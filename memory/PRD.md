@@ -73,3 +73,35 @@ Build a complete enterprise-grade Legal Operations & Court Services Marketplace 
 - Test credentials at `/app/memory/test_credentials.md`
 - Use REACT_APP_BACKEND_URL for all frontend API calls
 - All backend routes prefixed with `/api`
+
+## Iteration 2 — P1 Features Shipped (2026-02-XX)
+
+### Backend
+- **Expanded court hierarchy**: 36 states/UTs (28 + 8 UTs), 426 courts total (25 HCs + benches, 350+ district courts, 50+ tribunals + quasi-judicial bodies). Only Delhi flagged `serviceable: true` (35 courts: SC, Delhi HC, all 11 district courts, NCLT/NCLAT/DRT/DRAT/CAT/ITAT/CESTAT/NGT/TDSAT/AFT, CCI/SEBI/RERA, all 5 District Consumer Forums, Lokpal, ECI).
+- **Order serviceability enforcement**: `/api/orders` returns 400 if `court.serviceable=false`.
+- **Razorpay integration** (`/app/backend/razorpay_svc.py`): `/api/payments/razorpay/create-order` + `/api/payments/razorpay/verify`. Simulated mode without keys (auto-verifies for sandbox); real Razorpay activates when `RAZORPAY_KEY_ID` + `RAZORPAY_KEY_SECRET` added.
+- **Notifications module** (`/app/backend/notifications.py`): Twilio SMS, Twilio WhatsApp Business templates, SendGrid email. Templates: order_placed, order_status, otp. Fail-soft mock mode logs to console; real wires up when `TWILIO_*` / `SENDGRID_*` env vars set. Auto-fired on order create + status update.
+- **Notification prefs**: `PUT /api/notifications/prefs` for per-user sms/whatsapp/email toggles.
+- **Law-firm multi-user seats**: `/api/firms` (create), `/api/firms/me`, `/api/firms/invite` (email via SendGrid), `/api/firms/accept-invite`, `/api/firms/{id}/members/{id}` (remove), `/api/firms/{id}/orders`. Roles: owner, partner, associate, paralegal — permission gates enforced.
+- **Delivery partner workflow**: `/api/delivery/queue`, `/api/delivery/{id}/accept`, `/api/delivery/{id}/location` (lat/lng ping), `/api/delivery/{id}/complete` (OTP `123456` confirmation). Stubs for Dunzo/Borzo via env vars.
+- **Document Intelligence**: `/api/doc-intel/analyze` — Claude Sonnet 4.6 returns JSON report with filing_readiness_score, ocr_quality_score, pagination_score, missing_documents[], defects[{severity, issue, fix}], recommended_services[], summary. Stored in `doc_intel_reports`.
+- **Sponsored Vendor Listings**: `/api/vendors/sponsored/plan` (₹999/30 days), `/api/vendors/sponsored/activate`. Sponsored vendors get priority in `create_order` auto-matching algorithm.
+
+### Frontend
+- **OrderWizard**: defaults state to Delhi; unserviceable courts shown disabled "(Coming soon)" in Select with explanatory pill; new Doc Intelligence panel with "Analyze" CTA — shows 3 score gauges (filing/OCR/pagination), summary, defects with severity icons, missing docs list, AI-recommended services chips.
+- **OrderDetail**: dual payment buttons (Stripe + Razorpay), Razorpay SDK loaded via CDN, simulated mode notice; supports real Razorpay popup when keys are configured.
+- **CourtDirectory**: Serviceable/Coming Soon badges per court, defaults to Delhi.
+- **VendorDashboard**: Sponsored Listing promo card (CTA: activate ₹999/mo) or active-status gradient card with expiry; Sponsored badge in header.
+- **New pages**: `FirmManagement.jsx` (create firm + invite members + roles), `DeliveryHub.jsx` (queue + accept + location ping + OTP complete), `NotificationPrefs.jsx` (channel toggles with LIVE/MOCK status badges).
+- **AppLayout nav**: added Law Firm, Notifications nav items for advocate role; Delivery for delivery_partner role.
+- **Razorpay checkout script** loaded in `public/index.html`.
+
+### Testing
+- **57/58 backend tests passed** (1 failure was pre-existing AI streaming timeout, unrelated).
+- New tests added to `/app/backend/tests/test_courtbazaar_api.py`.
+
+## Deferred (Future P2)
+- Real OCR (currently AI-simulated via Claude). Add tesseract + PyPDF2 + pdf2image if needed.
+- Real map embed for delivery tracking (currently lat/lng text display)
+- WhatsApp template approval flow in admin console
+- Stripe ↔ Razorpay reconciliation reports
