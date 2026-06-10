@@ -3,7 +3,8 @@ import { NavLink, Outlet, Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
-  User, Settings, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck
+  User, Settings, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck,
+  Receipt, MessageSquare
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -45,6 +46,8 @@ const navItems = (role) => {
       { to: "/admin/vendors", icon: Store, label: "Vendors" },
       { to: "/admin/pricing", icon: CreditCard, label: "Pricing" },
       { to: "/admin/users", icon: User, label: "Users" },
+      { to: "/admin/reconciliation", icon: Receipt, label: "Reconciliation" },
+      { to: "/admin/whatsapp", icon: MessageSquare, label: "WhatsApp Templates" },
       { to: "/orders", icon: Package, label: "All Orders" },
       { to: "/delivery", icon: Truck, label: "Delivery" },
       { to: "/courts", icon: Building2, label: "Courts" },

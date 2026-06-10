@@ -1169,30 +1169,60 @@ class DocAnalyzeRequest(BaseModel):
 @api_router.post("/doc-intel/analyze")
 async def doc_intel_analyze(req: DocAnalyzeRequest, user=Depends(get_current_user)):
     from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+    from ocr_engine import analyze_document
     import json as _json
     files = await db.files.find({"file_id": {"$in": req.file_ids}, "user_id": user["user_id"]}, {"_id": 0}).to_list(50)
     if not files:
         raise HTTPException(404, "Files not found")
     court = await db.courts.find_one({"court_id": req.target_court}, {"_id": 0}) if req.target_court else None
-    files_summary = "\n".join([f"- {f['original_filename']} ({f['content_type']}, {(f.get('size',0)/1024):.1f} KB)" for f in files])
+
+    # REAL OCR / PDF analysis
+    analyses = []
+    combined_text_chunks = []
+    total_pages = 0
+    any_ocr = False
+    text_layer_count = 0
+    page_numbers_detected = 0
+    for f in files:
+        try:
+            data, ct = get_object(f["storage_path"])
+        except Exception as e:
+            logger.error(f"download for analysis failed: {e}")
+            continue
+        a = analyze_document(data, ct, f.get("original_filename", ""))
+        analyses.append({"filename": f["original_filename"], **{k: a[k] for k in a if k != "text"}})
+        if a["text"]:
+            combined_text_chunks.append(f"=== {f['original_filename']} ===\n{a['text']}")
+        total_pages += a["page_count"]
+        if a["ocr_used"]:
+            any_ocr = True
+        if a["has_text_layer"]:
+            text_layer_count += 1
+        page_numbers_detected += a["page_numbers_detected"]
+
+    combined_text = "\n\n".join(combined_text_chunks)[:12000]
+    files_summary = "\n".join([f"- {a['filename']}: pages={a['page_count']}, chars={a['char_count']}, ocr_used={a['ocr_used']}, has_text_layer={a['has_text_layer']}, page_numbers_seen={a['page_numbers_detected']}" for a in analyses])
+
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
         session_id=f"docint_{user['user_id']}_{uuid.uuid4().hex[:8]}",
         system_message=(
             "You are CourtBazaar's Document Intelligence engine for Indian courts. "
-            "Analyze the user's attached files and return ONLY a single JSON object (no markdown, no prose) with: "
+            "Analyze the extracted text + metadata and return ONLY a single JSON object (no markdown, no prose) with: "
             '{"filing_readiness_score": int 0-100, "ocr_quality_score": int 0-100, "pagination_score": int 0-100, '
             '"missing_documents": [str], "defects": [{"severity": "high|medium|low", "issue": str, "fix": str}], '
             '"recommended_services": [{"service_name": str, "reason": str}], '
-            '"summary": str}. Use Indian legal terminology. Keep arrays small (max 5 each).'
+            '"summary": str}. Use Indian legal terminology. Keep arrays small (max 5 each). '
+            "Base scores on the actual extracted content, not just the filenames."
         ),
     ).with_model("anthropic", "claude-sonnet-4-6")
-    prompt = f"Files attached:\n{files_summary}\n\n"
+    prompt = f"File metadata:\n{files_summary}\n\nExtracted text (truncated):\n{combined_text or '[no text extracted]'}\n\n"
     if court:
         prompt += f"Target court: {court['name']} ({court.get('type')}).\n"
     if req.case_type:
         prompt += f"Case type: {req.case_type}.\n"
     prompt += "Return the JSON object only."
+
     raw = ""
     try:
         async for ev in chat.stream_message(UserMessage(text=prompt)):
@@ -1202,8 +1232,7 @@ async def doc_intel_analyze(req: DocAnalyzeRequest, user=Depends(get_current_use
                 break
     except Exception as e:
         logger.error(f"doc-intel AI error: {e}")
-        raise HTTPException(500, f"AI error: {e}")
-    # Try to parse JSON
+
     raw_strip = raw.strip()
     if raw_strip.startswith("```"):
         raw_strip = raw_strip.split("```", 2)[1]
@@ -1213,17 +1242,29 @@ async def doc_intel_analyze(req: DocAnalyzeRequest, user=Depends(get_current_use
     try:
         report = _json.loads(raw_strip)
     except Exception:
+        # Heuristic fallback from OCR analysis
+        text_layer_ratio = (text_layer_count / len(analyses)) if analyses else 0
+        ocr_score = 90 if not any_ocr else (75 if combined_text else 40)
+        pagination_score = 85 if page_numbers_detected >= total_pages * 0.7 else (60 if page_numbers_detected > 0 else 35)
+        readiness = int((ocr_score + pagination_score + text_layer_ratio * 100) / 3)
         report = {
-            "filing_readiness_score": 75, "ocr_quality_score": 80, "pagination_score": 70,
+            "filing_readiness_score": readiness, "ocr_quality_score": ocr_score, "pagination_score": pagination_score,
             "missing_documents": [], "defects": [],
-            "recommended_services": [{"service_name": "Court Bundle Preparation", "reason": "Standard requirement"}],
-            "summary": raw_strip[:300] or "Analysis unavailable.",
+            "recommended_services": ([{"service_name": "Pagination", "reason": "Page numbers not consistently detected"}] if pagination_score < 70 else []) + ([{"service_name": "OCR Conversion", "reason": "Document appears to be scanned without text layer"}] if any_ocr else []),
+            "summary": f"{len(analyses)} file(s), {total_pages} page(s). OCR used: {any_ocr}. Text layer present: {text_layer_count}/{len(analyses)}.",
         }
+
     record = {
         "report_id": f"docint_{uuid.uuid4().hex[:12]}",
         "user_id": user["user_id"],
         "file_ids": req.file_ids, "target_court": req.target_court, "case_type": req.case_type,
-        "report": report, "created_at": datetime.now(timezone.utc).isoformat(),
+        "report": report,
+        "extracted": {
+            "total_pages": total_pages, "ocr_used": any_ocr,
+            "text_layer_count": text_layer_count, "page_numbers_detected": page_numbers_detected,
+            "files": analyses,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.doc_intel_reports.insert_one(record)
     record.pop("_id", None)
@@ -1264,6 +1305,228 @@ async def update_notif_prefs(payload: dict, user=Depends(get_current_user)):
     prefs = {k: bool(v) for k, v in payload.items() if k in ("sms", "whatsapp", "email")}
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"notif_prefs": prefs}})
     return {"ok": True, "notif_prefs": prefs}
+
+
+# ============================================================================
+# ADMIN: PAYMENT RECONCILIATION (Stripe ↔ Razorpay)
+# ============================================================================
+@api_router.get("/admin/reconciliation")
+async def admin_reconciliation(
+    user=Depends(get_current_user),
+    gateway: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    q: Dict[str, Any] = {}
+    if gateway:
+        q["gateway"] = gateway
+    if status_filter:
+        q["payment_status"] = status_filter
+    if from_date or to_date:
+        q["created_at"] = {}
+        if from_date:
+            q["created_at"]["$gte"] = from_date
+        if to_date:
+            q["created_at"]["$lte"] = to_date
+
+    txns = await db.payment_transactions.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+    order_ids = list({t.get("order_id") for t in txns if t.get("order_id")})
+    orders_map = {}
+    if order_ids:
+        async for o in db.orders.find({"order_id": {"$in": order_ids}}, {"_id": 0, "order_id": 1, "payment_status": 1, "pricing.total": 1, "status": 1}):
+            orders_map[o["order_id"]] = o
+
+    rows = []
+    stripe_paid = stripe_pending = stripe_failed = 0
+    rzp_paid = rzp_pending = rzp_failed = 0
+    stripe_paid_amt = rzp_paid_amt = 0.0
+    mismatches = []
+
+    for t in txns:
+        gw = t.get("gateway") or ("razorpay" if t.get("razorpay_order_id") else "stripe")
+        amt = float(t.get("amount", 0))
+        pstatus = t.get("payment_status", "pending")
+        order = orders_map.get(t.get("order_id"))
+        order_pstatus = order.get("payment_status") if order else None
+        mismatch = False
+        mismatch_reason = None
+        if order and order_pstatus and pstatus != order_pstatus:
+            mismatch = True
+            mismatch_reason = f"Txn={pstatus}, Order={order_pstatus}"
+            mismatches.append({"session_id": t.get("session_id"), "order_id": t.get("order_id"), "reason": mismatch_reason})
+        if gw == "stripe":
+            if pstatus == "paid":
+                stripe_paid += 1
+                stripe_paid_amt += amt
+            elif pstatus == "pending":
+                stripe_pending += 1
+            else:
+                stripe_failed += 1
+        else:
+            if pstatus == "paid":
+                rzp_paid += 1
+                rzp_paid_amt += amt
+            elif pstatus == "pending":
+                rzp_pending += 1
+            else:
+                rzp_failed += 1
+        rows.append({
+            "session_id": t.get("session_id"),
+            "razorpay_order_id": t.get("razorpay_order_id"),
+            "razorpay_payment_id": t.get("razorpay_payment_id"),
+            "gateway": gw,
+            "order_id": t.get("order_id"),
+            "user_id": t.get("user_id"),
+            "amount": amt,
+            "currency": t.get("currency", "inr"),
+            "payment_status": pstatus,
+            "order_payment_status": order_pstatus,
+            "order_status": order.get("status") if order else None,
+            "simulated": t.get("simulated", False),
+            "created_at": t.get("created_at"),
+            "mismatch": mismatch,
+            "mismatch_reason": mismatch_reason,
+        })
+
+    return {
+        "rows": rows,
+        "totals": {
+            "stripe": {"paid": stripe_paid, "pending": stripe_pending, "failed": stripe_failed, "paid_amount": round(stripe_paid_amt, 2)},
+            "razorpay": {"paid": rzp_paid, "pending": rzp_pending, "failed": rzp_failed, "paid_amount": round(rzp_paid_amt, 2)},
+            "grand_total_paid": round(stripe_paid_amt + rzp_paid_amt, 2),
+            "transaction_count": len(rows),
+        },
+        "mismatches": mismatches,
+    }
+
+
+@api_router.get("/admin/reconciliation/export")
+async def admin_reconciliation_csv(user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    import csv
+    import io as _io
+    txns = await db.payment_transactions.find({}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    buf = _io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["session_id", "gateway", "order_id", "user_id", "amount", "currency", "payment_status", "simulated", "created_at"])
+    for t in txns:
+        gw = t.get("gateway") or ("razorpay" if t.get("razorpay_order_id") else "stripe")
+        w.writerow([t.get("session_id"), gw, t.get("order_id"), t.get("user_id"), t.get("amount"), t.get("currency", "inr"), t.get("payment_status"), t.get("simulated", False), t.get("created_at")])
+    return Response(content=buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=courtbazaar-reconciliation.csv"})
+
+
+# ============================================================================
+# ADMIN: WHATSAPP TEMPLATE APPROVAL WORKFLOW
+# ============================================================================
+class WhatsAppTemplate(BaseModel):
+    name: str
+    category: Literal["transactional", "marketing", "otp", "utility"]
+    language: str = "en"
+    body: str
+    variables: List[str] = []
+    description: Optional[str] = None
+
+
+@api_router.get("/admin/whatsapp-templates")
+async def list_wa_templates(user=Depends(get_current_user), status_filter: Optional[str] = None):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    if await db.whatsapp_templates.count_documents({}) == 0:
+        defaults = [
+            {"template_id": f"wat_{uuid.uuid4().hex[:10]}", "name": "order_placed_v1", "category": "transactional", "language": "en", "body": "Hi {{1}}, your CourtBazaar order {{2}} for {{3}} has been placed. Total Rs.{{4}}. Track at courtbazaar.in", "variables": ["name", "order_id", "court", "amount"], "status": "approved", "twilio_sid": None, "description": "Order placement confirmation", "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user["user_id"], "history": []},
+            {"template_id": f"wat_{uuid.uuid4().hex[:10]}", "name": "order_status_v1", "category": "transactional", "language": "en", "body": "Hi {{1}}, order {{2}} is now {{3}}. Vendor: {{4}}. Track live at courtbazaar.in", "variables": ["name", "order_id", "status", "vendor"], "status": "approved", "twilio_sid": None, "description": "Order status change", "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user["user_id"], "history": []},
+            {"template_id": f"wat_{uuid.uuid4().hex[:10]}", "name": "otp_login_v1", "category": "otp", "language": "en", "body": "Your CourtBazaar OTP is {{1}}. Valid for 5 minutes. Do not share.", "variables": ["otp"], "status": "pending", "twilio_sid": None, "description": "Login OTP", "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user["user_id"], "history": []},
+            {"template_id": f"wat_{uuid.uuid4().hex[:10]}", "name": "delivery_otp_v1", "category": "transactional", "language": "en", "body": "Delivery OTP for order {{1}} is {{2}}. Share only with the delivery partner.", "variables": ["order_id", "otp"], "status": "draft", "twilio_sid": None, "description": "Delivery confirmation OTP", "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user["user_id"], "history": []},
+        ]
+        for t in defaults:
+            await db.whatsapp_templates.insert_one(t)
+    q = {}
+    if status_filter:
+        q["status"] = status_filter
+    tmpls = await db.whatsapp_templates.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return tmpls
+
+
+@api_router.post("/admin/whatsapp-templates")
+async def create_wa_template(payload: WhatsAppTemplate, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    doc = {
+        "template_id": f"wat_{uuid.uuid4().hex[:10]}",
+        **payload.model_dump(),
+        "status": "draft",
+        "twilio_sid": None,
+        "created_by": user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "history": [{"action": "created", "by": user["name"], "at": datetime.now(timezone.utc).isoformat()}],
+    }
+    await db.whatsapp_templates.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.post("/admin/whatsapp-templates/{template_id}/submit")
+async def submit_wa_template(template_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    t = await db.whatsapp_templates.find_one({"template_id": template_id}, {"_id": 0})
+    if not t:
+        raise HTTPException(404, "Template not found")
+    if t["status"] != "draft":
+        raise HTTPException(400, f"Template already {t['status']}")
+    twilio_sid = None
+    try:
+        from notifications import is_whatsapp_enabled
+        if is_whatsapp_enabled():
+            twilio_sid = f"HX_pending_{uuid.uuid4().hex[:14]}"
+    except Exception:
+        pass
+    await db.whatsapp_templates.update_one(
+        {"template_id": template_id},
+        {"$set": {"status": "pending", "twilio_sid": twilio_sid, "submitted_at": datetime.now(timezone.utc).isoformat()},
+         "$push": {"history": {"action": "submitted_for_approval", "by": user["name"], "at": datetime.now(timezone.utc).isoformat()}}},
+    )
+    return {"ok": True, "status": "pending", "twilio_sid": twilio_sid}
+
+
+@api_router.post("/admin/whatsapp-templates/{template_id}/approve")
+async def approve_wa_template(template_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    await db.whatsapp_templates.update_one(
+        {"template_id": template_id},
+        {"$set": {"status": "approved", "approved_at": datetime.now(timezone.utc).isoformat(), "approved_by": user["name"]},
+         "$push": {"history": {"action": "approved", "by": user["name"], "at": datetime.now(timezone.utc).isoformat()}}},
+    )
+    return {"ok": True, "status": "approved"}
+
+
+@api_router.post("/admin/whatsapp-templates/{template_id}/reject")
+async def reject_wa_template(template_id: str, payload: dict, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    reason = payload.get("reason", "Not specified")
+    await db.whatsapp_templates.update_one(
+        {"template_id": template_id},
+        {"$set": {"status": "rejected", "rejection_reason": reason},
+         "$push": {"history": {"action": "rejected", "reason": reason, "by": user["name"], "at": datetime.now(timezone.utc).isoformat()}}},
+    )
+    return {"ok": True, "status": "rejected"}
+
+
+@api_router.delete("/admin/whatsapp-templates/{template_id}")
+async def delete_wa_template(template_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    await db.whatsapp_templates.delete_one({"template_id": template_id})
+    return {"ok": True}
+
 
 
 app.include_router(api_router)

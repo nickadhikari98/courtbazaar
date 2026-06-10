@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 3 backend testing complete. Added 18 new tests to /app/backend/tests/test_courtbazaar_api.py covering: (a) Real OCR via Tesseract on a generated text PDF (reportlab) + a text PNG (PIL) verifying extracted.total_pages, text_layer_count, ocr_used, files[] per-file metadata, and the heuristic fallback report schema; (b) Admin Reconciliation list, totals, gateway filter, status filter, mismatch detection (stripe pending vs order paid via parallel razorpay verify), CSV export with text/csv + Content-Disposition + correct header line, and 403 for non-admin on both list & export; (c) WhatsApp templates seed (4 defaults with mixed statuses), create -> draft, submit -> pending (twilio_sid None in mock mode), double-submit -> 400, approve, reject + rejection_reason persisted, status_filter=approved, delete, and 403 for non-admin; (d) Regression on states (36+), services (44), 3-role login, and order create at court_tishazari. Result: 18/18 iter3 tests passed; full suite 75/76 (the one failure is the same pre-existing flaky TestAI.test_filing_checklist ingress 502, unrelated). Installed reportlab pip package for PDF generation.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/ai/filing-checklist", "issue": "Pre-existing intermittent 502 from preview ingress on slow Claude streaming (>~60s). Unchanged from iteration_2. Not a regression introduced by iter3."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_courtbazaar_api.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/iter3_results.xml"
+  ],
+  "action_items": [
+    "Optional: make /api/ai/filing-checklist non-streaming or short-circuit when EMERGENT_LLM_KEY budget hits, so it never hits the 60s ingress timeout.",
+    "Consider exposing reconciliation date-range filter (from_date/to_date already in code) on the admin UI — not currently tested end-to-end since UI is out of scope.",
+    "WhatsApp /submit only persists twilio_sid placeholder if is_whatsapp_enabled() — confirmed None here. When Twilio keys are added, integration test will need a Twilio mock or sandbox SID assertion."
+  ],
+  "critical_code_review_comments": [
+    "/api/admin/reconciliation: no pagination — .to_list(500) hard caps at 500 txns. Once volume grows the report will silently miss rows. Add skip/limit + a UI 'load more' or aggregate via $facet.",
+    "/api/admin/reconciliation/export: .to_list(2000) similarly capped. Should stream the CSV instead of buffering full result set in memory (StreamingResponse with a generator).",
+    "/api/admin/whatsapp-templates GET seeds 4 defaults on first call from inside a GET handler — non-idempotent side effect in a read endpoint. Should run as startup seed (in startup_db_client) or via a dedicated /seed admin POST.",
+    "WhatsApp /approve and /reject endpoints do not verify the template exists before update_one — silently no-ops if template_id is wrong and still returns ok:true. Should HTTPException(404) when matched_count==0.",
+    "WhatsApp /submit creates twilio_sid via mock string when keys present but never actually calls Twilio content-template API (notifications.is_whatsapp_enabled only checks env). Mock vs real boundary should be clearly logged.",
+    "Reconciliation mismatch logic flags any inequality between txn.payment_status and order.payment_status. A stripe txn left 'pending' after the user paid via razorpay is technically not a mismatch (it's an abandoned alternate gateway). Consider excluding mismatches where ANOTHER txn for the same order_id is 'paid'.",
+    "Iter2 review items still open: /api/delivery/{order_id}/location and /complete have no role/ownership checks; /api/firms/accept-invite does not validate invitee email matches invite; server.py now 1545 lines (was 1281) — split into routers/* modules is overdue."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_courtbazaar_api.py"
+  ],
+  "success_rate": {"backend": "98.7% (75/76; iter3 itself 100% 18/18)", "frontend": "N/A (backend-only)"},
+  "test_credentials": "advocate@demo.in/Advocate@123, vendor@demo.in/Vendor@123, admin@courtbazaar.in/Admin@123 — all working.",
+  "seed_data_creation": "Tests create TEST_-prefixed payment_transactions (stripe + razorpay simulated), TEST_-prefixed whatsapp_templates (transactional/marketing/utility, deleted after delete test), TEST_-prefixed PDFs and PNGs uploaded to Emergent storage, plus a docint_* report row. First call to /api/admin/whatsapp-templates seeds 4 default templates (order_placed_v1, order_status_v1, otp_login_v1, delivery_otp_v1) — these will remain in DB across iterations.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 3 tests live in classes TestDocIntelRealOCR, TestAdminReconciliation, TestWhatsAppTemplates, TestRegressionIter3. Reportlab is now installed (used to generate text PDFs for OCR tests). For OCR tests, both a real text-layer PDF and a rendered-text PNG are uploaded — the analyze endpoint MUST return 200 even when EMERGENT_LLM_KEY budget is exhausted (heuristic fallback). Mismatch detection test deliberately pays an order via Razorpay while leaving the stripe txn pending — that stripe row becomes mismatch=True. Twilio mock mode: submit returns twilio_sid=None since TWILIO_ACCOUNT_SID is empty in .env."
+}

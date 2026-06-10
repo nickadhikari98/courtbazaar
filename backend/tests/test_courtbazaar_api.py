@@ -768,3 +768,315 @@ class TestSponsoredP1:
         assert order.get("vendor_id") is not None
         # In demo data, the Sharma vendor at Tis Hazari is the activated vendor
         assert "Sharma" in (order.get("vendor_name") or "")
+
+
+# ============================================================================
+# ITERATION 3: OCR / Reconciliation / WhatsApp Template Approval
+# ============================================================================
+
+def _make_text_pdf_bytes(text="This is page 1 of a CourtBazaar test PDF.\nIN THE COURT OF TIS HAZARI, DELHI\nCivil Suit No. TEST/2026"):
+    """Generate a small text-layer PDF using reportlab."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    y = 800
+    for line in text.split("\n"):
+        c.drawString(72, y, line)
+        y -= 20
+    c.drawString(72, 60, "Page 1")
+    c.showPage()
+    c.drawString(72, 800, "Continuation page with more body text.")
+    c.drawString(72, 60, "Page 2")
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+def _make_text_png_bytes(text="HELLO COURTBAZAAR\nTesseract OCR test"):
+    """Generate a small PNG with rendered text for OCR."""
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.new("RGB", (600, 200), color="white")
+    d = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+    except Exception:
+        font = ImageFont.load_default()
+    y = 30
+    for line in text.split("\n"):
+        d.text((30, y), line, fill="black", font=font)
+        y += 50
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _upload_file(token, filename, data, content_type):
+    headers = {"Authorization": f"Bearer {token}"}
+    files = {"file": (filename, io.BytesIO(data), content_type)}
+    r = requests.post(f"{API}/files/upload", headers=headers, files=files, timeout=90)
+    assert r.status_code == 200, r.text
+    return r.json()["file_id"]
+
+
+# ---------- Doc Intel Real OCR ----------
+class TestDocIntelRealOCR:
+    def test_analyze_pdf_and_png_with_ocr(self, s, advocate_token):
+        pdf_id = _upload_file(advocate_token, "TEST_text.pdf", _make_text_pdf_bytes(), "application/pdf")
+        png_id = _upload_file(advocate_token, "TEST_text.png", _make_text_png_bytes(), "image/png")
+
+        r = s.post(
+            f"{API}/doc-intel/analyze",
+            headers=hdr(advocate_token),
+            json={"file_ids": [pdf_id, png_id], "target_court": "court_tishazari", "case_type": "Civil Suit"},
+            timeout=180,
+        )
+        assert r.status_code == 200, r.text
+        b = r.json()
+        # Extracted block
+        ex = b.get("extracted") or {}
+        assert ex.get("total_pages", 0) > 0, f"total_pages should be > 0, got {ex}"
+        assert ex.get("text_layer_count", 0) >= 1, f"PDF should have text layer, got {ex}"
+        assert ex.get("ocr_used") is True, "PNG should trigger OCR (any_ocr=true)"
+        files_arr = ex.get("files") or []
+        assert len(files_arr) == 2, f"expected 2 files in extracted.files[], got {len(files_arr)}"
+        for f in files_arr:
+            for key in ("filename", "page_count", "has_text_layer", "ocr_used", "char_count", "page_numbers_detected"):
+                assert key in f, f"missing {key} in per-file metadata: {f}"
+
+        # Report block (fallback OK)
+        report = b.get("report") or {}
+        for key in ("filing_readiness_score", "ocr_quality_score", "pagination_score"):
+            assert key in report, f"missing {key} in report"
+            assert isinstance(report[key], int)
+        assert "summary" in report and isinstance(report["summary"], str)
+
+
+# ---------- Admin Reconciliation ----------
+class TestAdminReconciliation:
+    def test_seed_one_paid_stripe_and_one_paid_razorpay(self, s, advocate_token):
+        """Ensure at least one stripe + one razorpay txn exist for the report."""
+        # Stripe checkout (creates a payment_transactions row, status 'pending')
+        ro = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
+        assert ro.status_code == 200
+        oid = ro.json()["order_id"]
+        chk = s.post(f"{API}/payments/checkout", headers=hdr(advocate_token),
+                     json={"order_id": oid, "origin_url": "https://example.com"}, timeout=60)
+        assert chk.status_code == 200
+
+        # Razorpay simulated paid
+        ro2 = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
+        assert ro2.status_code == 200
+        oid2 = ro2.json()["order_id"]
+        rzp = s.post(f"{API}/payments/razorpay/create-order", headers=hdr(advocate_token),
+                     json={"order_id": oid2}, timeout=15).json()
+        s.post(f"{API}/payments/razorpay/verify", headers=hdr(advocate_token),
+               json={"razorpay_order_id": rzp["razorpay_order_id"]}, timeout=15)
+        pytest.recon_paid_order_id = oid2
+
+    def test_reconciliation_list_shape(self, s, admin_token):
+        r = s.get(f"{API}/admin/reconciliation", headers=hdr(admin_token), timeout=30)
+        assert r.status_code == 200, r.text
+        b = r.json()
+        assert isinstance(b.get("rows"), list) and len(b["rows"]) >= 1
+        assert "totals" in b and "mismatches" in b
+        t = b["totals"]
+        for gw in ("stripe", "razorpay"):
+            assert gw in t
+            for k in ("paid", "pending", "failed", "paid_amount"):
+                assert k in t[gw]
+        assert "grand_total_paid" in t and "transaction_count" in t
+        # row shape
+        row = b["rows"][0]
+        for key in ("gateway", "order_id", "amount", "payment_status", "order_payment_status", "mismatch"):
+            assert key in row, f"row missing {key}: {row}"
+        assert row["gateway"] in ("stripe", "razorpay")
+
+    def test_reconciliation_filter_by_gateway(self, s, admin_token):
+        r = s.get(f"{API}/admin/reconciliation?gateway=razorpay", headers=hdr(admin_token), timeout=30)
+        assert r.status_code == 200
+        rows = r.json()["rows"]
+        assert len(rows) >= 1
+        for row in rows:
+            assert row["gateway"] == "razorpay", f"gateway filter leaked stripe row: {row}"
+
+    def test_reconciliation_filter_by_status_paid(self, s, admin_token):
+        r = s.get(f"{API}/admin/reconciliation?status_filter=paid", headers=hdr(admin_token), timeout=30)
+        assert r.status_code == 200
+        rows = r.json()["rows"]
+        # At least the razorpay-paid we created should be here
+        assert len(rows) >= 1
+        for row in rows:
+            assert row["payment_status"] == "paid", f"status filter leaked non-paid: {row}"
+
+    def test_reconciliation_mismatch_detection(self, s, admin_token, advocate_token):
+        # Create order + stripe checkout (txn pending, order pending). Manually pull
+        # admin route then force a mismatch by activating the order's payment_status=paid
+        # while leaving the txn pending. We use razorpay create (txn pending) then mark
+        # order paid by hitting a parallel razorpay verify on a DIFFERENT razorpay_order_id
+        # — actually simpler: create a stripe checkout (txn pending), then razorpay-verify
+        # the same order so order.payment_status='paid' but stripe txn stays 'pending'.
+        ro = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
+        assert ro.status_code == 200
+        oid = ro.json()["order_id"]
+        # 1) stripe checkout -> creates stripe txn (pending)
+        chk = s.post(f"{API}/payments/checkout", headers=hdr(advocate_token),
+                     json={"order_id": oid, "origin_url": "https://example.com"}, timeout=60)
+        assert chk.status_code == 200
+        stripe_sid = chk.json()["session_id"]
+        # 2) razorpay simulated paid -> sets order.payment_status='paid'
+        rzp = s.post(f"{API}/payments/razorpay/create-order", headers=hdr(advocate_token),
+                     json={"order_id": oid}, timeout=15).json()
+        s.post(f"{API}/payments/razorpay/verify", headers=hdr(advocate_token),
+               json={"razorpay_order_id": rzp["razorpay_order_id"]}, timeout=15)
+        # Now stripe txn is still pending but order is paid -> mismatch
+        r = s.get(f"{API}/admin/reconciliation", headers=hdr(admin_token), timeout=30)
+        assert r.status_code == 200
+        body = r.json()
+        # find the stripe row for this order
+        stripe_row = next((x for x in body["rows"] if x.get("session_id") == stripe_sid), None)
+        assert stripe_row is not None, f"stripe row missing for session {stripe_sid}"
+        assert stripe_row["mismatch"] is True, f"expected mismatch=True on stripe pending vs order paid: {stripe_row}"
+        # Mismatches array must include it
+        mm_ids = [m.get("session_id") for m in body["mismatches"]]
+        assert stripe_sid in mm_ids, f"mismatches[] missing stripe session: {mm_ids}"
+
+    def test_reconciliation_csv_export(self, s, admin_token):
+        r = s.get(f"{API}/admin/reconciliation/export", headers=hdr(admin_token), timeout=30)
+        assert r.status_code == 200
+        ct = r.headers.get("content-type", "")
+        assert "text/csv" in ct, f"expected text/csv, got {ct}"
+        cd = r.headers.get("content-disposition", "")
+        assert "attachment" in cd.lower(), f"expected attachment header, got {cd}"
+        body = r.text
+        first_line = body.splitlines()[0]
+        assert first_line.startswith("session_id,gateway,order_id,"), f"unexpected header: {first_line}"
+
+    def test_reconciliation_forbidden_for_non_admin(self, s, advocate_token):
+        r = s.get(f"{API}/admin/reconciliation", headers=hdr(advocate_token), timeout=15)
+        assert r.status_code == 403
+        r2 = s.get(f"{API}/admin/reconciliation/export", headers=hdr(advocate_token), timeout=15)
+        assert r2.status_code == 403
+
+
+# ---------- WhatsApp Templates Approval Workflow ----------
+class TestWhatsAppTemplates:
+    def test_seed_defaults_on_first_get(self, s, admin_token):
+        r = s.get(f"{API}/admin/whatsapp-templates", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200
+        tmpls = r.json()
+        names = {t["name"] for t in tmpls}
+        # Must contain the 4 defaults (may also include any later-created ones)
+        for required in ("order_placed_v1", "order_status_v1", "otp_login_v1", "delivery_otp_v1"):
+            assert required in names, f"default template {required} missing — got {names}"
+        statuses = {t["status"] for t in tmpls if t["name"] in {"order_placed_v1", "order_status_v1", "otp_login_v1", "delivery_otp_v1"}}
+        assert statuses & {"approved", "pending", "draft"}, f"expected mixed statuses, got {statuses}"
+
+    def test_create_submit_approve_flow(self, s, admin_token):
+        payload = {
+            "name": f"TEST_tmpl_{uuid.uuid4().hex[:6]}",
+            "category": "transactional",
+            "language": "en",
+            "body": "Hello {{1}}, your TEST message.",
+            "variables": ["name"],
+            "description": "TEST template",
+        }
+        r = s.post(f"{API}/admin/whatsapp-templates", headers=hdr(admin_token), json=payload, timeout=15)
+        assert r.status_code == 200, r.text
+        t = r.json()
+        assert t["status"] == "draft"
+        assert "template_id" in t
+        assert isinstance(t.get("history"), list) and len(t["history"]) >= 1
+        assert t["history"][0]["action"] == "created"
+        tid = t["template_id"]
+
+        # Submit (draft -> pending)
+        r2 = s.post(f"{API}/admin/whatsapp-templates/{tid}/submit", headers=hdr(admin_token), timeout=15)
+        assert r2.status_code == 200, r2.text
+        sb = r2.json()
+        assert sb["status"] == "pending"
+        # mock mode: twilio_sid None since no Twilio keys
+        assert sb.get("twilio_sid") is None
+
+        # Submit again should fail with 400 (already pending)
+        r2b = s.post(f"{API}/admin/whatsapp-templates/{tid}/submit", headers=hdr(admin_token), timeout=15)
+        assert r2b.status_code == 400
+
+        # Approve
+        r3 = s.post(f"{API}/admin/whatsapp-templates/{tid}/approve", headers=hdr(admin_token), timeout=15)
+        assert r3.status_code == 200
+        assert r3.json()["status"] == "approved"
+
+        # Verify history has 'approved'
+        lst = s.get(f"{API}/admin/whatsapp-templates", headers=hdr(admin_token), timeout=15).json()
+        found = next((x for x in lst if x["template_id"] == tid), None)
+        assert found and found["status"] == "approved"
+        actions = [h.get("action") for h in found.get("history", [])]
+        assert "approved" in actions, f"history missing approved: {actions}"
+
+    def test_reject_flow(self, s, admin_token):
+        # Create + submit
+        payload = {"name": f"TEST_rej_{uuid.uuid4().hex[:6]}", "category": "marketing", "language": "en", "body": "Promo {{1}}", "variables": ["x"]}
+        t = s.post(f"{API}/admin/whatsapp-templates", headers=hdr(admin_token), json=payload, timeout=15).json()
+        tid = t["template_id"]
+        s.post(f"{API}/admin/whatsapp-templates/{tid}/submit", headers=hdr(admin_token), timeout=15)
+        # Reject
+        r = s.post(f"{API}/admin/whatsapp-templates/{tid}/reject", headers=hdr(admin_token),
+                   json={"reason": "Body too promotional"}, timeout=15)
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "rejected"
+        # Verify rejection_reason persisted
+        lst = s.get(f"{API}/admin/whatsapp-templates", headers=hdr(admin_token), timeout=15).json()
+        found = next((x for x in lst if x["template_id"] == tid), None)
+        assert found and found.get("rejection_reason") == "Body too promotional"
+
+    def test_filter_by_status_approved(self, s, admin_token):
+        r = s.get(f"{API}/admin/whatsapp-templates?status_filter=approved", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200
+        tmpls = r.json()
+        assert len(tmpls) >= 1
+        for t in tmpls:
+            assert t["status"] == "approved", f"filter leaked: {t}"
+
+    def test_delete(self, s, admin_token):
+        payload = {"name": f"TEST_del_{uuid.uuid4().hex[:6]}", "category": "utility", "language": "en", "body": "X", "variables": []}
+        t = s.post(f"{API}/admin/whatsapp-templates", headers=hdr(admin_token), json=payload, timeout=15).json()
+        tid = t["template_id"]
+        r = s.delete(f"{API}/admin/whatsapp-templates/{tid}", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200
+        # confirm gone
+        lst = s.get(f"{API}/admin/whatsapp-templates", headers=hdr(admin_token), timeout=15).json()
+        assert not any(x["template_id"] == tid for x in lst)
+
+    def test_whatsapp_templates_forbidden_for_non_admin(self, s, advocate_token):
+        r = s.get(f"{API}/admin/whatsapp-templates", headers=hdr(advocate_token), timeout=15)
+        assert r.status_code == 403
+
+
+# ---------- Regression: core endpoints still healthy ----------
+class TestRegressionIter3:
+    def test_states_still_36plus(self, s):
+        r = s.get(f"{API}/states", timeout=15)
+        assert r.status_code == 200
+        assert len(r.json()) >= 36
+
+    def test_services_still_44(self, s):
+        r = s.get(f"{API}/services", timeout=15)
+        assert r.status_code == 200
+        assert len(r.json()) == 44
+
+    def test_logins_all_three(self, s):
+        for email, pwd, role in [
+            (ADV_EMAIL, ADV_PASS, "advocate"),
+            (VENDOR_EMAIL, VENDOR_PASS, "vendor"),
+            (ADMIN_EMAIL, ADMIN_PASS, "admin"),
+        ]:
+            r = s.post(f"{API}/auth/login", json={"email": email, "password": pwd}, timeout=15)
+            assert r.status_code == 200, f"login {email}: {r.text}"
+            assert r.json()["user"]["role"] == role
+
+    def test_order_create_at_tishazari(self, s, advocate_token):
+        r = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
+        assert r.status_code == 200, r.text
+        assert r.json()["court_id"] == "court_tishazari"
+

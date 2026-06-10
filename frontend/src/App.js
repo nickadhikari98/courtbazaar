@@ -24,6 +24,8 @@ import AdminDashboard from "@/pages/AdminDashboard";
 import AdminVendors from "@/pages/AdminVendors";
 import AdminPricing from "@/pages/AdminPricing";
 import AdminUsers from "@/pages/AdminUsers";
+import AdminReconciliation from "@/pages/AdminReconciliation";
+import AdminWhatsAppTemplates from "@/pages/AdminWhatsAppTemplates";
 import VendorOnboarding from "@/pages/VendorOnboarding";
 import FirmManagement from "@/pages/FirmManagement";
 import DeliveryHub from "@/pages/DeliveryHub";
@@ -111,6 +113,8 @@ function AppRouter() {
         <Route path="/admin/vendors" element={<ProtectedRoute roles={["admin"]}><AdminVendors /></ProtectedRoute>} />
         <Route path="/admin/pricing" element={<ProtectedRoute roles={["admin"]}><AdminPricing /></ProtectedRoute>} />
         <Route path="/admin/users" element={<ProtectedRoute roles={["admin"]}><AdminUsers /></ProtectedRoute>} />
+        <Route path="/admin/reconciliation" element={<ProtectedRoute roles={["admin"]}><AdminReconciliation /></ProtectedRoute>} />
+        <Route path="/admin/whatsapp" element={<ProtectedRoute roles={["admin"]}><AdminWhatsAppTemplates /></ProtectedRoute>} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" />} />
