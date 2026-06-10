@@ -1080,3 +1080,332 @@ class TestRegressionIter3:
         assert r.status_code == 200, r.text
         assert r.json()["court_id"] == "court_tishazari"
 
+
+
+# ============================================================================
+# ITERATION 4: Bulk Import + DPDP + Audit Log + Vendor Leaderboard / SLA
+# ============================================================================
+import json as _json
+
+
+def _register_advocate(s, label):
+    """Helper: register a fresh advocate user with unique email."""
+    suffix = uuid.uuid4().hex[:8]
+    email = f"TEST_{label}_{suffix}@cbtest.in"
+    pwd = "TestPass@123"
+    r = s.post(f"{API}/auth/register", json={
+        "email": email, "password": pwd, "name": f"TEST {label} {suffix}",
+        "phone": f"9{uuid.uuid4().int % 1000000000:09d}", "role": "advocate",
+    }, timeout=15)
+    assert r.status_code == 200, f"register failed: {r.status_code} {r.text}"
+    token = r.json()["token"]
+    user_id = r.json()["user"]["user_id"]
+    return email, pwd, token, user_id
+
+
+def _create_firm(s, token, name_suffix=""):
+    """Helper: create a firm for the given user (they become owner)."""
+    r = s.post(f"{API}/firms", headers=hdr(token), json={
+        "name": f"TEST Firm {name_suffix or uuid.uuid4().hex[:6]}",
+        "gst": "07AAACT1234A1Z5",
+        "address": "Test Address, Delhi",
+    }, timeout=15)
+    assert r.status_code == 200, f"create firm: {r.status_code} {r.text}"
+    return r.json()["firm_id"]
+
+
+class TestBulkImportIter4:
+    """Bulk Order CSV Import for law firms."""
+
+    def test_template_download(self, s, advocate_token):
+        r = s.get(f"{API}/firms/bulk-import/template", headers=hdr(advocate_token), timeout=15)
+        assert r.status_code == 200, r.text
+        assert "text/csv" in r.headers.get("content-type", "").lower()
+        body = r.text
+        first_line = body.splitlines()[0]
+        expected_header = "matter_name,service_ids,qty_each,court_id,delivery_option,urgent,delivery_address,notes"
+        assert first_line == expected_header, f"unexpected header: {first_line}"
+        # 1 header + at least 2 example rows
+        assert len(body.splitlines()) >= 3
+
+    def test_bulk_import_requires_firm(self, s):
+        # Fresh advocate without firm
+        _, _, tok, _ = _register_advocate(s, "nofirm")
+        csv_body = "matter_name,service_ids,qty_each,court_id,delivery_option,urgent,delivery_address,notes\n"
+        csv_body += "TEST Matter,svc_bw_photocopy,10,court_tishazari,chamber,false,Addr,note\n"
+        r = requests.post(
+            f"{API}/firms/bulk-import",
+            headers={"Authorization": f"Bearer {tok}"},
+            files={"file": ("test.csv", csv_body, "text/csv")},
+            timeout=20,
+        )
+        assert r.status_code == 400, r.text
+        assert "law-firm" in r.text.lower() or "firm" in r.text.lower()
+
+    def test_bulk_import_happy_path(self, s):
+        # Fresh advocate -> create firm -> bulk import
+        _, _, tok, _ = _register_advocate(s, "happy")
+        firm_id = _create_firm(s, tok, "happy")
+        csv_body = "matter_name,service_ids,qty_each,court_id,delivery_option,urgent,delivery_address,notes\n"
+        csv_body += "TEST Matter A,svc_bw_photocopy;svc_spiral_binding,100;1,court_tishazari,chamber,false,Chamber X,test\n"
+        csv_body += "TEST Matter B,svc_bw_photocopy;svc_spiral_binding,50;2,court_tishazari,chamber,false,Chamber Y,test2\n"
+        r = requests.post(
+            f"{API}/firms/bulk-import",
+            headers={"Authorization": f"Bearer {tok}"},
+            files={"file": ("bulk.csv", csv_body, "text/csv")},
+            timeout=30,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body["success"]) == 2, f"expected 2 success, got {body}"
+        assert body["errors"] == []
+        assert body["total_amount"] > 0
+        # Verify orders persisted with firm_id + matter_name + source
+        order_id = body["success"][0]["order_id"]
+        ro = s.get(f"{API}/orders/{order_id}", headers=hdr(tok), timeout=15)
+        assert ro.status_code == 200, ro.text
+        order = ro.json()
+        assert order["firm_id"] == firm_id
+        assert order["matter_name"] == "TEST Matter A"
+        assert order["source"] == "bulk_csv"
+        assert order["vendor_id"] is not None, "vendor should be auto-matched at tishazari"
+
+    def test_bulk_import_partial_errors_non_serviceable_court(self, s):
+        _, _, tok, _ = _register_advocate(s, "partial")
+        _create_firm(s, tok, "partial")
+        csv_body = "matter_name,service_ids,qty_each,court_id,delivery_option,urgent,delivery_address,notes\n"
+        csv_body += "TEST Good,svc_bw_photocopy,10,court_tishazari,chamber,false,Addr,note\n"
+        csv_body += "TEST Bad,svc_bw_photocopy,10,court_ka_hc,chamber,false,Addr,note\n"
+        r = requests.post(
+            f"{API}/firms/bulk-import",
+            headers={"Authorization": f"Bearer {tok}"},
+            files={"file": ("partial.csv", csv_body, "text/csv")},
+            timeout=20,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body["success"]) == 1
+        assert len(body["errors"]) == 1
+        assert "not yet serviceable" in body["errors"][0]["error"].lower(), body["errors"]
+
+    def test_bulk_import_unknown_service_handled(self, s):
+        _, _, tok, _ = _register_advocate(s, "badsvc")
+        _create_firm(s, tok, "badsvc")
+        csv_body = "matter_name,service_ids,qty_each,court_id,delivery_option,urgent,delivery_address,notes\n"
+        csv_body += "TEST Unknown,svc_does_not_exist,1,court_tishazari,chamber,false,Addr,note\n"
+        r = requests.post(
+            f"{API}/firms/bulk-import",
+            headers={"Authorization": f"Bearer {tok}"},
+            files={"file": ("bad.csv", csv_body, "text/csv")},
+            timeout=20,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Graceful handling: should either appear in success (with 0/low total) or errors (without 500)
+        assert (len(body["success"]) + len(body["errors"])) == 1
+
+    def test_bulk_import_associate_forbidden(self, s):
+        # owner creates firm and invites a new user as associate
+        _, _, owner_tok, _ = _register_advocate(s, "owner")
+        firm_id = _create_firm(s, owner_tok, "assoc")
+        # Register associate user (fresh)
+        assoc_email, assoc_pwd, assoc_tok, _ = _register_advocate(s, "assoc")
+        # Owner invites
+        ri = s.post(f"{API}/firms/invite", headers=hdr(owner_tok), json={
+            "firm_id": firm_id, "email": assoc_email, "name": "Associate Test", "role": "associate",
+        }, timeout=15)
+        assert ri.status_code == 200, ri.text
+        token = ri.json()["token"]
+        # Associate accepts
+        ra = s.post(f"{API}/firms/accept-invite", headers=hdr(assoc_tok), json={"token": token}, timeout=15)
+        assert ra.status_code == 200, ra.text
+        # Now associate tries bulk import -> 403
+        csv_body = "matter_name,service_ids,qty_each,court_id,delivery_option,urgent,delivery_address,notes\n"
+        csv_body += "TEST Matter,svc_bw_photocopy,1,court_tishazari,chamber,false,Addr,note\n"
+        r = requests.post(
+            f"{API}/firms/bulk-import",
+            headers={"Authorization": f"Bearer {assoc_tok}"},
+            files={"file": ("assoc.csv", csv_body, "text/csv")},
+            timeout=20,
+        )
+        assert r.status_code == 403, r.text
+
+
+class TestAuditLogIter4:
+    """Admin audit log + auto-write on auth/order events."""
+
+    def test_admin_audit_log_lists(self, s, admin_token):
+        # Trigger admin login first to ensure an auth.login entry exists
+        s.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASS}, timeout=15)
+        r = s.get(f"{API}/admin/audit-log", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert "entries" in data and "actions" in data
+        assert isinstance(data["entries"], list)
+        assert isinstance(data["actions"], list)
+        # Should have at least one auth.login entry
+        assert any(e.get("action") == "auth.login" for e in data["entries"]), "no auth.login entry found"
+
+    def test_admin_audit_log_filter_action(self, s, admin_token):
+        r = s.get(f"{API}/admin/audit-log?action=auth.login", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200
+        for e in r.json()["entries"]:
+            assert e["action"] == "auth.login"
+
+    def test_audit_log_forbidden_non_admin(self, s, advocate_token):
+        r = s.get(f"{API}/admin/audit-log", headers=hdr(advocate_token), timeout=15)
+        assert r.status_code == 403
+
+    def test_audit_log_auto_write_on_order_create(self, s, advocate_token, admin_token):
+        # Create a fresh order
+        ro = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
+        assert ro.status_code == 200, ro.text
+        order_id = ro.json()["order_id"]
+        # Allow audit write to flush
+        time.sleep(0.5)
+        r = s.get(f"{API}/admin/audit-log?action=order.create&limit=200", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200
+        entries = r.json()["entries"]
+        assert any((e.get("details") or {}).get("order_id") == order_id for e in entries), \
+            f"no audit entry for order {order_id}"
+
+
+class TestDPDPIter4:
+    """DPDP Act compliance endpoints."""
+
+    def test_my_data_preview_shape(self, s, advocate_token):
+        r = s.get(f"{API}/dpdp/my-data", headers=hdr(advocate_token), timeout=20)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        for k in ("profile", "orders", "files", "wallet_transactions",
+                  "payment_transactions", "ai_messages", "audit_log"):
+            assert k in data, f"missing key {k}"
+        # password_hash MUST NOT leak
+        assert "password_hash" not in (data.get("profile") or {})
+
+    def test_my_data_download_attachment(self, s, advocate_token):
+        r = s.get(f"{API}/dpdp/my-data/download", headers=hdr(advocate_token), timeout=20)
+        assert r.status_code == 200
+        assert "application/json" in r.headers.get("content-type", "").lower()
+        assert "attachment" in r.headers.get("content-disposition", "").lower()
+        body = _json.loads(r.text)
+        assert "profile" in body
+
+    def test_deletion_request_creates_record(self, s, advocate_token):
+        r = s.post(f"{API}/dpdp/request-deletion", headers=hdr(advocate_token),
+                   json={"reason": "TEST iter4 request"}, timeout=15)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body.get("status") == "pending"
+        assert body.get("request_id", "").startswith("del_")
+
+    def test_admin_dpdp_list_includes_request(self, s, admin_token):
+        r = s.get(f"{API}/admin/dpdp/requests", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200
+        reqs = r.json()
+        assert isinstance(reqs, list)
+        # At least one pending request (from previous test)
+        assert any(req.get("status") == "pending" for req in reqs)
+
+    def test_admin_execute_deletion_anonymises_user(self, s, admin_token):
+        # Register a throwaway user
+        email, pwd, tok, uid = _register_advocate(s, "tobedeleted")
+        # User files a deletion request
+        r1 = s.post(f"{API}/dpdp/request-deletion", headers=hdr(tok),
+                    json={"reason": "TEST throwaway"}, timeout=15)
+        assert r1.status_code == 200
+        req_id = r1.json()["request_id"]
+        # Admin executes
+        r2 = s.post(f"{API}/admin/dpdp/requests/{req_id}/execute",
+                    headers=hdr(admin_token), timeout=15)
+        assert r2.status_code == 200, r2.text
+        body = r2.json()
+        assert body["ok"] is True
+        assert body["status"] == "anonymized"
+        assert "orders_retained" in body
+        # Old session token no longer works
+        r3 = s.get(f"{API}/auth/me", headers=hdr(tok), timeout=15)
+        assert r3.status_code == 401, f"deleted user token should be invalid; got {r3.status_code} {r3.text}"
+
+
+class TestComplianceReportIter4:
+    def test_compliance_report_shape(self, s, admin_token):
+        r = s.get(f"{API}/admin/compliance-report", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        for k in ("audit_log_entries", "total_users", "deleted_users",
+                  "pending_deletion_requests", "executed_deletions",
+                  "top_actions", "dpdp_compliant", "data_retention_policy_days"):
+            assert k in body, f"missing {k}"
+        assert body["dpdp_compliant"] is True
+        assert body["data_retention_policy_days"] == 1825
+        assert isinstance(body["top_actions"], list)
+
+
+class TestVendorLeaderboardIter4:
+    def test_leaderboard_admin(self, s, admin_token):
+        r = s.get(f"{API}/admin/leaderboard", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200, r.text
+        rows = r.json()
+        assert isinstance(rows, list) and len(rows) >= 1
+        first = rows[0]
+        for k in ("shop_name", "sla_score", "grade", "on_time_rate",
+                  "avg_turnaround_hours", "avg_rating", "total_orders",
+                  "revenue", "dispute_rate", "completion_rate"):
+            assert k in first, f"missing {k}"
+        assert first["grade"] in ("A+", "A", "B", "C", "D")
+        assert 0 <= first["sla_score"] <= 100
+        # Sorted desc by sla_score
+        scores = [r_["sla_score"] for r_ in rows]
+        assert scores == sorted(scores, reverse=True), f"not sorted desc: {scores}"
+
+    def test_leaderboard_forbidden_for_non_admin(self, s, advocate_token):
+        r = s.get(f"{API}/admin/leaderboard", headers=hdr(advocate_token), timeout=15)
+        assert r.status_code == 403
+
+    def test_vendor_me_sla(self, s, vendor_token):
+        r = s.get(f"{API}/vendors/me/sla", headers=hdr(vendor_token), timeout=15)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "grade" in body and "sla_score" in body
+        assert body["grade"] in ("A+", "A", "B", "C", "D")
+
+    def test_vendor_me_sla_forbidden_for_advocate(self, s, advocate_token):
+        r = s.get(f"{API}/vendors/me/sla", headers=hdr(advocate_token), timeout=15)
+        assert r.status_code == 403
+
+    def test_vendor_sla_by_id_admin(self, s, admin_token, vendor_token):
+        # Get vendor user_id via /auth/me
+        rm = s.get(f"{API}/auth/me", headers=hdr(vendor_token), timeout=15)
+        assert rm.status_code == 200
+        vendor_user_id = rm.json()["user_id"]
+        r = s.get(f"{API}/vendors/{vendor_user_id}/sla", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200, r.text
+        assert "grade" in r.json()
+
+    def test_vendor_sla_by_id_other_vendor_forbidden(self, s, vendor_token):
+        # Vendor accessing a different vendor_id
+        r = s.get(f"{API}/vendors/some_other_vendor_id/sla", headers=hdr(vendor_token), timeout=15)
+        assert r.status_code == 403
+
+
+class TestRegressionIter4:
+    """Regression spot-checks for iter4."""
+
+    def test_states_36plus(self, s):
+        r = s.get(f"{API}/states", timeout=15)
+        assert r.status_code == 200
+        assert len(r.json()) >= 36
+
+    def test_services_44(self, s):
+        r = s.get(f"{API}/services", timeout=15)
+        assert r.status_code == 200
+        assert len(r.json()) == 44
+
+    def test_admin_analytics_ok(self, s, admin_token):
+        r = s.get(f"{API}/admin/analytics", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200
+
+    def test_admin_reconciliation_ok(self, s, admin_token):
+        r = s.get(f"{API}/admin/reconciliation", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200

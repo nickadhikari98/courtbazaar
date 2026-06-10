@@ -4,7 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
   User, Settings, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck,
-  Receipt, MessageSquare
+  Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -21,7 +21,9 @@ const navItems = (role) => {
     { to: "/courts", icon: Building2, label: "Courts" },
     { to: "/ai", icon: Sparkles, label: "AI Assistant" },
     { to: "/firm", icon: Users, label: "Law Firm" },
+    { to: "/firm/bulk-import", icon: FileSpreadsheet, label: "Bulk Import" },
     { to: "/wallet", icon: Wallet, label: "Wallet" },
+    { to: "/my-data", icon: Database, label: "My Data" },
     { to: "/notifications", icon: Bell, label: "Notifications" },
     { to: "/subscription", icon: CreditCard, label: "Plans" },
   ];
@@ -48,6 +50,8 @@ const navItems = (role) => {
       { to: "/admin/users", icon: User, label: "Users" },
       { to: "/admin/reconciliation", icon: Receipt, label: "Reconciliation" },
       { to: "/admin/whatsapp", icon: MessageSquare, label: "WhatsApp Templates" },
+      { to: "/admin/leaderboard", icon: Trophy, label: "Leaderboard" },
+      { to: "/admin/audit-log", icon: Activity, label: "Audit Log" },
       { to: "/orders", icon: Package, label: "All Orders" },
       { to: "/delivery", icon: Truck, label: "Delivery" },
       { to: "/courts", icon: Building2, label: "Courts" },

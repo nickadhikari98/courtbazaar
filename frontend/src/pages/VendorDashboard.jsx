@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Store, Package, TrendingUp, ShieldCheck, ArrowRight, Star, AlertCircle, Crown, Rocket } from "lucide-react";
+import { Store, Package, TrendingUp, ShieldCheck, ArrowRight, Star, AlertCircle, Crown, Rocket, Trophy, Clock } from "lucide-react";
 
 export default function VendorDashboard() {
   const { user } = useAuth();
@@ -14,13 +14,15 @@ export default function VendorDashboard() {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sponsorPlan, setSponsorPlan] = useState(null);
+  const [sla, setSla] = useState(null);
 
   const loadAll = () => Promise.all([
     api.get("/vendors/me"),
     api.get("/orders"),
     api.get("/vendors/sponsored/plan"),
-  ]).then(([v, o, sp]) => {
-    setVendor(v.data); setOrders(o.data || []); setSponsorPlan(sp.data); setLoading(false);
+    api.get("/vendors/me/sla").catch(() => ({ data: null })),
+  ]).then(([v, o, sp, s]) => {
+    setVendor(v.data); setOrders(o.data || []); setSponsorPlan(sp.data); setSla(s.data); setLoading(false);
   });
   useEffect(() => { loadAll(); }, []);
 
@@ -123,6 +125,37 @@ export default function VendorDashboard() {
         <Card className="dashboard-card border-none" data-testid="vendor-stat-completed"><CardContent className="p-5"><div className="cb-overline">Completed</div><div className="font-display font-black text-3xl mt-1">{completed.length}</div></CardContent></Card>
         <Card className="dashboard-card border-none" data-testid="vendor-stat-earnings"><CardContent className="p-5"><div className="cb-overline">Earnings (gross)</div><div className="font-display font-black text-3xl mt-1 text-accent">{formatINR(earnings)}</div></CardContent></Card>
       </div>
+
+      {/* SLA scorecard */}
+      {sla && sla.total_orders > 0 && (
+        <Card className="mb-6 dashboard-card border-none" data-testid="vendor-sla-card">
+          <CardContent className="p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+              <div>
+                <div className="cb-overline text-accent flex items-center gap-1.5"><Trophy className="w-3 h-3" /> SLA scorecard</div>
+                <div className="font-display font-bold text-xl mt-1">Performance grade</div>
+              </div>
+              <div className="text-right">
+                <div className="font-display font-black text-5xl tracking-tighter">{sla.sla_score}</div>
+                <Badge className={`${sla.grade === 'A+' ? 'bg-emerald-600' : sla.grade === 'A' ? 'bg-emerald-500' : sla.grade === 'B' ? 'bg-accent' : sla.grade === 'C' ? 'bg-amber-500' : 'bg-rose-500'} text-white border-0 font-black text-base px-3 py-0.5`}>{sla.grade}</Badge>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                { label: "On-time rate", val: `${sla.on_time_rate}%`, icon: Clock, color: sla.on_time_rate >= 80 ? 'text-emerald-600' : 'text-accent' },
+                { label: "Avg TAT", val: `${sla.avg_turnaround_hours}h`, icon: TrendingUp, color: 'text-foreground' },
+                { label: "Avg rating", val: sla.avg_rating ? `${sla.avg_rating}/5` : '—', icon: Star, color: 'text-accent' },
+                { label: "Dispute rate", val: `${sla.dispute_rate}%`, icon: AlertCircle, color: sla.dispute_rate < 5 ? 'text-emerald-600' : 'text-rose-600' },
+              ].map(m => (
+                <div key={m.label} className="bg-secondary rounded-lg p-3" data-testid={`sla-${m.label.toLowerCase().replace(/\s+/g, '-')}`}>
+                  <div className="cb-overline text-[10px] flex items-center gap-1"><m.icon className="w-3 h-3" /> {m.label}</div>
+                  <div className={`font-display font-black text-2xl mt-1 ${m.color}`}>{m.val}</div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <h2 className="font-display font-bold text-2xl tracking-tight mb-3">Order queue</h2>
       <div className="space-y-3">

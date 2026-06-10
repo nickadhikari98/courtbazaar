@@ -1,0 +1,44 @@
+{
+  "summary": "Iteration 4 backend testing complete. Added 26 new tests across 6 classes in /app/backend/tests/test_courtbazaar_api.py covering: (a) Bulk CSV import — template download (header + 2 example rows + text/csv), no-firm 400, associate 403 (full owner->invite->accept->bulk flow), happy path with 2 valid rows (firm_id + matter_name + source='bulk_csv' + vendor auto-match verified via GET /api/orders/{id}), partial errors with Karnataka HC court_ka_hc returning 'not yet serviceable', graceful handling of unknown service_ids; (b) Audit log — admin lists entries+actions, action=auth.login filter, advocate 403, auto-write on /api/orders POST (verified order_id in details); (c) DPDP — my-data preview keys + password_hash NOT leaking, my-data/download attachment+application/json, deletion request returns del_* id with status=pending, admin lists requests, admin execute anonymises user (orders_retained returned) BUT old JWT still validates -> 200 instead of expected 401 (REAL BUG); (d) Compliance report — all 8 keys including dpdp_compliant=true and data_retention_policy_days=1825; (e) Vendor leaderboard — admin sorted desc by sla_score with all 10 required fields + grade A+/A/B/C/D, advocate 403, vendor /me/sla works, advocate /me/sla 403, /vendors/{id}/sla admin works + vendor accessing other id 403; (f) Regression on states (36+), services (44), admin/analytics, admin/reconciliation. Result: 25/26 iter4 passed; total suite 100/102. The two failures are: (1) DPDP deletion test exposed a real backend bug — get_current_user does not honour user.deleted=true for JWT-issued tokens, so anonymised users' old tokens remain valid; (2) Pre-existing TestAI.test_filing_checklist 502 ingress flake (unchanged since iter2).",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "/admin/dpdp/requests/{id}/execute (+ get_current_user)", "issue": "After DPDP anonymisation, the deleted user's JWT-issued bearer token still authenticates against /api/auth/me (200 OK). delete_user_data() only purges db.user_sessions (used by Emergent google session tokens) and does not invalidate JWTs. get_current_user() decodes the JWT, finds the (now anonymised) user with deleted=true, and returns it. Compliance impact: a deleted user can still call /api/orders, /api/dpdp/my-data, etc. until JWT natural expiry. Fix: in get_current_user after both the user_sessions branch and the JWT branch, raise HTTPException(401, 'User account deleted') when user.get('deleted') is True.", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "/api/ai/filing-checklist", "issue": "Pre-existing 502 ingress timeout (~60s) on Claude streaming. Unchanged from iter2/iter3. Not a regression."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_courtbazaar_api.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/iter4_results.xml"
+  ],
+  "action_items": [
+    "CRITICAL: Patch get_current_user() to reject tokens belonging to users with deleted=true. Add a guard immediately after each `user = await db.users.find_one(...)` lookup (lines ~116 and ~122 of server.py) like: `if user.get('deleted'): raise HTTPException(401, 'Account deleted')`. Without this, DPDP 'right to erasure' is not actually enforced for the anonymised user's existing sessions.",
+    "Optionally also bump a 'token_version' on the user doc during deletion and embed it in JWTs so future password changes/deletions cleanly invalidate prior tokens without polluting user_sessions.",
+    "Consider returning 400 (not 200 with row in errors[]) on completely empty CSV or missing header — currently any malformed CSV silently returns empty success/errors arrays.",
+    "/api/firms/bulk-import passes raw exception strings into row errors (`'error': str(e)`) — wrap with a sanitized message for production to avoid leaking traceback internals."
+  ],
+  "critical_code_review_comments": [
+    "SECURITY/COMPLIANCE: DPDP deletion does not invalidate JWTs. delete_user_data only clears db.user_sessions which is used for Emergent google sessions; native JWT auth path (line 120-127 of server.py) keeps working until token expiry. This violates the DPDP Act 'right to erasure' guarantee that iter4 is trying to ship.",
+    "vendor_sla.compute_vendor_sla queries orders by vendor_id but /api/vendors/me/sla passes user['user_id'] — this only works because the seeded vendor happens to have vendor_id==user_id. Real vendors onboarded via /api/vendors/onboard get vendor_id == user_id (line 489) so it's consistent, but the implicit coupling should be made explicit (look up the vendors collection first).",
+    "/api/firms/bulk-import has no row limit — a malicious owner could upload a CSV with 100k rows and DOS the orders collection. Add a max_rows cap (e.g., 500) and a max file size check.",
+    "/api/firms/bulk-import vendor auto-matching uses `[0]` without checking the candidate list — already guarded with `candidates[0] if candidates else None`, good. But order.vendor_id can be None silently; UI should surface 'awaiting vendor match' state for unserviceable courts.",
+    "/api/admin/audit-log distinct() over the full audit_log collection is unbounded — will get slow at scale. Cache the distinct actions list or precompute.",
+    "/api/admin/compliance-report does a full count_documents across users + audit_log + dpdp_requests on every call. Add a 60s cache layer.",
+    "audit_log.log_audit swallows all exceptions silently — good for not breaking the request path, but log at WARNING with structured fields so prod ops can detect audit-log write failures.",
+    "DPDP my-data does .to_list(1000) per collection — a power user with >1000 orders/files would get a silently truncated export. Document the cap in API docs or paginate.",
+    "Iter3 review items still open and still relevant: server.py now 1777 lines (was 1545 in iter3 -> grown +232). Refactor into routers/* is increasingly overdue. Reconciliation and audit-log endpoints both buffer all rows in memory without pagination."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_courtbazaar_api.py"
+  ],
+  "success_rate": {"backend": "98.0% (100/102; iter4 itself 25/26 = 96.2%)", "frontend": "N/A (backend-only)"},
+  "test_credentials": "advocate@demo.in/Advocate@123, vendor@demo.in/Vendor@123, admin@courtbazaar.in/Admin@123 — all working. Throwaway test users registered with @cbtest.in domain (the .test TLD is rejected by EmailStr validator — flagged for any future tests).",
+  "seed_data_creation": "Tests register multiple TEST_-prefixed throwaway advocates (@cbtest.in) with password TestPass@123, create TEST_-prefixed firms, insert ~6 bulk-import orders tagged source='bulk_csv', insert several dpdp_requests rows (one executed/anonymized user). All TEST_-prefixed; safe to leave in DB. The seeded vendor (Sharma Xerox @ tishazari) is the auto-match target for all bulk-import happy-path orders.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter4 tests live in classes TestBulkImportIter4, TestAuditLogIter4, TestDPDPIter4, TestComplianceReportIter4, TestVendorLeaderboardIter4, TestRegressionIter4 — all gated by `-k Iter4`. Helper _register_advocate creates fresh advocates with @cbtest.in emails (the .test TLD is rejected by Pydantic EmailStr — do NOT use it). Helper _create_firm makes the user an owner. The one expected failure (test_admin_execute_deletion_anonymises_user) is gated on the get_current_user fix landing; once main agent adds `if user.get('deleted'): raise HTTPException(401)` after both find_one calls, that test will pass.",
+  "rca of the issue": "REPRO: 1) POST /api/auth/register {email, password, role:'advocate'} -> returns token T. 2) As T, POST /api/dpdp/request-deletion {reason:'x'} -> returns request_id R. 3) As admin, POST /api/admin/dpdp/requests/{R}/execute -> returns ok:true, status:anonymized. 4) GET /api/auth/me with header `Authorization: Bearer T` -> returns 200 with the anonymised user doc (email=deleted_user_*@deleted.local, deleted=true). EXPECTED: 401. ROOT CAUSE: server.py:103 get_current_user() decodes the JWT and looks up the user doc by user_id, but never checks the `deleted` flag. Anonymisation in audit_log.delete_user_data() (line 78) only does `db.user_sessions.delete_many(...)`, which is the Emergent-google-OAuth session store — it has zero effect on stateless JWT tokens. MITIGATION: Add `if user.get('deleted'): raise HTTPException(401, 'Account deleted')` immediately after each user load in get_current_user (server.py ~line 118 and ~line 124). Optionally also embed a token_version claim in JWTs and bump it on deletion to also invalidate any same-session tabs."
+}

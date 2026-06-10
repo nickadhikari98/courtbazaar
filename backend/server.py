@@ -319,12 +319,17 @@ async def register(req: RegisterRequest):
     return {"token": token, "user": user_doc}
 
 @api_router.post("/auth/login")
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, request: Request):
     user = await db.users.find_one({"email": req.email}, {"_id": 0})
     if not user or not verify_password(req.password, user.get("password_hash", "")):
         raise HTTPException(401, "Invalid credentials")
     token = make_jwt(user["user_id"], user["role"])
     user.pop("password_hash", None)
+    try:
+        from audit_log import log_audit
+        await log_audit(db, "auth.login", user, {}, request)
+    except Exception:
+        pass
     return {"token": token, "user": user}
 
 @api_router.post("/auth/otp/request")
@@ -647,6 +652,11 @@ async def create_order(req: OrderCreate, user=Depends(get_current_user)):
         notify(user, "order_placed", {"order": order})
     except Exception as e:
         logger.error(f"notify error: {e}")
+    try:
+        from audit_log import log_audit
+        await log_audit(db, "order.create", user, {"order_id": order_id, "total": pricing["total"], "court_id": req.court_id})
+    except Exception:
+        pass
     return order
 
 @api_router.get("/orders")
@@ -1526,6 +1536,228 @@ async def delete_wa_template(template_id: str, user=Depends(get_current_user)):
         raise HTTPException(403, "Admin only")
     await db.whatsapp_templates.delete_one({"template_id": template_id})
     return {"ok": True}
+
+
+
+# ============================================================================
+# BULK ORDER CSV IMPORT (for Law Firms — matter-wise batching)
+# ============================================================================
+@api_router.get("/firms/bulk-import/template")
+async def bulk_import_template(user=Depends(get_current_user)):
+    """Return CSV template for bulk order import."""
+    import csv, io as _io
+    buf = _io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["matter_name", "service_ids", "qty_each", "court_id", "delivery_option", "urgent", "delivery_address", "notes"])
+    w.writerow(["Sharma v. State - WP 1234/2026", "svc_bw_photocopy;svc_spiral_binding", "200;1", "court_delhi_hc", "chamber", "false", "Chamber 42, Delhi HC", "Court bundle for hearing 15 Mar"])
+    w.writerow(["Mehta Properties - LPA 567/2026", "svc_efile_hc;svc_court_bundle;svc_hard_binding", "1;1;3", "court_delhi_hc", "court", "true", "", "Urgent — file before 11 AM"])
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=courtbazaar-bulk-template.csv"},
+    )
+
+
+@api_router.post("/firms/bulk-import")
+async def firm_bulk_import(file: UploadFile = File(...), user=Depends(get_current_user)):
+    """Upload CSV → create one order per row (matter), all tagged with same firm_id."""
+    if not user.get("firm_id"):
+        raise HTTPException(400, "Bulk import is available for law-firm accounts only. Create or join a firm first.")
+    if user.get("firm_role") not in ("owner", "partner"):
+        raise HTTPException(403, "Only firm owner/partner can bulk-import orders")
+    import csv, io as _io
+    raw = (await file.read()).decode("utf-8", errors="ignore")
+    reader = csv.DictReader(_io.StringIO(raw))
+    success, errors = [], []
+    for idx, row in enumerate(reader, start=2):
+        try:
+            matter = (row.get("matter_name") or "").strip()
+            court_id = (row.get("court_id") or "").strip()
+            delivery = (row.get("delivery_option") or "chamber").strip().lower()
+            urgent = (row.get("urgent") or "").strip().lower() in ("true", "yes", "1", "y")
+            svc_ids = [s.strip() for s in (row.get("service_ids") or "").split(";") if s.strip()]
+            qtys = [int(q.strip()) for q in (row.get("qty_each") or "").split(";") if q.strip()]
+            if not svc_ids or not court_id:
+                errors.append({"row": idx, "matter": matter, "error": "service_ids and court_id required"})
+                continue
+            if len(qtys) != len(svc_ids):
+                qtys = [1] * len(svc_ids)
+            court_info = await db.courts.find_one({"court_id": court_id}, {"_id": 0})
+            if not court_info:
+                errors.append({"row": idx, "matter": matter, "error": f"court_id '{court_id}' not found"})
+                continue
+            if court_info.get("serviceable") is False:
+                errors.append({"row": idx, "matter": matter, "error": f"court '{court_info['name']}' not yet serviceable"})
+                continue
+            services = [{"service_id": s, "qty": qtys[i]} for i, s in enumerate(svc_ids)]
+            pricing = await calculate_pricing(services, court_id, delivery, urgent)
+            candidates = await db.vendors.find({"court_ids": court_id, "kyc_status": "approved"}, {"_id": 0}).to_list(20)
+            candidates.sort(key=lambda v: (not v.get("sponsored", False), -float(v.get("rating", 0))))
+            vendor = candidates[0] if candidates else None
+            order_id = f"ORD{datetime.now().strftime('%y%m%d')}{uuid.uuid4().hex[:6].upper()}"
+            order = {
+                "order_id": order_id, "user_id": user["user_id"], "user_name": user.get("name"),
+                "user_phone": user.get("phone"), "firm_id": user["firm_id"],
+                "matter_id": f"matter_{uuid.uuid4().hex[:8]}", "matter_name": matter,
+                "services": services, "state_id": court_info.get("state_id"), "court_id": court_id,
+                "court_name": court_info["name"], "state_name": court_info.get("state_name"),
+                "delivery_option": delivery, "delivery_address": (row.get("delivery_address") or "").strip(),
+                "file_ids": [], "urgent": urgent, "notes": (row.get("notes") or "").strip(),
+                "pricing": pricing,
+                "vendor_id": vendor["vendor_id"] if vendor else None,
+                "vendor_name": vendor["shop_name"] if vendor else None,
+                "vendor_sponsored": vendor.get("sponsored", False) if vendor else False,
+                "status": "placed", "payment_status": "pending", "source": "bulk_csv",
+                "timeline": [{"status": "placed", "at": datetime.now(timezone.utc).isoformat(), "note": f"Bulk import (matter: {matter})"}],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.orders.insert_one(order)
+            success.append({"row": idx, "order_id": order_id, "matter": matter, "total": pricing["total"]})
+        except Exception as e:
+            errors.append({"row": idx, "matter": row.get("matter_name", ""), "error": str(e)})
+    try:
+        from audit_log import log_audit
+        await log_audit(db, "order.bulk_import", user, {"success_count": len(success), "error_count": len(errors), "firm_id": user["firm_id"]})
+    except Exception:
+        pass
+    return {"success": success, "errors": errors, "total_rows": len(success) + len(errors),
+            "total_amount": round(sum(s["total"] for s in success), 2)}
+
+
+# ============================================================================
+# AUDIT LOG + DPDP COMPLIANCE
+# ============================================================================
+@api_router.get("/admin/audit-log")
+async def admin_audit_log(user=Depends(get_current_user), action: Optional[str] = None,
+                          user_id: Optional[str] = None, limit: int = 200):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    q: Dict[str, Any] = {}
+    if action:
+        q["action"] = action
+    if user_id:
+        q["user_id"] = user_id
+    entries = await db.audit_log.find(q, {"_id": 0}).sort("created_at", -1).to_list(min(limit, 1000))
+    # Distinct actions for filter
+    actions = await db.audit_log.distinct("action")
+    return {"entries": entries, "actions": sorted(actions)}
+
+
+@api_router.get("/dpdp/my-data")
+async def dpdp_my_data(user=Depends(get_current_user), request: Request = None):
+    from audit_log import export_user_data, log_audit
+    data = await export_user_data(db, user["user_id"])
+    await log_audit(db, "dpdp.data_export", user, {"records": {k: (len(v) if isinstance(v, list) else 1) for k, v in data.items() if k != "exported_at"}}, request)
+    return data
+
+
+@api_router.get("/dpdp/my-data/download")
+async def dpdp_my_data_download(user=Depends(get_current_user)):
+    import json as _json
+    from audit_log import export_user_data
+    data = await export_user_data(db, user["user_id"])
+    return Response(
+        content=_json.dumps(data, indent=2, default=str),
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename=courtbazaar-my-data-{user['user_id']}.json"},
+    )
+
+
+@api_router.post("/dpdp/request-deletion")
+async def dpdp_request_deletion(payload: dict, user=Depends(get_current_user), request: Request = None):
+    """Request account deletion (DPDP right to erasure)."""
+    from audit_log import log_audit
+    reason = payload.get("reason", "")
+    req_id = f"del_{uuid.uuid4().hex[:12]}"
+    await db.dpdp_requests.insert_one({
+        "request_id": req_id, "user_id": user["user_id"], "user_email": user["email"],
+        "reason": reason, "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await log_audit(db, "dpdp.data_deletion_request", user, {"request_id": req_id, "reason": reason}, request)
+    return {"request_id": req_id, "status": "pending",
+            "message": "Your deletion request has been recorded. Our team will process within 30 days as per DPDP Act."}
+
+
+@api_router.get("/admin/dpdp/requests")
+async def admin_dpdp_requests(user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    reqs = await db.dpdp_requests.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return reqs
+
+
+@api_router.post("/admin/dpdp/requests/{request_id}/execute")
+async def admin_execute_deletion(request_id: str, user=Depends(get_current_user), request: Request = None):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    from audit_log import delete_user_data, log_audit
+    req = await db.dpdp_requests.find_one({"request_id": request_id}, {"_id": 0})
+    if not req:
+        raise HTTPException(404, "Request not found")
+    result = await delete_user_data(db, req["user_id"])
+    await db.dpdp_requests.update_one({"request_id": request_id}, {"$set": {
+        "status": "executed", "executed_at": datetime.now(timezone.utc).isoformat(),
+        "executed_by": user["user_id"], "result": result,
+    }})
+    await log_audit(db, "dpdp.data_deletion_executed", user, {"request_id": request_id, "target_user_id": req["user_id"], "result": result}, request)
+    return {"ok": True, **result}
+
+
+@api_router.get("/admin/compliance-report")
+async def admin_compliance_report(user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    audit_count = await db.audit_log.count_documents({})
+    pending_deletions = await db.dpdp_requests.count_documents({"status": "pending"})
+    executed_deletions = await db.dpdp_requests.count_documents({"status": "executed"})
+    total_users = await db.users.count_documents({})
+    deleted_users = await db.users.count_documents({"deleted": True})
+    pipeline = [{"$group": {"_id": "$action", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}, {"$limit": 10}]
+    top_actions = []
+    async for d in db.audit_log.aggregate(pipeline):
+        top_actions.append({"action": d["_id"], "count": d["count"]})
+    return {
+        "audit_log_entries": audit_count,
+        "total_users": total_users,
+        "deleted_users": deleted_users,
+        "pending_deletion_requests": pending_deletions,
+        "executed_deletions": executed_deletions,
+        "top_actions": top_actions,
+        "dpdp_compliant": True,
+        "data_retention_policy_days": 1825,  # 5 years for legal records
+    }
+
+
+# ============================================================================
+# VENDOR PERFORMANCE LEADERBOARD + SLA
+# ============================================================================
+@api_router.get("/admin/leaderboard")
+async def admin_leaderboard(user=Depends(get_current_user), limit: int = 50):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    from vendor_sla import leaderboard
+    return await leaderboard(db, limit)
+
+
+@api_router.get("/vendors/me/sla")
+async def my_vendor_sla(user=Depends(get_current_user)):
+    if user["role"] != "vendor":
+        raise HTTPException(403, "Vendor only")
+    from vendor_sla import compute_vendor_sla, sla_grade
+    sla = await compute_vendor_sla(db, user["user_id"])
+    sla["grade"] = sla_grade(sla["sla_score"])
+    return sla
+
+
+@api_router.get("/vendors/{vendor_id}/sla")
+async def vendor_sla(vendor_id: str, user=Depends(get_current_user)):
+    if user["role"] not in ("admin", "vendor") or (user["role"] == "vendor" and user["user_id"] != vendor_id):
+        raise HTTPException(403, "Forbidden")
+    from vendor_sla import compute_vendor_sla, sla_grade
+    sla = await compute_vendor_sla(db, vendor_id)
+    sla["grade"] = sla_grade(sla["sla_score"])
+    return sla
 
 
 

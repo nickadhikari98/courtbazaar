@@ -26,6 +26,10 @@ import AdminPricing from "@/pages/AdminPricing";
 import AdminUsers from "@/pages/AdminUsers";
 import AdminReconciliation from "@/pages/AdminReconciliation";
 import AdminWhatsAppTemplates from "@/pages/AdminWhatsAppTemplates";
+import AdminAuditLog from "@/pages/AdminAuditLog";
+import AdminLeaderboard from "@/pages/AdminLeaderboard";
+import BulkImport from "@/pages/BulkImport";
+import MyData from "@/pages/MyData";
 import VendorOnboarding from "@/pages/VendorOnboarding";
 import FirmManagement from "@/pages/FirmManagement";
 import DeliveryHub from "@/pages/DeliveryHub";
@@ -103,6 +107,8 @@ function AppRouter() {
         <Route path="/subscription" element={<Subscription />} />
         <Route path="/profile" element={<Profile />} />
         <Route path="/firm" element={<FirmManagement />} />
+        <Route path="/firm/bulk-import" element={<BulkImport />} />
+        <Route path="/my-data" element={<MyData />} />
         <Route path="/notifications" element={<NotificationPrefs />} />
         <Route path="/delivery" element={<ProtectedRoute roles={["delivery_partner", "admin"]}><DeliveryHub /></ProtectedRoute>} />
 
@@ -115,6 +121,8 @@ function AppRouter() {
         <Route path="/admin/users" element={<ProtectedRoute roles={["admin"]}><AdminUsers /></ProtectedRoute>} />
         <Route path="/admin/reconciliation" element={<ProtectedRoute roles={["admin"]}><AdminReconciliation /></ProtectedRoute>} />
         <Route path="/admin/whatsapp" element={<ProtectedRoute roles={["admin"]}><AdminWhatsAppTemplates /></ProtectedRoute>} />
+        <Route path="/admin/audit-log" element={<ProtectedRoute roles={["admin"]}><AdminAuditLog /></ProtectedRoute>} />
+        <Route path="/admin/leaderboard" element={<ProtectedRoute roles={["admin"]}><AdminLeaderboard /></ProtectedRoute>} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" />} />
