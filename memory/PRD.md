@@ -123,3 +123,35 @@ Build a complete enterprise-grade Legal Operations & Court Services Marketplace 
 ### Testing
 - 18/18 new tests pass · 75/76 full backend suite (1 pre-existing AI streaming timeout, unrelated)
 - Tests installed reportlab for PDF generation; PIL for image OCR test
+
+## Iteration 4 — Compliance, Performance & Scale (2026-02-XX)
+
+### Backend
+- **Bulk Order CSV Import** for law firms (`/api/firms/bulk-import` + `/template`): CSV columns `matter_name, service_ids (semicolon-sep), qty_each (semicolon-sep), court_id, delivery_option, urgent, delivery_address, notes`. Owner/Partner-only. Each row creates one order tagged with same `firm_id` + unique `matter_id` + `matter_name`. Returns per-row success/error summary + total_amount. Auto-matches sponsored vendors. Enforces serviceability.
+- **Audit log** (`/app/backend/audit_log.py`): `log_audit()` helper writes to `audit_log` collection with action, user_id, IP, user_agent, details, timestamp. Auto-fired on `auth.login`, `order.create`, `order.bulk_import`, `dpdp.*`. 40+ canonical actions defined.
+- **DPDP Act 2023 compliance**:
+  - `/api/dpdp/my-data` (preview) + `/my-data/download` (JSON attachment) — full PII bundle: profile + vendor_profile + orders + files + wallet + payments + AI messages + audit log
+  - `/api/dpdp/request-deletion` (user) + `/api/admin/dpdp/requests` + `/execute` (admin) — anonymises user (name/email/phone/PII wiped), retains order/payment records for legal compliance (CrPC + GST 5-year retention).
+  - `get_current_user` now checks `user.deleted=true` and revokes JWTs immediately (bug fixed in iter 5).
+- **Admin compliance report** (`/api/admin/compliance-report`): audit count, total/deleted users, pending/executed deletion requests, top actions, `dpdp_compliant:true`, `data_retention_policy_days:1825`.
+- **Vendor SLA + Leaderboard** (`/app/backend/vendor_sla.py`): composite score (on-time 35% + completion 25% + rating 25% + dispute-free 15%), grades A+/A/B/C/D, avg turnaround, on-time rate, dispute rate, revenue.
+  - `/api/admin/leaderboard` — sorted ranking
+  - `/api/vendors/me/sla` — own SLA card for vendor
+  - `/api/vendors/{id}/sla` — admin or self-only
+
+### Frontend
+- **BulkImport page** (`/firm/bulk-import`): downloadable CSV template, drag-drop upload, per-row success/error result table with order_id links and total amount summary card.
+- **AdminAuditLog page** (`/admin/audit-log`): compliance metrics (audit entries / users / deletions / retention days), DPDP-compliant pill, filters (action + user_id), full audit table with timestamp/action/user/IP/details.
+- **MyData page** (`/my-data`): DPDP rights — preview data summary (counts per category), download JSON bundle, request deletion dialog with reason capture.
+- **AdminLeaderboard page** (`/admin/leaderboard`): Top-3 podium cards (gold/silver/bronze with Crown/Award/Trophy icons + SLA grade badges), full ranked table with all KPIs, sponsored crown indicator.
+- **VendorDashboard SLA scorecard**: top-of-page composite score + grade badge + 4 KPI tiles (on-time/avg TAT/rating/dispute rate).
+- **AppLayout nav**: added Bulk Import, My Data for advocates; Leaderboard, Audit Log for admin.
+
+### Testing
+- 25/26 iteration-4 tests passed first run + 3/3 iteration-5 bug-fix tests passed
+- 1 real bug found by tester: deleted users' JWTs stayed valid — **fixed** in get_current_user (now checks user.deleted)
+- Full suite: 103/104 (1 pre-existing AI streaming timeout, unrelated)
+
+### Total iterations
+- iter1: 37/38 (MVP) · iter2: 22/22 (P1) · iter3: 18/18 (P2 polish) · iter4+5: 28/29 (compliance/SLA)
+- Cumulative: 105/107 backend tests passing across 4 development iterations
