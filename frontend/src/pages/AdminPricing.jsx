@@ -1,0 +1,83 @@
+import React, { useEffect, useState } from "react";
+import { api, formatINR } from "@/lib/api";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { toast } from "sonner";
+import { Edit3, Save } from "lucide-react";
+
+export default function AdminPricing() {
+  const [services, setServices] = useState([]);
+  const [edit, setEdit] = useState({});
+
+  const load = () => api.get("/services").then(r => setServices(r.data));
+  useEffect(() => { load(); }, []);
+
+  const save = async (id) => {
+    const e = edit[id];
+    try {
+      await api.put(`/admin/services/${id}/pricing`, {
+        service_id: id,
+        base_price: parseFloat(e.base_price),
+        platform_commission_pct: e.platform_commission_pct !== undefined ? parseFloat(e.platform_commission_pct) : undefined,
+      });
+      toast.success("Pricing updated");
+      setEdit(s => { const c = {...s}; delete c[id]; return c; });
+      load();
+    } catch { toast.error("Update failed"); }
+  };
+
+  return (
+    <div className="p-6 lg:p-10 max-w-5xl mx-auto">
+      <div className="cb-overline text-accent">Admin · Pricing</div>
+      <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-6">Service pricing controls</h1>
+
+      <Card className="dashboard-card border-none">
+        <CardContent className="p-0">
+          <div className="divide-y divide-border">
+            {services.map(s => {
+              const isEdit = edit[s.service_id];
+              return (
+                <div key={s.service_id} className="p-5 flex flex-wrap items-center gap-4" data-testid={`pricing-row-${s.service_id}`}>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-display font-bold">{s.name}</div>
+                    <div className="text-xs cb-overline">{s.category}</div>
+                  </div>
+                  {!isEdit ? (
+                    <>
+                      <div className="text-right">
+                        <div className="font-display font-bold">{formatINR(s.base_price)}</div>
+                        <div className="text-xs text-muted-foreground font-semibold">{s.unit}</div>
+                      </div>
+                      <div className="text-right text-sm">
+                        <div className="cb-overline">Commission</div>
+                        <div className="font-bold">{((s.platform_commission_pct || 0.2) * 100).toFixed(0)}%</div>
+                      </div>
+                      <Button onClick={() => setEdit({...edit, [s.service_id]: { base_price: s.base_price, platform_commission_pct: s.platform_commission_pct || 0.2 }})} variant="outline" size="sm" data-testid={`edit-${s.service_id}`}>
+                        <Edit3 className="w-3.5 h-3.5 mr-1" /> Edit
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <div className="cb-overline mb-0.5">Price (₹)</div>
+                        <Input className="w-24 h-9" type="number" value={isEdit.base_price} onChange={(e) => setEdit({...edit, [s.service_id]: {...isEdit, base_price: e.target.value}})} data-testid={`edit-price-${s.service_id}`} />
+                      </div>
+                      <div>
+                        <div className="cb-overline mb-0.5">Commission %</div>
+                        <Input className="w-24 h-9" type="number" step="0.01" value={isEdit.platform_commission_pct} onChange={(e) => setEdit({...edit, [s.service_id]: {...isEdit, platform_commission_pct: e.target.value}})} data-testid={`edit-comm-${s.service_id}`} />
+                      </div>
+                      <Button onClick={() => save(s.service_id)} className="bg-accent font-bold" size="sm" data-testid={`save-${s.service_id}`}>
+                        <Save className="w-3.5 h-3.5 mr-1" /> Save
+                      </Button>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

@@ -1,0 +1,55 @@
+{
+  "summary": "Backend-only testing of CourtBazaar. Created comprehensive pytest suite (38 tests) covering health, auth (login/register/OTP), profile, courts, services, files, orders, payments, AI, subscriptions, wallet, vendor flow, vendor onboarding, admin flow and auth security. 37/38 tests passed. Fixed a real ObjectId serialization bug in /api/auth/otp/verify. Only failure is /api/ai/filing-checklist due to EMERGENT_LLM_KEY budget exhausted (external, not a code bug).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/api/ai/filing-checklist (and /api/ai/chat at risk)",
+        "issue": "Emergent LLM key budget exceeded: 'Current cost: 0.006, Max budget: 0.001'. Filing checklist consistently returns 500. AI chat passed once but will fail on next call. Backend logs: 'litellm.BadRequestError: Budget has been exceeded'. Likely budget cap on the EMERGENT_LLM_KEY in backend/.env.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "/api/auth/otp/verify",
+        "issue": "FIXED during testing: returned 500 ('ObjectId is not iterable') when creating a brand-new user via OTP because the inserted document still contained the Mongo _id ObjectId when being serialized. Added user.pop('_id', None) after insert_one, identical to the pattern already used in /auth/register."
+      },
+      {
+        "endpoint": "/api/subscriptions/plans",
+        "issue": "Returns a dict (object keyed by plan_id), not a JSON list. Functionally correct (4 plans present) but the review request asked for 'returns 4 plans' — frontend should iterate Object.entries(). Consider returning a list of {plan_id, name, price, features} for cleaner API contract."
+      },
+      {
+        "endpoint": "/api/auth/google/session",
+        "issue": "Stores session in cookie with samesite=none, secure=true. Works behind HTTPS preview URL but will not work in plain HTTP local dev. Not blocking."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_courtbazaar_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Investigate/refresh EMERGENT_LLM_KEY budget — current cap is $0.001 which is exhausted after 1-2 requests. AI Chat & Filing Checklist features are effectively broken in production. This is the highest-priority fix.",
+    "Consider returning /api/subscriptions/plans as a list with explicit plan_id for cleaner contract (optional).",
+    "Re-test /api/ai/* endpoints after the LLM key/budget is restored."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 926 lines and contains every domain (auth, courts, services, files, orders, payments, AI, admin, subscriptions, wallet). Should be split into /app/backend/routes/{auth,orders,payments,...}.py modules; an empty /app/backend/routes/ folder already exists. >700 line rule violated.",
+    "Several endpoints (POST /orders, vendor_onboard, get_order, etc.) duplicate the pattern of 'find_one without _id projection, then pop _id'. Standardize on always projecting {'_id': 0} in find_one to avoid future serialization regressions (the OTP bug fixed today was exactly this).",
+    "/api/auth/me, /api/orders, /api/vendors/me, etc. enforce auth via Depends(get_current_user) — good. However, /api/files/upload trusts file.filename without validation; suggest size limit & content-type allowlist (PDF/PNG/JPG) to prevent abuse.",
+    "/api/orders/{id}/status allows any vendor token to update if vendor_id matches — but a 'vendor' role with a DIFFERENT vendor_id is also allowed by the OR check `user['role'] not in ('admin','vendor')`. The condition should be: admin OR (vendor AND order.vendor_id == user.user_id). Currently any vendor can update any order's status.",
+    "AI endpoints use streaming but block on full response — set a hard timeout / max_tokens to prevent 502s on long generations.",
+    "Stripe webhook (/api/webhook/stripe) silently catches all exceptions and returns ok:true — should at least log and return 400 for invalid signatures so Stripe retries are sane."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (added user.pop('_id', None) in /auth/otp/verify after insert_one to fix 500)",
+    "/app/backend/tests/test_courtbazaar_api.py (new comprehensive pytest suite, 38 tests)"
+  ],
+  "success_rate": {"backend": "97.4% (37/38)", "frontend": "not tested (backend-only request)"},
+  "test_credentials": "advocate@demo.in / Advocate@123, vendor@demo.in / Vendor@123, admin@courtbazaar.in / Admin@123, Mock OTP: 123456 — all verified working.",
+  "seed_data_creation": "Created TEST_-prefixed users via /api/auth/register and /api/auth/otp/verify, TEST_ files via /api/files/upload, one TEST order via /api/orders (matched to Sharma Xerox vendor as expected), a vendor onboarding record, and minor wallet/profile mutations. None of these touch seeded courts/services/admin/demo accounts permanently (pricing edit was restored to 2.0). Subscription on advocate@demo.in was restored to 'advocate_pro' after the activate test.",
+  "retest_needed": true,
+  "main_agent_can_self_test": false,
+  "context_for_next_testing_agent": "Run pytest /app/backend/tests/test_courtbazaar_api.py -v. Only failure left is /api/ai/filing-checklist due to LLM budget cap. Once EMERGENT_LLM_KEY budget is fixed, re-run TestAI class. The OTP _id bug fix is already in server.py. Order auto-matching, vendor flow, admin flow, file upload (Emergent object storage), Stripe checkout URL creation — all verified end-to-end.",
+  "rca of the issue": "Filing checklist failure RCA: litellm.BadRequestError raised by emergentintegrations -> Budget exceeded (Max budget: 0.001, current 0.006). Reproduction: POST /api/ai/filing-checklist with {court:'Tis Hazari', case_type:'Civil Suit'} using advocate token. Mitigation: increase/refresh the budget for EMERGENT_LLM_KEY or rotate the key. The first /api/ai/chat call sometimes succeeds because each request has independent cost accounting only when budget head-room exists; subsequent calls in the same hour will 500. OTP verify RCA (already fixed): insert_one mutated the dict to inject ObjectId _id; FastAPI's jsonable_encoder cannot serialize ObjectId -> 500. Fix: pop _id after insert (consistent with /auth/register)."
+}
