@@ -116,12 +116,16 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
             user = await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
             if not user:
                 raise HTTPException(401, "User not found")
+            if user.get("deleted"):
+                raise HTTPException(401, "Account has been deleted")
             return user
         try:
             payload = decode_jwt(token)
             user = await db.users.find_one({"user_id": payload["user_id"]}, {"_id": 0})
             if not user:
                 raise HTTPException(401, "User not found")
+            if user.get("deleted"):
+                raise HTTPException(401, "Account has been deleted")
             return user
         except jwt.PyJWTError:
             raise HTTPException(401, "Invalid token")

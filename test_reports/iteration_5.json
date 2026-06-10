@@ -1,0 +1,27 @@
+{
+  "summary": "Iteration 5 — focused bug-fix re-verification for DPDP token invalidation. All 3 targeted tests PASSED: (1) deleted user's JWT now returns 401 'Account has been deleted' on /api/auth/me (was 200 in iter4 — bug confirmed fixed); (2) regression: advocate@demo.in /api/auth/me returns 200 with deleted=false; (3) regression: admin /api/admin/audit-log returns 200. Did NOT re-run full suite per request.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_dpdp_token_fix.py",
+    "/app/test_reports/pytest/iter5_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Fix verified at server.py lines 119-120 and 127-128: `if user.get('deleted'): raise HTTPException(401, 'Account has been deleted')` is added after BOTH find_one branches (user_sessions and JWT). Correct and minimal.",
+    "Optional follow-ups from iter4 still open and not in scope here: (a) embed a token_version claim in JWTs and bump on deletion for stronger guarantees, (b) refactor server.py (now ~1777 lines), (c) cache /admin/compliance-report and audit-log distinct() calls."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_dpdp_token_fix.py"
+  ],
+  "success_rate": {"backend": "100% (3/3 targeted tests)", "frontend": "N/A (backend-only)"},
+  "test_credentials": "admin@courtbazaar.in/Admin@123 OK; advocate@demo.in/Advocate@123 OK. Throwaway user TEST_dpdp_iter5_<ts>@cbtest.in created and DPDP-anonymised during test.",
+  "seed_data_creation": "Test created one TEST_ throwaway advocate (@cbtest.in) and immediately anonymised it via DPDP deletion. One dpdp_requests row inserted with status=anonymized. Safe to leave.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter4's TestDPDPIter4.test_admin_execute_deletion_anonymises_user is now expected to pass; full suite was not re-run this iteration. The new focused test lives at /app/backend/tests/test_dpdp_token_fix.py and can be used as a regression check. EmailStr still rejects .test TLD — keep using @cbtest.in for throwaway users.",
+  "rca of the issue": "Bug from iter4 (DPDP-anonymised user's existing JWT still authenticated) was caused by get_current_user not honouring the user.deleted flag. Fix applied by main agent: after both find_one lookups in get_current_user (server.py L119-120 and L127-128) the function now raises HTTPException(401, 'Account has been deleted') when user.get('deleted') is True. Verified end-to-end: register -> /auth/me 200 -> request-deletion -> admin execute -> /auth/me 401. DPDP right-to-erasure now enforced for stateless JWT path."
+}
