@@ -105,3 +105,21 @@ Build a complete enterprise-grade Legal Operations & Court Services Marketplace 
 - Real map embed for delivery tracking (currently lat/lng text display)
 - WhatsApp template approval flow in admin console
 - Stripe ↔ Razorpay reconciliation reports
+
+## Iteration 3 — P2 Polish (2026-02-XX)
+
+### Backend
+- **Real OCR pipeline** (`/app/backend/ocr_engine.py`): Tesseract 5.3.0 + PyPDF2 + pdf2image + Pillow. `analyze_document()` extracts text layer from PDFs (PyPDF2), falls back to Tesseract OCR on scanned PDFs (pdf2image @ 150dpi, max 5 pages), and runs Tesseract directly on images. Returns text, page_count, has_text_layer, char_count, ocr_used, page_numbers_detected (regex heuristic).
+- **Doc Intelligence v2** (`/api/doc-intel/analyze`): now runs real OCR first, feeds extracted text + metadata into Claude for scoring. Heuristic fallback computes filing_readiness/OCR quality/pagination scores from OCR metrics when Claude fails. Response includes `extracted.{total_pages, ocr_used, text_layer_count, page_numbers_detected, files[]}`.
+- **Reconciliation report**: `GET /api/admin/reconciliation` returns rows[], totals (Stripe/Razorpay paid+pending+failed counts + amounts), mismatches (txn vs order payment_status). Filters: `gateway`, `status_filter`, `from_date`, `to_date`. `GET /api/admin/reconciliation/export` returns CSV download.
+- **WhatsApp template approval workflow**: `GET/POST/DELETE /api/admin/whatsapp-templates`. Status lifecycle: draft → submit → pending → approved/rejected. History array tracks every action with timestamp + user. Seeds 4 defaults (order_placed_v1, order_status_v1, otp_login_v1, delivery_otp_v1). Twilio SID populated when real keys exist.
+
+### Frontend
+- **AdminReconciliation page** (`/admin/reconciliation`): totals cards (Stripe/Razorpay/combined), filters by gateway + status, mismatch alert card, transaction table with mismatch highlighting (red rows + "⚠ MISMATCH" pill), CSV export button.
+- **AdminWhatsAppTemplates page** (`/admin/whatsapp`): tabs (all/draft/pending/approved/rejected), create-template dialog (name, category, language, body with `{{n}}` variables, vars list), per-template actions (Submit/Approve/Reject/Delete), reject-with-reason dialog, variable badges, Twilio SID display, expandable history log.
+- **OrderWizard Doc Intel** now shows real OCR scores (filing readiness, OCR quality, pagination) derived from actual document content.
+- **AppLayout nav**: added Reconciliation + WhatsApp Templates entries for admin role.
+
+### Testing
+- 18/18 new tests pass · 75/76 full backend suite (1 pre-existing AI streaming timeout, unrelated)
+- Tests installed reportlab for PDF generation; PIL for image OCR test
