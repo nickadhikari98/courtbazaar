@@ -1,0 +1,120 @@
+{
+  "theme": "Light",
+  "archetype": "4 (Swiss & High-Contrast) / 5 (Luxury Hybrid)",
+  "vibe": "Premium, trustworthy, fast, authoritative",
+  "colors": {
+    "background": "#FAFAFA",
+    "foreground": "#0A1128",
+    "card": "#FFFFFF",
+    "card_foreground": "#0A1128",
+    "popover": "#FFFFFF",
+    "popover_foreground": "#0A1128",
+    "primary": "#0F172A",
+    "primary_foreground": "#FFFFFF",
+    "secondary": "#F1F5F9",
+    "secondary_foreground": "#0F172A",
+    "muted": "#F8FAFC",
+    "muted_foreground": "#64748B",
+    "accent": "#D97706",
+    "accent_foreground": "#FFFFFF",
+    "destructive": "#DC2626",
+    "destructive_foreground": "#FFFFFF",
+    "border": "#E2E8F0",
+    "input": "#E2E8F0",
+    "ring": "#D97706"
+  },
+  "typography": {
+    "heading_font": "Cabinet Grotesk",
+    "body_font": "Manrope",
+    "styles": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl font-black tracking-tighter leading-none",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight leading-tight",
+      "h3": "text-xl sm:text-2xl font-bold tracking-tight",
+      "h4": "text-lg sm:text-xl font-semibold",
+      "body": "text-base font-medium leading-relaxed",
+      "small": "text-sm font-medium",
+      "overline": "text-xs font-bold uppercase tracking-[0.2em]"
+    }
+  },
+  "spacing_and_layout": {
+    "philosophy": "Optical alignment, Zepto-style speed density in dashboard, expansive luxury pacing in marketing.",
+    "marketing_grid": "grid-cols-1 md:grid-cols-8 lg:grid-cols-12 gap-8 lg:gap-12",
+    "dashboard_grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6",
+    "card_padding": "p-6 sm:p-8",
+    "section_padding": "py-20 lg:py-32"
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-primary text-primary-foreground hover:bg-primary/90 shadow-lg rounded-none or very slight rounded-md font-bold tracking-wide transition-all",
+      "accent": "bg-accent text-accent-foreground hover:bg-accent/90 shadow-md rounded-md font-bold transition-all",
+      "ghost": "hover:bg-secondary hover:text-secondary-foreground text-muted-foreground font-semibold"
+    },
+    "cards": {
+      "dashboard_style": "bg-card border border-border shadow-sm hover:shadow-md transition-shadow duration-200 rounded-lg",
+      "marketing_bento": "bg-white border-none shadow-[0_8px_32px_rgba(0,0,0,0.04)] rounded-2xl overflow-hidden"
+    },
+    "inputs": "bg-white border-border focus:ring-2 focus:ring-accent focus:border-accent rounded-md text-sm",
+    "dialogs": "backdrop-blur-xl bg-white/95 border border-border/50 shadow-2xl rounded-xl"
+  },
+  "motion": {
+    "hover": "transition-all duration-200 ease-in-out",
+    "entrance": "animate-in fade-in slide-in-from-bottom-4 duration-500",
+    "staggered_list": "use framer-motion for staggering children by 0.1s"
+  },
+  "iconography": {
+    "library": "lucide-react",
+    "style": "stroke-[1.5] text-primary for main icons, text-muted-foreground for secondary, text-accent for highlights"
+  },
+  "screens": {
+    "landing_page": {
+      "hero": "Split layout or massive centered typography with Cabinet Grotesk. Hero image overlay max 30%. High contrast CTA.",
+      "services_grid": "Bento box 'Tetris' grid. Showcasing speed and trust.",
+      "stats": "Large typography displaying India-wide court coverage."
+    },
+    "advocate_dashboard": {
+      "layout": "Sidebar navigation + Topbar for wallet/profile. Main area uses 'Control Room' dense grid.",
+      "quick_order": "Zepto-style service grid (Photocopy, E-Filing, Notary) at the very top for sub-30s ordering.",
+      "active_orders": "Prominent tracker with real-time status (Blinkit style)."
+    },
+    "smart_order_wizard": {
+      "flow": "Multi-step modal or dedicated clean screen. Step 1: Upload (Drag & Drop), Step 2: Service/Options, Step 3: State/Court Select (Cascading dropdowns), Step 4: Review & Payment.",
+      "ux": "Progress bar at top. Clear INR pricing breakdown. Auto-calculating AI estimates."
+    },
+    "tracking_page": {
+      "layout": "Two-column. Left: 12-step vertical timeline (e-Filing, Printing, Stamping, Delivery). Right: Map or Courier info.",
+      "components": "Shadcn Progress, badges for status, Avatar for delivery partner."
+    },
+    "marketplace_browse": {
+      "layout": "Filter sidebar (Left) + Grid of services/vendors (Right). IndiaMART style density but cleaner.",
+      "vendor_card": "Shows rating, courts served, turnaround time, 'Verified' badge."
+    },
+    "admin_dashboard": {
+      "layout": "Data-heavy. Cardless tables for vendor management, commission splits, and court mappings."
+    }
+  },
+  "image_assets": {
+    "hero_marketing": {
+      "url": "https://images.unsplash.com/photo-1739512267566-7b2f3a2d29af?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA3MDR8MHwxfHNlYXJjaHw0fHxpbmRpYW4lMjBsYXd5ZXIlMjBjb3VydHxlbnwwfHx8fDE3ODEwODY5OTN8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Indian Courthouse building for scale and trust"
+    },
+    "legal_printing": {
+      "url": "https://images.unsplash.com/photo-1516409590654-e8d51fc2d25c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1Mjh8MHwxfHNlYXJjaHwyfHxsZWdhbCUyMGRvY3VtZW50JTIwcHJpbnRpbmd8ZW58MHx8fHwxNzgxMDg2OTkzfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Stack of legal papers representing document services"
+    },
+    "fast_delivery": {
+      "url": "https://images.unsplash.com/photo-1617347454431-f49d7ff5c3b1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNDR8MHwxfHNlYXJjaHwxfHxmYXN0JTIwZGVsaXZlcnklMjBjb3VyaWVyfGVufDB8fHx8MTc4MTA4NzAwNnww&ixlib=rb-4.1.0&q=85",
+      "description": "Fast courier delivery on motorcycle representing quick turnaround"
+    },
+    "legal_trust": {
+      "url": "https://images.unsplash.com/photo-1593115057322-e94b77572f20?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njd8MHwxfHNlYXJjaHwxfHxsZWdhbCUyMGdhdmVsfGVufDB8fHx8MTc4MTA4NzAwNnww&ixlib=rb-4.1.0&q=85",
+      "description": "Legal gavel for authority and marketplace trust"
+    }
+  },
+  "specific_rules": {
+    "testing": "All interactive elements MUST include data-testid (e.g., data-testid='login-submit-button').",
+    "localization": "Use ₹ (INR) for all currency. Use Indian legal terms like 'Cause List', 'Vakalatnama', 'Paper Book'.",
+    "trust_signals": "KYC Verified badges on vendor profiles, GST compliant invoices, Court-verified stamps.",
+    "shadcn_overrides": "Do not use default Shadcn border radius. Use subtle rounded-md for strict enterprise feel, or rounded-lg for softer modern feel. Override primary colors with the deep navy.",
+    "css_variables": "Map all theme colors to index.css CSS variables for Tailwind configuration."
+  }
+}
