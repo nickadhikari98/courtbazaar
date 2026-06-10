@@ -1,0 +1,36 @@
+{
+  "summary": "Backend P1 testing complete. Added 22 new tests to /app/backend/tests/test_courtbazaar_api.py covering: expanded courts/states (36 states, 426 courts), serviceability enforcement, Razorpay simulated payments, payment methods endpoint, notifications status + prefs + mock dispatch, Law Firm create/me/invite/accept/orders, Delivery partner full flow (queue/accept/location/complete + OTP validation), Document Intelligence (Claude), Sponsored Vendor plan/activate + priority matching. Also updated existing TestHealth.test_states (8 -> 36+) and TestCourts.test_courts_by_state_delhi (==10 -> >=10) to reflect expanded seed. Result: 57/58 passed. The single failure (TestAI.test_filing_checklist) is a pre-existing intermittent ingress 502 (gateway timeout) on slow LLM streaming, unrelated to P1 work — passed in iteration_1.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/ai/filing-checklist", "issue": "Intermittent 502 gateway timeout when Claude streaming exceeds ~60s ingress timeout. Same endpoint passed in iter_1. Recommend either streaming response back to client incrementally, or shorter prompt / non-stream mode, or increase ingress timeout. Mock notifications confirmed firing in backend logs."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_courtbazaar_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional: address intermittent 502 on /api/ai/filing-checklist by making the LLM call non-streaming / shorter, OR raise ingress timeout. Not a P1 regression."
+  ],
+  "critical_code_review_comments": [
+    "/api/delivery/{order_id}/location currently has no role-check — any authenticated user can spoof another delivery partner's GPS pings. Recommend: require role == 'delivery_partner' (or admin) AND require order.delivery_partner_id == user.user_id.",
+    "/api/delivery/{order_id}/complete has no role/ownership check either — any authenticated user supplying otp=123456 can mark any order delivered. Same fix as above.",
+    "Mock delivery OTP '123456' is hardcoded in server.py (line 1144). Acceptable for demo but should read from env (e.g., DELIVERY_OTP_MOCK) and be disabled when real OTP service is configured.",
+    "/api/firms/accept-invite does not validate that the logged-in user's email matches invite.email — anyone holding the token can accept on behalf of someone else.",
+    "/api/firms/invite sends email synchronously inside the request handler; can slow invite response if SendGrid is enabled. Consider BackgroundTasks.",
+    "server.py is 1281 lines — recommend extracting delivery, firms, doc-intel, notifications, razorpay endpoints into /app/backend/routes/* modules (the routes/ dir already exists but is empty).",
+    "/api/doc-intel/analyze: when Claude raises, returns 500 — but the prompt says it should return 200 with fallback defaults on JSON parse failure. The 500 path should also fall back to defaults so the UX stays consistent.",
+    "/api/payments/razorpay/create-order: no idempotency — calling twice on the same order creates duplicate payment_transactions rows. Consider upsert on order_id+gateway."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_courtbazaar_api.py"
+  ],
+  "success_rate": {"backend": "98% (57/58)", "frontend": "N/A (backend-only test request)"},
+  "test_credentials": "advocate@demo.in/Advocate@123, vendor@demo.in/Vendor@123, admin@courtbazaar.in/Admin@123, mock delivery OTP 123456 — all working.",
+  "seed_data_creation": "Tests create TEST_-prefixed advocates, firm owners, firm invitees, delivery partners, vendor onboardings, orders, files, and doc-intel reports via API. Sponsored flag set on real vendor@demo.in (sponsored=true, sponsored_until=+30d) — main agent should reset if needed for clean state.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Full pytest suite at /app/backend/tests/test_courtbazaar_api.py covers v1 + P1. P1 tests live in classes named *P1 (TestCourtsP1, TestPaymentsP1, TestNotificationsP1, TestLawFirmP1, TestDeliveryP1, TestServiceabilityP1, TestDocIntelP1, TestSponsoredP1). Use ORDER_STATUSES = [placed, matched, accepted, processing, quality_check, ready, out_for_delivery, delivered, completed, cancelled] — NOT 'in_progress'. Razorpay simulated mode: any payment_id/signature works as long as razorpay_order_id is valid. vendor@demo.in is now sponsored — reset db.vendors {user_id: vendor.user_id} unset sponsored if a clean state needed. TestAI.test_filing_checklist is flaky due to ingress 502 on slow LLM, not a regression."
+}

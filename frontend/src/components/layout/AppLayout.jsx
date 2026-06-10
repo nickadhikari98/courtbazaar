@@ -3,7 +3,7 @@ import { NavLink, Outlet, Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
-  User, Settings, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield
+  User, Settings, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,9 @@ const navItems = (role) => {
     { to: "/marketplace", icon: Store, label: "Marketplace" },
     { to: "/courts", icon: Building2, label: "Courts" },
     { to: "/ai", icon: Sparkles, label: "AI Assistant" },
+    { to: "/firm", icon: Users, label: "Law Firm" },
     { to: "/wallet", icon: Wallet, label: "Wallet" },
+    { to: "/notifications", icon: Bell, label: "Notifications" },
     { to: "/subscription", icon: CreditCard, label: "Plans" },
   ];
   if (role === "vendor") {
@@ -27,7 +29,14 @@ const navItems = (role) => {
       { to: "/vendor", icon: LayoutDashboard, label: "Vendor Hub" },
       { to: "/orders", icon: Package, label: "Order Queue" },
       { to: "/wallet", icon: Wallet, label: "Earnings" },
+      { to: "/notifications", icon: Bell, label: "Notifications" },
       { to: "/profile", icon: User, label: "Shop Profile" },
+    ];
+  }
+  if (role === "delivery_partner") {
+    return [
+      { to: "/delivery", icon: Truck, label: "Delivery Queue", highlight: true },
+      { to: "/profile", icon: User, label: "Profile" },
     ];
   }
   if (role === "admin") {
@@ -37,6 +46,7 @@ const navItems = (role) => {
       { to: "/admin/pricing", icon: CreditCard, label: "Pricing" },
       { to: "/admin/users", icon: User, label: "Users" },
       { to: "/orders", icon: Package, label: "All Orders" },
+      { to: "/delivery", icon: Truck, label: "Delivery" },
       { to: "/courts", icon: Building2, label: "Courts" },
     ];
   }

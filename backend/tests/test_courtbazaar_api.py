@@ -77,7 +77,8 @@ class TestHealth:
         assert r.status_code == 200
         data = r.json()
         assert isinstance(data, list)
-        assert len(data) == 8, f"expected 8 states, got {len(data)}"
+        # Expanded in P1: now 36+ states/UTs
+        assert len(data) >= 36, f"expected 36+ states, got {len(data)}"
 
     def test_services(self, s):
         r = s.get(f"{API}/services", timeout=15)
@@ -178,7 +179,8 @@ class TestCourts:
         assert r.status_code == 200
         courts = r.json()
         assert isinstance(courts, list)
-        assert len(courts) == 10, f"expected 10 courts in Delhi, got {len(courts)}"
+        # Expanded in P1: Delhi now has ~35+ courts
+        assert len(courts) >= 10, f"expected 10+ courts in Delhi, got {len(courts)}"
         for c in courts:
             assert c["state_id"] == "state_delhi"
 
@@ -438,3 +440,331 @@ class TestAuthSecurity:
     def test_admin_endpoint_forbidden_for_non_admin(self, s, advocate_token):
         r = s.get(f"{API}/admin/analytics", headers=hdr(advocate_token), timeout=15)
         assert r.status_code == 403
+
+
+# ============================================================================
+# P1 FEATURES (iteration_2)
+# ============================================================================
+
+# ---------- Courts: serviceable enforcement & expanded hierarchy ----------
+class TestCourtsP1:
+    def test_serviceable_only_returns_delhi_only(self, s):
+        r = s.get(f"{API}/courts?serviceable_only=true", timeout=15)
+        assert r.status_code == 200
+        courts = r.json()
+        assert isinstance(courts, list)
+        assert len(courts) >= 30, f"expected ~35 serviceable Delhi courts, got {len(courts)}"
+        # All serviceable courts must belong to Delhi
+        for c in courts:
+            assert c["state_id"] == "state_delhi", f"non-Delhi court in serviceable list: {c['court_id']}"
+
+    def test_all_courts_count(self, s):
+        r = s.get(f"{API}/courts", timeout=15)
+        assert r.status_code == 200
+        courts = r.json()
+        assert len(courts) >= 400, f"expected 400+ courts, got {len(courts)}"
+
+
+# ---------- P1 Payments: Razorpay ----------
+class TestPaymentsP1:
+    def test_payment_methods_endpoint(self, s):
+        r = s.get(f"{API}/payments/methods", timeout=15)
+        assert r.status_code == 200
+        b = r.json()
+        assert b.get("stripe") is True
+        # No keys configured -> razorpay disabled, simulated mode on
+        assert b.get("razorpay") is False
+        assert b.get("razorpay_simulated") is True
+
+    def test_razorpay_create_and_verify_simulated(self, s, advocate_token):
+        # Create a new order to pay via razorpay (separate from stripe-tested order)
+        payload = dict(ORDER_PAYLOAD)
+        payload["notes"] = "TEST razorpay order"
+        ro = s.post(f"{API}/orders", headers=hdr(advocate_token), json=payload, timeout=15)
+        assert ro.status_code == 200, ro.text
+        order_id = ro.json()["order_id"]
+        pytest.rzp_order_id = order_id
+
+        # Create razorpay order
+        r = s.post(f"{API}/payments/razorpay/create-order", headers=hdr(advocate_token),
+                   json={"order_id": order_id}, timeout=15)
+        assert r.status_code == 200, r.text
+        rb = r.json()
+        assert "razorpay_order_id" in rb
+        assert rb.get("simulated") is True
+        rzp_oid = rb["razorpay_order_id"]
+
+        # Verify
+        v = s.post(f"{API}/payments/razorpay/verify", headers=hdr(advocate_token),
+                   json={"razorpay_order_id": rzp_oid, "razorpay_payment_id": "pay_test_1",
+                         "razorpay_signature": "sig_test_1"}, timeout=15)
+        assert v.status_code == 200, v.text
+        assert v.json().get("ok") is True
+
+        # Verify the order is now paid
+        det = s.get(f"{API}/orders/{order_id}", headers=hdr(advocate_token), timeout=15).json()
+        assert det.get("payment_status") == "paid"
+
+
+# ---------- P1 Notifications ----------
+class TestNotificationsP1:
+    def test_notifications_status(self, s):
+        r = s.get(f"{API}/notifications/status", timeout=15)
+        assert r.status_code == 200
+        b = r.json()
+        # All providers in mock mode (no env keys configured)
+        assert b.get("sms_enabled") is False
+        assert b.get("whatsapp_enabled") is False
+        assert b.get("email_enabled") is False
+
+    def test_notif_prefs_update_persists(self, s, advocate_token):
+        prefs = {"sms": True, "whatsapp": False, "email": True}
+        r = s.put(f"{API}/notifications/prefs", headers=hdr(advocate_token), json=prefs, timeout=15)
+        assert r.status_code == 200
+        b = r.json()
+        assert b.get("ok") is True
+        assert b.get("notif_prefs") == prefs
+        # Verify on me
+        me = s.get(f"{API}/auth/me", headers=hdr(advocate_token), timeout=15).json()
+        assert me.get("notif_prefs") == prefs
+
+    def test_order_creation_triggers_notification_without_error(self, s, advocate_token):
+        # If notifications dispatch raises, order create would 500. We already created orders in earlier tests
+        # but assert again with a fresh payload.
+        r = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
+        assert r.status_code == 200, r.text
+
+    def test_order_status_update_triggers_notification_without_error(self, s, advocate_token, vendor_token):
+        # Create a fresh order so this test doesn't depend on inter-class state
+        ro = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
+        assert ro.status_code == 200, ro.text
+        oid = ro.json()["order_id"]
+        r = s.post(f"{API}/orders/{oid}/status", headers=hdr(vendor_token),
+                   json={"status": "processing", "note": "TEST progress"}, timeout=15)
+        assert r.status_code == 200, r.text
+
+
+# ---------- P1 Law Firm Multi-User ----------
+class TestLawFirmP1:
+    def test_create_firm_and_me(self, s):
+        # Create a fresh advocate to own a firm
+        email = f"TEST_firmowner_{uuid.uuid4().hex[:8]}@test.com"
+        reg = s.post(f"{API}/auth/register", json={
+            "email": email, "password": "Test@123", "name": "Firm Owner",
+            "role": "advocate", "phone": "9000000201",
+        }, timeout=15).json()
+        owner_tok = reg["token"]
+        pytest.firm_owner_token = owner_tok
+        pytest.firm_owner_email = email
+
+        r = s.post(f"{API}/firms", headers=hdr(owner_tok),
+                   json={"name": "TEST & Associates", "gst": "07ABCDE1234F1Z5", "address": "Tis Hazari"}, timeout=15)
+        assert r.status_code == 200, r.text
+        firm = r.json()
+        assert "firm_id" in firm
+        pytest.firm_id = firm["firm_id"]
+
+        # Me should reflect firm + role
+        me = s.get(f"{API}/auth/me", headers=hdr(owner_tok), timeout=15).json()
+        assert me.get("firm_id") == firm["firm_id"]
+        assert me.get("firm_role") == "owner"
+        assert me.get("role") == "law_firm"
+
+        # /firms/me
+        r2 = s.get(f"{API}/firms/me", headers=hdr(owner_tok), timeout=15)
+        assert r2.status_code == 200
+        b = r2.json()
+        assert b.get("onboarded") is True
+        assert b.get("firm", {}).get("firm_id") == firm["firm_id"]
+        assert isinstance(b.get("members"), list) and len(b["members"]) == 1
+        assert b["members"][0]["role"] == "owner"
+
+    def test_firm_invite_non_owner_forbidden(self, s, advocate_token):
+        # Advocate (not in this firm) cannot invite
+        r = s.post(f"{API}/firms/invite", headers=hdr(advocate_token),
+                   json={"firm_id": pytest.firm_id, "email": "x@y.com", "name": "X", "role": "associate"}, timeout=15)
+        assert r.status_code == 403
+
+    def test_firm_invite_and_accept_flow(self, s):
+        owner_tok = pytest.firm_owner_token
+        invitee_email = f"TEST_invitee_{uuid.uuid4().hex[:8]}@test.com"
+        # Owner sends invite
+        r = s.post(f"{API}/firms/invite", headers=hdr(owner_tok),
+                   json={"firm_id": pytest.firm_id, "email": invitee_email, "name": "Invitee A", "role": "associate"}, timeout=15)
+        assert r.status_code == 200, r.text
+        inv = r.json()
+        assert "token" in inv and "invite_id" in inv
+        token = inv["token"]
+
+        # Register the 2nd user
+        reg = s.post(f"{API}/auth/register", json={
+            "email": invitee_email, "password": "Test@123", "name": "Invitee A",
+            "role": "advocate", "phone": "9000000202",
+        }, timeout=15).json()
+        invitee_tok = reg["token"]
+
+        # Accept invite
+        r2 = s.post(f"{API}/firms/accept-invite", headers=hdr(invitee_tok), json={"token": token}, timeout=15)
+        assert r2.status_code == 200, r2.text
+        assert r2.json().get("firm_id") == pytest.firm_id
+
+        # Verify invitee role
+        me = s.get(f"{API}/auth/me", headers=hdr(invitee_tok), timeout=15).json()
+        assert me.get("firm_id") == pytest.firm_id
+        assert me.get("firm_role") == "associate"
+        assert me.get("role") == "law_firm"
+
+        # Firm /me now has 2 members
+        b = s.get(f"{API}/firms/me", headers=hdr(owner_tok), timeout=15).json()
+        assert len(b["members"]) == 2
+
+    def test_firm_orders_endpoint(self, s):
+        owner_tok = pytest.firm_owner_token
+        r = s.get(f"{API}/firms/{pytest.firm_id}/orders", headers=hdr(owner_tok), timeout=15)
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)
+        # Foreign firm_id forbidden
+        r2 = s.get(f"{API}/firms/firm_nonexistent/orders", headers=hdr(owner_tok), timeout=15)
+        assert r2.status_code == 403
+
+
+# ---------- P1 Delivery Partner ----------
+class TestDeliveryP1:
+    def test_delivery_integrations(self, s):
+        r = s.get(f"{API}/delivery/integrations", timeout=15)
+        assert r.status_code == 200
+        b = r.json()
+        assert b.get("dunzo_enabled") is False
+        assert b.get("borzo_enabled") is False
+        assert b.get("own_network") is True
+
+    def test_delivery_full_flow(self, s, advocate_token, vendor_token):
+        # Register a delivery partner
+        dp_email = f"TEST_dp_{uuid.uuid4().hex[:8]}@test.com"
+        reg = s.post(f"{API}/auth/register", json={
+            "email": dp_email, "password": "Test@123", "name": "Delivery Bro",
+            "role": "delivery_partner", "phone": "9000000301",
+        }, timeout=15)
+        assert reg.status_code == 200, reg.text
+        dp_tok = reg.json()["token"]
+
+        # Queue accessible
+        rq = s.get(f"{API}/delivery/queue", headers=hdr(dp_tok), timeout=15)
+        assert rq.status_code == 200
+
+        # Create an order + pay (razorpay simulated) + mark ready by vendor
+        ro = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
+        assert ro.status_code == 200, ro.text
+        order_id = ro.json()["order_id"]
+
+        rzp = s.post(f"{API}/payments/razorpay/create-order", headers=hdr(advocate_token),
+                     json={"order_id": order_id}, timeout=15).json()
+        s.post(f"{API}/payments/razorpay/verify", headers=hdr(advocate_token),
+               json={"razorpay_order_id": rzp["razorpay_order_id"]}, timeout=15)
+
+        # Vendor advances to 'ready'
+        for st in ("accepted", "processing", "ready"):
+            r = s.post(f"{API}/orders/{order_id}/status", headers=hdr(vendor_token),
+                       json={"status": st, "note": f"TEST {st}"}, timeout=15)
+            assert r.status_code == 200, r.text
+
+        # Delivery accept
+        ra = s.post(f"{API}/delivery/{order_id}/accept", headers=hdr(dp_tok), json={}, timeout=15)
+        assert ra.status_code == 200, ra.text
+        det = s.get(f"{API}/orders/{order_id}", headers=hdr(advocate_token), timeout=15).json()
+        assert det.get("status") == "out_for_delivery"
+        assert det.get("delivery_partner_id") is not None
+
+        # Location update
+        rl = s.post(f"{API}/delivery/{order_id}/location", headers=hdr(dp_tok),
+                    json={"lat": 28.6692, "lng": 77.2265, "note": "near gate"}, timeout=15)
+        assert rl.status_code == 200
+
+        # Wrong OTP -> 400
+        rw = s.post(f"{API}/delivery/{order_id}/complete", headers=hdr(dp_tok), json={"otp": "000000"}, timeout=15)
+        assert rw.status_code == 400
+
+        # Correct OTP -> 200, status delivered
+        rc = s.post(f"{API}/delivery/{order_id}/complete", headers=hdr(dp_tok), json={"otp": "123456"}, timeout=15)
+        assert rc.status_code == 200, rc.text
+        det2 = s.get(f"{API}/orders/{order_id}", headers=hdr(advocate_token), timeout=15).json()
+        assert det2.get("status") == "delivered"
+
+    def test_delivery_queue_forbidden_for_non_dp(self, s, advocate_token):
+        r = s.get(f"{API}/delivery/queue", headers=hdr(advocate_token), timeout=15)
+        assert r.status_code == 403
+
+
+# ---------- P1 Serviceability enforcement on Order ----------
+class TestServiceabilityP1:
+    def test_order_non_delhi_court_rejected(self, s, advocate_token):
+        bad = dict(ORDER_PAYLOAD)
+        bad["state_id"] = "state_ka"
+        bad["court_id"] = "court_ka_hc"
+        r = s.post(f"{API}/orders", headers=hdr(advocate_token), json=bad, timeout=15)
+        assert r.status_code == 400, f"expected 400 for non-serviceable court, got {r.status_code} {r.text}"
+        assert "serviceable" in r.text.lower()
+
+    def test_order_delhi_court_succeeds(self, s, advocate_token):
+        r = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
+        assert r.status_code == 200, r.text
+
+
+# ---------- P1 Document Intelligence ----------
+class TestDocIntelP1:
+    def test_doc_intel_analyze_returns_valid_report(self, s, advocate_token):
+        # Upload a tiny file first
+        files = {"file": ("TEST_docint.png", io.BytesIO(b"\x89PNG\r\n\x1a\nTEST_DOCINT"), "image/png")}
+        headers = {"Authorization": f"Bearer {advocate_token}"}
+        up = requests.post(f"{API}/files/upload", headers=headers, files=files, timeout=60)
+        assert up.status_code == 200, up.text
+        file_id = up.json()["file_id"]
+
+        r = s.post(f"{API}/doc-intel/analyze", headers=hdr(advocate_token),
+                   json={"file_ids": [file_id], "target_court": "court_tishazari", "case_type": "Civil Suit"},
+                   timeout=180)
+        # AI may fail; spec says we should return 200 with fallback defaults
+        assert r.status_code == 200, r.text
+        b = r.json()
+        assert "report_id" in b
+        report = b.get("report", {})
+        # Validate the JSON schema
+        assert isinstance(report.get("filing_readiness_score"), int)
+        assert 0 <= report["filing_readiness_score"] <= 100
+        assert isinstance(report.get("ocr_quality_score"), int)
+        assert isinstance(report.get("pagination_score"), int)
+        assert isinstance(report.get("missing_documents"), list)
+        assert isinstance(report.get("defects"), list)
+        assert isinstance(report.get("recommended_services"), list)
+        assert isinstance(report.get("summary"), str)
+
+
+# ---------- P1 Sponsored Vendor Listings ----------
+class TestSponsoredP1:
+    def test_sponsored_plan(self, s):
+        r = s.get(f"{API}/vendors/sponsored/plan", timeout=15)
+        assert r.status_code == 200
+        b = r.json()
+        assert b.get("price") == 999
+        assert b.get("duration_days") == 30
+        assert isinstance(b.get("benefits"), list)
+
+    def test_sponsored_activate_and_priority_in_matching(self, s, vendor_token, advocate_token):
+        r = s.post(f"{API}/vendors/sponsored/activate", headers=hdr(vendor_token), json={}, timeout=15)
+        assert r.status_code == 200, r.text
+        b = r.json()
+        assert b.get("ok") is True
+        assert b.get("amount") == 999
+        assert "sponsored_until" in b
+
+        # Vendor /me should reflect sponsored
+        v = s.get(f"{API}/vendors/me", headers=hdr(vendor_token), timeout=15).json()
+        assert v.get("sponsored") is True
+
+        # Place a new order and ensure it gets matched to the sponsored vendor
+        ro = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
+        assert ro.status_code == 200, ro.text
+        order = ro.json()
+        assert order.get("vendor_id") is not None
+        # In demo data, the Sharma vendor at Tis Hazari is the activated vendor
+        assert "Sharma" in (order.get("vendor_name") or "")

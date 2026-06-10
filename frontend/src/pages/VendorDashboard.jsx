@@ -5,19 +5,32 @@ import { useAuth } from "@/context/AuthContext";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Store, Package, TrendingUp, ShieldCheck, ArrowRight, Star, AlertCircle } from "lucide-react";
+import { toast } from "sonner";
+import { Store, Package, TrendingUp, ShieldCheck, ArrowRight, Star, AlertCircle, Crown, Rocket } from "lucide-react";
 
 export default function VendorDashboard() {
   const { user } = useAuth();
   const [vendor, setVendor] = useState(null);
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [sponsorPlan, setSponsorPlan] = useState(null);
 
-  useEffect(() => {
-    Promise.all([api.get("/vendors/me"), api.get("/orders")]).then(([v, o]) => {
-      setVendor(v.data); setOrders(o.data || []); setLoading(false);
-    });
-  }, []);
+  const loadAll = () => Promise.all([
+    api.get("/vendors/me"),
+    api.get("/orders"),
+    api.get("/vendors/sponsored/plan"),
+  ]).then(([v, o, sp]) => {
+    setVendor(v.data); setOrders(o.data || []); setSponsorPlan(sp.data); setLoading(false);
+  });
+  useEffect(() => { loadAll(); }, []);
+
+  const activateSponsored = async () => {
+    try {
+      await api.post("/vendors/sponsored/activate");
+      toast.success("Sponsored listing activated for 30 days!");
+      loadAll();
+    } catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
+  };
 
   if (loading) return <div className="p-10">Loading…</div>;
 
@@ -48,6 +61,7 @@ export default function VendorDashboard() {
           <div className="cb-overline text-accent">Vendor hub</div>
           <h1 className="font-display font-black text-3xl tracking-tighter mt-1 flex items-center gap-2">{vendor.shop_name}
             {vendor.kyc_status === 'approved' && <ShieldCheck className="w-6 h-6 text-emerald-600" />}
+            {vendor.sponsored && <Badge className="bg-gradient-to-r from-accent to-amber-500 text-white border-0 font-bold uppercase text-[10px]"><Crown className="w-3 h-3 mr-1" /> Sponsored</Badge>}
           </h1>
           <div className="text-sm text-muted-foreground font-semibold flex items-center gap-2 mt-1">
             <Star className="w-3.5 h-3.5 text-accent fill-accent" /> {vendor.rating?.toFixed(1) || "—"} · {vendor.total_orders} orders · {vendor.court_ids?.length || 0} courts
@@ -65,6 +79,42 @@ export default function VendorDashboard() {
             <div className="text-sm font-semibold">Your KYC is pending review. You'll start receiving orders once approved.</div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Sponsored listing card */}
+      {vendor.kyc_status === "approved" && (
+        vendor.sponsored ? (
+          <Card className="mb-6 bg-gradient-to-r from-accent to-amber-500 text-white border-none" data-testid="sponsored-active-card">
+            <CardContent className="p-5 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Crown className="w-8 h-8" />
+                <div>
+                  <div className="font-display font-bold text-lg">Sponsored Listing Active</div>
+                  <div className="text-sm text-white/90 font-semibold">Priority in auto-matching · Highlighted in directory</div>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="cb-overline text-white/70">Active until</div>
+                <div className="font-bold">{vendor.sponsored_until ? new Date(vendor.sponsored_until).toLocaleDateString('en-IN') : '—'}</div>
+              </div>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card className="mb-6 border-accent bg-accent/5" data-testid="sponsored-promo-card">
+            <CardContent className="p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <Rocket className="w-8 h-8 text-accent shrink-0" />
+                <div>
+                  <div className="font-display font-bold text-lg">Boost your orders 3× — Sponsored Listing</div>
+                  <div className="text-sm text-muted-foreground font-medium">{sponsorPlan?.benefits?.join(' · ')}</div>
+                </div>
+              </div>
+              <Button onClick={activateSponsored} className="bg-accent hover:bg-accent/90 font-bold h-12 px-5" data-testid="activate-sponsored-btn">
+                Activate {formatINR(sponsorPlan?.price || 999)} / month
+              </Button>
+            </CardContent>
+          </Card>
+        )
       )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">

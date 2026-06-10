@@ -25,6 +25,9 @@ import AdminVendors from "@/pages/AdminVendors";
 import AdminPricing from "@/pages/AdminPricing";
 import AdminUsers from "@/pages/AdminUsers";
 import VendorOnboarding from "@/pages/VendorOnboarding";
+import FirmManagement from "@/pages/FirmManagement";
+import DeliveryHub from "@/pages/DeliveryHub";
+import NotificationPrefs from "@/pages/NotificationPrefs";
 import AppLayout from "@/components/layout/AppLayout";
 
 function AuthCallback() {
@@ -97,6 +100,9 @@ function AppRouter() {
         <Route path="/wallet" element={<Wallet />} />
         <Route path="/subscription" element={<Subscription />} />
         <Route path="/profile" element={<Profile />} />
+        <Route path="/firm" element={<FirmManagement />} />
+        <Route path="/notifications" element={<NotificationPrefs />} />
+        <Route path="/delivery" element={<ProtectedRoute roles={["delivery_partner", "admin"]}><DeliveryHub /></ProtectedRoute>} />
 
         <Route path="/vendor" element={<ProtectedRoute roles={["vendor", "admin"]}><VendorDashboard /></ProtectedRoute>} />
         <Route path="/vendor/onboard" element={<VendorOnboard />} />

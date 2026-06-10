@@ -3,7 +3,7 @@ import { api } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Building2, ShieldCheck, Search, MapPin } from "lucide-react";
+import { Building2, ShieldCheck, Search, MapPin, Lock } from "lucide-react";
 
 export default function CourtDirectory() {
   const [states, setStates] = useState([]);
@@ -15,9 +15,10 @@ export default function CourtDirectory() {
   useEffect(() => {
     api.get("/states").then(r => {
       setStates(r.data);
-      if (r.data.length) {
-        setActiveState(r.data[0].state_id);
-      }
+      // Default to Delhi (the serviceable state)
+      const delhi = r.data.find(s => s.state_id === "state_delhi");
+      if (delhi) setActiveState(delhi.state_id);
+      else if (r.data.length) setActiveState(r.data[0].state_id);
       setLoading(false);
     });
   }, []);
@@ -55,20 +56,26 @@ export default function CourtDirectory() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {filtered.map(c => (
-              <Card key={c.court_id} className="dashboard-card border-none hover:shadow-md transition-all" data-testid={`court-${c.court_id}`}>
+              <Card key={c.court_id} className={`dashboard-card border-none hover:shadow-md transition-all ${c.serviceable === false ? 'opacity-70' : ''}`} data-testid={`court-${c.court_id}`}>
                 <CardContent className="p-5">
                   <div className="flex items-start gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
-                      <Building2 className="w-5 h-5 text-accent" />
+                    <div className={`w-10 h-10 rounded-lg ${c.serviceable === false ? 'bg-secondary' : 'bg-accent/10'} flex items-center justify-center shrink-0`}>
+                      <Building2 className={`w-5 h-5 ${c.serviceable === false ? 'text-muted-foreground' : 'text-accent'}`} />
                     </div>
                     <div className="min-w-0">
                       <div className="font-display font-bold text-base leading-tight">{c.name}</div>
                       <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1.5"><MapPin className="w-3 h-3" /> {c.address}</div>
-                      <div className="mt-2 flex items-center gap-2">
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
                         <Badge className="bg-emerald-100 text-emerald-700 border-0 text-[10px] uppercase font-bold">{c.type?.replace('_', ' ')}</Badge>
-                        <Badge variant="outline" className="text-[10px] font-bold flex items-center gap-1">
-                          <ShieldCheck className="w-3 h-3" /> Verified
-                        </Badge>
+                        {c.serviceable !== false ? (
+                          <Badge variant="outline" className="text-[10px] font-bold flex items-center gap-1 border-emerald-300 text-emerald-700">
+                            <ShieldCheck className="w-3 h-3" /> Serviceable
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px] font-bold flex items-center gap-1 border-amber-300 text-amber-700">
+                            <Lock className="w-3 h-3" /> Coming Soon
+                          </Badge>
+                        )}
                       </div>
                     </div>
                   </div>

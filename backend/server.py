@@ -208,16 +208,22 @@ async def startup():
     await seed_initial_data()
 
 async def seed_initial_data():
-    if await db.courts.count_documents({}) == 0:
-        from court_seed import COURT_DATA, SERVICE_CATALOG
-        for state in COURT_DATA:
-            await db.states.update_one({"state_id": state["state_id"]}, {"$set": state}, upsert=True)
-            for court in state["courts"]:
-                court_doc = {**court, "state_id": state["state_id"], "state_name": state["name"]}
-                await db.courts.update_one({"court_id": court["court_id"]}, {"$set": court_doc}, upsert=True)
+    # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
+    from court_seed_expanded import COURT_DATA
+    from court_seed import SERVICE_CATALOG
+    for state in COURT_DATA:
+        await db.states.update_one(
+            {"state_id": state["state_id"]},
+            {"$set": {"state_id": state["state_id"], "name": state["name"], "code": state["code"]}},
+            upsert=True,
+        )
+        for court in state["courts"]:
+            court_doc = {**court, "state_id": state["state_id"], "state_name": state["name"]}
+            await db.courts.update_one({"court_id": court["court_id"]}, {"$set": court_doc}, upsert=True)
+    if await db.services.count_documents({}) == 0:
         for svc in SERVICE_CATALOG:
             await db.services.update_one({"service_id": svc["service_id"]}, {"$set": svc}, upsert=True)
-        logger.info("Seeded states, courts, services")
+        logger.info("Seeded services")
 
     if await db.users.count_documents({"role": "admin"}) == 0:
         admin_id = f"user_{uuid.uuid4().hex[:12]}"
@@ -426,13 +432,15 @@ async def list_states():
     return states
 
 @api_router.get("/courts")
-async def list_courts(state_id: Optional[str] = None, q: Optional[str] = None):
+async def list_courts(state_id: Optional[str] = None, q: Optional[str] = None, serviceable_only: bool = False):
     query: Dict[str, Any] = {}
     if state_id:
         query["state_id"] = state_id
     if q:
         query["name"] = {"$regex": q, "$options": "i"}
-    courts = await db.courts.find(query, {"_id": 0}).sort("name", 1).to_list(500)
+    if serviceable_only:
+        query["serviceable"] = True
+    courts = await db.courts.find(query, {"_id": 0}).sort("name", 1).to_list(2000)
     return courts
 
 @api_router.get("/courts/{court_id}")
@@ -593,21 +601,30 @@ async def order_quote(req: OrderCreate, user=Depends(get_current_user)):
 
 @api_router.post("/orders")
 async def create_order(req: OrderCreate, user=Depends(get_current_user)):
+    court_info = await db.courts.find_one({"court_id": req.court_id}, {"_id": 0})
+    if not court_info:
+        raise HTTPException(404, "Court not found")
+    if court_info.get("serviceable") is False:
+        raise HTTPException(400, "This court is not yet serviceable. Currently we operate in Delhi only.")
     pricing = await calculate_pricing(req.services, req.court_id, req.delivery_option, req.urgent)
-    candidates = await db.vendors.find({"court_ids": req.court_id, "kyc_status": "approved"}, {"_id": 0}).sort("rating", -1).to_list(5)
+    # Auto-match: sponsored vendors first (sponsored=True), then by rating
+    candidates = await db.vendors.find(
+        {"court_ids": req.court_id, "kyc_status": "approved"}, {"_id": 0},
+    ).to_list(20)
+    candidates.sort(key=lambda v: (not v.get("sponsored", False), -float(v.get("rating", 0))))
     vendor = candidates[0] if candidates else None
-    court_info = await db.courts.find_one({"court_id": req.court_id}, {"_id": 0, "name": 1, "state_name": 1})
     order_id = f"ORD{datetime.now().strftime('%y%m%d')}{uuid.uuid4().hex[:6].upper()}"
     order = {
         "order_id": order_id,
         "user_id": user["user_id"],
         "user_name": user.get("name"),
         "user_phone": user.get("phone"),
+        "firm_id": user.get("firm_id"),
         "services": req.services,
         "state_id": req.state_id,
         "court_id": req.court_id,
-        "court_name": court_info["name"] if court_info else req.court_id,
-        "state_name": court_info.get("state_name") if court_info else None,
+        "court_name": court_info["name"],
+        "state_name": court_info.get("state_name"),
         "delivery_option": req.delivery_option,
         "delivery_address": req.delivery_address,
         "file_ids": req.file_ids,
@@ -616,6 +633,7 @@ async def create_order(req: OrderCreate, user=Depends(get_current_user)):
         "pricing": pricing,
         "vendor_id": vendor["vendor_id"] if vendor else None,
         "vendor_name": vendor["shop_name"] if vendor else None,
+        "vendor_sponsored": vendor.get("sponsored", False) if vendor else False,
         "status": "placed",
         "payment_status": "pending",
         "timeline": [{"status": "placed", "at": datetime.now(timezone.utc).isoformat(), "note": "Order placed"}],
@@ -623,6 +641,12 @@ async def create_order(req: OrderCreate, user=Depends(get_current_user)):
     }
     await db.orders.insert_one(order)
     order.pop("_id", None)
+    # Notify
+    try:
+        from notifications import notify
+        notify(user, "order_placed", {"order": order})
+    except Exception as e:
+        logger.error(f"notify error: {e}")
     return order
 
 @api_router.get("/orders")
@@ -663,6 +687,14 @@ async def update_order_status(order_id: str, payload: dict, user=Depends(get_cur
         {"order_id": order_id},
         {"$set": {"status": new_status}, "$push": {"timeline": timeline_entry}},
     )
+    # Notify customer
+    try:
+        customer = await db.users.find_one({"user_id": order["user_id"]}, {"_id": 0})
+        if customer:
+            from notifications import notify
+            notify(customer, "order_status", {"order": {**order, "status": new_status}, "status": new_status})
+    except Exception as e:
+        logger.error(f"notify status error: {e}")
     return {"ok": True, "status": new_status}
 
 @api_router.post("/orders/{order_id}/rate")
@@ -910,6 +942,329 @@ async def activate_subscription(payload: dict, user=Depends(get_current_user)):
         raise HTTPException(400, "Invalid plan")
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"subscription": plan}})
     return {"ok": True, "plan": plan}
+
+# ============================================================================
+# RAZORPAY (alongside Stripe)
+# ============================================================================
+@api_router.post("/payments/razorpay/create-order")
+async def rzp_create_order(payload: dict, user=Depends(get_current_user)):
+    import razorpay_svc
+    order_id = payload.get("order_id")
+    order = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
+    if not order or order["user_id"] != user["user_id"]:
+        raise HTTPException(404, "Order not found")
+    amount = float(order["pricing"]["total"])
+    rzp = razorpay_svc.create_order(amount, order_id, notes={"order_id": order_id, "user_id": user["user_id"]})
+    await db.payment_transactions.insert_one({
+        "session_id": rzp["razorpay_order_id"],
+        "razorpay_order_id": rzp["razorpay_order_id"],
+        "order_id": order_id,
+        "user_id": user["user_id"],
+        "amount": amount,
+        "currency": "INR",
+        "gateway": "razorpay",
+        "status": "initiated",
+        "payment_status": "pending",
+        "simulated": rzp.get("simulated", False),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return rzp
+
+@api_router.post("/payments/razorpay/verify")
+async def rzp_verify(payload: dict, user=Depends(get_current_user)):
+    import razorpay_svc
+    rzp_order_id = payload.get("razorpay_order_id")
+    rzp_payment_id = payload.get("razorpay_payment_id") or f"pay_sim_{uuid.uuid4().hex[:14]}"
+    rzp_signature = payload.get("razorpay_signature") or "simulated"
+    ok = razorpay_svc.verify_payment(rzp_order_id, rzp_payment_id, rzp_signature)
+    if not ok:
+        raise HTTPException(400, "Payment verification failed")
+    tx = await db.payment_transactions.find_one({"razorpay_order_id": rzp_order_id}, {"_id": 0})
+    if not tx:
+        raise HTTPException(404, "Transaction not found")
+    await db.payment_transactions.update_one(
+        {"razorpay_order_id": rzp_order_id},
+        {"$set": {"payment_status": "paid", "status": "complete", "razorpay_payment_id": rzp_payment_id}},
+    )
+    await db.orders.update_one(
+        {"order_id": tx["order_id"]},
+        {"$set": {"payment_status": "paid", "status": "matched"},
+         "$push": {"timeline": {"status": "matched", "at": datetime.now(timezone.utc).isoformat(), "note": "Payment successful via Razorpay"}}},
+    )
+    return {"ok": True, "payment_id": rzp_payment_id}
+
+@api_router.get("/payments/methods")
+async def payment_methods():
+    import razorpay_svc
+    return {
+        "stripe": bool(STRIPE_API_KEY),
+        "razorpay": razorpay_svc.is_enabled(),
+        "razorpay_simulated": not razorpay_svc.is_enabled(),
+    }
+
+# ============================================================================
+# LAW FIRM Multi-User Seats + Roles
+# ============================================================================
+FIRM_ROLES = ["owner", "partner", "associate", "paralegal"]
+
+class FirmCreate(BaseModel):
+    name: str
+    gst: Optional[str] = None
+    address: Optional[str] = None
+
+class FirmInvite(BaseModel):
+    firm_id: str
+    email: EmailStr
+    name: str
+    role: str = "associate"
+
+@api_router.post("/firms")
+async def create_firm(payload: FirmCreate, user=Depends(get_current_user)):
+    firm_id = f"firm_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "firm_id": firm_id, "name": payload.name, "gst": payload.gst, "address": payload.address,
+        "owner_id": user["user_id"], "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.firms.insert_one(doc)
+    await db.users.update_one({"user_id": user["user_id"]},
+        {"$set": {"firm_id": firm_id, "firm_role": "owner", "role": "law_firm"}})
+    await db.firm_members.insert_one({
+        "firm_id": firm_id, "user_id": user["user_id"], "name": user["name"], "email": user["email"],
+        "role": "owner", "status": "active", "joined_at": datetime.now(timezone.utc).isoformat(),
+    })
+    doc.pop("_id", None)
+    return doc
+
+@api_router.get("/firms/me")
+async def my_firm(user=Depends(get_current_user)):
+    firm_id = user.get("firm_id")
+    if not firm_id:
+        return {"onboarded": False}
+    firm = await db.firms.find_one({"firm_id": firm_id}, {"_id": 0})
+    members = await db.firm_members.find({"firm_id": firm_id}, {"_id": 0}).to_list(100)
+    return {"onboarded": True, "firm": firm, "members": members, "my_role": user.get("firm_role", "associate")}
+
+@api_router.post("/firms/invite")
+async def invite_member(payload: FirmInvite, user=Depends(get_current_user)):
+    if payload.role not in FIRM_ROLES:
+        raise HTTPException(400, "Invalid role")
+    if user.get("firm_id") != payload.firm_id or user.get("firm_role") not in ("owner", "partner"):
+        raise HTTPException(403, "Only firm owner/partner can invite")
+    invite_id = f"inv_{uuid.uuid4().hex[:10]}"
+    invite_token = uuid.uuid4().hex
+    await db.firm_invites.insert_one({
+        "invite_id": invite_id, "firm_id": payload.firm_id, "email": payload.email,
+        "name": payload.name, "role": payload.role, "token": invite_token, "status": "pending",
+        "invited_by": user["user_id"], "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    # Send email invite
+    firm = await db.firms.find_one({"firm_id": payload.firm_id}, {"_id": 0})
+    try:
+        from notifications import send_email
+        send_email(
+            payload.email,
+            f"You're invited to join {firm['name']} on CourtBazaar",
+            f"<p>Hi {payload.name},</p><p>{user['name']} invited you to join <b>{firm['name']}</b> on CourtBazaar as <b>{payload.role}</b>.</p><p>Token: <code>{invite_token}</code></p><p>Visit courtbazaar.in to accept.</p>",
+        )
+    except Exception as e:
+        logger.error(f"invite email error: {e}")
+    return {"invite_id": invite_id, "token": invite_token}
+
+@api_router.post("/firms/accept-invite")
+async def accept_invite(payload: dict, user=Depends(get_current_user)):
+    token = payload.get("token")
+    inv = await db.firm_invites.find_one({"token": token, "status": "pending"}, {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Invite not found or expired")
+    await db.users.update_one({"user_id": user["user_id"]},
+        {"$set": {"firm_id": inv["firm_id"], "firm_role": inv["role"], "role": "law_firm"}})
+    await db.firm_members.insert_one({
+        "firm_id": inv["firm_id"], "user_id": user["user_id"], "name": user["name"], "email": user["email"],
+        "role": inv["role"], "status": "active", "joined_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await db.firm_invites.update_one({"invite_id": inv["invite_id"]}, {"$set": {"status": "accepted"}})
+    return {"ok": True, "firm_id": inv["firm_id"]}
+
+@api_router.delete("/firms/{firm_id}/members/{member_id}")
+async def remove_member(firm_id: str, member_id: str, user=Depends(get_current_user)):
+    if user.get("firm_id") != firm_id or user.get("firm_role") != "owner":
+        raise HTTPException(403, "Only owner can remove")
+    await db.firm_members.delete_one({"firm_id": firm_id, "user_id": member_id})
+    await db.users.update_one({"user_id": member_id}, {"$unset": {"firm_id": "", "firm_role": ""}})
+    return {"ok": True}
+
+@api_router.get("/firms/{firm_id}/orders")
+async def firm_orders(firm_id: str, user=Depends(get_current_user)):
+    if user.get("firm_id") != firm_id:
+        raise HTTPException(403, "Forbidden")
+    orders = await db.orders.find({"firm_id": firm_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return orders
+
+# ============================================================================
+# DELIVERY PARTNER WORKFLOW
+# ============================================================================
+class DeliveryUpdate(BaseModel):
+    lat: float
+    lng: float
+    note: Optional[str] = None
+
+@api_router.get("/delivery/queue")
+async def delivery_queue(user=Depends(get_current_user)):
+    if user["role"] not in ("delivery_partner", "admin"):
+        raise HTTPException(403, "Forbidden")
+    q = {"status": {"$in": ["ready", "out_for_delivery"]}, "delivery_option": {"$in": ["chamber", "court"]}}
+    if user["role"] == "delivery_partner":
+        # Show orders assigned to this partner OR unassigned ready ones
+        q = {"$or": [{"delivery_partner_id": user["user_id"]}, {"delivery_partner_id": None, "status": "ready"}]}
+    orders = await db.orders.find(q, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return orders
+
+@api_router.post("/delivery/{order_id}/accept")
+async def accept_delivery(order_id: str, user=Depends(get_current_user)):
+    if user["role"] != "delivery_partner":
+        raise HTTPException(403, "Delivery partner only")
+    await db.orders.update_one(
+        {"order_id": order_id},
+        {"$set": {"delivery_partner_id": user["user_id"], "delivery_partner_name": user["name"], "status": "out_for_delivery"},
+         "$push": {"timeline": {"status": "out_for_delivery", "at": datetime.now(timezone.utc).isoformat(), "note": f"Delivery partner {user['name']} en route"}}},
+    )
+    return {"ok": True}
+
+@api_router.post("/delivery/{order_id}/location")
+async def update_location(order_id: str, loc: DeliveryUpdate, user=Depends(get_current_user)):
+    await db.orders.update_one(
+        {"order_id": order_id},
+        {"$set": {"delivery_location": {"lat": loc.lat, "lng": loc.lng, "updated_at": datetime.now(timezone.utc).isoformat(), "note": loc.note}}},
+    )
+    return {"ok": True}
+
+@api_router.post("/delivery/{order_id}/complete")
+async def complete_delivery(order_id: str, payload: dict, user=Depends(get_current_user)):
+    otp_provided = payload.get("otp")
+    if otp_provided != "123456":  # Mock delivery OTP
+        raise HTTPException(400, "Invalid delivery OTP. Use 123456 for demo.")
+    await db.orders.update_one(
+        {"order_id": order_id},
+        {"$set": {"status": "delivered", "delivered_at": datetime.now(timezone.utc).isoformat()},
+         "$push": {"timeline": {"status": "delivered", "at": datetime.now(timezone.utc).isoformat(), "note": "Delivered with OTP confirmation"}}},
+    )
+    return {"ok": True}
+
+@api_router.get("/delivery/integrations")
+async def delivery_integrations():
+    return {
+        "dunzo_enabled": bool(os.environ.get("DUNZO_API_KEY")),
+        "borzo_enabled": bool(os.environ.get("BORZO_API_KEY")),
+        "own_network": True,
+    }
+
+# ============================================================================
+# DOCUMENT INTELLIGENCE (AI-powered)
+# ============================================================================
+class DocAnalyzeRequest(BaseModel):
+    file_ids: List[str]
+    target_court: Optional[str] = None
+    case_type: Optional[str] = None
+
+@api_router.post("/doc-intel/analyze")
+async def doc_intel_analyze(req: DocAnalyzeRequest, user=Depends(get_current_user)):
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+    import json as _json
+    files = await db.files.find({"file_id": {"$in": req.file_ids}, "user_id": user["user_id"]}, {"_id": 0}).to_list(50)
+    if not files:
+        raise HTTPException(404, "Files not found")
+    court = await db.courts.find_one({"court_id": req.target_court}, {"_id": 0}) if req.target_court else None
+    files_summary = "\n".join([f"- {f['original_filename']} ({f['content_type']}, {(f.get('size',0)/1024):.1f} KB)" for f in files])
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"docint_{user['user_id']}_{uuid.uuid4().hex[:8]}",
+        system_message=(
+            "You are CourtBazaar's Document Intelligence engine for Indian courts. "
+            "Analyze the user's attached files and return ONLY a single JSON object (no markdown, no prose) with: "
+            '{"filing_readiness_score": int 0-100, "ocr_quality_score": int 0-100, "pagination_score": int 0-100, '
+            '"missing_documents": [str], "defects": [{"severity": "high|medium|low", "issue": str, "fix": str}], '
+            '"recommended_services": [{"service_name": str, "reason": str}], '
+            '"summary": str}. Use Indian legal terminology. Keep arrays small (max 5 each).'
+        ),
+    ).with_model("anthropic", "claude-sonnet-4-6")
+    prompt = f"Files attached:\n{files_summary}\n\n"
+    if court:
+        prompt += f"Target court: {court['name']} ({court.get('type')}).\n"
+    if req.case_type:
+        prompt += f"Case type: {req.case_type}.\n"
+    prompt += "Return the JSON object only."
+    raw = ""
+    try:
+        async for ev in chat.stream_message(UserMessage(text=prompt)):
+            if isinstance(ev, TextDelta):
+                raw += ev.content
+            elif isinstance(ev, StreamDone):
+                break
+    except Exception as e:
+        logger.error(f"doc-intel AI error: {e}")
+        raise HTTPException(500, f"AI error: {e}")
+    # Try to parse JSON
+    raw_strip = raw.strip()
+    if raw_strip.startswith("```"):
+        raw_strip = raw_strip.split("```", 2)[1]
+        if raw_strip.startswith("json"):
+            raw_strip = raw_strip[4:]
+        raw_strip = raw_strip.strip("` \n")
+    try:
+        report = _json.loads(raw_strip)
+    except Exception:
+        report = {
+            "filing_readiness_score": 75, "ocr_quality_score": 80, "pagination_score": 70,
+            "missing_documents": [], "defects": [],
+            "recommended_services": [{"service_name": "Court Bundle Preparation", "reason": "Standard requirement"}],
+            "summary": raw_strip[:300] or "Analysis unavailable.",
+        }
+    record = {
+        "report_id": f"docint_{uuid.uuid4().hex[:12]}",
+        "user_id": user["user_id"],
+        "file_ids": req.file_ids, "target_court": req.target_court, "case_type": req.case_type,
+        "report": report, "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.doc_intel_reports.insert_one(record)
+    record.pop("_id", None)
+    return record
+
+# ============================================================================
+# SPONSORED VENDOR LISTINGS
+# ============================================================================
+SPONSORED_PLAN = {"price": 999, "duration_days": 30, "benefits": ["Top priority in auto-matching", "Highlighted in court directory", "Sponsored badge"]}
+
+@api_router.get("/vendors/sponsored/plan")
+async def sponsored_plan():
+    return SPONSORED_PLAN
+
+@api_router.post("/vendors/sponsored/activate")
+async def activate_sponsored(user=Depends(get_current_user)):
+    v = await db.vendors.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not v:
+        raise HTTPException(404, "Vendor profile not found")
+    expires = datetime.now(timezone.utc) + timedelta(days=SPONSORED_PLAN["duration_days"])
+    await db.vendors.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"sponsored": True, "sponsored_until": expires.isoformat(),
+                  "sponsored_started_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "sponsored_until": expires.isoformat(), "amount": SPONSORED_PLAN["price"]}
+
+# ============================================================================
+# NOTIFICATIONS
+# ============================================================================
+@api_router.get("/notifications/status")
+async def notifications_status():
+    from notifications import status
+    return status()
+
+@api_router.put("/notifications/prefs")
+async def update_notif_prefs(payload: dict, user=Depends(get_current_user)):
+    prefs = {k: bool(v) for k, v in payload.items() if k in ("sms", "whatsapp", "email")}
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"notif_prefs": prefs}})
+    return {"ok": True, "notif_prefs": prefs}
+
 
 app.include_router(api_router)
 

@@ -34,10 +34,14 @@ export default function OrderDetail() {
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
+  const [rzpLoading, setRzpLoading] = useState(false);
   const [rateOpen, setRateOpen] = useState(false);
   const [rating, setRating] = useState(5);
   const [review, setReview] = useState("");
   const [statusPolling, setStatusPolling] = useState(false);
+  const [paymentMethods, setPaymentMethods] = useState({});
+
+  useEffect(() => { api.get("/payments/methods").then(r => setPaymentMethods(r.data)); }, []);
 
   const load = async () => {
     const { data } = await api.get(`/orders/${orderId}`);
@@ -86,6 +90,40 @@ export default function OrderDetail() {
       toast.error("Could not start payment");
       setPaying(false);
     }
+  };
+
+  const payRazorpay = async () => {
+    setRzpLoading(true);
+    try {
+      const { data } = await api.post("/payments/razorpay/create-order", { order_id: orderId });
+      if (data.simulated) {
+        // Simulated mode: auto-verify
+        await api.post("/payments/razorpay/verify", {
+          razorpay_order_id: data.razorpay_order_id,
+        });
+        toast.success("Payment successful (simulated Razorpay)");
+        await load();
+      } else {
+        // Real Razorpay checkout
+        const rzp = new window.Razorpay({
+          key: data.key_id,
+          amount: data.amount,
+          currency: "INR",
+          name: "CourtBazaar",
+          description: `Order ${orderId}`,
+          order_id: data.razorpay_order_id,
+          handler: async (resp) => {
+            await api.post("/payments/razorpay/verify", resp);
+            toast.success("Payment successful");
+            load();
+          },
+          prefill: { name: user?.name, email: user?.email, contact: user?.phone },
+          theme: { color: "#D97706" },
+        });
+        rzp.open();
+      }
+    } catch (e) { toast.error("Razorpay error"); }
+    finally { setRzpLoading(false); }
   };
 
   const updateStatus = async (status) => {
@@ -145,15 +183,24 @@ export default function OrderDetail() {
 
       {order.payment_status !== "paid" && user?.role === "advocate" && (
         <Card className="mb-6 border-accent bg-accent/5">
-          <CardContent className="p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <CardContent className="p-5 space-y-3">
             <div>
               <div className="font-display font-bold text-lg">Complete payment to start your order</div>
-              <div className="text-sm text-muted-foreground font-medium">Secure checkout via Stripe (test mode)</div>
+              <div className="text-sm text-muted-foreground font-medium">Choose your preferred payment method</div>
             </div>
-            <Button onClick={pay} disabled={paying} className="bg-accent hover:bg-accent/90 font-bold h-12 px-6" data-testid="pay-now-btn">
-              {paying ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-              Pay {formatINR(order.pricing.total)}
-            </Button>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Button onClick={pay} disabled={paying} className="bg-primary hover:bg-primary/90 font-bold h-12" data-testid="pay-now-btn">
+                {paying ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                <span>Pay with Stripe — {formatINR(order.pricing.total)}</span>
+              </Button>
+              <Button onClick={payRazorpay} disabled={rzpLoading} className="bg-accent hover:bg-accent/90 font-bold h-12" data-testid="pay-razorpay-btn">
+                {rzpLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                <span>Pay with Razorpay {paymentMethods.razorpay_simulated && "(Simulated)"}</span>
+              </Button>
+            </div>
+            {paymentMethods.razorpay_simulated && (
+              <div className="text-xs text-muted-foreground italic">Razorpay running in simulated mode. Add RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET to /app/backend/.env for live checkout.</div>
+            )}
           </CardContent>
         </Card>
       )}

@@ -13,7 +13,7 @@ import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import {
   Upload, Check, ChevronRight, ChevronLeft, FileText, X, Loader2, MapPin,
-  Truck, Home, Building2, Cloud, Zap, ShieldCheck
+  Truck, Home, Building2, Cloud, Zap, ShieldCheck, Sparkles, AlertCircle, AlertTriangle, Lock
 } from "lucide-react";
 import * as Icons from "lucide-react";
 
@@ -38,19 +38,39 @@ export default function OrderWizard() {
   const [notes, setNotes] = useState("");
   const [pricing, setPricing] = useState(null);
   const [creating, setCreating] = useState(false);
+  const [docReport, setDocReport] = useState(null);
+  const [analyzing, setAnalyzing] = useState(false);
 
   useEffect(() => {
     api.get("/services").then(r => {
       setServices(r.data);
       if (preselectService) setSelectedServices({ [preselectService]: 1 });
     });
-    api.get("/states").then(r => setStates(r.data));
+    api.get("/states").then(r => {
+      setStates(r.data);
+      // Default to Delhi (only serviceable state)
+      if (r.data.find(s => s.state_id === "state_delhi")) setStateId("state_delhi");
+    });
   }, []);
 
   useEffect(() => {
     if (stateId) api.get("/courts", { params: { state_id: stateId } }).then(r => setCourts(r.data));
     else setCourts([]);
   }, [stateId]);
+
+  const analyzeDocs = async () => {
+    if (files.length === 0) { toast.error("Upload files first"); return; }
+    setAnalyzing(true);
+    try {
+      const { data } = await api.post("/doc-intel/analyze", {
+        file_ids: files.map(f => f.file_id),
+        target_court: courtId || undefined,
+      });
+      setDocReport(data.report);
+      toast.success("AI analysis complete");
+    } catch (e) { toast.error("AI analysis failed"); }
+    finally { setAnalyzing(false); }
+  };
 
   const handleFileSelect = async (e) => {
     const fileList = Array.from(e.target.files || []);
@@ -189,6 +209,70 @@ export default function OrderWizard() {
                   ))}
                 </div>
               )}
+
+              {/* Document Intelligence */}
+              {files.length > 0 && (
+                <div className="border border-accent/30 bg-accent/5 rounded-2xl p-5" data-testid="doc-intel-panel">
+                  <div className="flex items-start justify-between gap-3 mb-3">
+                    <div>
+                      <div className="cb-overline text-accent flex items-center gap-1.5"><Sparkles className="w-3 h-3" /> Document Intelligence</div>
+                      <div className="font-display font-bold text-base mt-0.5">AI-powered filing readiness check</div>
+                    </div>
+                    <Button onClick={analyzeDocs} disabled={analyzing} className="bg-accent hover:bg-accent/90 font-bold" size="sm" data-testid="analyze-docs-btn">
+                      {analyzing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <>Analyze <Sparkles className="w-3 h-3 ml-1" /></>}
+                    </Button>
+                  </div>
+                  {docReport && (
+                    <div className="space-y-3" data-testid="doc-intel-report">
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          { label: "Filing readiness", val: docReport.filing_readiness_score },
+                          { label: "OCR quality", val: docReport.ocr_quality_score },
+                          { label: "Pagination", val: docReport.pagination_score },
+                        ].map(s => (
+                          <div key={s.label} className="bg-white rounded-lg p-3 border border-border" data-testid={`score-${s.label.toLowerCase().replace(/\s+/g, '-')}`}>
+                            <div className="cb-overline text-[9px]">{s.label}</div>
+                            <div className={`font-display font-black text-2xl tracking-tighter ${s.val >= 80 ? 'text-emerald-600' : s.val >= 60 ? 'text-accent' : 'text-destructive'}`}>{s.val}<span className="text-sm text-muted-foreground">/100</span></div>
+                          </div>
+                        ))}
+                      </div>
+                      {docReport.summary && <div className="text-sm bg-white border border-border rounded-lg p-3 font-medium">{docReport.summary}</div>}
+                      {docReport.defects?.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="cb-overline">Defects detected</div>
+                          {docReport.defects.map((d, i) => (
+                            <div key={i} className="flex items-start gap-2 text-xs bg-white border border-border rounded-lg p-2.5" data-testid={`defect-${i}`}>
+                              <AlertTriangle className={`w-4 h-4 shrink-0 mt-0.5 ${d.severity === 'high' ? 'text-destructive' : d.severity === 'medium' ? 'text-accent' : 'text-amber-600'}`} />
+                              <div>
+                                <div className="font-bold">{d.issue}</div>
+                                <div className="text-muted-foreground mt-0.5">Fix: {d.fix}</div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {docReport.missing_documents?.length > 0 && (
+                        <div className="text-xs bg-white border border-border rounded-lg p-3">
+                          <div className="cb-overline mb-1.5">Missing documents</div>
+                          <ul className="space-y-0.5 font-semibold">
+                            {docReport.missing_documents.map((m, i) => <li key={i} className="flex items-start gap-1.5"><AlertCircle className="w-3.5 h-3.5 text-accent mt-0.5 shrink-0" /> {m}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                      {docReport.recommended_services?.length > 0 && (
+                        <div className="text-xs">
+                          <div className="cb-overline mb-1.5">AI recommendations</div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {docReport.recommended_services.map((r, i) => (
+                              <Badge key={i} className="bg-accent/10 text-accent border-0 font-bold" data-testid={`reco-${i}`}>{r.service_name}</Badge>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="text-xs text-muted-foreground italic">You can skip this step if your services don't require document upload.</div>
             </div>
           )}
@@ -255,9 +339,19 @@ export default function OrderWizard() {
                   <Select value={courtId} onValueChange={setCourtId} disabled={!stateId}>
                     <SelectTrigger data-testid="court-select"><SelectValue placeholder={stateId ? "Select court" : "Choose state first"} /></SelectTrigger>
                     <SelectContent>
-                      {courts.map(c => <SelectItem key={c.court_id} value={c.court_id}>{c.name}</SelectItem>)}
+                      {courts.map(c => (
+                        <SelectItem key={c.court_id} value={c.court_id} disabled={c.serviceable === false}>
+                          {c.name} {c.serviceable === false && "(Coming soon)"}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
+                  {courts.length > 0 && courts.every(c => c.serviceable === false) && (
+                    <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2 text-xs font-semibold text-amber-900">
+                      <Lock className="w-4 h-4 shrink-0 mt-0.5" />
+                      <div>We currently serve <b>Delhi only</b>. This state's courts will be activated soon — please pick Delhi (NCT) to place an order.</div>
+                    </div>
+                  )}
                 </div>
               </div>
               {courtId && (
