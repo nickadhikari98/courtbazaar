@@ -595,16 +595,48 @@ async def upload_file(file: UploadFile = File(...), user=Depends(get_current_use
     # Auto-detect page count
     page_count = 1
     try:
-        if "pdf" in content_type.lower() or file.filename.lower().endswith(".pdf"):
-            from PyPDF2 import PdfReader
+        fn = (file.filename or "").lower()
+        ct = (content_type or "").lower()
+        if "pdf" in ct or fn.endswith(".pdf"):
             import io as _io
-            page_count = len(PdfReader(_io.BytesIO(data)).pages)
-        elif "image" in content_type.lower() or any(file.filename.lower().endswith(e) for e in [".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".webp"]):
+            page_count = 0
+            # 1) Try PyPDF2 (works for normal PDFs with structure intact)
+            try:
+                from PyPDF2 import PdfReader
+                reader = PdfReader(_io.BytesIO(data))
+                page_count = len(reader.pages)
+            except Exception as e:
+                logger.warning(f"PyPDF2 page count failed: {e}")
+            # 2) Fallback to pdfinfo / pdf2image for scanned or malformed PDFs
+            if page_count == 0:
+                try:
+                    from pdf2image.pdf2image import pdfinfo_from_bytes
+                    info = pdfinfo_from_bytes(data, userpw=None)
+                    page_count = int(info.get("Pages", 0))
+                except Exception as e:
+                    logger.warning(f"pdfinfo fallback failed: {e}")
+            # 3) Last-resort: count "/Type /Page" markers in raw bytes
+            if page_count == 0:
+                try:
+                    page_count = max(1, data.count(b"/Type /Page") - data.count(b"/Type /Pages"))
+                except Exception:
+                    page_count = 1
+            page_count = max(1, page_count)
+        elif "tiff" in ct or fn.endswith((".tif", ".tiff")):
+            # Multi-page TIFF support
+            try:
+                from PIL import Image
+                import io as _io
+                img = Image.open(_io.BytesIO(data))
+                page_count = getattr(img, "n_frames", 1) or 1
+            except Exception:
+                page_count = 1
+        elif "image" in ct or any(fn.endswith(e) for e in [".jpg", ".jpeg", ".png", ".bmp", ".webp", ".heic", ".heif"]):
             page_count = 1
-        elif "officedocument" in content_type.lower() or file.filename.lower().endswith((".docx", ".doc")):
-            # Approximate: 1 page per ~3000 chars
+        elif "officedocument" in ct or fn.endswith((".docx", ".doc")):
             try:
                 from docx import Document
+                import io as _io
                 doc = Document(_io.BytesIO(data))
                 total_chars = sum(len(p.text) for p in doc.paragraphs)
                 page_count = max(1, total_chars // 3000)
@@ -2089,6 +2121,133 @@ async def vendor_categories():
         {"id": "court_runner", "name": "Court Runner / Clerk", "icon": "Footprints", "service_categories": ["Court Support"]},
         {"id": "delivery_partner", "name": "Delivery Partner", "icon": "Truck", "service_categories": []},
     ]
+
+
+# ============================================================================
+# VENDOR PAYOUT SETTLEMENTS (T+1, NEFT/UPI batch)
+# ============================================================================
+@api_router.post("/admin/settlements/run")
+async def run_settlements(payload: dict = None, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    from settlements import run_settlement_cycle
+    payload = payload or {}
+    result = await run_settlement_cycle(
+        db,
+        cycle_date=payload.get("cycle_date"),
+        dry_run=bool(payload.get("dry_run", False)),
+    )
+    try:
+        from audit_log import log_audit
+        await log_audit(db, "admin.settlement_run", user, {"cycle_date": result["cycle_date"], "created": result["settlements_created"], "amount": result["total_amount"], "dry_run": result["dry_run"]})
+    except Exception:
+        pass
+    return result
+
+
+@api_router.get("/admin/settlements")
+async def admin_list_settlements(user=Depends(get_current_user), status_filter: Optional[str] = None, cycle_date: Optional[str] = None):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    q: Dict[str, Any] = {}
+    if status_filter:
+        q["status"] = status_filter
+    if cycle_date:
+        q["cycle_date"] = cycle_date
+    items = await db.settlements.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    summary = {
+        "total_count": len(items),
+        "total_amount": round(sum(s.get("amount", 0) for s in items), 2),
+        "queued": sum(1 for s in items if s.get("status") == "queued"),
+        "paid": sum(1 for s in items if s.get("status") == "paid"),
+        "failed": sum(1 for s in items if s.get("status") == "failed"),
+    }
+    return {"summary": summary, "settlements": items}
+
+
+@api_router.post("/admin/settlements/{settlement_id}/mark-paid")
+async def mark_settlement_paid(settlement_id: str, payload: dict = None, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    payload = payload or {}
+    ref = payload.get("utr") or payload.get("reference", "")
+    await db.settlements.update_one(
+        {"settlement_id": settlement_id},
+        {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat(), "utr": ref, "paid_by": user["user_id"]}},
+    )
+    try:
+        from audit_log import log_audit
+        await log_audit(db, "admin.settlement_paid", user, {"settlement_id": settlement_id, "utr": ref})
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@api_router.post("/admin/settlements/{settlement_id}/mark-failed")
+async def mark_settlement_failed(settlement_id: str, payload: dict = None, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    payload = payload or {}
+    s = await db.settlements.find_one({"settlement_id": settlement_id}, {"_id": 0})
+    if not s:
+        raise HTTPException(404, "Settlement not found")
+    await db.settlements.update_one(
+        {"settlement_id": settlement_id},
+        {"$set": {"status": "failed", "failure_reason": payload.get("reason", "Unknown")}},
+    )
+    # Release orders so they can be re-settled
+    await db.orders.update_many({"order_id": {"$in": s.get("order_ids", [])}}, {"$unset": {"settlement_id": ""}})
+    return {"ok": True}
+
+
+@api_router.get("/admin/settlements/export")
+async def export_settlements_csv(user=Depends(get_current_user), status_filter: Optional[str] = "queued"):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    from settlements import neft_csv_for_settlements
+    q = {"status": status_filter} if status_filter and status_filter != "all" else {}
+    items = await db.settlements.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    csv_data = neft_csv_for_settlements(items)
+    return Response(
+        content=csv_data, media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=courtbazaar-neft-batch.csv"},
+    )
+
+
+@api_router.get("/vendors/me/settlements")
+async def my_settlements(user=Depends(get_current_user)):
+    if user["role"] != "vendor":
+        raise HTTPException(403, "Vendor only")
+    items = await db.settlements.find({"vendor_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    paid_total = sum(s["amount"] for s in items if s.get("status") == "paid")
+    pending_total = sum(s["amount"] for s in items if s.get("status") == "queued")
+    return {
+        "settlements": items,
+        "paid_lifetime": round(paid_total, 2),
+        "pending": round(pending_total, 2),
+    }
+
+
+@app.on_event("startup")
+async def schedule_daily_settlements():
+    """Schedule daily T+1 settlement run at 02:00 UTC."""
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+        from settlements import run_settlement_cycle as _run
+        async def _job():
+            try:
+                result = await _run(db)
+                logger.info(f"Daily settlement: {result['settlements_created']} created, ₹{result['total_amount']}")
+            except Exception as e:
+                logger.error(f"Scheduled settlement error: {e}")
+        sched = AsyncIOScheduler()
+        sched.add_job(_job, CronTrigger(hour=2, minute=0))
+        sched.start()
+        logger.info("T+1 settlement scheduler started (daily 02:00 UTC)")
+    except Exception as e:
+        logger.warning(f"Scheduler not started: {e}")
+
 
 
 app.include_router(api_router)

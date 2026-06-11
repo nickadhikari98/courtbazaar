@@ -1,0 +1,150 @@
+import React, { useEffect, useState } from "react";
+import { api, formatINR, API_BASE } from "@/lib/api";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
+import { toast } from "sonner";
+import { Download, Play, CheckCircle2, XCircle, Receipt, Loader2 } from "lucide-react";
+
+const statusColor = { queued: "bg-amber-100 text-amber-700", paid: "bg-emerald-100 text-emerald-700", failed: "bg-rose-100 text-rose-700" };
+
+export default function AdminSettlements() {
+  const [data, setData] = useState({ summary: {}, settlements: [] });
+  const [status, setStatus] = useState("all");
+  const [running, setRunning] = useState(false);
+  const [paidOpen, setPaidOpen] = useState(false);
+  const [activeS, setActiveS] = useState(null);
+  const [utr, setUtr] = useState("");
+
+  const load = async () => {
+    const params = status !== "all" ? { status_filter: status } : {};
+    const { data } = await api.get("/admin/settlements", { params });
+    setData(data);
+  };
+  useEffect(() => { load(); }, [status]);
+
+  const runCycle = async (dry = false) => {
+    setRunning(true);
+    try {
+      const { data } = await api.post("/admin/settlements/run", { dry_run: dry });
+      toast.success(`${dry ? '[Dry] ' : ''}${data.settlements_created} settlement(s) · ${formatINR(data.total_amount)}`);
+      if (!dry) load();
+    } catch (e) { toast.error("Run failed"); }
+    finally { setRunning(false); }
+  };
+
+  const exportCSV = () => {
+    const token = localStorage.getItem("cb_token");
+    fetch(`${API_BASE}/admin/settlements/export?status_filter=${status === "all" ? "all" : status}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.blob()).then(b => {
+        const url = URL.createObjectURL(b);
+        const a = document.createElement("a");
+        a.href = url; a.download = "courtbazaar-neft-batch.csv"; a.click();
+      });
+  };
+
+  const markPaid = async () => {
+    try {
+      await api.post(`/admin/settlements/${activeS.settlement_id}/mark-paid`, { utr });
+      toast.success("Marked paid");
+      setPaidOpen(false); setUtr("");
+      load();
+    } catch { toast.error("Failed"); }
+  };
+
+  const markFailed = async (id) => {
+    const reason = prompt("Failure reason?") || "Unknown";
+    try { await api.post(`/admin/settlements/${id}/mark-failed`, { reason }); toast.success("Marked failed · orders released"); load(); } catch { toast.error("Failed"); }
+  };
+
+  return (
+    <div className="p-6 lg:p-10 max-w-7xl mx-auto">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
+        <div>
+          <div className="cb-overline text-accent">Admin · Settlements</div>
+          <h1 className="font-display font-black text-3xl tracking-tighter mt-1">Vendor payouts (T+1)</h1>
+          <p className="text-muted-foreground font-medium mt-1">Daily NEFT/UPI batches · auto-runs at 02:00 UTC · manual trigger available</p>
+        </div>
+        <div className="flex gap-2">
+          <Button onClick={() => runCycle(true)} variant="outline" className="font-bold" data-testid="run-dry-btn">Dry run</Button>
+          <Button onClick={() => runCycle(false)} disabled={running} className="bg-primary font-bold" data-testid="run-cycle-btn">
+            {running ? <Loader2 className="w-4 h-4 animate-spin mr-1.5" /> : <Play className="w-4 h-4 mr-1.5" />}
+            Run T+1 cycle
+          </Button>
+          <Button onClick={exportCSV} variant="outline" className="font-bold" data-testid="export-neft-btn">
+            <Download className="w-4 h-4 mr-1.5" /> NEFT CSV
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+        <Card className="dashboard-card border-none" data-testid="settle-total"><CardContent className="p-4"><div className="cb-overline">Total</div><div className="font-display font-black text-2xl">{data.summary.total_count || 0}</div></CardContent></Card>
+        <Card className="dashboard-card border-none" data-testid="settle-amount"><CardContent className="p-4"><div className="cb-overline">Total amount</div><div className="font-display font-black text-2xl text-accent">{formatINR(data.summary.total_amount || 0)}</div></CardContent></Card>
+        <Card className="dashboard-card border-none" data-testid="settle-queued"><CardContent className="p-4"><div className="cb-overline">Queued</div><div className="font-display font-black text-2xl text-amber-600">{data.summary.queued || 0}</div></CardContent></Card>
+        <Card className="dashboard-card border-none" data-testid="settle-paid"><CardContent className="p-4"><div className="cb-overline">Paid</div><div className="font-display font-black text-2xl text-emerald-600">{data.summary.paid || 0}</div></CardContent></Card>
+      </div>
+
+      <Tabs value={status} onValueChange={setStatus} className="mb-4">
+        <TabsList data-testid="settle-tabs">
+          <TabsTrigger value="all" data-testid="tab-all">All</TabsTrigger>
+          <TabsTrigger value="queued" data-testid="tab-queued">Queued</TabsTrigger>
+          <TabsTrigger value="paid" data-testid="tab-paid">Paid</TabsTrigger>
+          <TabsTrigger value="failed" data-testid="tab-failed">Failed</TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      <Card className="dashboard-card border-none overflow-hidden">
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-secondary text-xs cb-overline text-left">
+                <tr><th className="px-4 py-3">Settlement ID</th><th className="px-4 py-3">Vendor</th><th className="px-4 py-3">Cycle</th><th className="px-4 py-3 text-right">Orders</th><th className="px-4 py-3 text-right">Amount</th><th className="px-4 py-3">Mode</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Actions</th></tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {data.settlements.map(s => (
+                  <tr key={s.settlement_id} className="hover:bg-secondary/40" data-testid={`settle-row-${s.settlement_id}`}>
+                    <td className="px-4 py-3 font-mono text-xs">{s.settlement_id}</td>
+                    <td className="px-4 py-3">
+                      <div className="font-display font-bold text-sm">{s.shop_name}</div>
+                      <div className="text-xs text-muted-foreground font-mono">{s.bank_account || "—"} · {s.bank_ifsc || ""}</div>
+                    </td>
+                    <td className="px-4 py-3 text-xs font-mono">{s.cycle_date}</td>
+                    <td className="px-4 py-3 text-right font-bold">{s.order_count}</td>
+                    <td className="px-4 py-3 text-right font-bold">{formatINR(s.amount)}</td>
+                    <td className="px-4 py-3"><Badge variant="outline" className="font-bold uppercase text-[10px]">{s.payment_mode}</Badge></td>
+                    <td className="px-4 py-3"><Badge className={`${statusColor[s.status] || ''} border-0 font-bold uppercase text-[10px]`}>{s.status}</Badge>{s.utr && <div className="text-[10px] font-mono mt-0.5">UTR: {s.utr}</div>}</td>
+                    <td className="px-4 py-3">
+                      {s.status === "queued" && (
+                        <div className="flex gap-1">
+                          <Button onClick={() => { setActiveS(s); setPaidOpen(true); }} size="sm" className="bg-emerald-600 hover:bg-emerald-700 font-bold h-7 text-xs" data-testid={`mark-paid-${s.settlement_id}`}>
+                            <CheckCircle2 className="w-3 h-3 mr-1" /> Paid
+                          </Button>
+                          <Button onClick={() => markFailed(s.settlement_id)} size="sm" variant="outline" className="h-7 text-xs text-rose-600 border-rose-300 font-bold" data-testid={`mark-failed-${s.settlement_id}`}>
+                            <XCircle className="w-3 h-3" />
+                          </Button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {data.settlements.length === 0 && <tr><td colSpan={8} className="px-4 py-10 text-center text-muted-foreground">No settlements yet — click "Run T+1 cycle" to generate</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Dialog open={paidOpen} onOpenChange={setPaidOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Mark settlement {activeS?.settlement_id} as paid</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">Amount: <b className="text-accent">{formatINR(activeS?.amount)}</b> to {activeS?.shop_name}</p>
+          <Input value={utr} onChange={(e) => setUtr(e.target.value)} placeholder="UTR / transaction reference" data-testid="utr-input" />
+          <DialogFooter><Button onClick={markPaid} className="bg-emerald-600 font-bold" data-testid="confirm-paid-btn">Confirm paid</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
