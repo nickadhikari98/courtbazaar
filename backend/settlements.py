@@ -24,8 +24,6 @@ async def run_settlement_cycle(db, cycle_date: str = None, dry_run: bool = False
         target_date = datetime.fromisoformat(cycle_date).date()
     else:
         target_date = (now - timedelta(days=1)).date()
-    start = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc).isoformat()
-    end = datetime.combine(target_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=timezone.utc).isoformat()
 
     cursor = db.orders.find({
         "payment_status": "paid",
@@ -97,8 +95,58 @@ async def run_settlement_cycle(db, cycle_date: str = None, dry_run: bool = False
     }
 
 
-def neft_csv_for_settlements(settlements: list) -> str:
-    """Generate a NEFT/UPI batch CSV in standard Indian bank format."""
+def neft_csv_for_settlements(settlements: list, source_account: str = "", source_ifsc: str = "") -> str:
+    """Generate a NEFT/UPI batch CSV in standard Indian bank H2H bulk-upload format.
+
+    Columns (compatible with SBI Connect / HDFC ENet / ICICI iBizz Corporate bulk upload):
+    Payment Type, Beneficiary Code, Beneficiary Name, Beneficiary Account Number,
+    Beneficiary IFSC, Amount, Value Date (DD/MM/YYYY), Debit Account Number, Narration,
+    Email, Mobile, Reference Number
+    """
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    # Header row (NPCI/H2H compatible)
+    w.writerow([
+        "Payment Type",          # NEFT / IMPS / UPI
+        "Beneficiary Code",      # vendor_id
+        "Beneficiary Name",      # shop_name
+        "Beneficiary Account",   # bank account
+        "Beneficiary IFSC",      # IFSC
+        "Amount",                # numeric, 2-decimal
+        "Value Date",            # DD/MM/YYYY
+        "Debit Account",         # company source account (optional)
+        "Narration",             # max 30 chars
+        "Email",
+        "Mobile",
+        "Reference",             # settlement_id (max 22 chars)
+    ])
+    for s in settlements:
+        try:
+            d = datetime.fromisoformat(s.get("cycle_date"))
+            value_date = d.strftime("%d/%m/%Y")
+        except Exception:
+            value_date = (s.get("cycle_date") or "")
+        mode = s.get("payment_mode", "NEFT")
+        narration = f"CB-{s.get('settlement_id','')[-10:]}"  # short narration
+        w.writerow([
+            mode,
+            s.get("vendor_id") or "",
+            (s.get("shop_name") or "")[:50],
+            s.get("bank_account") or "",
+            s.get("bank_ifsc") or "",
+            f"{float(s.get('amount', 0)):.2f}",
+            value_date,
+            source_account or "",
+            narration[:30],
+            s.get("email") or "",
+            s.get("mobile") or "",
+            (s.get("settlement_id") or "")[:22],
+        ])
+    return buf.getvalue()
+
+
+def neft_csv_legacy(settlements: list) -> str:
+    """Legacy simple CSV (kept for backward-compat with older tests)."""
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["Settlement ID", "Beneficiary Name", "Account Number", "IFSC", "Amount (INR)", "Mode", "Cycle Date", "GST", "Remarks"])

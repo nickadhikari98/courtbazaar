@@ -36,13 +36,14 @@ export default function AdminSettlements() {
     finally { setRunning(false); }
   };
 
-  const exportCSV = () => {
+  const exportCSV = (format = "h2h") => {
     const token = localStorage.getItem("cb_token");
-    fetch(`${API_BASE}/admin/settlements/export?status_filter=${status === "all" ? "all" : status}`, { headers: { Authorization: `Bearer ${token}` } })
+    const s = status === "all" ? "all" : status;
+    fetch(`${API_BASE}/admin/settlements/export?status_filter=${s}&format=${format}`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.blob()).then(b => {
         const url = URL.createObjectURL(b);
         const a = document.createElement("a");
-        a.href = url; a.download = "courtbazaar-neft-batch.csv"; a.click();
+        a.href = url; a.download = format === "h2h" ? "courtbazaar-neft-h2h.csv" : "courtbazaar-settlements.csv"; a.click();
       });
   };
 
@@ -74,8 +75,11 @@ export default function AdminSettlements() {
             {running ? <Loader2 className="w-4 h-4 animate-spin mr-1.5" /> : <Play className="w-4 h-4 mr-1.5" />}
             Run T+1 cycle
           </Button>
-          <Button onClick={exportCSV} variant="outline" className="font-bold" data-testid="export-neft-btn">
-            <Download className="w-4 h-4 mr-1.5" /> NEFT CSV
+          <Button onClick={() => exportCSV("h2h")} variant="outline" className="font-bold" data-testid="export-neft-btn">
+            <Download className="w-4 h-4 mr-1.5" /> NEFT H2H CSV
+          </Button>
+          <Button onClick={() => exportCSV("legacy")} variant="ghost" className="font-bold" data-testid="export-legacy-btn">
+            <Download className="w-4 h-4 mr-1.5" /> Simple CSV
           </Button>
         </div>
       </div>

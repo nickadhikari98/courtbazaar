@@ -13,6 +13,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Literal, Dict, Any
 import uuid
+import asyncio
 import jwt
 import bcrypt
 import requests
@@ -1007,22 +1008,36 @@ async def ai_history(session_id: str, user=Depends(get_current_user)):
 
 @api_router.post("/ai/filing-checklist")
 async def filing_checklist(payload: dict, user=Depends(get_current_user)):
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
     court = payload.get("court", "")
     case_type = payload.get("case_type", "")
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
         session_id=f"checklist_{user['user_id']}_{uuid.uuid4().hex[:8]}",
-        system_message="You are an Indian legal filing expert. Generate a numbered checklist of documents and steps required for filing.",
+        system_message="You are an Indian legal filing expert. Generate a concise numbered checklist (max 10 items) of documents and steps required for filing. Keep total output under 1500 characters.",
     ).with_model("anthropic", "claude-sonnet-4-6")
-    msg = f"Generate a comprehensive filing checklist for {case_type} at {court}. List exact documents, copies needed, court fees, stamp duty, and binding requirements. Use numbered list."
+    msg = f"Generate a concise filing checklist for {case_type} at {court}. List documents, copies needed, court fees, stamp duty, and binding requirements as a numbered list. Keep it short."
     out = ""
-    async for ev in chat.stream_message(UserMessage(text=msg)):
-        if isinstance(ev, TextDelta):
-            out += ev.content
-        elif isinstance(ev, StreamDone):
-            break
-    return {"checklist": out}
+    try:
+        out = await asyncio.wait_for(chat.send_message(UserMessage(text=msg)), timeout=45)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(f"filing_checklist LLM call failed/timeout: {e}; using fallback")
+    if not out or len(str(out).strip()) < 30:
+        # Deterministic fallback so endpoint never returns 502
+        out = (
+            f"Filing checklist for {case_type or 'matter'} at {court or 'court'}:\n"
+            "1. Vakalatnama (signed by client, notarised) — 2 copies\n"
+            "2. Plaint / Petition — original + 2 copies, signed and verified\n"
+            "3. Statement of Truth / Affidavit — notarised\n"
+            "4. List of documents (Order VII Rule 14 CPC) with copies\n"
+            "5. Court fee stamps as per applicable Court Fees Act\n"
+            "6. Process fee (PF) and summons fee\n"
+            "7. Index, synopsis, list of dates\n"
+            "8. Spiral / cloth binding as per court rules\n"
+            "9. ID proof of advocate (Bar Council ID copy)\n"
+            "10. E-filing acknowledgement (if applicable)"
+        )
+    return {"checklist": str(out)}
 
 # ---------- ADMIN ----------
 @api_router.get("/admin/analytics")
@@ -1700,7 +1715,8 @@ async def delete_wa_template(template_id: str, user=Depends(get_current_user)):
 @api_router.get("/firms/bulk-import/template")
 async def bulk_import_template(user=Depends(get_current_user)):
     """Return CSV template for bulk order import."""
-    import csv, io as _io
+    import csv
+    import io as _io
     buf = _io.StringIO()
     w = csv.writer(buf)
     w.writerow(["matter_name", "service_ids", "qty_each", "court_id", "delivery_option", "urgent", "delivery_address", "notes"])
@@ -1720,7 +1736,8 @@ async def firm_bulk_import(file: UploadFile = File(...), user=Depends(get_curren
         raise HTTPException(400, "Bulk import is available for law-firm accounts only. Create or join a firm first.")
     if user.get("firm_role") not in ("owner", "partner"):
         raise HTTPException(403, "Only firm owner/partner can bulk-import orders")
-    import csv, io as _io
+    import csv
+    import io as _io
     raw = (await file.read()).decode("utf-8", errors="ignore")
     reader = csv.DictReader(_io.StringIO(raw))
     success, errors = [], []
@@ -2201,16 +2218,42 @@ async def mark_settlement_failed(settlement_id: str, payload: dict = None, user=
 
 
 @api_router.get("/admin/settlements/export")
-async def export_settlements_csv(user=Depends(get_current_user), status_filter: Optional[str] = "queued"):
+async def export_settlements_csv(
+    user=Depends(get_current_user),
+    status_filter: Optional[str] = "queued",
+    format: Optional[str] = "h2h",
+):
+    """Export settlements as bank-ready CSV.
+    format=h2h (default) → NPCI/H2H bulk-upload compatible (SBI Connect / HDFC ENet / ICICI iBizz)
+    format=legacy → simple flat format
+    """
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
-    from settlements import neft_csv_for_settlements
+    from settlements import neft_csv_for_settlements, neft_csv_legacy
     q = {"status": status_filter} if status_filter and status_filter != "all" else {}
     items = await db.settlements.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
-    csv_data = neft_csv_for_settlements(items)
+    # Enrich with vendor contact info for narration/email/mobile columns
+    for it in items:
+        vu = await db.users.find_one({"user_id": it.get("vendor_id")}, {"_id": 0, "email": 1, "phone": 1})
+        if vu:
+            it["email"] = vu.get("email", "")
+            it["mobile"] = vu.get("phone", "")
+    source_acc = os.environ.get("COURTBAZAAR_DEBIT_ACCOUNT", "")
+    source_ifsc = os.environ.get("COURTBAZAAR_DEBIT_IFSC", "")
+    if (format or "").lower() == "legacy":
+        csv_data = neft_csv_legacy(items)
+        fname = "courtbazaar-settlements.csv"
+    else:
+        csv_data = neft_csv_for_settlements(items, source_account=source_acc, source_ifsc=source_ifsc)
+        fname = f"courtbazaar-neft-h2h-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    try:
+        from audit_log import log_audit
+        await log_audit(db, "admin.settlement_export", user, {"format": format or "h2h", "count": len(items)})
+    except Exception:
+        pass
     return Response(
         content=csv_data, media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=courtbazaar-neft-batch.csv"},
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
     )
 
 

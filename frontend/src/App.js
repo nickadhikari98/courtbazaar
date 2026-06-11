@@ -20,6 +20,8 @@ import Subscription from "@/pages/Subscription";
 import Profile from "@/pages/Profile";
 import VendorDashboard from "@/pages/VendorDashboard";
 import VendorOnboard from "@/pages/VendorOnboard";
+import VendorSettlements from "@/pages/VendorSettlements";
+import AdminSettlements from "@/pages/AdminSettlements";
 import AdminDashboard from "@/pages/AdminDashboard";
 import AdminVendors from "@/pages/AdminVendors";
 import AdminPricing from "@/pages/AdminPricing";
@@ -116,6 +118,9 @@ function AppRouter() {
 
         <Route path="/vendor" element={<ProtectedRoute roles={["vendor", "admin"]}><VendorDashboard /></ProtectedRoute>} />
         <Route path="/vendor/onboard" element={<VendorOnboard />} />
+        <Route path="/vendor/settlements" element={<ProtectedRoute roles={["vendor"]}><VendorSettlements /></ProtectedRoute>} />
+
+        <Route path="/admin/settlements" element={<ProtectedRoute roles={["admin"]}><AdminSettlements /></ProtectedRoute>} />
 
         <Route path="/admin" element={<ProtectedRoute roles={["admin"]}><AdminDashboard /></ProtectedRoute>} />
         <Route path="/admin/vendors" element={<ProtectedRoute roles={["admin"]}><AdminVendors /></ProtectedRoute>} />

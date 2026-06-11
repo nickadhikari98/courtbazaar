@@ -4,7 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
   User, Settings, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck,
-  Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic
+  Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic, Banknote
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,7 @@ const navItems = (role) => {
     return [
       { to: "/vendor", icon: LayoutDashboard, label: "Vendor Hub" },
       { to: "/orders", icon: Package, label: "Order Queue" },
+      { to: "/vendor/settlements", icon: Banknote, label: "Settlements", highlight: true },
       { to: "/wallet", icon: Wallet, label: "Earnings" },
       { to: "/notifications", icon: Bell, label: "Notifications" },
       { to: "/profile", icon: User, label: "Shop Profile" },
@@ -51,6 +52,7 @@ const navItems = (role) => {
       { to: "/admin/pricing", icon: CreditCard, label: "Pricing" },
       { to: "/admin/users", icon: User, label: "Users" },
       { to: "/admin/reconciliation", icon: Receipt, label: "Reconciliation" },
+      { to: "/admin/settlements", icon: Banknote, label: "Settlements" },
       { to: "/admin/whatsapp", icon: MessageSquare, label: "WhatsApp Templates" },
       { to: "/admin/leaderboard", icon: Trophy, label: "Leaderboard" },
       { to: "/admin/audit-log", icon: Activity, label: "Audit Log" },
