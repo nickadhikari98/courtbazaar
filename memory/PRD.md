@@ -186,3 +186,21 @@ Build a complete enterprise-grade Legal Operations & Court Services Marketplace 
 ### Testing
 - 25/25 iteration-6 tests passed first run
 - Full suite: **126/127 backend tests passing** across 6 development iterations (1 pre-existing AI streaming flake, unrelated)
+
+## Iteration 7 — Vendor Settlements UI + Filing Checklist Fix + NEFT H2H (2026-02-XX)
+
+### Backend
+- **Filing checklist endpoint stabilized** (`/api/ai/filing-checklist`): converted from `stream_message` (which 502'd at ingress) to `send_message` wrapped in `asyncio.wait_for(45s)` with a deterministic 10-item fallback checklist. Endpoint now guaranteed to return 200 within 60s — previously-flaky test now passes 3-of-3.
+- **NEFT H2H bank-ready export** (`/api/admin/settlements/export?format=h2h`): standard 12-column NPCI/H2H bulk-upload format compatible with SBI Connect / HDFC ENet / ICICI iBizz Corporate. Columns: Payment Type, Beneficiary Code, Beneficiary Name, Beneficiary Account, Beneficiary IFSC, Amount, Value Date (DD/MM/YYYY), Debit Account, Narration (≤30 chars), Email, Mobile, Reference (≤22 chars). Source debit account read from `COURTBAZAAR_DEBIT_ACCOUNT` env.
+- **Legacy CSV preserved** at `?format=legacy` for backward-compat.
+- Enriches vendor email/mobile into export rows for bank narration.
+- Audit log entry `admin.settlement_export` on each download.
+
+### Frontend
+- **VendorSettlements page** (`/vendor/settlements`): 4 stat cards (paid lifetime, pending, failed, total cycles), "How payouts work" banner explaining T+1 model, status tabs (all/queued/paid/failed), full settlements table with cycle date / orders / amount / mode / UTR / status. Empty state CTA.
+- **AppLayout**: Settlements nav entry added for vendor role (FAST badge) and admin role (between Reconciliation and WhatsApp).
+- **AdminSettlements**: dual export buttons — "NEFT H2H CSV" (default, bank-ready) and "Simple CSV" (legacy flat format).
+
+### Testing
+- **130/130 backend tests passing** (previously 126/127 — `test_filing_checklist` now stable).
+- Full Playwright frontend verification: 0 issues. All data-testids confirmed (vendor-settlements-page, stat cards, tabs, banner, admin Settlements nav, H2H + Simple CSV download triggers). RBAC redirect from /admin/settlements → /dashboard verified for vendor role.
