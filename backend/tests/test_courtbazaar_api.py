@@ -85,7 +85,7 @@ class TestHealth:
         assert r.status_code == 200
         data = r.json()
         assert isinstance(data, list)
-        assert len(data) == 44, f"expected 44 services, got {len(data)}"
+        assert len(data) == 48, f"expected 48 services (iter6: 44 + 4 stenographer), got {len(data)}"
 
     def test_service_categories(self, s):
         r = s.get(f"{API}/services/categories", timeout=15)
@@ -426,9 +426,9 @@ class TestAdmin:
         # verify
         svc = s.get(f"{API}/services/svc_bw_photocopy", timeout=15).json()
         assert float(svc["base_price"]) == new_price
-        # restore original (2.0 typical)
+        # restore original (1.0 — seeded value)
         s.put(f"{API}/admin/services/svc_bw_photocopy/pricing", headers=hdr(admin_token),
-              json={"service_id": "svc_bw_photocopy", "base_price": 2.0}, timeout=15)
+              json={"service_id": "svc_bw_photocopy", "base_price": 1.0}, timeout=15)
 
 
 # ---------- Auth security ----------
@@ -1061,9 +1061,10 @@ class TestRegressionIter3:
         assert len(r.json()) >= 36
 
     def test_services_still_44(self, s):
+        # Iter6: now 48 services (44 + 4 new Stenographer Services)
         r = s.get(f"{API}/services", timeout=15)
         assert r.status_code == 200
-        assert len(r.json()) == 44
+        assert len(r.json()) == 48
 
     def test_logins_all_three(self, s):
         for email, pwd, role in [
@@ -1398,9 +1399,10 @@ class TestRegressionIter4:
         assert len(r.json()) >= 36
 
     def test_services_44(self, s):
+        # Iter6: now 48 services
         r = s.get(f"{API}/services", timeout=15)
         assert r.status_code == 200
-        assert len(r.json()) == 44
+        assert len(r.json()) == 48
 
     def test_admin_analytics_ok(self, s, admin_token):
         r = s.get(f"{API}/admin/analytics", headers=hdr(admin_token), timeout=15)
@@ -1408,4 +1410,485 @@ class TestRegressionIter4:
 
     def test_admin_reconciliation_ok(self, s, admin_token):
         r = s.get(f"{API}/admin/reconciliation", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200
+
+
+# ============================================================================
+# ITERATION 6 — Super Admin Command Center, Vendor Onboarding, Pricing 80/20,
+#                Stenographer hourly booking, File page-count, DPDP auto-delete
+# ============================================================================
+class TestIter6Services:
+    """Services: 48 total, stenographer category, unified 20% commission."""
+
+    def test_services_count_48(self, s):
+        r = s.get(f"{API}/services", timeout=15)
+        assert r.status_code == 200
+        assert len(r.json()) == 48
+
+    def test_stenographer_services_seeded(self, s):
+        r = s.get(f"{API}/services", params={"category": "Stenographer Services"}, timeout=15)
+        assert r.status_code == 200
+        steno = r.json()
+        assert len(steno) == 4
+        ids = sorted([x["service_id"] for x in steno])
+        assert ids == sorted([
+            "svc_steno_hearing", "svc_steno_deposition",
+            "svc_steno_transcription", "svc_steno_dictation",
+        ])
+        for svc in steno:
+            assert svc.get("booking_type") == "hourly", svc
+            assert svc.get("min_hours", 0) >= 1
+            assert svc.get("platform_commission_pct") == 0.20
+
+    def test_unified_20pct_commission_all_services(self, s):
+        r = s.get(f"{API}/services", timeout=15)
+        assert r.status_code == 200
+        for svc in r.json():
+            assert svc.get("platform_commission_pct") == 0.20, \
+                f"service {svc['service_id']} commission={svc.get('platform_commission_pct')}"
+
+
+class TestIter6PricingEngine:
+    """80/20 service split, 50/50 delivery, convenience = platform, urgent 80/20."""
+
+    def _quote(self, s, token, services, delivery="chamber", urgent=False, court="court_tishazari"):
+        r = s.post(
+            f"{API}/orders/quote",
+            headers=hdr(token),
+            json={
+                "services": services,
+                "court_id": court,
+                "state_id": "state_delhi",
+                "delivery_option": delivery,
+                "urgent": urgent,
+                "file_ids": [],
+            },
+            timeout=20,
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def test_80_20_split_bw_photocopy_100pages_chamber(self, s, advocate_token):
+        q = self._quote(s, advocate_token,
+                        [{"service_id": "svc_bw_photocopy", "qty": 100}],
+                        delivery="chamber", urgent=False)
+        sd = q["split_details"]
+        # subtotal: 100 * 1 = 100
+        assert q["subtotal"] == 100.0
+        assert sd["service_subtotal"] == 100.0
+        assert sd["vendor_service_share_80pct"] == 80.0
+        assert sd["platform_commission_20pct"] == 20.0
+        # chamber delivery 79 -> 50/50
+        assert q["delivery_fee"] == 79
+        assert sd["vendor_delivery_share_50pct"] == 39.5
+        assert sd["platform_delivery_share_50pct"] == 39.5
+        # convenience = platform revenue
+        assert q["convenience_fee"] == 10
+        assert sd["convenience_fee_platform"] == 10
+        # urgent off
+        assert sd["urgent_fee"] == 0
+        assert sd["vendor_urgent_share_80pct"] == 0
+        assert sd["platform_urgent_share_20pct"] == 0
+        # totals: gst 18% on (100+79+0+10)=189 -> 34.02; total 223.02
+        assert q["gst"] == 34.02
+        assert q["total"] == 223.02
+        # vendor_payout = 80 + 39.5 + 0 = 119.5
+        assert q["vendor_payout"] == 119.5
+        # platform_revenue = 20 + 39.5 + 10 + 0 = 69.5
+        assert q["platform_revenue"] == 69.5
+
+    def test_convenience_equals_platform(self, s, advocate_token):
+        q = self._quote(s, advocate_token,
+                        [{"service_id": "svc_bw_photocopy", "qty": 50}],
+                        delivery="chamber", urgent=False)
+        assert q["split_details"]["convenience_fee_platform"] == q["convenience_fee"]
+
+    def test_urgent_80_20_split(self, s, advocate_token):
+        q = self._quote(s, advocate_token,
+                        [{"service_id": "svc_bw_photocopy", "qty": 100}],
+                        delivery="pickup", urgent=True)
+        # subtotal=100, urgent=25
+        assert q["subtotal"] == 100.0
+        assert q["urgent_fee"] == 25.0
+        sd = q["split_details"]
+        assert sd["vendor_urgent_share_80pct"] == 20.0
+        assert sd["platform_urgent_share_20pct"] == 5.0
+
+
+class TestIter6Stenographer:
+    """Hourly booking flow + min_hours + serviceability."""
+
+    def test_book_happy_path(self, s, advocate_token):
+        r = s.post(
+            f"{API}/stenographers/book",
+            headers=hdr(advocate_token),
+            json={
+                "service_id": "svc_steno_hearing",
+                "state_id": "state_delhi",
+                "court_id": "court_tishazari",
+                "date": "2026-03-15",
+                "start_time": "10:00",
+                "hours": 3,
+                "delivery_option": "court",
+            },
+            timeout=20,
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["order_id"].startswith("STN")
+        assert data["order_type"] == "stenographer_booking"
+        assert data["booking"]["date"] == "2026-03-15"
+        assert data["booking"]["start_time"] == "10:00"
+        assert data["booking"]["hours"] == 3
+        # 3 hours * 800 = 2400
+        assert data["pricing"]["subtotal"] == 2400.0
+
+    def test_min_hours_validation(self, s, advocate_token):
+        r = s.post(
+            f"{API}/stenographers/book",
+            headers=hdr(advocate_token),
+            json={
+                "service_id": "svc_steno_hearing",
+                "state_id": "state_delhi",
+                "court_id": "court_tishazari",
+                "date": "2026-03-15",
+                "start_time": "10:00",
+                "hours": 1,
+                "delivery_option": "court",
+            },
+            timeout=15,
+        )
+        assert r.status_code == 400
+        assert "Minimum" in r.text and "hour" in r.text
+
+    def test_non_serviceable_court_rejected(self, s, advocate_token):
+        # Use Bombay HC which has serviceable=False explicitly in seed
+        r = s.post(
+            f"{API}/stenographers/book",
+            headers=hdr(advocate_token),
+            json={
+                "service_id": "svc_steno_hearing",
+                "state_id": "state_mh",
+                "court_id": "court_bombay_hc",
+                "date": "2026-03-15",
+                "start_time": "10:00",
+                "hours": 2,
+                "delivery_option": "court",
+            },
+            timeout=15,
+        )
+        assert r.status_code == 400
+        assert "not yet serviceable" in r.text.lower()
+
+    def test_list_stenographers(self, s):
+        r = s.get(f"{API}/stenographers", timeout=15)
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)
+
+    def test_list_stenographers_by_court(self, s):
+        r = s.get(f"{API}/stenographers", params={"court_id": "court_tishazari"}, timeout=15)
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)
+
+
+class TestIter6VendorCategories:
+    def test_vendor_categories_endpoint(self, s):
+        r = s.get(f"{API}/vendor-categories", timeout=15)
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data) == 8
+        ids = sorted([x["id"] for x in data])
+        assert ids == sorted([
+            "photocopy", "typist", "efiling_agent", "notary",
+            "stamp_vendor", "stenographer", "court_runner", "delivery_partner",
+        ])
+        for c in data:
+            assert "name" in c and "icon" in c and "service_categories" in c
+
+
+class TestIter6VendorOnboarding:
+    """Vendor onboarding with optional GST + vendor_category + hourly_rate."""
+
+    def _register(self, s, role="advocate"):
+        ts = int(time.time() * 1000)
+        email = f"TEST_iter6_{ts}_{uuid.uuid4().hex[:4]}@cbtest.in"
+        r = s.post(
+            f"{API}/auth/register",
+            json={"email": email, "password": "Test@1234", "name": "Iter6 Test", "phone": f"9{ts%1000000000:09d}", "role": role},
+            timeout=20,
+        )
+        assert r.status_code == 200, r.text
+        return r.json()["token"]
+
+    def test_onboard_without_gst(self, s):
+        tok = self._register(s)
+        r = s.post(
+            f"{API}/vendors/onboard",
+            headers=hdr(tok),
+            json={
+                "shop_name": "TEST_TypistShop",
+                "owner_name": "Test Typist",
+                "phone": "9876500001",
+                "address": "Tis Hazari, Delhi",
+                "court_ids": ["court_tishazari"],
+                "service_ids": ["svc_typing_petition"],
+                "vendor_category": "typist",
+                "has_gst": False,
+                "gst": None,
+                "bio": "Legal typist with 5y exp",
+            },
+            timeout=20,
+        )
+        assert r.status_code == 200, r.text
+        v = r.json()
+        assert v["has_gst"] is False
+        assert v["vendor_category"] == "typist"
+        assert v.get("gst") in (None, "")
+
+    def test_onboard_with_gst(self, s):
+        tok = self._register(s)
+        r = s.post(
+            f"{API}/vendors/onboard",
+            headers=hdr(tok),
+            json={
+                "shop_name": "TEST_GSTShop",
+                "owner_name": "Test Owner",
+                "phone": "9876500002",
+                "address": "Tis Hazari, Delhi",
+                "court_ids": ["court_tishazari"],
+                "service_ids": ["svc_bw_photocopy"],
+                "vendor_category": "photocopy",
+                "has_gst": True,
+                "gst": "07AAAAA0000A1Z5",
+            },
+            timeout=20,
+        )
+        assert r.status_code == 200, r.text
+        v = r.json()
+        assert v["has_gst"] is True
+        assert v["gst"] == "07AAAAA0000A1Z5"
+
+    def test_onboard_stenographer_with_hourly_rate(self, s):
+        tok = self._register(s)
+        r = s.post(
+            f"{API}/vendors/onboard",
+            headers=hdr(tok),
+            json={
+                "shop_name": "TEST_StenoVendor",
+                "owner_name": "Steno Pro",
+                "phone": "9876500003",
+                "address": "Tis Hazari, Delhi",
+                "court_ids": ["court_tishazari"],
+                "service_ids": ["svc_steno_hearing", "svc_steno_deposition"],
+                "vendor_category": "stenographer",
+                "has_gst": False,
+                "hourly_rate": 800,
+                "bio": "Court stenographer 10y",
+            },
+            timeout=20,
+        )
+        assert r.status_code == 200, r.text
+        v = r.json()
+        assert v["vendor_category"] == "stenographer"
+        assert v["hourly_rate"] == 800
+
+
+class TestIter6FilePageCount:
+    """Auto-detect page count on upload."""
+
+    def _gen_pdf(self, pages: int) -> bytes:
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import A4
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=A4)
+        for i in range(pages):
+            c.drawString(72, 720, f"TEST page {i+1}")
+            c.showPage()
+        c.save()
+        return buf.getvalue()
+
+    def _gen_png(self) -> bytes:
+        # Minimal 1x1 PNG
+        return (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+            b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xfa\xcf"
+            b"\x00\x00\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+
+    def test_pdf_page_count_5(self, s, advocate_token):
+        pdf_bytes = self._gen_pdf(5)
+        files = {"file": ("TEST_iter6_5p.pdf", pdf_bytes, "application/pdf")}
+        # Use requests.post directly to avoid session's Content-Type=json header
+        r = requests.post(
+            f"{API}/files/upload",
+            headers={"Authorization": f"Bearer {advocate_token}"},
+            files=files,
+            timeout=30,
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["page_count"] == 5
+        assert data["original_filename"].endswith(".pdf")
+
+    def test_png_page_count_1(self, s, advocate_token):
+        png_bytes = self._gen_png()
+        files = {"file": ("TEST_iter6.png", png_bytes, "image/png")}
+        r = requests.post(
+            f"{API}/files/upload",
+            headers={"Authorization": f"Bearer {advocate_token}"},
+            files=files,
+            timeout=30,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["page_count"] == 1
+
+
+class TestIter6AutoDeleteOnCompletion:
+    """DPDP: files purged when order status -> completed."""
+
+    def _upload_pdf(self, s, token, pages=2):
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import A4
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=A4)
+        for i in range(pages):
+            c.drawString(72, 720, f"AUTO-DEL TEST page {i+1}")
+            c.showPage()
+        c.save()
+        files = {"file": ("TEST_autodel.pdf", buf.getvalue(), "application/pdf")}
+        r = requests.post(
+            f"{API}/files/upload",
+            headers={"Authorization": f"Bearer {token}"},
+            files=files, timeout=30,
+        )
+        assert r.status_code == 200
+        return r.json()["file_id"]
+
+    def test_files_purged_on_completed(self, s, advocate_token, admin_token):
+        # 1) Upload file
+        fid = self._upload_pdf(s, advocate_token)
+
+        # 2) Create order with file_ids
+        r = s.post(
+            f"{API}/orders",
+            headers=hdr(advocate_token),
+            json={
+                "services": [{"service_id": "svc_bw_photocopy", "qty": 10}],
+                "court_id": "court_tishazari",
+                "state_id": "state_delhi",
+                "delivery_option": "chamber",
+                "urgent": False,
+                "file_ids": [fid],
+            },
+            timeout=20,
+        )
+        assert r.status_code == 200, r.text
+        order = r.json()
+        order_id = order["order_id"]
+        assert fid in order["file_ids"]
+
+        # 3) Admin transitions to completed (admin can override status)
+        r = s.post(
+            f"{API}/orders/{order_id}/status",
+            headers=hdr(admin_token),
+            json={"status": "completed", "note": "test auto-purge"},
+            timeout=20,
+        )
+        assert r.status_code == 200, r.text
+
+        # 4) Verify file is_deleted=true via /api/files/{file_id} (admin) or DPDP my-data
+        # Use order detail to check files_purged metadata
+        r = s.get(f"{API}/orders/{order_id}", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200
+        odata = r.json()
+        assert "files_purged" in odata, odata
+        assert odata["files_purged"]["deleted"] >= 1
+
+        # Verify file record marked deleted via DPDP /my-data (advocate sees own files)
+        r = s.get(f"{API}/dpdp/my-data", headers=hdr(advocate_token), timeout=15)
+        assert r.status_code == 200
+        my = r.json()
+        # find our file in user's file list
+        my_files = my.get("files", []) or my.get("data", {}).get("files", [])
+        found = next((f for f in my_files if f.get("file_id") == fid), None)
+        if found is not None:
+            assert found.get("is_deleted") is True
+            dr = found.get("deleted_reason", "")
+            assert "order_completed" in dr and order_id in dr
+
+
+class TestIter6CommandCenter:
+    """Super Admin Command Center."""
+
+    def test_command_center_admin_200(self, s, admin_token):
+        r = s.get(f"{API}/admin/command-center", headers=hdr(admin_token), timeout=20)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        # revenue block
+        rev = data["revenue"]
+        for k in ["platform_total", "platform_commission_20pct",
+                  "platform_delivery_share_50pct", "platform_convenience_fee",
+                  "platform_urgent_share_20pct", "vendor_payout_total",
+                  "gst_collected", "paid_orders"]:
+            assert k in rev, f"missing revenue.{k}"
+        # orders block
+        orders = data["orders"]
+        for k in ["last_7_days", "by_status", "total"]:
+            assert k in orders, f"missing orders.{k}"
+        # vendors block
+        vendors = data["vendors"]
+        for k in ["total", "approved", "pending_kyc", "sponsored",
+                  "with_gst", "without_gst", "by_category"]:
+            assert k in vendors, f"missing vendors.{k}"
+        # users block
+        users = data["users"]
+        assert "total" in users and "by_role" in users
+        # compliance
+        comp = data["compliance"]
+        for k in ["audit_entries", "pending_deletions", "files_purged"]:
+            assert k in comp, f"missing compliance.{k}"
+        # revenue_model fixed config
+        rm = data["revenue_model"]
+        assert rm["platform_commission_pct"] == 20
+        assert rm["delivery_split_vendor_pct"] == 50
+        assert rm["convenience_fee_inr"] == 10
+        assert rm["gst_pct"] == 18
+
+    def test_command_center_forbidden_non_admin(self, s, advocate_token):
+        r = s.get(f"{API}/admin/command-center", headers=hdr(advocate_token), timeout=15)
+        assert r.status_code == 403
+
+
+class TestIter6Regression:
+    def test_states_36(self, s):
+        r = s.get(f"{API}/states", timeout=15)
+        assert r.status_code == 200
+        assert len(r.json()) >= 36
+
+    def test_order_at_tishazari_works(self, s, advocate_token):
+        r = s.post(
+            f"{API}/orders",
+            headers=hdr(advocate_token),
+            json={
+                "services": [{"service_id": "svc_bw_photocopy", "qty": 5}],
+                "court_id": "court_tishazari",
+                "state_id": "state_delhi",
+                "delivery_option": "chamber",
+                "urgent": False,
+                "file_ids": [],
+            },
+            timeout=20,
+        )
+        assert r.status_code == 200, r.text
+
+    def test_admin_reconciliation_ok(self, s, admin_token):
+        r = s.get(f"{API}/admin/reconciliation", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200
+
+    def test_admin_leaderboard_ok(self, s, admin_token):
+        r = s.get(f"{API}/admin/leaderboard", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 200
+
+    def test_admin_audit_log_ok(self, s, admin_token):
+        r = s.get(f"{API}/admin/audit-log", headers=hdr(admin_token), timeout=15)
         assert r.status_code == 200

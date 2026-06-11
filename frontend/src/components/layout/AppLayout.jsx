@@ -4,7 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
   User, Settings, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck,
-  Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity
+  Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ const navItems = (role) => {
     { to: "/order/new", icon: Plus, label: "New Order", highlight: true },
     { to: "/orders", icon: Package, label: "My Orders" },
     { to: "/marketplace", icon: Store, label: "Marketplace" },
+    { to: "/stenographer", icon: Mic, label: "Stenographer" },
     { to: "/courts", icon: Building2, label: "Courts" },
     { to: "/ai", icon: Sparkles, label: "AI Assistant" },
     { to: "/firm", icon: Users, label: "Law Firm" },
@@ -44,7 +45,8 @@ const navItems = (role) => {
   }
   if (role === "admin") {
     return [
-      { to: "/admin", icon: Shield, label: "Admin Console" },
+      { to: "/admin/console", icon: Crown, label: "Command Center", highlight: true },
+      { to: "/admin", icon: Shield, label: "Analytics" },
       { to: "/admin/vendors", icon: Store, label: "Vendors" },
       { to: "/admin/pricing", icon: CreditCard, label: "Pricing" },
       { to: "/admin/users", icon: User, label: "Users" },

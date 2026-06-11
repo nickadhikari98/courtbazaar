@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 6 — end-to-end backend testing of Super Admin Command Center, vendor onboarding with optional GST + vendor_category, unified 20% commission with 80/20 service split, 50/50 delivery split, urgent 80/20, convenience-fee-as-platform-revenue, stenographer hourly booking with min_hours/serviceability checks, file page-count auto-detection on upload, and DPDP auto-purge on order completion. Added 25 new pytest cases in /app/backend/tests/test_courtbazaar_api.py under classes TestIter6Services / TestIter6PricingEngine / TestIter6Stenographer / TestIter6VendorCategories / TestIter6VendorOnboarding / TestIter6FilePageCount / TestIter6AutoDeleteOnCompletion / TestIter6CommandCenter / TestIter6Regression. ALL 25 iter6 tests PASS. Full suite: 126/127 PASS (1 pre-existing flaky AI test — /api/ai/filing-checklist returning 502 from upstream LLM, unrelated to iter6).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/ai/filing-checklist", "issue": "Intermittent 502 from upstream LLM (preview env). Pre-existing in iter5; not caused by iter6 changes."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_courtbazaar_api.py",
+    "/app/test_reports/pytest/iter6_results.xml",
+    "/app/test_reports/pytest/iter6_full_results.xml"
+  ],
+  "action_items": [
+    "Investigate /api/ai/filing-checklist 502 — likely Emergent LLM call exceeds ingress idle timeout; consider increasing timeout, streaming, or moving to async job."
+  ],
+  "critical_code_review_comments": [
+    "server.py calculate_pricing (L656-715) correctly implements unified 80/20 service split, 50/50 delivery (DELIVERY_SHARE_VENDOR_PCT=0.5), urgent 80/20, convenience-as-platform; split_details matches review spec exactly. Math verified: 100*₹1 + ₹79 chamber + ₹10 convenience -> vendor_payout=119.5, platform_revenue=69.5, GST=34.02, total=223.02.",
+    "Seed (server.py L272-277) force-unifies platform_commission_pct=0.20 across all services with update_many; even though court_seed.py still has 0.25/0.30 literals, the runtime override correctly normalises all 48 services to 0.20. Consider also fixing court_seed.py literals for consistency.",
+    "Stenographer serviceability check (server.py L2027) uses `is False` so courts missing the `serviceable` field (e.g. court_karnataka_hc) silently PASS the check. Currently only Delhi courts and a few state HCs (e.g. Bombay HC) have the field set in DB. This means a stenographer booking could succeed for a non-Delhi court that simply lacks the flag. Recommend changing to `not court_info.get('serviceable')` to default to non-serviceable, mirroring the intent stated in the 400 message.",
+    "VendorOnboard (server.py L217-232) correctly adds vendor_category/has_gst/bio/hourly_rate; values persist on update_one with full payload spread. OK.",
+    "Auto-purge on completion (server.py L815-822) works end-to-end: files.is_deleted=true, deleted_reason='order_completed:<order_id>', orders.files_purged.deleted=N. Verified via DPDP /my-data and order detail.",
+    "Command Center (server.py L1890-1989) returns the full payload spec'd in the request and aggregates only payment_status=paid orders for revenue. Forbidden for non-admin (403). OK.",
+    "File size: server.py is now 2107 lines — recommend splitting into routers (orders, files, vendors, admin, stenographers) for maintainability.",
+    "Page-count detection (L595-615) handles PDF (PyPDF2), images (1), docx; falls back to 1 on error. Safe."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_courtbazaar_api.py — added 9 iter6 test classes (25 tests); fixed 2 pre-existing test bugs: TestHealth.test_services count 44->48, TestAdmin.test_admin_update_pricing restore base_price 2.0 -> 1.0 (matches seed)."
+  ],
+  "success_rate": {"backend": "100% on iter6 (25/25); 99.2% overall (126/127, only pre-existing AI flake fails)", "frontend": "N/A (backend-only)"},
+  "test_credentials": "admin@courtbazaar.in/Admin@123, advocate@demo.in/Advocate@123, vendor@demo.in/Vendor@123 — all working.",
+  "seed_data_creation": "Tests created TEST_-prefixed throwaway advocate users (@cbtest.in) and TEST_-prefixed vendor records (TypistShop, GSTShop, StenoVendor). One TEST_autodel.pdf order created and transitioned to completed (files purged). Safe to leave; cleanup not required.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter6 test suite lives at TestIter6* classes (L1413+) in /app/backend/tests/test_courtbazaar_api.py. Run `-k Iter6` for fast smoke (~4s, 25 tests). Service count is now 48. /api/ai/filing-checklist may flake with 502 from upstream LLM — pre-existing. court_karnataka_hc has no `serviceable` field in DB and currently bypasses serviceability checks — flagged in code review.",
+  "rca of the issue": "N/A — no functional bugs found in iter6 implementation. Two test-only fixes applied: (a) TestHealth.test_services hardcoded 44 (updated to 48 after stenographer additions); (b) TestAdmin.test_admin_update_pricing restored base_price to 2.0 instead of seeded 1.0, polluting later pricing tests — fixed restore value to 1.0. Initial run of pricing tests after the polluting test showed subtotal=200 instead of 100, confirming root cause."
+}

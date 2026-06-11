@@ -28,6 +28,8 @@ import AdminReconciliation from "@/pages/AdminReconciliation";
 import AdminWhatsAppTemplates from "@/pages/AdminWhatsAppTemplates";
 import AdminAuditLog from "@/pages/AdminAuditLog";
 import AdminLeaderboard from "@/pages/AdminLeaderboard";
+import SuperAdminConsole from "@/pages/SuperAdminConsole";
+import StenographerBooking from "@/pages/StenographerBooking";
 import BulkImport from "@/pages/BulkImport";
 import MyData from "@/pages/MyData";
 import VendorOnboarding from "@/pages/VendorOnboarding";
@@ -123,6 +125,8 @@ function AppRouter() {
         <Route path="/admin/whatsapp" element={<ProtectedRoute roles={["admin"]}><AdminWhatsAppTemplates /></ProtectedRoute>} />
         <Route path="/admin/audit-log" element={<ProtectedRoute roles={["admin"]}><AdminAuditLog /></ProtectedRoute>} />
         <Route path="/admin/leaderboard" element={<ProtectedRoute roles={["admin"]}><AdminLeaderboard /></ProtectedRoute>} />
+        <Route path="/admin/console" element={<ProtectedRoute roles={["admin"]}><SuperAdminConsole /></ProtectedRoute>} />
+        <Route path="/stenographer" element={<StenographerBooking />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" />} />

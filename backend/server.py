@@ -79,6 +79,47 @@ def get_object(path: str):
     resp.raise_for_status()
     return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
+
+def delete_object(path: str) -> bool:
+    """Delete an object from storage. Returns True on success."""
+    key = init_storage()
+    if not key:
+        return False
+    try:
+        resp = requests.delete(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key}, timeout=30,
+        )
+        return resp.status_code in (200, 204, 404)
+    except Exception as e:
+        logger.error(f"Storage delete failed: {e}")
+        return False
+
+
+async def delete_order_files(order_id: str) -> dict:
+    """Delete all files attached to an order (DPDP compliance — wipe after job done)."""
+    order = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
+    if not order:
+        return {"deleted": 0}
+    file_ids = order.get("file_ids", [])
+    if not file_ids:
+        return {"deleted": 0}
+    deleted = 0
+    for fid in file_ids:
+        rec = await db.files.find_one({"file_id": fid, "is_deleted": False}, {"_id": 0})
+        if not rec:
+            continue
+        ok = delete_object(rec["storage_path"])
+        await db.files.update_one({"file_id": fid}, {"$set": {
+            "is_deleted": True,
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+            "deleted_reason": f"order_completed:{order_id}",
+            "storage_purged": ok,
+        }})
+        deleted += 1
+    logger.info(f"DPDP: purged {deleted} files for order {order_id}")
+    return {"deleted": deleted, "order_id": order_id}
+
 # ===== Auth helpers =====
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
@@ -180,11 +221,15 @@ class VendorOnboard(BaseModel):
     address: str
     court_ids: List[str]
     service_ids: List[str]
+    vendor_category: str = "photocopy"  # photocopy, typist, efiling_agent, notary, stamp_vendor, stenographer, delivery_partner
+    has_gst: bool = False
     pan: Optional[str] = None
     gst: Optional[str] = None
     aadhaar: Optional[str] = None
     bank_account: Optional[str] = None
     bank_ifsc: Optional[str] = None
+    bio: Optional[str] = None
+    hourly_rate: Optional[float] = None  # For stenographers + court runners
 
 class PricingUpdate(BaseModel):
     service_id: str
@@ -224,10 +269,12 @@ async def seed_initial_data():
         for court in state["courts"]:
             court_doc = {**court, "state_id": state["state_id"], "state_name": state["name"]}
             await db.courts.update_one({"court_id": court["court_id"]}, {"$set": court_doc}, upsert=True)
-    if await db.services.count_documents({}) == 0:
+    if await db.services.count_documents({}) == 0 or await db.services.count_documents({"category": "Stenographer Services"}) == 0:
         for svc in SERVICE_CATALOG:
             await db.services.update_one({"service_id": svc["service_id"]}, {"$set": svc}, upsert=True)
-        logger.info("Seeded services")
+        # Unified 20% commission for all services
+        await db.services.update_many({}, {"$set": {"platform_commission_pct": 0.20}})
+        logger.info("Seeded/updated services (unified 20% commission)")
 
     if await db.users.count_documents({"role": "admin"}) == 0:
         admin_id = f"user_{uuid.uuid4().hex[:12]}"
@@ -544,6 +591,29 @@ async def upload_file(file: UploadFile = File(...), user=Depends(get_current_use
     except Exception as e:
         logger.error(f"Upload failed: {e}")
         raise HTTPException(500, f"Upload failed: {e}")
+
+    # Auto-detect page count
+    page_count = 1
+    try:
+        if "pdf" in content_type.lower() or file.filename.lower().endswith(".pdf"):
+            from PyPDF2 import PdfReader
+            import io as _io
+            page_count = len(PdfReader(_io.BytesIO(data)).pages)
+        elif "image" in content_type.lower() or any(file.filename.lower().endswith(e) for e in [".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".webp"]):
+            page_count = 1
+        elif "officedocument" in content_type.lower() or file.filename.lower().endswith((".docx", ".doc")):
+            # Approximate: 1 page per ~3000 chars
+            try:
+                from docx import Document
+                doc = Document(_io.BytesIO(data))
+                total_chars = sum(len(p.text) for p in doc.paragraphs)
+                page_count = max(1, total_chars // 3000)
+            except Exception:
+                page_count = max(1, len(data) // 50000)
+    except Exception as e:
+        logger.error(f"Page count detection failed: {e}")
+        page_count = 1
+
     record = {
         "file_id": file_id,
         "user_id": user["user_id"],
@@ -551,6 +621,7 @@ async def upload_file(file: UploadFile = File(...), user=Depends(get_current_use
         "original_filename": file.filename,
         "content_type": content_type,
         "size": result.get("size", len(data)),
+        "page_count": page_count,
         "is_deleted": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -576,9 +647,15 @@ async def my_files(user=Depends(get_current_user)):
 # ---------- ORDERS ----------
 ORDER_STATUSES = ["placed", "matched", "accepted", "processing", "quality_check", "ready", "out_for_delivery", "delivered", "completed", "cancelled"]
 
+# Unified platform economics (applies to ALL vendor categories)
+PLATFORM_COMMISSION_PCT = 0.20      # Platform retains 20% of vendor's service earnings
+DELIVERY_SHARE_VENDOR_PCT = 0.50    # 50% of delivery fee goes to vendor
+CONVENIENCE_FEE_FLAT = 10.0          # Pure platform revenue
+GST_PCT = 0.18
+
 async def calculate_pricing(services: List[Dict], court_id: str, delivery: str, urgent: bool):
     subtotal = 0.0
-    vendor_share = 0.0
+    vendor_service_share = 0.0
     breakdown = []
     for item in services:
         svc = await db.services.find_one({"service_id": item["service_id"]}, {"_id": 0})
@@ -586,22 +663,55 @@ async def calculate_pricing(services: List[Dict], court_id: str, delivery: str, 
             continue
         qty = item.get("qty", 1)
         unit = float(svc.get("base_price", 0))
+        # For hourly services (stenographer), qty represents hours
         line = unit * qty
-        vendor_unit = unit * (1 - float(svc.get("platform_commission_pct", 0.2)))
         subtotal += line
-        vendor_share += vendor_unit * qty
-        breakdown.append({"service_id": svc["service_id"], "name": svc["name"], "unit_price": unit, "qty": qty, "line_total": line})
+        breakdown.append({"service_id": svc["service_id"], "name": svc["name"], "unit_price": unit, "qty": qty, "line_total": line, "unit": svc.get("unit", "per item")})
+    # Unified 20% commission for ALL services
+    vendor_service_share = subtotal * (1 - PLATFORM_COMMISSION_PCT)
+    platform_service_commission = subtotal * PLATFORM_COMMISSION_PCT
+
     delivery_fee = {"pickup": 0, "chamber": 79, "court": 49, "digital": 0}.get(delivery, 0)
+    # 50/50 delivery split
+    vendor_delivery_share = delivery_fee * DELIVERY_SHARE_VENDOR_PCT
+    platform_delivery_share = delivery_fee * (1 - DELIVERY_SHARE_VENDOR_PCT)
+
     urgent_fee = round(subtotal * 0.25, 2) if urgent else 0
-    convenience = 10.0
-    gst = round((subtotal + delivery_fee + urgent_fee + convenience) * 0.18, 2)
+    # Urgent surcharge: vendor takes 80%, platform 20% (consistent with service split)
+    vendor_urgent_share = urgent_fee * (1 - PLATFORM_COMMISSION_PCT)
+    platform_urgent_share = urgent_fee * PLATFORM_COMMISSION_PCT
+
+    convenience = CONVENIENCE_FEE_FLAT  # Pure platform revenue
+    gst = round((subtotal + delivery_fee + urgent_fee + convenience) * GST_PCT, 2)
     total = round(subtotal + delivery_fee + urgent_fee + convenience + gst, 2)
-    platform_commission = round(subtotal - vendor_share, 2)
+
+    vendor_payout = round(vendor_service_share + vendor_delivery_share + vendor_urgent_share, 2)
+    platform_revenue = round(platform_service_commission + platform_delivery_share + platform_urgent_share + convenience, 2)
+
     return {
-        "breakdown": breakdown, "subtotal": round(subtotal, 2),
-        "delivery_fee": delivery_fee, "urgent_fee": urgent_fee,
-        "convenience_fee": convenience, "gst": gst, "total": total,
-        "vendor_payout": round(vendor_share, 2), "platform_commission": platform_commission,
+        "breakdown": breakdown,
+        "subtotal": round(subtotal, 2),
+        "delivery_fee": delivery_fee,
+        "urgent_fee": urgent_fee,
+        "convenience_fee": convenience,
+        "gst": gst,
+        "total": total,
+        # Revenue split (excl. GST which is government's)
+        "vendor_payout": vendor_payout,
+        "platform_revenue": platform_revenue,
+        "platform_commission": round(platform_service_commission, 2),  # Backward-compat alias
+        "split_details": {
+            "service_subtotal": round(subtotal, 2),
+            "vendor_service_share_80pct": round(vendor_service_share, 2),
+            "platform_commission_20pct": round(platform_service_commission, 2),
+            "delivery_fee": delivery_fee,
+            "vendor_delivery_share_50pct": round(vendor_delivery_share, 2),
+            "platform_delivery_share_50pct": round(platform_delivery_share, 2),
+            "convenience_fee_platform": convenience,
+            "urgent_fee": urgent_fee,
+            "vendor_urgent_share_80pct": round(vendor_urgent_share, 2),
+            "platform_urgent_share_20pct": round(platform_urgent_share, 2),
+        },
     }
 
 @api_router.post("/orders/quote")
@@ -701,6 +811,15 @@ async def update_order_status(order_id: str, payload: dict, user=Depends(get_cur
         {"order_id": order_id},
         {"$set": {"status": new_status}, "$push": {"timeline": timeline_entry}},
     )
+    # DPDP auto-purge: delete attached files when order is completed
+    if new_status == "completed":
+        try:
+            purge = await delete_order_files(order_id)
+            await db.orders.update_one({"order_id": order_id}, {"$set": {"files_purged": purge}})
+            from audit_log import log_audit
+            await log_audit(db, "file.auto_delete", user, {"order_id": order_id, **purge})
+        except Exception as e:
+            logger.error(f"auto purge files error: {e}")
     # Notify customer
     try:
         customer = await db.users.find_one({"user_id": order["user_id"]}, {"_id": 0})
@@ -1763,6 +1882,213 @@ async def vendor_sla(vendor_id: str, user=Depends(get_current_user)):
     sla["grade"] = sla_grade(sla["sla_score"])
     return sla
 
+
+
+# ============================================================================
+# SUPER ADMIN COMMAND CENTER (consolidated)
+# ============================================================================
+@api_router.get("/admin/command-center")
+async def admin_command_center(user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+
+    # Revenue split (new schema)
+    platform_commission = 0.0
+    platform_delivery = 0.0
+    platform_convenience = 0.0
+    platform_urgent = 0.0
+    platform_total = 0.0
+    vendor_payout_total = 0.0
+    gst_collected = 0.0
+    paid_count = 0
+    async for o in db.orders.find({"payment_status": "paid"}, {"_id": 0, "pricing": 1}):
+        p = o.get("pricing", {})
+        sd = p.get("split_details", {})
+        platform_commission += sd.get("platform_commission_20pct", p.get("platform_commission", 0))
+        platform_delivery += sd.get("platform_delivery_share_50pct", 0)
+        platform_convenience += sd.get("convenience_fee_platform", p.get("convenience_fee", 0))
+        platform_urgent += sd.get("platform_urgent_share_20pct", 0)
+        vendor_payout_total += p.get("vendor_payout", 0)
+        gst_collected += p.get("gst", 0)
+        paid_count += 1
+    platform_total = platform_commission + platform_delivery + platform_convenience + platform_urgent
+
+    # Vendor breakdown by category
+    vendor_pipeline = [{"$group": {"_id": "$vendor_category", "count": {"$sum": 1}}}]
+    vendor_by_cat = []
+    async for d in db.vendors.aggregate(vendor_pipeline):
+        vendor_by_cat.append({"category": d["_id"] or "uncategorized", "count": d["count"]})
+
+    # Order pulse — by status
+    status_pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
+    status_pulse = []
+    async for d in db.orders.aggregate(status_pipeline):
+        status_pulse.append({"status": d["_id"], "count": d["count"]})
+
+    # Last 7 days orders
+    from datetime import timedelta as _td
+    seven_days_ago = (datetime.now(timezone.utc) - _td(days=7)).isoformat()
+    recent_orders = await db.orders.count_documents({"created_at": {"$gte": seven_days_ago}})
+    recent_paid = await db.orders.count_documents({"created_at": {"$gte": seven_days_ago}, "payment_status": "paid"})
+
+    # User breakdown
+    user_pipeline = [{"$group": {"_id": "$role", "count": {"$sum": 1}}}]
+    users_by_role = []
+    async for d in db.users.aggregate(user_pipeline):
+        users_by_role.append({"role": d["_id"], "count": d["count"]})
+
+    # Top sponsored vendors
+    sponsored_count = await db.vendors.count_documents({"sponsored": True})
+    pending_kyc = await db.vendors.count_documents({"kyc_status": "pending"})
+    gst_vendors = await db.vendors.count_documents({"has_gst": True})
+    non_gst_vendors = await db.vendors.count_documents({"$or": [{"has_gst": False}, {"has_gst": {"$exists": False}}, {"gst": None}, {"gst": ""}]})
+
+    return {
+        "revenue": {
+            "platform_total": round(platform_total, 2),
+            "platform_commission_20pct": round(platform_commission, 2),
+            "platform_delivery_share_50pct": round(platform_delivery, 2),
+            "platform_convenience_fee": round(platform_convenience, 2),
+            "platform_urgent_share_20pct": round(platform_urgent, 2),
+            "vendor_payout_total": round(vendor_payout_total, 2),
+            "gst_collected": round(gst_collected, 2),
+            "paid_orders": paid_count,
+        },
+        "orders": {
+            "last_7_days": recent_orders,
+            "last_7_days_paid": recent_paid,
+            "by_status": status_pulse,
+            "total": await db.orders.count_documents({}),
+        },
+        "vendors": {
+            "total": await db.vendors.count_documents({}),
+            "approved": await db.vendors.count_documents({"kyc_status": "approved"}),
+            "pending_kyc": pending_kyc,
+            "sponsored": sponsored_count,
+            "with_gst": gst_vendors,
+            "without_gst": non_gst_vendors,
+            "by_category": vendor_by_cat,
+        },
+        "users": {
+            "total": await db.users.count_documents({}),
+            "by_role": users_by_role,
+        },
+        "compliance": {
+            "audit_entries": await db.audit_log.count_documents({}),
+            "pending_deletions": await db.dpdp_requests.count_documents({"status": "pending"}),
+            "deleted_users": await db.users.count_documents({"deleted": True}),
+            "files_purged": await db.files.count_documents({"is_deleted": True}),
+        },
+        "revenue_model": {
+            "platform_commission_pct": PLATFORM_COMMISSION_PCT * 100,
+            "delivery_split_vendor_pct": DELIVERY_SHARE_VENDOR_PCT * 100,
+            "delivery_split_platform_pct": (1 - DELIVERY_SHARE_VENDOR_PCT) * 100,
+            "convenience_fee_inr": CONVENIENCE_FEE_FLAT,
+            "gst_pct": GST_PCT * 100,
+        },
+    }
+
+
+# ============================================================================
+# STENOGRAPHER BOOKING (hourly slots)
+# ============================================================================
+class StenoBooking(BaseModel):
+    service_id: str
+    stenographer_id: Optional[str] = None  # If null, auto-match
+    court_id: str
+    state_id: str
+    date: str  # YYYY-MM-DD
+    start_time: str  # HH:MM 24h
+    hours: int
+    delivery_option: Literal["pickup", "chamber", "court", "digital"] = "court"
+    delivery_address: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@api_router.get("/stenographers")
+async def list_stenographers(court_id: Optional[str] = None):
+    q = {"vendor_category": "stenographer", "kyc_status": "approved"}
+    if court_id:
+        q["court_ids"] = court_id
+    return await db.vendors.find(q, {"_id": 0}).sort("rating", -1).to_list(100)
+
+
+@api_router.post("/stenographers/book")
+async def book_stenographer(req: StenoBooking, user=Depends(get_current_user)):
+    svc = await db.services.find_one({"service_id": req.service_id}, {"_id": 0})
+    if not svc or svc.get("category") != "Stenographer Services":
+        raise HTTPException(400, "Invalid stenographer service")
+    min_hours = svc.get("min_hours", 1)
+    if req.hours < min_hours:
+        raise HTTPException(400, f"Minimum {min_hours} hour(s) required")
+    court_info = await db.courts.find_one({"court_id": req.court_id}, {"_id": 0})
+    if not court_info:
+        raise HTTPException(404, "Court not found")
+    if court_info.get("serviceable") is False:
+        raise HTTPException(400, "This court is not yet serviceable")
+
+    # Pricing (qty = hours)
+    pricing = await calculate_pricing(
+        [{"service_id": req.service_id, "qty": req.hours}],
+        req.court_id, req.delivery_option, urgent=False,
+    )
+
+    # Auto-match a stenographer
+    candidates_q = {"vendor_category": "stenographer", "kyc_status": "approved", "court_ids": req.court_id}
+    if req.stenographer_id:
+        candidates_q["vendor_id"] = req.stenographer_id
+    candidates = await db.vendors.find(candidates_q, {"_id": 0}).to_list(20)
+    candidates.sort(key=lambda v: (not v.get("sponsored", False), -float(v.get("rating", 0))))
+    vendor = candidates[0] if candidates else None
+
+    order_id = f"STN{datetime.now().strftime('%y%m%d')}{uuid.uuid4().hex[:6].upper()}"
+    booking = {
+        "order_id": order_id,
+        "user_id": user["user_id"], "user_name": user.get("name"), "user_phone": user.get("phone"),
+        "firm_id": user.get("firm_id"),
+        "services": [{"service_id": req.service_id, "qty": req.hours, "hours": req.hours}],
+        "state_id": req.state_id, "court_id": req.court_id,
+        "court_name": court_info["name"], "state_name": court_info.get("state_name"),
+        "delivery_option": req.delivery_option, "delivery_address": req.delivery_address,
+        "file_ids": [], "urgent": False, "notes": req.notes,
+        "pricing": pricing,
+        "vendor_id": vendor["vendor_id"] if vendor else None,
+        "vendor_name": vendor["shop_name"] if vendor else None,
+        "vendor_sponsored": vendor.get("sponsored", False) if vendor else False,
+        "booking": {"date": req.date, "start_time": req.start_time, "hours": req.hours, "service_name": svc["name"]},
+        "order_type": "stenographer_booking",
+        "status": "placed", "payment_status": "pending",
+        "timeline": [{"status": "placed", "at": datetime.now(timezone.utc).isoformat(), "note": f"Stenographer booking: {req.date} {req.start_time} for {req.hours}h"}],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.orders.insert_one(booking)
+    booking.pop("_id", None)
+    try:
+        from notifications import notify
+        notify(user, "order_placed", {"order": booking})
+    except Exception:
+        pass
+    try:
+        from audit_log import log_audit
+        await log_audit(db, "order.create", user, {"order_id": order_id, "type": "stenographer", "hours": req.hours})
+    except Exception:
+        pass
+    return booking
+
+
+@api_router.get("/vendor-categories")
+async def vendor_categories():
+    """List of vendor categories with their typical services."""
+    return [
+        {"id": "photocopy", "name": "Photocopy & Print Shop", "icon": "Printer", "service_categories": ["Document Services", "Binding Services"]},
+        {"id": "typist", "name": "Legal Typist", "icon": "Type", "service_categories": ["Legal Typing"]},
+        {"id": "efiling_agent", "name": "E-Filing Agent", "icon": "Gavel", "service_categories": ["E-Filing Services"]},
+        {"id": "notary", "name": "Notary Partner", "icon": "Stamp", "service_categories": ["Notary Services", "Affidavit Services"]},
+        {"id": "stamp_vendor", "name": "Stamp Vendor", "icon": "Receipt", "service_categories": ["Stamp Services"]},
+        {"id": "stenographer", "name": "Stenographer", "icon": "Mic", "service_categories": ["Stenographer Services"]},
+        {"id": "court_runner", "name": "Court Runner / Clerk", "icon": "Footprints", "service_categories": ["Court Support"]},
+        {"id": "delivery_partner", "name": "Delivery Partner", "icon": "Truck", "service_categories": []},
+    ]
 
 
 app.include_router(api_router)

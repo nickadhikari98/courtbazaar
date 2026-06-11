@@ -131,9 +131,15 @@ SERVICE_CATALOG = [
     {"service_id": "svc_nj_stamp", "name": "Non-Judicial Stamp Paper", "category": "Stamp Services", "base_price": 100.0, "unit": "per stamp paper", "platform_commission_pct": 0.20, "icon": "Newspaper", "turnaround_hours": 4},
 
     # Court Support
-    {"service_id": "svc_certified_copy", "name": "Certified Copy Application", "category": "Court Support", "base_price": 400.0, "unit": "per application", "platform_commission_pct": 0.25, "icon": "FileCheck", "turnaround_hours": 24},
-    {"service_id": "svc_cause_list", "name": "Cause List Printing", "category": "Court Support", "base_price": 100.0, "unit": "per list", "platform_commission_pct": 0.25, "icon": "ListTodo", "turnaround_hours": 2},
+    {"service_id": "svc_certified_copy", "name": "Certified Copy Application", "category": "Court Support", "base_price": 400.0, "unit": "per application", "platform_commission_pct": 0.20, "icon": "FileCheck", "turnaround_hours": 24},
+    {"service_id": "svc_cause_list", "name": "Cause List Printing", "category": "Court Support", "base_price": 100.0, "unit": "per list", "platform_commission_pct": 0.20, "icon": "ListTodo", "turnaround_hours": 2},
     {"service_id": "svc_court_runner", "name": "Court Runner Services", "category": "Court Support", "base_price": 500.0, "unit": "per visit", "platform_commission_pct": 0.20, "icon": "Footprints", "turnaround_hours": 4},
     {"service_id": "svc_court_clerk", "name": "Court Clerk Services", "category": "Court Support", "base_price": 800.0, "unit": "per day", "platform_commission_pct": 0.20, "icon": "Users", "turnaround_hours": 8},
-    {"service_id": "svc_doc_delivery", "name": "Document Delivery", "category": "Court Support", "base_price": 150.0, "unit": "per delivery", "platform_commission_pct": 0.25, "icon": "Truck", "turnaround_hours": 4},
+    {"service_id": "svc_doc_delivery", "name": "Document Delivery", "category": "Court Support", "base_price": 150.0, "unit": "per delivery", "platform_commission_pct": 0.20, "icon": "Truck", "turnaround_hours": 4},
+
+    # Stenographer Services (hourly booking)
+    {"service_id": "svc_steno_hearing", "name": "Stenographer — Hearing Coverage", "category": "Stenographer Services", "base_price": 800.0, "unit": "per hour", "platform_commission_pct": 0.20, "icon": "Mic", "turnaround_hours": 1, "booking_type": "hourly", "min_hours": 2},
+    {"service_id": "svc_steno_deposition", "name": "Stenographer — Deposition / Recording", "category": "Stenographer Services", "base_price": 1000.0, "unit": "per hour", "platform_commission_pct": 0.20, "icon": "Mic", "turnaround_hours": 1, "booking_type": "hourly", "min_hours": 2},
+    {"service_id": "svc_steno_transcription", "name": "Stenographer — Audio Transcription", "category": "Stenographer Services", "base_price": 600.0, "unit": "per hour", "platform_commission_pct": 0.20, "icon": "FileText", "turnaround_hours": 24, "booking_type": "hourly", "min_hours": 1},
+    {"service_id": "svc_steno_dictation", "name": "Stenographer — Dictation Session", "category": "Stenographer Services", "base_price": 500.0, "unit": "per hour", "platform_commission_pct": 0.20, "icon": "Mic", "turnaround_hours": 2, "booking_type": "hourly", "min_hours": 1},
 ]

@@ -55,6 +55,7 @@ export default function VendorDashboard() {
   const active = orders.filter(o => ["accepted", "processing", "quality_check", "ready", "out_for_delivery"].includes(o.status));
   const completed = orders.filter(o => ["completed", "delivered"].includes(o.status));
   const earnings = orders.reduce((s, o) => s + (o.pricing?.vendor_payout || 0), 0);
+  const platformCommissionPaid = orders.reduce((s, o) => s + (o.pricing?.split_details?.platform_commission_20pct || 0), 0);
 
   return (
     <div className="p-6 lg:p-10 max-w-7xl mx-auto">
@@ -123,7 +124,7 @@ export default function VendorDashboard() {
         <Card className="dashboard-card border-none" data-testid="vendor-stat-pending"><CardContent className="p-5"><div className="cb-overline">Pending</div><div className="font-display font-black text-3xl mt-1">{pending.length}</div></CardContent></Card>
         <Card className="dashboard-card border-none" data-testid="vendor-stat-active"><CardContent className="p-5"><div className="cb-overline">In Production</div><div className="font-display font-black text-3xl mt-1">{active.length}</div></CardContent></Card>
         <Card className="dashboard-card border-none" data-testid="vendor-stat-completed"><CardContent className="p-5"><div className="cb-overline">Completed</div><div className="font-display font-black text-3xl mt-1">{completed.length}</div></CardContent></Card>
-        <Card className="dashboard-card border-none" data-testid="vendor-stat-earnings"><CardContent className="p-5"><div className="cb-overline">Earnings (gross)</div><div className="font-display font-black text-3xl mt-1 text-accent">{formatINR(earnings)}</div></CardContent></Card>
+        <Card className="dashboard-card border-none" data-testid="vendor-stat-earnings"><CardContent className="p-5"><div className="cb-overline">Your earnings (80%)</div><div className="font-display font-black text-3xl mt-1 text-accent">{formatINR(earnings)}</div><div className="text-[10px] text-muted-foreground font-bold uppercase mt-1">Platform took {formatINR(platformCommissionPaid)} (20%)</div></CardContent></Card>
       </div>
 
       {/* SLA scorecard */}
