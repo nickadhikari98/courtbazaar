@@ -155,3 +155,34 @@ Build a complete enterprise-grade Legal Operations & Court Services Marketplace 
 ### Total iterations
 - iter1: 37/38 (MVP) · iter2: 22/22 (P1) · iter3: 18/18 (P2 polish) · iter4+5: 28/29 (compliance/SLA)
 - Cumulative: 105/107 backend tests passing across 4 development iterations
+
+## Iteration 6 — Super Admin + Revenue Model + Stenographer (2026-02-XX)
+
+### Backend
+- **Unified revenue model** (`PLATFORM_COMMISSION_PCT=0.20`, `DELIVERY_SHARE_VENDOR_PCT=0.50`, `CONVENIENCE_FEE_FLAT=10`):
+  - Vendor receives 80% of service price; platform retains 20% commission
+  - Delivery fee split 50:50 vendor/platform
+  - Convenience fee = pure platform revenue
+  - Urgent surcharge split 80/20 same as services
+  - All services updated to 0.20 commission (was 0.20-0.30 mix)
+  - `pricing.split_details` now exposes itemised vendor/platform shares
+- **Page-count auto-detection** on file upload via PyPDF2 (PDFs), defaults to 1 for images, ~3000 chars/page for DOCX (via python-docx).
+- **Auto file purge on order completion** (DPDP): when status becomes 'completed', `delete_order_files()` calls Emergent Storage DELETE + marks `files.is_deleted=true` with `deleted_reason=order_completed:ORD...`. Audit log entry `file.auto_delete`.
+- **Stenographer hourly booking** (`/api/stenographers/book`, `/api/stenographers`):
+  - 4 new services: hearing coverage (₹800/hr), deposition (₹1000/hr), transcription (₹600/hr), dictation (₹500/hr)
+  - Each has `booking_type='hourly'` + `min_hours` (1 or 2)
+  - Order_id prefix `STN`, order_type `stenographer_booking`, booking object stores date/start_time/hours
+- **Vendor onboarding upgraded**: optional GST via `has_gst` flag + new `vendor_category` field (photocopy / typist / efiling_agent / notary / stamp_vendor / stenographer / court_runner / delivery_partner) + `bio` + `hourly_rate`. Same 80/20 split for all categories.
+- **Super Admin Command Center** (`/api/admin/command-center`): consolidated revenue (commission/delivery/convenience/urgent), vendor breakdown by category + GST status, order pulse, user roles, compliance metrics, active revenue model parameters.
+- **Vendor categories endpoint** (`/api/vendor-categories`) drives onboarding UI.
+
+### Frontend
+- **SuperAdminConsole page** (`/admin/console`): hero revenue card with 4-component split, revenue mix donut (recharts), revenue model card (20% / 80% / 50:50 / ₹10 / GST 18%), 12-tile KPI grid, vendors-by-category bar chart, orders-by-status bar chart, 8 quick-link tiles to other admin pages.
+- **StenographerBooking page** (`/stenographer`): service type cards, court picker (Delhi-serviceable only), date/time/hours inputs, optional specific stenographer picker, live quote sidebar, hourly minimum enforcement.
+- **VendorOnboard redesigned** with category picker (8 categories), GST optional toggle (Switch), hourly_rate field for stenographers/runners, bio textarea, 5-step layout (Category → Business → GST/KYC → Courts → Services), revenue-model info card.
+- **VendorDashboard**: "Your earnings (80%)" stat now shows platform's 20% take alongside.
+- **AppLayout**: Stenographer nav for advocates; Command Center first item (highlighted) for admin.
+
+### Testing
+- 25/25 iteration-6 tests passed first run
+- Full suite: **126/127 backend tests passing** across 6 development iterations (1 pre-existing AI streaming flake, unrelated)
