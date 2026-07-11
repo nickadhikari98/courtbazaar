@@ -4,7 +4,8 @@ import { useAuth } from "@/context/AuthContext";
 import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
   User, Settings, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck,
-  Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic, Banknote
+  Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic, Banknote,
+  UserPlus,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -49,6 +50,7 @@ const navItems = (role) => {
       { to: "/admin/console", icon: Crown, label: "Command Center", highlight: true },
       { to: "/admin", icon: Shield, label: "Analytics" },
       { to: "/admin/vendors", icon: Store, label: "Vendors" },
+      { to: "/admin/leads", icon: UserPlus, label: "Leads" },
       { to: "/admin/pricing", icon: CreditCard, label: "Pricing" },
       { to: "/admin/users", icon: User, label: "Users" },
       { to: "/admin/reconciliation", icon: Receipt, label: "Reconciliation" },

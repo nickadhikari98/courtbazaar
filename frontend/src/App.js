@@ -5,39 +5,41 @@ import { Toaster } from "sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { setToken } from "@/lib/api";
 
-import Landing from "@/pages/Landing";
-import Login from "@/pages/Login";
-import Register from "@/pages/Register";
-import Dashboard from "@/pages/Dashboard";
-import OrderWizard from "@/pages/OrderWizard";
-import OrderDetail from "@/pages/OrderDetail";
-import Orders from "@/pages/Orders";
-import Marketplace from "@/pages/Marketplace";
-import CourtDirectory from "@/pages/CourtDirectory";
-import AIAssistant from "@/pages/AIAssistant";
-import Wallet from "@/pages/Wallet";
-import Subscription from "@/pages/Subscription";
-import Profile from "@/pages/Profile";
-import VendorDashboard from "@/pages/VendorDashboard";
-import VendorOnboard from "@/pages/VendorOnboard";
-import VendorSettlements from "@/pages/VendorSettlements";
-import AdminSettlements from "@/pages/AdminSettlements";
-import AdminDashboard from "@/pages/AdminDashboard";
-import AdminVendors from "@/pages/AdminVendors";
-import AdminPricing from "@/pages/AdminPricing";
-import AdminUsers from "@/pages/AdminUsers";
-import AdminReconciliation from "@/pages/AdminReconciliation";
-import AdminWhatsAppTemplates from "@/pages/AdminWhatsAppTemplates";
-import AdminAuditLog from "@/pages/AdminAuditLog";
-import AdminLeaderboard from "@/pages/AdminLeaderboard";
-import SuperAdminConsole from "@/pages/SuperAdminConsole";
-import StenographerBooking from "@/pages/StenographerBooking";
-import BulkImport from "@/pages/BulkImport";
-import MyData from "@/pages/MyData";
-import VendorOnboarding from "@/pages/VendorOnboarding";
-import FirmManagement from "@/pages/FirmManagement";
-import DeliveryHub from "@/pages/DeliveryHub";
-import NotificationPrefs from "@/pages/NotificationPrefs";
+import Landing from "@/pages/marketing/Landing";
+import Pricing from "@/pages/marketing/Pricing";
+import VendorOnboarding from "@/pages/marketing/VendorOnboarding";
+import Login from "@/pages/auth/Login";
+import Register from "@/pages/auth/Register";
+import Dashboard from "@/pages/customer/Dashboard";
+import OrderWizard from "@/pages/customer/OrderWizard";
+import OrderDetail from "@/pages/customer/OrderDetail";
+import Orders from "@/pages/customer/Orders";
+import Marketplace from "@/pages/customer/Marketplace";
+import CourtDirectory from "@/pages/customer/CourtDirectory";
+import AIAssistant from "@/pages/customer/AIAssistant";
+import Wallet from "@/pages/customer/Wallet";
+import Subscription from "@/pages/customer/Subscription";
+import Profile from "@/pages/customer/Profile";
+import BulkImport from "@/pages/customer/BulkImport";
+import MyData from "@/pages/customer/MyData";
+import FirmManagement from "@/pages/customer/FirmManagement";
+import NotificationPrefs from "@/pages/customer/NotificationPrefs";
+import VendorDashboard from "@/pages/vendor/VendorDashboard";
+import VendorOnboard from "@/pages/vendor/VendorOnboard";
+import VendorSettlements from "@/pages/vendor/VendorSettlements";
+import AdminSettlements from "@/pages/admin/AdminSettlements";
+import AdminDashboard from "@/pages/admin/AdminDashboard";
+import AdminVendors from "@/pages/admin/AdminVendors";
+import AdminLeads from "@/pages/admin/AdminLeads";
+import AdminPricing from "@/pages/admin/AdminPricing";
+import AdminUsers from "@/pages/admin/AdminUsers";
+import AdminReconciliation from "@/pages/admin/AdminReconciliation";
+import AdminWhatsAppTemplates from "@/pages/admin/AdminWhatsAppTemplates";
+import AdminAuditLog from "@/pages/admin/AdminAuditLog";
+import AdminLeaderboard from "@/pages/admin/AdminLeaderboard";
+import SuperAdminConsole from "@/pages/admin/SuperAdminConsole";
+import DeliveryHub from "@/pages/delivery/DeliveryHub";
+import StenographerBooking from "@/pages/special/StenographerBooking";
 import AppLayout from "@/components/layout/AppLayout";
 
 function AuthCallback() {
@@ -94,6 +96,7 @@ function AppRouter() {
   return (
     <Routes>
       <Route path="/" element={<Landing />} />
+      <Route path="/pricing" element={<Pricing />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
@@ -124,6 +127,7 @@ function AppRouter() {
 
         <Route path="/admin" element={<ProtectedRoute roles={["admin"]}><AdminDashboard /></ProtectedRoute>} />
         <Route path="/admin/vendors" element={<ProtectedRoute roles={["admin"]}><AdminVendors /></ProtectedRoute>} />
+        <Route path="/admin/leads" element={<ProtectedRoute roles={["admin"]}><AdminLeads /></ProtectedRoute>} />
         <Route path="/admin/pricing" element={<ProtectedRoute roles={["admin"]}><AdminPricing /></ProtectedRoute>} />
         <Route path="/admin/users" element={<ProtectedRoute roles={["admin"]}><AdminUsers /></ProtectedRoute>} />
         <Route path="/admin/reconciliation" element={<ProtectedRoute roles={["admin"]}><AdminReconciliation /></ProtectedRoute>} />

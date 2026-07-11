@@ -1,0 +1,726 @@
+/* ===== LANDING PAGE STYLES ===== */
+/* Consolidated CSS using Tailwind @apply for maintainability */
+
+/* ===== UTILITY BAR ===== */
+.landing-utility-bar {
+  @apply bg-primary text-primary-foreground text-[13px] py-2.5;
+}
+
+.landing-utility-link {
+  @apply text-white/75 hover:text-white transition-colors font-medium inline-flex items-center gap-2;
+}
+
+.landing-utility-link svg {
+  @apply flex-shrink-0;
+}
+
+.landing-utility-cta {
+  @apply inline-flex items-center gap-2 text-white font-semibold rounded-full px-3.5 py-1.5 bg-white/10 border border-white/15 transition-all duration-300;
+}
+.landing-utility-cta svg {
+  @apply flex-shrink-0 text-white/70;
+}
+.landing-utility-cta:hover {
+  @apply bg-white/15 border-white/25;
+  transform: translateY(-1px);
+}
+
+/* Highlighted variant — Join as Counsel / Proxy Counsel, the flagship CTA */
+.landing-utility-cta--highlight {
+  @apply relative border-accent/60 bg-accent/10;
+  animation: utility-cta-breathe 3.2s ease-in-out infinite;
+}
+.landing-utility-cta--highlight svg {
+  @apply text-accent;
+}
+.landing-utility-cta--highlight::before {
+  content: '';
+  @apply absolute -inset-[2px] rounded-full pointer-events-none;
+  background: linear-gradient(135deg, rgba(217, 119, 6, 0.9), rgba(251, 191, 36, 0.4), rgba(217, 119, 6, 0.9));
+  z-index: -1;
+  opacity: 0.7;
+  filter: blur(3px);
+  animation: utility-cta-glow 3.2s ease-in-out infinite;
+}
+.landing-utility-cta--highlight:hover {
+  @apply bg-accent/25 border-accent;
+  animation-play-state: paused;
+  transform: translateY(-2px) scale(1.04);
+  box-shadow: 0 10px 24px -6px rgba(217, 119, 6, 0.5), 0 0 0 5px rgba(217, 119, 6, 0.16);
+}
+@keyframes utility-cta-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.45);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(217, 119, 6, 0);
+    transform: scale(1.035);
+  }
+}
+@keyframes utility-cta-glow {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.85; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing-utility-cta--highlight,
+  .landing-utility-cta--highlight::before {
+    animation: none;
+  }
+}
+
+/* ===== NAVIGATION ===== */
+.landing-nav {
+  @apply sticky top-0 z-40 backdrop-blur-xl border-b border-slate-200/80 transition-shadow duration-300;
+  background-color: rgba(255, 255, 255, 0.98);
+}
+.landing-nav.scrolled {
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.04);
+}
+
+.landing-nav-container {
+  @apply max-w-7xl mx-auto px-6 lg:px-10 h-16 flex items-center justify-between;
+}
+
+.landing-nav-link {
+  @apply text-sm font-semibold text-muted-foreground transition-colors duration-200 relative;
+}
+.landing-nav-link:hover {
+  @apply text-foreground;
+}
+.landing-nav-link::after {
+  content: '';
+  @apply absolute bottom-0 left-0 w-0 h-0.5 bg-accent transition-all duration-200;
+}
+.landing-nav-link:hover::after {
+  @apply w-full;
+}
+.landing-nav-link.active {
+  @apply text-foreground;
+}
+.landing-nav-link.active::after {
+  @apply w-full;
+}
+
+.landing-mega-menu {
+  @apply absolute top-full left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded-xl p-4 w-[640px];
+  box-shadow: 0 10px 40px -10px rgba(15, 23, 42, 0.15), 0 4px 12px -4px rgba(15, 23, 42, 0.08);
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, -8px);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
+}
+.group:hover .landing-mega-menu {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
+.landing-mega-featured {
+  @apply relative bg-gradient-to-r from-accent/[0.07] to-primary/[0.03] transition-all duration-300;
+  border: 1.5px solid rgba(217, 119, 6, 0.35);
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.06), 0 4px 16px -4px rgba(217, 119, 6, 0.18);
+}
+.landing-mega-featured:hover {
+  border-color: rgba(217, 119, 6, 0.6);
+  box-shadow: 0 0 0 4px rgba(217, 119, 6, 0.1), 0 10px 28px -6px rgba(217, 119, 6, 0.3);
+  transform: translateY(-2px) scale(1.01);
+}
+.landing-mega-featured-badge {
+  @apply inline-flex items-center gap-1 bg-accent text-white text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full;
+}
+
+/* ===== HERO SECTION ===== */
+.landing-hero {
+  @apply relative overflow-hidden;
+}
+
+.landing-hero-badge {
+  @apply inline-flex items-center gap-2.5 bg-white rounded-full pl-3 pr-4 py-2 text-[11px] sm:text-xs font-bold uppercase tracking-wide text-primary/90;
+  box-shadow: 0 10px 24px -8px rgba(15, 23, 42, 0.18), 0 2px 6px -1px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(15, 23, 42, 0.05);
+}
+
+.landing-hero-badge-accent {
+  @apply w-1 h-4 rounded-full bg-accent flex-shrink-0;
+}
+
+.landing-hero-title {
+  @apply font-display font-bold text-4xl sm:text-5xl lg:text-6xl leading-[1.08] tracking-tight;
+}
+
+.landing-hero-subtitle {
+  @apply text-base sm:text-lg text-muted-foreground font-normal leading-[1.75] max-w-[34rem] text-pretty;
+}
+
+.landing-tracking-widget {
+  @apply inline-flex items-center gap-1 bg-white border border-input rounded-lg h-12 pl-2 pr-1.5 shadow-sm;
+}
+
+.landing-steps-card {
+  @apply bg-white/95 backdrop-blur-xl rounded-2xl p-6 shadow-xl border border-border;
+}
+
+.landing-steps-item {
+  @apply flex flex-col items-center text-center;
+}
+
+/* ===== SERVICE CARDS ===== */
+.landing-service-card {
+  @apply relative bg-white border-2 border-slate-200/70 rounded-2xl p-6 sm:p-8 text-center transition-all duration-300 ease-out cursor-pointer overflow-hidden;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+}
+.landing-service-card:hover {
+  @apply border-accent/70;
+  box-shadow: 0 32px 60px -16px rgba(15, 23, 42, 0.22), 0 10px 24px -6px rgba(15, 23, 42, 0.1), 0 0 0 3px rgba(217, 119, 6, 0.1);
+  transform: translateY(-8px) scale(1.015);
+}
+
+.landing-service-icon {
+  @apply w-28 h-28 mx-auto rounded-2xl flex items-center justify-center mb-4 transition-transform duration-300 ease-out;
+}
+.landing-service-card:hover .landing-service-icon {
+  transform: scale(1.12);
+}
+
+.landing-service-title {
+  @apply font-display font-bold text-2xl leading-tight;
+}
+
+.landing-service-price-dot {
+  @apply w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0;
+}
+
+.landing-service-price {
+  @apply inline-flex items-center gap-1.5 bg-accent/10 text-accent text-xs font-bold px-3 py-1 rounded-full mt-2.5;
+}
+
+.landing-featured-service-price {
+  @apply inline-flex items-center gap-1.5 bg-white/15 text-white text-xs font-bold px-3 py-1 rounded-full mt-2.5;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+.landing-featured-service-price .landing-service-price-dot {
+  @apply bg-white;
+}
+
+.landing-service-desc {
+  @apply text-[15px] text-muted-foreground mt-2 leading-relaxed line-clamp-2;
+}
+
+.landing-service-cta {
+  @apply inline-flex items-center text-xs text-accent font-bold mt-4 opacity-70 transition-opacity duration-300 uppercase tracking-wide;
+}
+.landing-service-card:hover .landing-service-cta {
+  @apply opacity-100;
+}
+
+/* ===== COMING SOON RIBBON ===== */
+.landing-coming-soon-badge {
+  @apply absolute z-10 bg-accent text-white text-[10px] font-bold uppercase tracking-wide text-center rounded-sm;
+  top: 16px;
+  right: -36px;
+  width: 135px;
+  padding: 4px 0;
+  transform: rotate(35deg);
+  box-shadow: 0 3px 10px -2px rgba(217, 119, 6, 0.5);
+}
+
+/* ===== FEATURED SERVICE CARD (Proxy Counsel) ===== */
+.landing-featured-service {
+  @apply relative rounded-2xl p-8 sm:p-12 mt-7 overflow-hidden;
+  background: linear-gradient(155deg, #22406b 0%, #1a3358 32%, #16243f 68%, #0f172a 100%);
+  box-shadow: 0 24px 48px -16px rgba(15, 23, 42, 0.35), 0 8px 16px -4px rgba(15, 23, 42, 0.15);
+}
+.landing-featured-service::after {
+  content: '';
+  @apply absolute pointer-events-none;
+  top: -40%;
+  right: -20%;
+  width: 70%;
+  height: 90%;
+  background: radial-gradient(circle, rgba(217, 119, 6, 0.22) 0%, transparent 65%);
+}
+
+.landing-featured-service-badge {
+  @apply relative inline-flex items-center gap-1.5 bg-accent/20 text-accent text-xs font-bold uppercase tracking-wide px-3 py-1.5 rounded-full mb-6;
+  border: 1px solid rgba(217, 119, 6, 0.35);
+}
+
+.landing-featured-service-icon {
+  @apply relative w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-white/10 flex items-center justify-center flex-shrink-0;
+  border: 1px solid rgba(217, 119, 6, 0.25);
+}
+
+/* Vertical (tall) variant — sits beside the 3x2 core services grid.
+   Premium orange gradient (distinct from the navy horizontal variant). */
+.landing-featured-service--vertical {
+  @apply flex flex-col items-center justify-center text-center p-8 mt-0 transition-all duration-300;
+  background: linear-gradient(160deg, #fbbf24 0%, #d97706 42%, #b45309 75%, #92400e 100%);
+  box-shadow: 0 24px 48px -16px rgba(180, 83, 9, 0.4), 0 8px 16px -4px rgba(15, 23, 42, 0.15);
+}
+.landing-featured-service--vertical::after {
+  background: radial-gradient(circle, rgba(255, 237, 213, 0.35) 0%, transparent 65%);
+}
+.landing-featured-service--vertical:hover {
+  box-shadow: 0 36px 68px -14px rgba(180, 83, 9, 0.5), 0 12px 28px -4px rgba(15, 23, 42, 0.24), 0 0 0 3px rgba(15, 23, 42, 0.08);
+  transform: translateY(-10px) scale(1.02);
+}
+.landing-featured-service--vertical:hover::after {
+  background: radial-gradient(circle, rgba(255, 237, 213, 0.5) 0%, transparent 65%);
+}
+.landing-featured-service--vertical .landing-featured-service-badge {
+  @apply bg-primary/40 text-white;
+  border: 1px solid rgba(217, 119, 6, 0.5);
+}
+.landing-featured-service-icon--vertical {
+  @apply w-20 h-20 rounded-2xl bg-white/15 flex items-center justify-center flex-shrink-0 mb-1 overflow-hidden;
+  border: 1px solid rgba(217, 119, 6, 0.4);
+  box-shadow: 0 0 0 4px rgba(217, 119, 6, 0.12);
+}
+
+/* ===== HOW IT WORKS STEPS ===== */
+.landing-step {
+  @apply relative text-center;
+}
+
+.landing-step-number {
+  @apply w-12 h-12 rounded-full bg-white border-2 border-border text-foreground font-display font-bold text-lg flex items-center justify-center mx-auto mb-4;
+}
+
+.landing-step-number--active {
+  @apply bg-accent border-accent text-white;
+}
+
+.landing-step-icon {
+  @apply w-16 h-16 rounded-2xl bg-white border border-border flex items-center justify-center mx-auto mb-4 shadow-sm;
+}
+
+.landing-step-title {
+  @apply font-display font-bold text-base sm:text-lg leading-snug mt-2;
+}
+
+.landing-step-desc {
+  @apply text-sm text-muted-foreground mt-2.5 leading-relaxed;
+}
+
+.landing-step-connector {
+  @apply hidden md:block absolute top-8 left-[calc(50%+40px)] w-[calc(100%-80px)] border-t-2 border-dashed border-border;
+}
+
+/* ===== TRUST BADGES ===== */
+.landing-trust-section {
+  @apply bg-primary text-white py-12;
+}
+
+.landing-trust-badge {
+  @apply flex flex-col items-center text-center;
+}
+
+.landing-trust-icon {
+  @apply w-10 h-10 text-accent mb-4;
+}
+
+.landing-trust-label {
+  @apply font-bold text-base sm:text-lg;
+}
+
+.landing-trust-desc {
+  @apply text-sm text-white/70 mt-2 leading-relaxed;
+}
+
+/* ===== PRICING CARDS ===== */
+.landing-pricing-card {
+  @apply bg-white border border-slate-200 rounded-2xl p-7 relative flex flex-col transition-all duration-300;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+.landing-pricing-card:hover {
+  @apply border-slate-300;
+  box-shadow: 0 12px 32px -8px rgba(15, 23, 42, 0.1);
+  transform: translateY(-2px);
+}
+
+.landing-pricing-popular {
+  @apply border-accent/30 bg-gradient-to-b from-accent/[0.02] to-white;
+  box-shadow: 0 0 0 1px rgba(217, 119, 6, 0.2), 0 8px 24px -4px rgba(217, 119, 6, 0.12);
+}
+.landing-pricing-popular:hover {
+  box-shadow: 0 0 0 1px rgba(217, 119, 6, 0.3), 0 16px 40px -8px rgba(217, 119, 6, 0.18);
+}
+
+.landing-pricing-badge {
+  @apply absolute -top-3 left-1/2 -translate-x-1/2 bg-accent text-white text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide;
+}
+.landing-pricing-badge--dark {
+  @apply bg-primary;
+}
+
+.landing-pricing-best-value {
+  @apply border-primary/20 bg-gradient-to-b from-primary/[0.03] to-white;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.08), 0 8px 24px -4px rgba(15, 23, 42, 0.1);
+}
+.landing-pricing-best-value:hover {
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.12), 0 16px 40px -8px rgba(15, 23, 42, 0.16);
+}
+
+.landing-pricing-savings {
+  @apply text-xs font-bold text-emerald-600 mt-1;
+}
+
+.landing-pricing-name {
+  @apply font-display font-bold text-lg;
+}
+
+.landing-pricing-price {
+  @apply font-display font-bold text-4xl mt-2;
+}
+
+.landing-pricing-period {
+  @apply text-sm text-muted-foreground font-normal;
+}
+
+.landing-pricing-feature {
+  @apply flex items-center gap-2 text-sm py-1.5;
+}
+
+.landing-bulk-note {
+  @apply max-w-5xl mx-auto mt-8 flex flex-col sm:flex-row items-center justify-between gap-4 bg-white border border-accent/30 rounded-xl p-5 sm:p-6 text-center sm:text-left;
+  animation: bulk-note-glow 4s ease-in-out infinite;
+}
+
+.landing-bulk-cta {
+  @apply inline-flex items-center gap-2 bg-primary hover:bg-primary/90 text-white font-bold text-sm px-4 py-2.5 rounded-md transition-colors flex-shrink-0;
+  animation: bulk-cta-pulse 2.6s ease-in-out infinite;
+}
+@keyframes bulk-note-glow {
+  0%, 100% {
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 0 0 0 rgba(217, 119, 6, 0);
+  }
+  50% {
+    box-shadow: 0 10px 30px -8px rgba(217, 119, 6, 0.3), 0 0 0 6px rgba(217, 119, 6, 0.08);
+  }
+}
+@keyframes bulk-cta-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.5);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(217, 119, 6, 0);
+    transform: scale(1.03);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing-bulk-note,
+  .landing-bulk-cta {
+    animation: none;
+  }
+}
+
+/* ===== PRICING PAGE — PREMIUM REDESIGN ===== */
+
+/* -- Individual pricing service rows -- */
+.landing-service-row {
+  @apply flex items-center gap-4 bg-white border border-slate-200 rounded-xl px-4 py-3.5 transition-all duration-300 ease-out;
+}
+.landing-service-row:hover {
+  @apply border-accent/50;
+  box-shadow: 0 10px 24px -8px rgba(217, 119, 6, 0.16), 0 2px 8px -2px rgba(15, 23, 42, 0.06);
+  transform: translateY(-2px);
+}
+.landing-service-row-icon {
+  @apply w-11 h-11 rounded-lg flex items-center justify-center flex-shrink-0 bg-slate-50;
+}
+.landing-service-row:hover .landing-service-row-icon {
+  @apply bg-accent/10;
+}
+.landing-service-row-name {
+  @apply font-display font-bold text-sm sm:text-[15px] text-foreground;
+}
+.landing-service-row-desc {
+  @apply text-xs text-muted-foreground mt-0.5 leading-snug;
+}
+.landing-service-row-price {
+  @apply inline-flex items-center bg-accent/10 text-accent text-sm font-bold px-3.5 py-1.5 rounded-full flex-shrink-0 ml-auto;
+}
+
+/* -- Package savings banner -- */
+.landing-savings-banner {
+  @apply relative bg-white border border-accent/25 rounded-2xl p-6 sm:p-8 text-center overflow-hidden;
+  background-image: linear-gradient(180deg, rgba(217, 119, 6, 0.05) 0%, rgba(255, 255, 255, 1) 55%);
+  box-shadow: 0 4px 16px -6px rgba(217, 119, 6, 0.14), 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+.landing-savings-banner-items {
+  @apply flex flex-col sm:flex-row items-center justify-center flex-wrap gap-3 sm:gap-6 mt-5;
+}
+.landing-savings-banner-item {
+  @apply inline-flex items-center gap-2 text-sm font-semibold text-foreground bg-slate-50 border border-slate-200/80 rounded-full px-3.5 py-1.5;
+}
+.landing-savings-banner-item svg {
+  @apply text-accent flex-shrink-0;
+}
+
+/* -- Packages / Comparison toggle -- */
+.landing-pricing-toggle {
+  @apply inline-flex items-center gap-1 bg-slate-100 rounded-full p-1 h-auto;
+}
+.landing-pricing-toggle-trigger {
+  @apply rounded-full px-4 sm:px-5 py-2 text-sm font-bold text-muted-foreground transition-all duration-200;
+}
+.landing-pricing-toggle-trigger[data-state="active"] {
+  @apply bg-white text-primary;
+  box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.16);
+}
+
+/* -- Hero package cards -- */
+.landing-pricing-hero-card {
+  @apply relative w-full bg-white border border-slate-200 rounded-3xl p-7 sm:p-8 flex flex-col transition-all duration-300 ease-out;
+  box-shadow: 0 4px 14px -4px rgba(15, 23, 42, 0.08);
+}
+.landing-pricing-hero-card:hover {
+  @apply border-slate-300;
+  box-shadow: 0 28px 56px -18px rgba(15, 23, 42, 0.22), 0 10px 24px -8px rgba(15, 23, 42, 0.1);
+  transform: translateY(-6px) scale(1.012);
+}
+.landing-pricing-hero-popular {
+  @apply border-accent/40;
+  background-image: linear-gradient(180deg, rgba(217, 119, 6, 0.04) 0%, rgba(255, 255, 255, 1) 60%);
+  box-shadow: 0 0 0 1.5px rgba(217, 119, 6, 0.25), 0 10px 28px -8px rgba(217, 119, 6, 0.18);
+}
+.landing-pricing-hero-popular:hover {
+  box-shadow: 0 0 0 1.5px rgba(217, 119, 6, 0.35), 0 32px 60px -16px rgba(217, 119, 6, 0.24);
+}
+.landing-pricing-hero-best-value {
+  @apply border-primary/25;
+  background-image: linear-gradient(180deg, rgba(15, 23, 42, 0.05) 0%, rgba(255, 255, 255, 1) 60%);
+  box-shadow: 0 0 0 1.5px rgba(15, 23, 42, 0.14), 0 10px 28px -8px rgba(15, 23, 42, 0.14);
+}
+.landing-pricing-hero-best-value:hover {
+  box-shadow: 0 0 0 1.5px rgba(15, 23, 42, 0.2), 0 32px 60px -16px rgba(15, 23, 42, 0.22);
+}
+
+.landing-pricing-hero-badge {
+  @apply absolute -top-3.5 left-1/2 -translate-x-1/2 inline-flex items-center gap-1 text-white text-xs font-extrabold px-3.5 py-1.5 rounded-full uppercase tracking-wide whitespace-nowrap;
+  box-shadow: 0 6px 16px -4px rgba(15, 23, 42, 0.35);
+}
+.landing-pricing-hero-badge--popular {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+.landing-pricing-hero-badge--best-value {
+  background: linear-gradient(135deg, #1e3a5f, #0f172a);
+}
+
+.landing-pricing-hero-price {
+  @apply font-display font-bold text-[2.75rem] leading-none tracking-tight text-foreground;
+}
+
+.landing-pricing-hero-savings-row {
+  @apply flex flex-wrap items-center gap-2 mt-3;
+}
+.landing-pricing-hero-savings-chip {
+  @apply inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 text-xs font-bold px-3 py-1.5 rounded-full;
+  animation: savings-chip-pulse 3.4s ease-in-out infinite;
+}
+.landing-pricing-hero-savings-chip--pct {
+  @apply bg-slate-100 text-slate-600;
+  animation: none;
+}
+@keyframes savings-chip-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+}
+
+.landing-pricing-hero-cta {
+  @apply inline-flex items-center justify-center gap-2 w-full font-bold h-12 rounded-xl transition-all duration-300;
+}
+.landing-pricing-hero-cta svg {
+  @apply transition-transform duration-300;
+}
+.landing-pricing-hero-cta:hover svg {
+  transform: translateX(4px);
+}
+.landing-pricing-hero-cta:hover {
+  box-shadow: 0 10px 28px -6px rgba(217, 119, 6, 0.45);
+  transform: translateY(-2px);
+}
+
+.landing-pricing-hero-expand-trigger {
+  @apply inline-flex items-center justify-center gap-1.5 text-sm font-semibold text-primary hover:text-accent transition-colors duration-200 mt-3;
+}
+.landing-pricing-hero-expand-trigger svg {
+  @apply transition-transform duration-300;
+}
+.landing-pricing-hero-expand-trigger[data-open="true"] svg {
+  transform: rotate(180deg);
+}
+
+/* -- Comparison table -- */
+.landing-comparison-wrap {
+  @apply bg-white border border-slate-200 rounded-2xl p-5 sm:p-7 overflow-x-auto;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+/* -- Trust indicators strip -- */
+.landing-trust-strip {
+  @apply grid grid-cols-2 sm:grid-cols-4 gap-4;
+}
+.landing-trust-strip-item {
+  @apply flex items-center gap-2.5 justify-center text-center sm:text-left sm:justify-start bg-white border border-slate-200 rounded-xl px-4 py-3.5;
+}
+.landing-trust-strip-item svg {
+  @apply text-emerald-600 flex-shrink-0;
+}
+.landing-trust-strip-label {
+  @apply text-xs sm:text-sm font-bold text-foreground leading-snug;
+}
+
+/* -- Bulk pricing offer card -- */
+.landing-bulk-offer {
+  @apply relative rounded-3xl p-8 sm:p-12 text-center overflow-hidden;
+  background: linear-gradient(155deg, #fbbf24 0%, #d97706 45%, #b45309 80%, #92400e 100%);
+  box-shadow: 0 24px 48px -16px rgba(180, 83, 9, 0.4), 0 8px 16px -4px rgba(15, 23, 42, 0.15);
+  animation: bulk-offer-glow 4.5s ease-in-out infinite;
+}
+.landing-bulk-offer::after {
+  content: '';
+  @apply absolute pointer-events-none;
+  top: -30%;
+  right: -10%;
+  width: 60%;
+  height: 80%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.25) 0%, transparent 65%);
+}
+.landing-bulk-offer-title {
+  @apply relative font-display font-bold text-2xl sm:text-3xl text-white tracking-tight;
+}
+.landing-bulk-offer-subtitle {
+  @apply relative text-sm sm:text-base text-white/85 mt-2.5 max-w-xl mx-auto leading-relaxed;
+}
+.landing-bulk-offer-cta {
+  @apply relative inline-flex items-center gap-2 bg-white text-primary font-bold text-sm sm:text-base px-6 py-3 rounded-xl mt-6 transition-all duration-300;
+}
+.landing-bulk-offer-cta:hover {
+  box-shadow: 0 12px 28px -8px rgba(15, 23, 42, 0.35);
+  transform: translateY(-2px) scale(1.03);
+}
+@keyframes bulk-offer-glow {
+  0%, 100% { box-shadow: 0 24px 48px -16px rgba(180, 83, 9, 0.4), 0 8px 16px -4px rgba(15, 23, 42, 0.15); }
+  50% { box-shadow: 0 28px 60px -14px rgba(180, 83, 9, 0.55), 0 10px 24px -4px rgba(15, 23, 42, 0.2), 0 0 0 6px rgba(217, 119, 6, 0.1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing-pricing-hero-savings-chip,
+  .landing-bulk-offer {
+    animation: none;
+  }
+}
+
+/* ===== REVIEWS / TESTIMONIALS ===== */
+.landing-review-card {
+  @apply bg-white border border-slate-200 rounded-2xl p-7 transition-all duration-300;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+.landing-review-card:hover {
+  @apply border-slate-300;
+  box-shadow: 0 12px 32px -8px rgba(15, 23, 42, 0.1);
+  transform: translateY(-2px);
+}
+
+/* ===== COVERAGE MAP ===== */
+.landing-map-container {
+  @apply relative rounded-2xl overflow-hidden bg-slate-100;
+}
+
+.landing-court-item {
+  @apply flex items-center gap-2 text-base py-1.5 px-2 -mx-2 rounded-lg transition-colors;
+}
+.landing-court-item:hover {
+  @apply bg-white;
+}
+.landing-court-item--active {
+  @apply bg-white shadow-sm;
+}
+.landing-court-item--active span {
+  @apply text-accent font-bold;
+}
+
+.landing-court-highlight {
+  @apply bg-white border border-slate-200 rounded-xl p-5 transition-all duration-200;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+.landing-map-container .leaflet-container {
+  @apply w-full h-full;
+  font-family: inherit;
+}
+
+.court-map-pin-inner {
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  background: #D97706;
+  border: 3px solid #fff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.35);
+  transition: transform 0.15s ease;
+}
+.leaflet-marker-icon:hover .court-map-pin-inner {
+  transform: scale(1.15);
+}
+
+.court-map-tooltip.leaflet-tooltip {
+  @apply font-semibold text-xs text-primary bg-white border border-slate-200 rounded-md px-2.5 py-1.5;
+  box-shadow: 0 4px 12px -2px rgba(15, 23, 42, 0.18);
+  transition: opacity 0.15s ease;
+}
+.court-map-tooltip.leaflet-tooltip-top:before {
+  border-top-color: #fff;
+}
+
+/* ===== CTA SECTION ===== */
+.landing-cta {
+  @apply bg-primary text-white rounded-3xl p-10 lg:p-16 relative overflow-hidden;
+}
+
+.landing-cta-title {
+  @apply font-display font-bold text-2xl sm:text-3xl lg:text-4xl tracking-tight;
+}
+
+/* ===== FOOTER ===== */
+.landing-footer {
+  @apply bg-primary text-white py-8 lg:py-10;
+}
+
+.landing-footer-heading {
+  @apply text-sm font-extrabold uppercase tracking-wider text-white mb-3;
+}
+
+.landing-footer-link {
+  @apply text-white/80 hover:text-white text-sm transition-colors block py-1;
+}
+
+.landing-footer-social {
+  @apply w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors;
+}
+
+.landing-footer-divider {
+  @apply border-t border-white/10 my-5;
+}
+
+/* ===== SECTION UTILITIES ===== */
+.landing-section {
+  @apply py-12 lg:py-16;
+}
+
+.landing-section-header {
+  @apply text-center max-w-3xl mx-auto mb-9;
+}
+
+.landing-section-title {
+  @apply font-display font-bold text-3xl sm:text-4xl lg:text-5xl tracking-tight leading-tight;
+}
+
+.landing-section-subtitle {
+  @apply text-base sm:text-lg text-muted-foreground mt-3.5 leading-relaxed;
+}
+
+.landing-container {
+  @apply max-w-7xl mx-auto px-6 lg:px-10;
+}

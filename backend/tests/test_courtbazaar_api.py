@@ -7,8 +7,10 @@ import io
 import os
 import time
 import uuid
+import bcrypt
 import pytest
 import requests
+from pymongo import MongoClient
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL")
 if not BASE_URL:
@@ -23,6 +25,14 @@ if not BASE_URL:
         pass
 BASE_URL = (BASE_URL or "").rstrip("/")
 API = f"{BASE_URL}/api"
+
+
+def _otp_db():
+    """Direct DB access, test-only: OTP codes are delivered via SMS in real
+    usage, so a black-box HTTP test has no other way to read the code the
+    server generated in order to exercise the real verify path."""
+    return MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))[os.environ.get("DB_NAME", "courtbazaar")]
+
 
 ADV_EMAIL = "advocate@demo.in"
 ADV_PASS = "Advocate@123"
@@ -144,8 +154,24 @@ class TestAuth:
         assert r.json().get("ok") is True
 
     def test_otp_verify_creates_user(self, s):
+        # OTP delivery is real now (SMS provider or console-logged mock) —
+        # a black-box HTTP test can't intercept the SMS, so it seeds the
+        # known code server-side after /request, the same way a test would
+        # stub any other real-world delivery channel. This exercises the
+        # actual hash-compare/expiry verify path, not a hardcoded bypass.
         phone = f"9{uuid.uuid4().int % 1000000000:09d}"
-        r = s.post(f"{API}/auth/otp/verify", json={"phone": phone, "otp": "123456", "name": "OTP Tester", "role": "advocate"}, timeout=15)
+        r = s.post(f"{API}/auth/otp/request", json={"phone": phone}, timeout=15)
+        assert r.status_code == 200
+
+        test_code = "654321"
+        db = _otp_db()
+        result = db.otp_codes.update_one(
+            {"phone": phone, "used": False},
+            {"$set": {"otp_hash": bcrypt.hashpw(test_code.encode(), bcrypt.gensalt()).decode()}},
+        )
+        assert result.matched_count == 1, "expected /auth/otp/request to have created exactly one otp_codes record"
+
+        r = s.post(f"{API}/auth/otp/verify", json={"phone": phone, "otp": test_code, "name": "OTP Tester", "role": "advocate"}, timeout=15)
         assert r.status_code == 200
         body = r.json()
         assert "token" in body

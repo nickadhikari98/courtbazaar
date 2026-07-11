@@ -13,6 +13,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Literal, Dict, Any
 import uuid
+import secrets
 import asyncio
 import jwt
 import bcrypt
@@ -23,16 +24,28 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+db_name = os.environ.get('DB_NAME', 'courtbazaar')
+client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=3000)
+db = client[db_name]
 
 # Config
-JWT_SECRET = os.environ.get('JWT_SECRET', 'change-me')
+JWT_SECRET = os.environ.get('JWT_SECRET')
+if not JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET environment variable is required and must not be empty. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+    )
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY')
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 APP_NAME = os.environ.get('APP_NAME', 'courtbazaar')
-STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+GOOGLE_OAUTH_ENABLED = os.environ.get('GOOGLE_OAUTH_ENABLED', 'false').lower() == 'true'
+CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',')
+MAX_UPLOAD_SIZE_BYTES = int(os.environ.get('MAX_UPLOAD_SIZE_BYTES', str(10 * 1024 * 1024)))  # 10MB default
+ALLOWED_UPLOAD_EXTENSIONS = {'pdf', 'jpg', 'jpeg', 'png'}
+ALLOWED_UPLOAD_CONTENT_TYPES = {
+    'application/pdf', 'image/jpeg', 'image/jpg', 'image/png',
+}
 
 app = FastAPI(title="CourtBazaar API")
 api_router = APIRouter(prefix="/api")
@@ -40,65 +53,22 @@ api_router = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+async def ensure_db_ready() -> bool:
+    try:
+        await client.admin.command('ping')
+        return True
+    except Exception as exc:
+        logger.warning("MongoDB unavailable at startup: %s", exc)
+        return False
+
 # ===== Storage =====
-_storage_key: Optional[str] = None
-
-def init_storage():
-    global _storage_key
-    if _storage_key:
-        return _storage_key
-    try:
-        resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
-        resp.raise_for_status()
-        _storage_key = resp.json()["storage_key"]
-        logger.info("Object storage initialized")
-        return _storage_key
-    except Exception as e:
-        logger.error(f"Storage init failed: {e}")
-        return None
-
-def put_object(path: str, data: bytes, content_type: str) -> dict:
-    key = init_storage()
-    if not key:
-        raise HTTPException(500, "Storage unavailable")
-    resp = requests.put(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key, "Content-Type": content_type},
-        data=data, timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-def get_object(path: str):
-    key = init_storage()
-    if not key:
-        raise HTTPException(500, "Storage unavailable")
-    resp = requests.get(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key}, timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
-
-
-def delete_object(path: str) -> bool:
-    """Delete an object from storage. Returns True on success."""
-    key = init_storage()
-    if not key:
-        return False
-    try:
-        resp = requests.delete(
-            f"{STORAGE_URL}/objects/{path}",
-            headers={"X-Storage-Key": key}, timeout=30,
-        )
-        return resp.status_code in (200, 204, 404)
-    except Exception as e:
-        logger.error(f"Storage delete failed: {e}")
-        return False
+# S3-compatible (Cloudflare R2 by default, swappable to AWS S3 via env vars) —
+# see storage.py. Replaces the old Emergent-platform-specific object store.
+from storage import put_object, get_object, delete_object, presigned_download_url
 
 
 async def delete_order_files(order_id: str) -> dict:
-    """Delete all files attached to an order (DPDP compliance — wipe after job done)."""
+    """Delete all files attached to an order (DPDP compliance - wipe after job done)."""
     order = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
     if not order:
         return {"deleted": 0}
@@ -120,6 +90,19 @@ async def delete_order_files(order_id: str) -> dict:
         deleted += 1
     logger.info(f"DPDP: purged {deleted} files for order {order_id}")
     return {"deleted": deleted, "order_id": order_id}
+
+
+def validate_upload(filename: str, content_type: Optional[str], size: int) -> None:
+    """Shared guard for every file-upload endpoint. Raises HTTPException on rejection."""
+    ext = filename.rsplit(".", 1)[-1].lower() if filename and "." in filename else ""
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported file type '.{ext}'. Allowed: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}")
+    if content_type and content_type.lower() not in ALLOWED_UPLOAD_CONTENT_TYPES:
+        raise HTTPException(400, f"Unsupported content type '{content_type}'")
+    if size > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(400, f"File too large. Max size is {MAX_UPLOAD_SIZE_BYTES // (1024*1024)}MB")
+    if size == 0:
+        raise HTTPException(400, "Uploaded file is empty")
 
 # ===== Auth helpers =====
 def hash_password(password: str) -> str:
@@ -251,13 +234,40 @@ class RatingCreate(BaseModel):
     rating: int
     review: Optional[str] = None
 
+class LeadDraftCreate(BaseModel):
+    role_applied_for: str
+    form_data: Dict[str, Any] = {}
+    current_step: int = 0
+
+class LeadDraftUpdate(BaseModel):
+    draft_token: str
+    form_data: Dict[str, Any]
+    current_step: Optional[int] = None
+
+class LeadSubmit(BaseModel):
+    draft_token: str
+
+class LeadStatusChange(BaseModel):
+    status: str
+    remark: Optional[str] = None
+
+class LeadNote(BaseModel):
+    note: str
+
 # ===== Startup: seed data =====
 @app.on_event("startup")
 async def startup():
-    init_storage()
-    await seed_initial_data()
+    if not await ensure_db_ready():
+        logger.warning("Continuing without database seeding because MongoDB is not reachable. Start MongoDB to enable full functionality.")
+        return
+    try:
+        await seed_initial_data()
+    except Exception as exc:
+        logger.warning("Database seeding skipped due to startup error: %s", exc)
 
 async def seed_initial_data():
+    if not await ensure_db_ready():
+        return
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -276,68 +286,9 @@ async def seed_initial_data():
         # Unified 20% commission for all services
         await db.services.update_many({}, {"$set": {"platform_commission_pct": 0.20}})
         logger.info("Seeded/updated services (unified 20% commission)")
-
-    if await db.users.count_documents({"role": "admin"}) == 0:
-        admin_id = f"user_{uuid.uuid4().hex[:12]}"
-        await db.users.insert_one({
-            "user_id": admin_id,
-            "email": "admin@courtbazaar.in",
-            "name": "Platform Admin",
-            "role": "admin",
-            "password_hash": hash_password("Admin@123"),
-            "phone": "9999999999",
-            "verified": True,
-            "wallet_balance": 0.0,
-            "subscription": "enterprise",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-
-    if not await db.users.find_one({"email": "advocate@demo.in"}):
-        adv_id = f"user_{uuid.uuid4().hex[:12]}"
-        await db.users.insert_one({
-            "user_id": adv_id,
-            "email": "advocate@demo.in",
-            "name": "Adv. Priya Sharma",
-            "role": "advocate",
-            "password_hash": hash_password("Advocate@123"),
-            "phone": "9876543210",
-            "bar_council_id": "D/1234/2018",
-            "chamber_address": "Chamber 42, Tis Hazari Court, Delhi",
-            "verified": True,
-            "wallet_balance": 2500.0,
-            "subscription": "advocate_pro",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-
-    if not await db.users.find_one({"email": "vendor@demo.in"}):
-        v_id = f"user_{uuid.uuid4().hex[:12]}"
-        await db.users.insert_one({
-            "user_id": v_id,
-            "email": "vendor@demo.in",
-            "name": "Sharma Xerox & Print Center",
-            "role": "vendor",
-            "password_hash": hash_password("Vendor@123"),
-            "phone": "9876543211",
-            "verified": True,
-            "kyc_status": "approved",
-            "wallet_balance": 0.0,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-        await db.vendors.insert_one({
-            "vendor_id": v_id,
-            "user_id": v_id,
-            "shop_name": "Sharma Xerox & Print Center",
-            "owner_name": "Rakesh Sharma",
-            "phone": "9876543211",
-            "address": "Shop 12, Tis Hazari Court Complex, Delhi",
-            "court_ids": ["court_tishazari", "court_patiala_house", "court_karkardooma"],
-            "service_ids": ["svc_bw_photocopy", "svc_color_photocopy", "svc_bw_print", "svc_color_print", "svc_spiral_binding", "svc_hard_binding", "svc_pagination", "svc_bookmarking"],
-            "rating": 4.7,
-            "total_orders": 1247,
-            "kyc_status": "approved",
-            "gst": "07AAACS1234A1Z5",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
+    # No demo/admin accounts are seeded here by design — production must never boot with
+    # known hardcoded credentials. Use scripts/create_admin.py once, on a real deployment,
+    # to bootstrap the first admin account interactively.
 
 # ===== Routes =====
 @api_router.get("/")
@@ -384,14 +335,48 @@ async def login(req: LoginRequest, request: Request):
         pass
     return {"token": token, "user": user}
 
+OTP_TTL_SECONDS = 300
+OTP_RESEND_COOLDOWN_SECONDS = 60
+OTP_MAX_ATTEMPTS = 5
+
 @api_router.post("/auth/otp/request")
 async def otp_request(req: OtpRequest):
-    return {"ok": True, "message": "OTP sent (mock). Use 123456", "phone": req.phone}
+    now = datetime.now(timezone.utc)
+    recent = await db.otp_codes.find_one(
+        {"phone": req.phone}, sort=[("created_at", -1)]
+    )
+    if recent:
+        created_at = datetime.fromisoformat(recent["created_at"])
+        if (now - created_at).total_seconds() < OTP_RESEND_COOLDOWN_SECONDS:
+            raise HTTPException(429, "Please wait before requesting another OTP")
+    code = f"{secrets.randbelow(900000) + 100000}"
+    await db.otp_codes.delete_many({"phone": req.phone, "used": False})
+    await db.otp_codes.insert_one({
+        "phone": req.phone,
+        "otp_hash": hash_password(code),
+        "expires_at": (now + timedelta(seconds=OTP_TTL_SECONDS)).isoformat(),
+        "attempts": 0,
+        "used": False,
+        "created_at": now.isoformat(),
+    })
+    from notifications import notify
+    notify({"phone": req.phone, "notif_prefs": {"sms": True, "whatsapp": True, "email": False}}, "otp", {"otp": code})
+    return {"ok": True, "message": "OTP sent", "phone": req.phone}
 
 @api_router.post("/auth/otp/verify")
 async def otp_verify(req: OtpVerify):
-    if req.otp != "123456":
+    rec = await db.otp_codes.find_one({"phone": req.phone, "used": False}, sort=[("created_at", -1)])
+    if not rec:
+        raise HTTPException(400, "Invalid or expired OTP")
+    if rec["attempts"] >= OTP_MAX_ATTEMPTS:
+        raise HTTPException(429, "Too many attempts. Request a new OTP.")
+    expires_at = datetime.fromisoformat(rec["expires_at"])
+    if datetime.now(timezone.utc) > expires_at:
+        raise HTTPException(400, "OTP has expired")
+    if not verify_password(req.otp, rec["otp_hash"]):
+        await db.otp_codes.update_one({"_id": rec["_id"]}, {"$inc": {"attempts": 1}})
         raise HTTPException(400, "Invalid OTP")
+    await db.otp_codes.update_one({"_id": rec["_id"]}, {"$set": {"used": True}})
     user = await db.users.find_one({"phone": req.phone}, {"_id": 0})
     if not user:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
@@ -414,6 +399,8 @@ async def otp_verify(req: OtpVerify):
 
 @api_router.post("/auth/google/session")
 async def google_session(payload: dict, response: Response):
+    if not GOOGLE_OAUTH_ENABLED:
+        raise HTTPException(501, "Google login is not configured on this server")
     session_id = payload.get("session_id")
     if not session_id:
         raise HTTPException(400, "session_id required")
@@ -582,11 +569,12 @@ async def approve_vendor(vendor_id: str, user=Depends(get_current_user)):
 # ---------- FILES ----------
 @api_router.post("/files/upload")
 async def upload_file(file: UploadFile = File(...), user=Depends(get_current_user)):
+    data = await file.read()
+    content_type = file.content_type or "application/octet-stream"
+    validate_upload(file.filename, content_type, len(data))
     ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "bin"
     file_id = str(uuid.uuid4())
     path = f"{APP_NAME}/uploads/{user['user_id']}/{file_id}.{ext}"
-    data = await file.read()
-    content_type = file.content_type or "application/octet-stream"
     try:
         result = put_object(path, data, content_type)
     except Exception as e:
@@ -667,15 +655,113 @@ async def download_file(file_id: str, user=Depends(get_current_user)):
     rec = await db.files.find_one({"file_id": file_id, "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(404, "File not found")
-    if rec["user_id"] != user["user_id"] and user["role"] not in ("admin", "vendor"):
+    is_owner = rec["user_id"] == user["user_id"]
+    is_admin = user["role"] == "admin"
+    is_assigned_vendor = False
+    if not is_owner and not is_admin and user["role"] == "vendor":
+        is_assigned_vendor = await db.orders.find_one({"vendor_id": user["user_id"], "file_ids": file_id}) is not None
+    if not (is_owner or is_admin or is_assigned_vendor):
         raise HTTPException(403, "Forbidden")
-    data, ct = get_object(rec["storage_path"])
-    return Response(content=data, media_type=rec.get("content_type", ct))
+    url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"))
+    return {"url": url, "filename": rec.get("original_filename")}
 
 @api_router.get("/files/mine")
 async def my_files(user=Depends(get_current_user)):
     files = await db.files.find({"user_id": user["user_id"], "is_deleted": False}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return files
+
+# ---------- LEADS (public: landing-page "Join as..." applications) ----------
+import leads as leads_svc
+from fastapi.responses import HTMLResponse
+
+@api_router.post("/leads/draft")
+async def leads_create_draft(payload: LeadDraftCreate, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    leads_svc.check_draft_rate_limit(client_ip)
+    return await leads_svc.create_draft(db, payload.role_applied_for, payload.form_data, payload.current_step)
+
+@api_router.put("/leads/{lead_id}/draft")
+async def leads_update_draft(lead_id: str, payload: LeadDraftUpdate):
+    return await leads_svc.update_draft(db, lead_id, payload.draft_token, payload.form_data, payload.current_step)
+
+@api_router.post("/leads/{lead_id}/documents")
+async def leads_add_document(
+    lead_id: str,
+    draft_token: str = Form(...),
+    field_key: str = Form(...),
+    file: UploadFile = File(...),
+):
+    data = await file.read()
+    content_type = file.content_type or "application/octet-stream"
+    return await leads_svc.add_document(
+        db, put_object, validate_upload, lead_id, draft_token, field_key, file.filename, content_type, data,
+    )
+
+@api_router.delete("/leads/{lead_id}/documents/{doc_id}")
+async def leads_remove_document(lead_id: str, doc_id: str, draft_token: str = Query(...)):
+    return await leads_svc.remove_document(db, delete_object, lead_id, draft_token, doc_id)
+
+@api_router.post("/leads/{lead_id}/submit")
+async def leads_submit(lead_id: str, payload: LeadSubmit, request: Request):
+    from notifications import send_email
+    verify_base_url = f"{str(request.base_url).rstrip('/')}/api/leads/verify-email"
+    return await leads_svc.submit_lead(db, send_email, verify_base_url, lead_id, payload.draft_token)
+
+@api_router.get("/leads/verify-email")
+async def leads_verify_email(token: str):
+    try:
+        await leads_svc.verify_email(db, token)
+        body = "<h2>Email verified</h2><p>Thanks — your email address has been confirmed. You can close this tab.</p>"
+    except HTTPException as e:
+        body = f"<h2>Verification failed</h2><p>{e.detail}</p>"
+    return HTMLResponse(f"<html><body style='font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center;'>{body}</body></html>")
+
+# ---------- ADMIN: LEADS ----------
+@api_router.get("/admin/leads/stats")
+async def admin_leads_stats(user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await leads_svc.lead_stats(db)
+
+@api_router.get("/admin/leads")
+async def admin_leads_list(
+    user=Depends(get_current_user),
+    status: Optional[str] = None,
+    role: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await leads_svc.list_leads(db, status, role, q)
+
+@api_router.get("/admin/leads/{lead_id}")
+async def admin_leads_detail(lead_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await leads_svc.get_lead_detail(db, lead_id)
+
+@api_router.put("/admin/leads/{lead_id}/status")
+async def admin_leads_status(lead_id: str, payload: LeadStatusChange, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    from notifications import send_email
+    return await leads_svc.admin_change_status(db, send_email, lead_id, payload.status, payload.remark, user)
+
+@api_router.post("/admin/leads/{lead_id}/notes")
+async def admin_leads_add_note(lead_id: str, payload: LeadNote, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await leads_svc.add_note(db, lead_id, payload.note, user)
+
+@api_router.get("/admin/leads/{lead_id}/documents/{doc_id}/download-url")
+async def admin_leads_document_url(lead_id: str, doc_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    rec = await db.lead_documents.find_one({"doc_id": doc_id, "lead_id": lead_id, "is_deleted": False}, {"_id": 0})
+    if not rec:
+        raise HTTPException(404, "Document not found")
+    url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"))
+    return {"url": url, "filename": rec.get("original_filename")}
 
 # ---------- ORDERS ----------
 ORDER_STATUSES = ["placed", "matched", "accepted", "processing", "quality_check", "ready", "out_for_delivery", "delivered", "completed", "cancelled"]
@@ -1026,9 +1112,9 @@ async def filing_checklist(payload: dict, user=Depends(get_current_user)):
         # Deterministic fallback so endpoint never returns 502
         out = (
             f"Filing checklist for {case_type or 'matter'} at {court or 'court'}:\n"
-            "1. Vakalatnama (signed by client, notarised) — 2 copies\n"
-            "2. Plaint / Petition — original + 2 copies, signed and verified\n"
-            "3. Statement of Truth / Affidavit — notarised\n"
+            "1. Vakalatnama (signed by client, notarised) - 2 copies\n"
+            "2. Plaint / Petition - original + 2 copies, signed and verified\n"
+            "3. Statement of Truth / Affidavit - notarised\n"
             "4. List of documents (Order VII Rule 14 CPC) with copies\n"
             "5. Court fee stamps as per applicable Court Fees Act\n"
             "6. Process fee (PF) and summons fee\n"
@@ -1710,7 +1796,7 @@ async def delete_wa_template(template_id: str, user=Depends(get_current_user)):
 
 
 # ============================================================================
-# BULK ORDER CSV IMPORT (for Law Firms — matter-wise batching)
+# BULK ORDER CSV IMPORT (for Law Firms - matter-wise batching)
 # ============================================================================
 @api_router.get("/firms/bulk-import/template")
 async def bulk_import_template(user=Depends(get_current_user)):
@@ -1721,7 +1807,7 @@ async def bulk_import_template(user=Depends(get_current_user)):
     w = csv.writer(buf)
     w.writerow(["matter_name", "service_ids", "qty_each", "court_id", "delivery_option", "urgent", "delivery_address", "notes"])
     w.writerow(["Sharma v. State - WP 1234/2026", "svc_bw_photocopy;svc_spiral_binding", "200;1", "court_delhi_hc", "chamber", "false", "Chamber 42, Delhi HC", "Court bundle for hearing 15 Mar"])
-    w.writerow(["Mehta Properties - LPA 567/2026", "svc_efile_hc;svc_court_bundle;svc_hard_binding", "1;1;3", "court_delhi_hc", "court", "true", "", "Urgent — file before 11 AM"])
+    w.writerow(["Mehta Properties - LPA 567/2026", "svc_efile_hc;svc_court_bundle;svc_hard_binding", "1;1;3", "court_delhi_hc", "court", "true", "", "Urgent - file before 11 AM"])
     return Response(
         content=buf.getvalue(),
         media_type="text/csv",
@@ -1731,7 +1817,8 @@ async def bulk_import_template(user=Depends(get_current_user)):
 
 @api_router.post("/firms/bulk-import")
 async def firm_bulk_import(file: UploadFile = File(...), user=Depends(get_current_user)):
-    """Upload CSV → create one order per row (matter), all tagged with same firm_id."""
+    """Upload CSV -> create one order per row (matter), all tagged with same firm_id."""
+
     if not user.get("firm_id"):
         raise HTTPException(400, "Bulk import is available for law-firm accounts only. Create or join a firm first.")
     if user.get("firm_role") not in ("owner", "partner"):
@@ -1968,7 +2055,7 @@ async def admin_command_center(user=Depends(get_current_user)):
     async for d in db.vendors.aggregate(vendor_pipeline):
         vendor_by_cat.append({"category": d["_id"] or "uncategorized", "count": d["count"]})
 
-    # Order pulse — by status
+    # Order pulse - by status
     status_pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
     status_pulse = []
     async for d in db.orders.aggregate(status_pipeline):
@@ -2224,8 +2311,8 @@ async def export_settlements_csv(
     format: Optional[str] = "h2h",
 ):
     """Export settlements as bank-ready CSV.
-    format=h2h (default) → NPCI/H2H bulk-upload compatible (SBI Connect / HDFC ENet / ICICI iBizz)
-    format=legacy → simple flat format
+    format=h2h (default) - NPCI/H2H bulk-upload compatible (SBI Connect / HDFC ENet / ICICI iBizz)
+    format=legacy -> simple flat format
     """
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
@@ -2273,7 +2360,7 @@ async def my_settlements(user=Depends(get_current_user)):
 
 @app.on_event("startup")
 async def schedule_daily_settlements():
-    """Schedule daily T+1 settlement run at 02:00 UTC."""
+    """Schedule daily T+1 settlement run at 2:00 UTC."""
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.cron import CronTrigger
@@ -2298,7 +2385,7 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -2306,3 +2393,4 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
