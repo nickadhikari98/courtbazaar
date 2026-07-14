@@ -1,7 +1,7 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { MessageCircle } from "lucide-react";
 import PricingCard from "./PricingCard";
+import BulkPricingOffer from "./pricing/BulkPricingOffer";
 import { packages } from "@/lib/pricingData";
 
 const gridVariants = {
@@ -46,22 +46,11 @@ export default function PricingSection() {
           ))}
         </motion.div>
 
-        <div className="landing-bulk-note">
-          <div>
-            <p className="font-display font-bold text-sm sm:text-base">More than 1000 pages?</p>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              Get special bulk pricing for law firms, senior advocates, chambers and litigation teams.
-            </p>
-          </div>
-          <a
-            href="https://wa.me/919876543210?text=Hi%2C%20I%27d%20like%20a%20bulk%20pricing%20quote%20for%20CourtBazaar%20services."
-            target="_blank"
-            rel="noopener noreferrer"
-            className="landing-bulk-cta"
-          >
-            <MessageCircle className="w-4 h-4" />
-            WhatsApp for Instant Quote
-          </a>
+        <div className="mt-8">
+          <BulkPricingOffer
+            title="More than 1000 pages?"
+            subtitle="Get special bulk pricing for law firms, senior advocates, chambers and litigation teams."
+          />
         </div>
       </div>
     </section>

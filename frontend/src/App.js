@@ -4,10 +4,17 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from
 import { Toaster } from "sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { setToken } from "@/lib/api";
+import ScrollToTop from "@/components/ScrollToTop";
 
 import Landing from "@/pages/marketing/Landing";
 import Pricing from "@/pages/marketing/Pricing";
 import VendorOnboarding from "@/pages/marketing/VendorOnboarding";
+import About from "@/pages/marketing/About";
+import Contact from "@/pages/marketing/Contact";
+import Security from "@/pages/marketing/Security";
+import Trust from "@/pages/marketing/Trust";
+import LegalCenter from "@/pages/legal/LegalCenter";
+import LegalDocument from "@/pages/legal/LegalDocument";
 import Login from "@/pages/auth/Login";
 import Register from "@/pages/auth/Register";
 import Dashboard from "@/pages/customer/Dashboard";
@@ -94,6 +101,8 @@ function AppRouter() {
     return <AuthCallback />;
   }
   return (
+    <>
+    <ScrollToTop />
     <Routes>
       <Route path="/" element={<Landing />} />
       <Route path="/pricing" element={<Pricing />} />
@@ -101,6 +110,12 @@ function AppRouter() {
       <Route path="/register" element={<Register />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/vendor-signup" element={<VendorOnboarding />} />
+      <Route path="/about" element={<About />} />
+      <Route path="/contact" element={<Contact />} />
+      <Route path="/security" element={<Security />} />
+      <Route path="/trust" element={<Trust />} />
+      <Route path="/legal" element={<LegalCenter />} />
+      <Route path="/legal/:slug" element={<LegalDocument />} />
 
       <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route path="/dashboard" element={<Dashboard />} />
@@ -140,6 +155,7 @@ function AppRouter() {
 
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>
+    </>
   );
 }
 

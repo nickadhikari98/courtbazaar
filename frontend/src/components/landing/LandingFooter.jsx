@@ -1,44 +1,64 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { Mail, Phone, MapPin } from "lucide-react";
+import ComingSoonBadge from "@/components/shared/ComingSoonBadge";
 
 const footerColumns = [
   {
-    title: "Services",
+    title: "Company",
     links: [
-      { label: "Print-Out Service", to: "#services" },
-      { label: "Photocopy Services", to: "#services" },
-      { label: "Scanning Services", to: "#services" },
-      { label: "OCR & Bookmarking", to: "#services" },
-      { label: "E-Filing Services", to: "#services" },
-      { label: "Proxy Counsel", to: "#services" },
+      { label: "Careers", soon: true },
+      { label: "Blog", soon: true },
     ],
   },
   {
-    title: "Company",
+    title: "Services",
     links: [
-      { label: "About Us", to: "/about" },
-      { label: "How It Works", to: "#how" },
-      { label: "Plans & Pricing", to: "#pricing" },
-      { label: "Our Network", to: "/network" },
-      { label: "Contact Us", to: "/contact" },
+      { label: "Printing", to: "#services" },
+      { label: "Scanning", to: "#services" },
+      { label: "OCR", to: "#services" },
+      { label: "E-Filing", to: "#services" },
+      { label: "Proxy Counsel", to: "#services" },
+      { label: "Packages", to: "/pricing" },
+    ],
+  },
+  {
+    title: "Resources",
+    links: [
+      { label: "About", to: "/about" },
+      { label: "Trust Center", to: "/trust" },
+      { label: "Security", to: "/security" },
+      { label: "Contact", to: "/contact" },
     ],
   },
   {
     title: "Legal",
     links: [
-      { label: "Privacy Policy", to: "/privacy" },
-      { label: "Terms & Conditions", to: "/terms" },
-      { label: "Refund Policy", to: "/refund" },
-      { label: "KYC Policy", to: "/kyc" },
-      { label: "Data Retention Policy", to: "/data-retention" },
+      { label: "Terms", to: "/legal/terms" },
+      { label: "Privacy", to: "/legal/privacy" },
+      { label: "Refund Policy", to: "/legal/refund" },
+      { label: "Cookie Policy", to: "/legal/cookies" },
+      { label: "Disclaimer", to: "/legal/disclaimer" },
+      { label: "Confidentiality Policy", to: "/legal/confidentiality" },
+      { label: "Grievance Policy", to: "/legal/grievance" },
+    ],
+  },
+  {
+    title: "Support",
+    links: [
+      { label: "Help Center", soon: true },
+      { label: "Contact Support", to: "/contact" },
+      { label: "FAQs", soon: true },
     ],
   },
 ];
 
-const contactInfo = [
-  { icon: Mail, label: "support@courtbazaar.com", href: "mailto:support@courtbazaar.com" },
-  { icon: MapPin, label: "Delhi, India" },
+const secondaryLinks = [
+  { label: "Privacy", to: "/legal/privacy" },
+  { label: "Terms", to: "/legal/terms" },
+  { label: "Cookies", to: "/legal/cookies" },
+  { label: "Refund", to: "/legal/refund" },
+  { label: "Security", to: "/security" },
+  { label: "Trust Center", to: "/trust" },
 ];
 
 const socialLinks = [
@@ -47,11 +67,34 @@ const socialLinks = [
   { icon: "X", href: "https://x.com/court_bazaar", label: "X (Twitter)" },
 ];
 
+function FooterLink({ link }) {
+  if (link.soon) {
+    return (
+      <span className="landing-footer-link landing-footer-link--soon" aria-disabled="true">
+        {link.label}
+        <ComingSoonBadge variant="inline" label="Soon" className="ml-1.5" />
+      </span>
+    );
+  }
+  if (link.to.startsWith("#")) {
+    return (
+      <a href={link.to} className="landing-footer-link">
+        {link.label}
+      </a>
+    );
+  }
+  return (
+    <Link to={link.to} className="landing-footer-link">
+      {link.label}
+    </Link>
+  );
+}
+
 export default function LandingFooter() {
   return (
     <footer id="contact" className="landing-footer">
       <div className="landing-container">
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-6 lg:gap-8">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-6 lg:gap-8">
           {/* Logo & Description */}
           <div className="col-span-2 md:col-span-3 lg:col-span-1">
             <Link to="/" className="inline-flex items-center bg-white rounded-lg px-3 py-2 mb-3">
@@ -88,45 +131,30 @@ export default function LandingFooter() {
               <ul className="space-y-1">
                 {column.links.map((link) => (
                   <li key={link.label}>
-                    {link.to.startsWith("#") ? (
-                      <a href={link.to} className="landing-footer-link">
-                        {link.label}
-                      </a>
-                    ) : (
-                      <Link to={link.to} className="landing-footer-link">
-                        {link.label}
-                      </Link>
-                    )}
+                    <FooterLink link={link} />
                   </li>
                 ))}
               </ul>
             </div>
           ))}
-
-          {/* Contact Us */}
-          <div>
-            <h4 className="landing-footer-heading">Contact Us</h4>
-            <ul className="space-y-2">
-              {contactInfo.map((item) => (
-                <li key={item.label} className="flex items-start gap-2 text-sm">
-                  <item.icon className="w-4 h-4 text-accent mt-0.5 flex-shrink-0" />
-                  {item.href ? (
-                    <a href={item.href} className="text-white/80 hover:text-white transition-colors">
-                      {item.label}
-                    </a>
-                  ) : (
-                    <span className="text-white/80">{item.label}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
         </div>
 
         {/* Bottom Bar */}
         <div className="landing-footer-divider" />
-        <div className="text-center text-sm text-white/60">
-          <p>&copy; {new Date().getFullYear()} LexOrbit Technologies. All rights reserved.</p>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <p className="text-sm text-white/60 text-center sm:text-left">
+            &copy; {new Date().getFullYear()} CourtBazaar &middot; Powered by LexOrbit Technologies
+            <br className="sm:hidden" />
+            <span className="hidden sm:inline"> &middot; </span>
+            India's First Legal Operations Network &amp; Services Platform
+          </p>
+          <nav aria-label="Legal links" className="flex flex-wrap justify-center gap-x-4 gap-y-1.5">
+            {secondaryLinks.map((link) => (
+              <Link key={link.label} to={link.to} className="text-xs text-white/50 hover:text-white/80 transition-colors">
+                {link.label}
+              </Link>
+            ))}
+          </nav>
         </div>
       </div>
     </footer>

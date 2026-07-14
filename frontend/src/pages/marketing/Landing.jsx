@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useLocation } from "react-router-dom";
 import {
   Clock, Network, Activity, Shield, BadgeCheck, ShieldCheck,
 } from "lucide-react";
@@ -79,10 +79,10 @@ const coreServices = [
 
 const proxyCounselService = {
   image: "/images/illustrations/proxy-counsel-badge.png",
-  name: "Proxy Counsel",
-  description: "Find and connect with verified proxy counsels across Delhi courts — briefed, reliable, and ready to appear on your behalf.",
+  name: "Counsel / Proxy Counsel",
+  description: "Find and connect with verified proxy counsels across India — briefed, reliable, and ready to appear on your behalf.",
   cta: "Book Now",
-  startingPrice: "₹499/appearance",
+  startingPrice: "₹Starting from 499/appearance",
 };
 
 const howItWorksSteps = [
@@ -130,6 +130,7 @@ const trustBadges = [
 
 export default function Landing() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const [tourRun, setTourRun] = useState(false);
   const [tourStep, setTourStep] = useState(0);
 
@@ -143,6 +144,18 @@ export default function Landing() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Deep-link support for in-page anchors like /#services (used by the nav's
+  // mega menu) — runs after ScrollToTop's top-reset, so it always scrolls
+  // down from the top rather than racing it.
+  useEffect(() => {
+    const hash = location.hash?.slice(1);
+    if (!hash) return;
+    const id = requestAnimationFrame(() => {
+      document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [location.hash]);
 
   const handleTakeTour = useCallback(() => {
     setTourStep(0);
@@ -204,13 +217,14 @@ export default function Landing() {
               Simple, Transparent and Efficient
             </p>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-6 lg:gap-8">
+          <div className="flex flex-wrap justify-center gap-x-6 gap-y-8 md:grid md:grid-cols-5 md:gap-6 lg:gap-8">
             {howItWorksSteps.map((step, i) => (
-              <StepItem
-                key={step.number}
-                {...step}
-                showConnector={i < howItWorksSteps.length - 1}
-              />
+              <div key={step.number} className="w-[45%] sm:w-[28%] md:w-auto">
+                <StepItem
+                  {...step}
+                  showConnector={i < howItWorksSteps.length - 1}
+                />
+              </div>
             ))}
           </div>
         </div>
@@ -227,9 +241,11 @@ export default function Landing() {
               Why Legal Professionals Trust CourtBazaar?
             </h2>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-6">
+          <div className="flex flex-wrap justify-center gap-x-6 gap-y-8 md:grid md:grid-cols-5 md:gap-6">
             {trustBadges.map((badge) => (
-              <TrustBadge key={badge.label} {...badge} />
+              <div key={badge.label} className="w-[45%] sm:w-[28%] md:w-auto">
+                <TrustBadge {...badge} />
+              </div>
             ))}
           </div>
         </div>

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
+import ComingSoonBadge from "@/components/shared/ComingSoonBadge";
 
 export default function FeaturedServiceCard({
   icon: Icon,
@@ -21,7 +22,7 @@ export default function FeaturedServiceCard({
         to={ctaLink}
         className={cn("landing-featured-service landing-featured-service--vertical group", className)}
       >
-        <span className="landing-coming-soon-badge">Coming Soon</span>
+        <ComingSoonBadge />
         <div className="landing-featured-service-badge">
           <Sparkles className="w-3 h-3" />
           Flagship Service
@@ -37,7 +38,7 @@ export default function FeaturedServiceCard({
         {startingPrice && (
           <div className="landing-featured-service-price">
             <span className="landing-service-price-dot" />
-            Starting at {startingPrice}
+            {startingPrice}
           </div>
         )}
         <p className="text-white text-[15px] sm:text-base mt-3 px-1 leading-relaxed text-center">{description}</p>

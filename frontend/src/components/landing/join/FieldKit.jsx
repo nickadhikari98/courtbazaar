@@ -9,8 +9,11 @@ import {
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
 import StateDistrictField from "./StateDistrictField";
+import DateField from "./DateField";
+import { SingleSelectCombobox } from "./Combobox";
+import CourtOfPracticeField from "./CourtOfPracticeField";
 import { uploadLeadDocument, removeLeadDocument } from "@/lib/leadsApi";
-import { cn } from "@/lib/utils";
+import { cn, resolveDateBound } from "@/lib/utils";
 
 function FieldLabel({ label, required }) {
   if (!label) return null;
@@ -20,11 +23,6 @@ function FieldLabel({ label, required }) {
       {required && <span className="text-red-500 ml-0.5">*</span>}
     </label>
   );
-}
-
-function resolveDateBound(bound) {
-  if (bound === "today") return new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD in local time
-  return bound;
 }
 
 export function TextField({ label, required, placeholder, type = "text", value, onChange, min, max }) {
@@ -77,9 +75,11 @@ export function SelectField({ label, required, options = [], placeholder = "Sele
   );
 }
 
-export function RadioField({ label, required, options = [], other, value, onChange, otherValue, onOtherChange }) {
+export function RadioField({
+  label, required, options = [], other, otherTriggerValues, value, onChange, otherValue, onOtherChange,
+}) {
   const id = useId();
-  const isOtherSelected = value === "Other";
+  const isOtherSelected = otherTriggerValues ? otherTriggerValues.includes(value) : value === "Other";
   return (
     <div>
       <FieldLabel label={label} required={required} />
@@ -94,7 +94,9 @@ export function RadioField({ label, required, options = [], other, value, onChan
             <label htmlFor={`${id}-${opt}`} className="text-sm cursor-pointer">{opt}</label>
           </div>
         ))}
-        {other && (
+        {/* Legacy pattern: `options` doesn't include "Other" literally, so a
+            synthetic extra choice is appended here. */}
+        {other && !otherTriggerValues && (
           <div className="col-span-2 sm:col-span-3 flex items-center gap-2">
             <RadioGroupItem value="Other" id={`${id}-other`} />
             <label htmlFor={`${id}-other`} className="text-sm cursor-pointer flex-shrink-0">Other</label>
@@ -108,6 +110,17 @@ export function RadioField({ label, required, options = [], other, value, onChan
           </div>
         )}
       </RadioGroup>
+      {/* otherTriggerValues pattern: the specify-able choices are already
+          normal options above; just reveal/require the text field alongside. */}
+      {otherTriggerValues && (
+        <Input
+          placeholder="Please specify"
+          className="h-9 text-sm mt-2.5"
+          value={otherValue ?? ""}
+          onChange={(e) => onOtherChange?.(e.target.value)}
+          disabled={!isOtherSelected}
+        />
+      )}
     </div>
   );
 }
@@ -435,6 +448,29 @@ export function renderField(field, key, ctx = {}) {
   switch (field.type) {
     case "select":
       return <div key={key} className={span}><SelectField {...field} value={value} onChange={onChange} /></div>;
+    case "date":
+      return <div key={key} className={span}><DateField {...field} value={value} onChange={onChange} /></div>;
+    case "barCouncil":
+      return (
+        <div key={key} className={span}>
+          <FieldLabel label={field.label} required={field.required} />
+          <SingleSelectCombobox
+            options={field.options}
+            value={value}
+            onChange={onChange}
+            other={field.other}
+            otherValue={otherValue}
+            onOtherChange={onOtherChange}
+            placeholder="Select your State Bar Council"
+          />
+        </div>
+      );
+    case "courtOfPractice":
+      return (
+        <div key={key} className={span}>
+          <CourtOfPracticeField label={field.label} required={field.required} value={value} onChange={onChange} />
+        </div>
+      );
     case "textarea":
       return <div key={key} className={span}><TextareaField {...field} value={value} onChange={onChange} /></div>;
     case "radio":

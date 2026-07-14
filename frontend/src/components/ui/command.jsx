@@ -47,12 +47,32 @@ const CommandInput = React.forwardRef(({ className, ...props }, ref) => (
 
 CommandInput.displayName = CommandPrimitive.Input.displayName
 
-const CommandList = React.forwardRef(({ className, ...props }, ref) => (
-  <CommandPrimitive.List
-    ref={ref}
-    className={cn("max-h-[300px] overflow-y-auto overflow-x-hidden", className)}
-    {...props} />
-))
+const CommandList = React.forwardRef(({ className, ...props }, ref) => {
+  // When a Command is nested inside a Radix Dialog (e.g. a searchable
+  // dropdown inside the "Join as..." modal), the Dialog's scroll-lock
+  // doesn't recognize the Popover's portaled content as part of its own
+  // subtree and silently swallows wheel/trackpad scroll on it — the native
+  // scrollbar still works since it bypasses that lock entirely. Driving the
+  // scroll manually here sidesteps the issue regardless of nesting; it
+  // doesn't touch cmdk's own keyboard navigation, and native touch-scroll on
+  // mobile is unaffected since it isn't gated by wheel handling.
+  const innerRef = React.useRef(null);
+  React.useImperativeHandle(ref, () => innerRef.current);
+
+  const handleWheel = (e) => {
+    const el = innerRef.current;
+    if (!el) return;
+    el.scrollTop += e.deltaY;
+  };
+
+  return (
+    <CommandPrimitive.List
+      ref={innerRef}
+      onWheel={handleWheel}
+      className={cn("max-h-[300px] overflow-y-auto overflow-x-hidden overscroll-contain", className)}
+      {...props} />
+  );
+})
 
 CommandList.displayName = CommandPrimitive.List.displayName
 

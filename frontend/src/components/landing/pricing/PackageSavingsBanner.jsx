@@ -1,13 +1,20 @@
 import React from "react";
 import { Wallet, Tag, ShieldCheck, Zap, Scale } from "lucide-react";
 
-export default function PackageSavingsBanner({ packages = [] }) {
+export default function PackageSavingsBanner({ packages = [], activePackage = null }) {
   const maxSavingsPct = Math.max(...packages.map((p) => parseInt(p.savings, 10) || 0));
   const lowestStartingPrice = Math.min(...packages.map((p) => parseInt(p.startingPrice, 10) || 0));
 
+  // When the user arrived via a specific package's link (e.g. /pricing#standard),
+  // show that package's own figures here instead of the cross-package aggregate —
+  // otherwise the banner above a single-package view would cite a different
+  // package's price than the one actually being shown below it.
+  const savingsPctText = activePackage ? parseInt(activePackage.savings, 10) || maxSavingsPct : maxSavingsPct;
+  const startingPriceText = activePackage ? parseInt(activePackage.startingPrice, 10) || lowestStartingPrice : lowestStartingPrice;
+
   const benefits = [
-    { icon: Wallet, text: `Save up to ${maxSavingsPct}%` },
-    { icon: Tag, text: `Starting from ₹${lowestStartingPrice}` },
+    { icon: Wallet, text: `Save up to ${savingsPctText}%` },
+    { icon: Tag, text: `Starting from ₹${startingPriceText}` },
     { icon: ShieldCheck, text: "No hidden charges" },
     { icon: Zap, text: "Faster turnaround" },
     { icon: Scale, text: "Built for Advocates & Law Firms" },

@@ -45,6 +45,12 @@ function validateSection(section, values) {
     if (field.type === "turnaroundTime" && values[key] === "Custom Time") {
       if (!values[`${key}__from`] || !values[`${key}__to`]) missing = true;
     }
+    if (field.other || field.otherTriggerValues) {
+      const isOtherSelected = field.otherTriggerValues
+        ? field.otherTriggerValues.includes(values[key])
+        : values[key] === "Other";
+      if (isOtherSelected && !isValueFilled({ type: "text" }, values[`${key}__other`])) missing = true;
+    }
   });
   return !missing;
 }
@@ -58,9 +64,11 @@ function buildInitialValues(sections) {
         values[key] = field.multiple ? [field.default || "Delhi"] : (field.default || "Delhi");
       } else if (field.type === "district" && field.multiple) {
         values[key] = [];
+      } else if (field.type === "date" && field.default === "today") {
+        values[key] = new Date().toLocaleDateString("en-CA");
       } else if (field.default !== undefined) {
         values[key] = field.default;
-      } else if (field.type === "checkboxes" || field.type === "declaration" || field.type === "file") {
+      } else if (field.type === "checkboxes" || field.type === "declaration" || field.type === "file" || field.type === "courtOfPractice") {
         values[key] = [];
       } else {
         values[key] = "";
@@ -207,7 +215,7 @@ export default function RoleForm({ roleLabel, roleKey, sections = [], onDone }) 
               ctx.draftToken = draftToken;
               ctx.fieldKey = key;
             }
-            if (field.other) {
+            if (field.other || field.otherTriggerValues) {
               const otherKey = `${key}__other`;
               ctx.otherValue = values[otherKey];
               ctx.onOtherChange = (v) => setValue(otherKey, v);
@@ -234,16 +242,16 @@ export default function RoleForm({ roleLabel, roleKey, sections = [], onDone }) 
               </Button>
             )}
           </div>
-          <div className="flex items-center gap-2 ml-auto">
-            <Button type="button" variant="outline" onClick={handleSaveDraft} className="font-bold text-muted-foreground border-slate-300">
+          <div className="flex flex-wrap items-center gap-2 ml-auto justify-end">
+            <Button type="button" variant="outline" onClick={handleSaveDraft} className="font-bold text-muted-foreground border-slate-300 px-3 sm:px-4">
               Save as Draft
             </Button>
             {!isLastStep ? (
-              <Button type="button" onClick={handleNext} className="bg-primary hover:bg-primary/90 font-bold px-6">
+              <Button type="button" onClick={handleNext} className="bg-primary hover:bg-primary/90 font-bold px-4 sm:px-6">
                 Next <ArrowRight className="w-4 h-4 ml-1.5" />
               </Button>
             ) : (
-              <Button type="submit" disabled={submitting} className="bg-accent hover:bg-accent/90 text-white font-bold px-8">
+              <Button type="submit" disabled={submitting} className="bg-accent hover:bg-accent/90 text-white font-bold px-5 sm:px-8">
                 {submitting ? "Submitting..." : "Submit Application"}
               </Button>
             )}

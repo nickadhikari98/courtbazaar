@@ -24,7 +24,6 @@ export { default as StepItem } from "./StepItem";
 export { default as TrustBadge } from "./TrustBadge";
 export { default as PricingCard } from "./PricingCard";
 export { default as PricingSection } from "./PricingSection";
-export { default as PricingTierTable } from "./PricingTierTable";
 export { default as LiveCourtMap } from "./LiveCourtMap";
 export { default as CoverageSection } from "./CoverageSection";
 export { default as ReviewsSection } from "./ReviewsSection";

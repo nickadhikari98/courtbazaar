@@ -24,10 +24,10 @@ export default function HeroSection() {
       <div className="absolute inset-0 cb-grain opacity-30" />
 
       <div className="landing-container relative">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-0 min-h-[600px] lg:min-h-[650px]">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-0 lg:min-h-[650px]">
 
           {/* Left Content */}
-          <div className="flex flex-col justify-start pt-6 pb-12 lg:pt-10 lg:pb-20 lg:pr-12 relative z-10">
+          <div className="flex flex-col justify-start pt-6 pb-8 lg:pt-10 lg:pb-20 lg:pr-12 relative z-10">
             {/* Heading Block */}
             <div className="mb-5">
               <div className="mb-4">
@@ -69,10 +69,12 @@ export default function HeroSection() {
           </div>
 
           {/* Right Side - Full Image Area */}
-          <div className="relative h-[420px] sm:h-[480px] lg:h-auto lg:absolute lg:right-0 lg:top-0 lg:bottom-0 lg:w-1/2">
-            {/* Supreme Court Image - Full Coverage */}
+          <div className="relative lg:h-auto lg:absolute lg:right-0 lg:top-0 lg:bottom-0 lg:w-1/2">
+            {/* Supreme Court Image - fixed-height box on mobile/tablet so it never
+                collides with the step card below it; absolute-fill on desktop
+                (unchanged) where the step card floats over it instead. */}
             <div
-              className="absolute inset-0 rounded-2xl lg:rounded-none lg:rounded-l-3xl overflow-hidden"
+              className="relative h-[260px] sm:h-[340px] lg:h-full lg:absolute lg:inset-0 rounded-2xl lg:rounded-none lg:rounded-l-3xl overflow-hidden"
               style={{
                 backgroundImage: `url('/images/illustrations/Supreme Court illustration.avif')`,
                 backgroundSize: 'contain',
@@ -89,8 +91,11 @@ export default function HeroSection() {
               />
             </div>
 
-            {/* 3-Step Workflow Card - Floating, pinned near the bottom edge so the image stays visible */}
-            <div className="absolute bottom-3 left-2 right-2 lg:bottom-5 lg:left-3 lg:right-3 bg-white rounded-xl shadow-xl border border-slate-100 p-4 lg:p-5">
+            {/* 3-Step Workflow Card — normal document flow directly below the
+                image on mobile/tablet (guarantees no overlap); reverts to the
+                original floating overlay pinned to the image's bottom edge
+                at lg: and up. */}
+            <div className="relative mt-4 lg:mt-0 lg:absolute lg:bottom-5 lg:left-3 lg:right-3 bg-white rounded-xl shadow-xl border border-slate-100 p-4 lg:p-5">
               <h3 className="font-display font-bold text-sm lg:text-base text-center mb-4">
                 Place Your Order in 3 Simple Steps
               </h3>

@@ -1,0 +1,205 @@
+/* ===== LEGAL CENTER & COMPLIANCE PAGES ===== */
+
+.legal-container {
+  @apply max-w-7xl mx-auto px-6 lg:px-10;
+}
+
+/* -- Compliance banner -- */
+.legal-compliance-banner {
+  @apply flex items-start gap-2.5 rounded-xl px-4 py-3 text-sm text-white;
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 55%, #b45309 130%);
+}
+.legal-compliance-banner p {
+  @apply leading-relaxed;
+}
+
+/* -- Hero document-info panel -- */
+.legal-hero-info-card {
+  @apply bg-white border border-slate-200 rounded-2xl p-5;
+  background-image: linear-gradient(180deg, rgba(217, 119, 6, 0.05) 0%, rgba(255, 255, 255, 1) 55%);
+  box-shadow: 0 8px 24px -12px rgba(15, 23, 42, 0.12), 0 2px 6px -2px rgba(15, 23, 42, 0.06);
+}
+.legal-hero-info-heading {
+  @apply text-[13px] font-extrabold uppercase tracking-wider text-primary mb-3.5 pb-3 border-b border-slate-100;
+}
+.legal-hero-info-row {
+  @apply flex items-center justify-between gap-3 text-sm;
+}
+.legal-hero-info-row dt {
+  @apply flex items-center gap-1.5 text-muted-foreground font-medium;
+}
+.legal-hero-info-row dd {
+  @apply font-bold text-foreground text-right;
+}
+.legal-hero-info-divider {
+  @apply h-px bg-slate-100 my-4;
+}
+.legal-hero-info-subheading {
+  @apply text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2;
+}
+.legal-hero-info-link {
+  @apply text-sm font-semibold text-accent hover:underline;
+}
+
+/* -- Section typography -- */
+.legal-section-title {
+  @apply font-display font-bold text-xl sm:text-2xl tracking-tight;
+}
+.legal-section-divider {
+  @apply h-px bg-slate-200 mt-3 mb-4;
+}
+
+.legal-block-p {
+  @apply text-[15px] text-slate-700 leading-relaxed;
+}
+.legal-block-list {
+  @apply list-disc list-outside pl-5 space-y-1.5 text-[15px] text-slate-700 leading-relaxed;
+}
+.legal-definition {
+  @apply bg-slate-50 border border-slate-200 rounded-lg px-4 py-3;
+}
+.legal-definition dt {
+  @apply font-display font-bold text-sm text-foreground;
+}
+.legal-definition dd {
+  @apply text-sm text-slate-700 mt-1 leading-relaxed;
+}
+
+.legal-callout {
+  @apply flex items-start gap-2.5 rounded-lg border px-4 py-3 text-sm leading-relaxed;
+}
+.legal-callout--info {
+  @apply bg-blue-50 border-blue-200 text-blue-900;
+}
+.legal-callout--warning {
+  @apply bg-red-50 border-red-200 text-red-900;
+}
+.legal-callout--notice {
+  @apply bg-amber-50 border-amber-200 text-amber-900;
+}
+
+.legal-highlight {
+  @apply bg-accent/25 text-foreground rounded-sm px-0.5;
+}
+
+/* -- Table of contents -- */
+.legal-toc-card {
+  @apply bg-white border border-slate-200 rounded-2xl px-3.5 py-4 flex flex-col;
+  max-height: calc(100vh - 7.5rem);
+  box-shadow: 0 8px 24px -12px rgba(15, 23, 42, 0.12), 0 2px 6px -2px rgba(15, 23, 42, 0.06);
+}
+.legal-toc-heading {
+  @apply flex-shrink-0 text-[13px] font-extrabold uppercase tracking-wider text-primary mb-2.5 px-2.5 pb-2.5 border-b border-slate-100;
+}
+/* Only this inner list scrolls when the document has more sections than fit
+   in the viewport — the card itself stays put at its sticky position, it
+   never drifts or unsticks early. */
+.legal-toc-scroll {
+  @apply flex-1 min-h-0 overflow-y-auto overscroll-contain;
+  scroll-behavior: smooth;
+}
+.legal-toc-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+.legal-toc-scroll::-webkit-scrollbar-thumb {
+  @apply bg-slate-200 rounded-full;
+}
+.legal-toc-link {
+  @apply relative block w-full text-left text-sm font-medium text-slate-600 hover:text-primary hover:bg-slate-50 py-2 pl-3.5 pr-2.5 rounded-lg transition-all duration-150;
+  border-left: 2px solid transparent;
+}
+.legal-toc-link--active {
+  @apply text-accent font-bold bg-accent/[0.07];
+  border-left-color: hsl(var(--accent));
+}
+.legal-mobile-toc-trigger {
+  @apply flex items-center justify-between w-full bg-white border border-slate-200 rounded-lg px-4 py-3 text-sm font-bold mt-3;
+  box-shadow: 0 4px 12px -6px rgba(15, 23, 42, 0.1);
+}
+
+/* -- Search -- */
+.legal-search-box {
+  @apply flex items-center gap-2.5 bg-white border border-slate-200 rounded-lg px-3.5 py-2.5 shadow-sm;
+}
+.legal-search-box input {
+  @apply flex-1 text-sm outline-none placeholder:text-muted-foreground bg-transparent;
+}
+.legal-search-trigger {
+  @apply flex items-center justify-between w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-muted-foreground hover:border-accent/40 transition-colors mb-1;
+}
+.legal-search-kbd {
+  @apply bg-slate-100 border border-slate-300 rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold text-slate-500;
+}
+
+/* -- Actions -- */
+.legal-action-btn {
+  @apply inline-flex items-center gap-1.5 bg-white border border-slate-200 hover:border-accent/40 hover:bg-accent/5 text-foreground text-xs font-bold px-3.5 py-2 rounded-lg transition-colors;
+}
+.legal-action-btn--disabled {
+  @apply opacity-50 cursor-not-allowed hover:border-slate-200 hover:bg-white;
+}
+
+.legal-related-chip {
+  @apply inline-flex items-center gap-1.5 bg-white border border-slate-200 hover:border-accent/40 text-sm font-semibold px-3.5 py-2 rounded-full transition-colors;
+}
+
+/* -- Legal Center hub cards — same premium treatment as About/Trust/
+   Security/Contact informational cards (.landing-premium-card in
+   landing.css), reproduced here since this file loads independently. -- */
+.legal-center-card {
+  @apply relative flex flex-col bg-white border border-accent/15 rounded-2xl p-5 transition-all duration-300 ease-out;
+  background-image: linear-gradient(180deg, rgba(217, 119, 6, 0.05) 0%, rgba(255, 255, 255, 1) 60%);
+  box-shadow: 0 4px 14px -4px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+.legal-center-card:hover {
+  @apply border-accent/35;
+  box-shadow: 0 20px 40px -16px rgba(217, 119, 6, 0.22), 0 8px 20px -8px rgba(15, 23, 42, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  transform: translateY(-4px);
+}
+.legal-center-card-icon {
+  @apply w-11 h-11 rounded-xl bg-accent/10 flex items-center justify-center transition-transform duration-300 ease-out;
+}
+.legal-center-card:hover .legal-center-card-icon {
+  transform: scale(1.08);
+}
+
+/* ===== PRINT ===== */
+@media print {
+  .landing-nav,
+  .landing-utility-bar,
+  .landing-footer,
+  .legal-compliance-banner,
+  .legal-search-box,
+  .legal-search-trigger,
+  aside {
+    display: none !important;
+  }
+  body {
+    background: white !important;
+  }
+  /* Keep a section together where it reasonably fits on one page... */
+  .legal-section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  /* ...and even when a long section has to split, never leave its heading
+     orphaned alone at the bottom of a page — the heading always starts a
+     fresh page together with at least its first line of content. */
+  .legal-section-title {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+  .legal-definition,
+  .legal-callout,
+  .legal-block-list {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  /* Breadcrumb and any inline links stay visible and legible on paper,
+     including on grayscale printers. */
+  a {
+    color: #000 !important;
+    text-decoration: underline;
+  }
+}

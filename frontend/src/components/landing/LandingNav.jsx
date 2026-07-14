@@ -1,16 +1,17 @@
 import React, { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, PlayCircle, Menu, X } from "lucide-react";
+import { ChevronDown, LogIn, Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import NavbarLogo from "./NavbarLogo";
 import MegaMenu from "./MegaMenu";
+import TourSideTab from "./TourSideTab";
 
 const navLinks = [
   { label: "Home", to: "/" },
   { label: "How It Works", to: "#how" },
   { label: "Package Plans", to: "#pricing" },
-  { label: "Proxy Counsel", to: "#services" },
+  { label: "Counsel / Proxy Counsel", to: "#services" },
   { label: "Courts Coverage", to: "#coverage" },
   { label: "About Us", to: "/about" },
   { label: "Contact Us", to: "/contact" },
@@ -29,6 +30,7 @@ export default function LandingNav({ onTakeTour }) {
   }, []);
 
   return (
+    <>
     <nav className={cn("landing-nav", scrolled && "scrolled")}>
       <div className="landing-nav-container">
         {/* Logo */}
@@ -57,17 +59,13 @@ export default function LandingNav({ onTakeTour }) {
 
         {/* Auth Buttons */}
         <div className="hidden lg:flex items-center gap-2">
-          {onTakeTour ? (
-            <Button onClick={onTakeTour} className="bg-primary hover:bg-primary/90 font-bold">
-              Take a Tour <PlayCircle className="w-4 h-4 ml-1" />
+          <Link to="/login">
+            <Button
+              className="bg-accent hover:bg-accent/90 active:bg-accent text-white font-bold rounded-lg shadow-sm hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 active:shadow-sm transition-all duration-200"
+            >
+              Login <LogIn className="w-4 h-4 ml-1" />
             </Button>
-          ) : (
-            <Link to="/?tour=1">
-              <Button className="bg-primary hover:bg-primary/90 font-bold">
-                Take a Tour <PlayCircle className="w-4 h-4 ml-1" />
-              </Button>
-            </Link>
-          )}
+          </Link>
         </div>
 
         {/* Mobile Menu Button */}
@@ -93,23 +91,16 @@ export default function LandingNav({ onTakeTour }) {
                 {link.label}
               </a>
             ))}
-            {onTakeTour ? (
-              <Button
-                onClick={() => { onTakeTour(); setMobileOpen(false); }}
-                className="w-full bg-primary hover:bg-primary/90 font-bold mt-2"
-              >
-                Take a Tour <PlayCircle className="w-4 h-4 ml-1" />
+            <Link to="/login" onClick={() => setMobileOpen(false)}>
+              <Button className="w-full bg-accent hover:bg-accent/90 active:bg-accent text-white font-bold rounded-lg shadow-sm hover:shadow-lg active:shadow-sm transition-all duration-200 mt-2">
+                Login <LogIn className="w-4 h-4 ml-1" />
               </Button>
-            ) : (
-              <Link to="/?tour=1" onClick={() => setMobileOpen(false)}>
-                <Button className="w-full bg-primary hover:bg-primary/90 font-bold mt-2">
-                  Take a Tour <PlayCircle className="w-4 h-4 ml-1" />
-                </Button>
-              </Link>
-            )}
+            </Link>
           </div>
         </div>
       )}
     </nav>
+    {!mobileOpen && <TourSideTab onTakeTour={onTakeTour} />}
+    </>
   );
 }

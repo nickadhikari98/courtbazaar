@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 @import './styles/landing.css';
+@import './styles/legal.css';
 
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
 @import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@800,700,500,400,900&display=swap');
@@ -10,6 +11,15 @@
 /* Defensive hide in case any third-party script re-injects this badge at runtime */
 #emergent-badge {
     display: none !important;
+}
+
+html, body {
+    max-width: 100%;
+    /* `clip` (not `hidden`) — hidden turns html/body into a scroll
+       container, which breaks position:sticky for every descendant in
+       most browsers. clip prevents the same horizontal-overflow bleed
+       without that side effect. */
+    overflow-x: clip;
 }
 
 body {

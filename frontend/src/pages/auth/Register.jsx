@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { Scale, ArrowRight, Loader2 } from "lucide-react";
 
@@ -13,10 +14,12 @@ export default function Register() {
   const navigate = useNavigate();
   const { register } = useAuth();
   const [loading, setLoading] = useState(false);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", phone: "", password: "", role: "advocate" });
 
   const submit = async (e) => {
     e.preventDefault();
+    if (!agreedToTerms) return;
     setLoading(true);
     try {
       await register(form);
@@ -56,13 +59,13 @@ export default function Register() {
         </div>
 
         <Card className="border-none shadow-xl">
-          <CardContent className="p-8">
+          <CardContent className="p-6 sm:p-8">
             <div className="cb-overline text-accent">Sign up</div>
             <h2 className="font-display font-black text-3xl mt-1 tracking-tighter">Create your account</h2>
             <p className="text-muted-foreground mt-1 text-sm">Already have one? <Link to="/login" className="text-accent font-bold hover:underline" data-testid="register-go-login">Sign in</Link></p>
 
             <form onSubmit={submit} className="mt-6 space-y-4">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <Label>Full Name</Label>
                   <Input value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} required placeholder="Adv. R. Kumar" data-testid="register-name-input" />
@@ -94,7 +97,31 @@ export default function Register() {
                   </SelectContent>
                 </Select>
               </div>
-              <Button type="submit" disabled={loading} className="w-full bg-primary hover:bg-primary/90 h-12 font-bold" data-testid="register-submit-btn">
+              <div className="flex items-start gap-2.5">
+                <Checkbox
+                  id="agree-terms"
+                  checked={agreedToTerms}
+                  onCheckedChange={(v) => setAgreedToTerms(v === true)}
+                  className="mt-0.5"
+                  data-testid="register-agree-terms"
+                />
+                <label htmlFor="agree-terms" className="text-sm text-muted-foreground leading-relaxed cursor-pointer">
+                  I have read and agree to the{" "}
+                  <Link to="/legal/terms" target="_blank" rel="noopener noreferrer" className="text-accent font-semibold hover:underline">
+                    Terms
+                  </Link>
+                  ,{" "}
+                  <Link to="/legal/privacy" target="_blank" rel="noopener noreferrer" className="text-accent font-semibold hover:underline">
+                    Privacy Policy
+                  </Link>
+                  , and{" "}
+                  <Link to="/legal/refund" target="_blank" rel="noopener noreferrer" className="text-accent font-semibold hover:underline">
+                    Refund Policy
+                  </Link>
+                  .
+                </label>
+              </div>
+              <Button type="submit" disabled={loading || !agreedToTerms} className="w-full bg-primary hover:bg-primary/90 h-12 font-bold" data-testid="register-submit-btn">
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Create account <ArrowRight className="w-4 h-4 ml-2" /></>}
               </Button>
             </form>

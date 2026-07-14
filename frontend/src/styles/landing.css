@@ -167,7 +167,7 @@
 
 /* ===== SERVICE CARDS ===== */
 .landing-service-card {
-  @apply relative bg-white border-2 border-slate-200/70 rounded-2xl p-6 sm:p-8 text-center transition-all duration-300 ease-out cursor-pointer overflow-hidden;
+  @apply relative flex flex-col h-full bg-white border-2 border-slate-200/70 rounded-2xl p-6 sm:p-8 text-center transition-all duration-300 ease-out cursor-pointer overflow-hidden;
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
 }
 .landing-service-card:hover {
@@ -192,11 +192,11 @@
 }
 
 .landing-service-price {
-  @apply inline-flex items-center gap-1.5 bg-accent/10 text-accent text-xs font-bold px-3 py-1 rounded-full mt-2.5;
+  @apply inline-flex items-center justify-center self-center gap-1.5 bg-accent/10 text-accent text-xs font-bold px-3 py-1 rounded-full mt-2.5;
 }
 
 .landing-featured-service-price {
-  @apply inline-flex items-center gap-1.5 bg-white/15 text-white text-xs font-bold px-3 py-1 rounded-full mt-2.5;
+  @apply inline-flex items-center justify-center self-center gap-1.5 bg-white/15 text-white text-xs font-bold px-3 py-1 rounded-full mt-2.5;
   border: 1px solid rgba(255, 255, 255, 0.25);
 }
 .landing-featured-service-price .landing-service-price-dot {
@@ -208,13 +208,21 @@
 }
 
 .landing-service-cta {
-  @apply inline-flex items-center text-xs text-accent font-bold mt-4 opacity-70 transition-opacity duration-300 uppercase tracking-wide;
+  @apply inline-flex items-center justify-center text-xs text-accent font-bold mt-auto pt-4 opacity-70 transition-opacity duration-300 uppercase tracking-wide;
 }
 .landing-service-card:hover .landing-service-cta {
   @apply opacity-100;
 }
 
-/* ===== COMING SOON RIBBON ===== */
+/* ===== COMING SOON BADGE (single shared component — ComingSoonBadge.jsx) =====
+   `corner` variant: the diagonal ribbon, absolutely positioned into a card
+   corner — identical top/right offset, width, rotation, padding, shadow,
+   and z-index everywhere it's used (requires a `relative overflow-hidden`
+   ancestor).
+   `inline` variant: a horizontal premium label for contexts a diagonal
+   ribbon can't fit (footer list items, inline text labels) — same brand
+   color and bold uppercase typography, but laid out in normal flow with no
+   rotation, a pill radius, and a gentle "breathing" glow instead. */
 .landing-coming-soon-badge {
   @apply absolute z-10 bg-accent text-white text-[10px] font-bold uppercase tracking-wide text-center rounded-sm;
   top: 16px;
@@ -223,6 +231,29 @@
   padding: 4px 0;
   transform: rotate(35deg);
   box-shadow: 0 3px 10px -2px rgba(217, 119, 6, 0.5);
+}
+.landing-coming-soon-badge--inline {
+  @apply inline-flex items-center justify-center whitespace-nowrap rounded-full;
+  position: static;
+  width: auto;
+  padding: 3px 10px;
+  transform: none;
+  animation: coming-soon-breathe 2.8s ease-in-out infinite;
+}
+@keyframes coming-soon-breathe {
+  0%, 100% {
+    box-shadow: 0 2px 6px -1px rgba(217, 119, 6, 0.4);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 4px 12px -1px rgba(217, 119, 6, 0.7);
+    transform: scale(1.05);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing-coming-soon-badge--inline {
+    animation: none;
+  }
 }
 
 /* ===== FEATURED SERVICE CARD (Proxy Counsel) ===== */
@@ -443,6 +474,29 @@
   @apply inline-flex items-center bg-accent/10 text-accent text-sm font-bold px-3.5 py-1.5 rounded-full flex-shrink-0 ml-auto;
 }
 
+/* -- Premium feature card — shared across About/Trust/Security/Contact
+   informational cards. Reuses the same soft-orange gradient wash already
+   established elsewhere (savings banner, join cards, trust strip) rather
+   than inventing a new visual pattern; adds a restrained layered shadow +
+   inset highlight for depth and a gentle hover elevation. -- */
+.landing-premium-card {
+  @apply relative bg-white border border-accent/15 rounded-2xl p-6 transition-all duration-300 ease-out;
+  background-image: linear-gradient(180deg, rgba(217, 119, 6, 0.05) 0%, rgba(255, 255, 255, 1) 60%);
+  box-shadow: 0 4px 14px -4px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+.landing-premium-card:hover {
+  @apply border-accent/35;
+  box-shadow: 0 20px 40px -16px rgba(217, 119, 6, 0.22), 0 8px 20px -8px rgba(15, 23, 42, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  transform: translateY(-4px);
+}
+.landing-premium-card-icon {
+  @apply w-11 h-11 rounded-xl bg-accent/10 flex items-center justify-center mb-4 transition-transform duration-300 ease-out;
+}
+.landing-premium-card:hover .landing-premium-card-icon {
+  transform: scale(1.08);
+}
+
 /* -- Package savings banner -- */
 .landing-savings-banner {
   @apply relative bg-white border border-accent/25 rounded-2xl p-6 sm:p-8 text-center overflow-hidden;
@@ -509,8 +563,16 @@
   background: linear-gradient(135deg, #1e3a5f, #0f172a);
 }
 
+.landing-pricing-hero-ribbon-clip {
+  @apply absolute top-0 right-0 w-36 h-36 overflow-hidden pointer-events-none rounded-tr-3xl z-10;
+}
+
 .landing-pricing-hero-price {
   @apply font-display font-bold text-[2.75rem] leading-none tracking-tight text-foreground;
+}
+
+.landing-pricing-hero-rate-pill {
+  @apply inline-flex items-center bg-accent/10 text-accent text-sm font-semibold px-2.5 py-1 rounded-full mt-2;
 }
 
 .landing-pricing-hero-savings-row {
@@ -553,6 +615,44 @@
   transform: rotate(180deg);
 }
 
+/* -- Full-width page-wise pricing panel (rendered below the package cards,
+   not inside any one card, so cards stay equal height regardless of
+   expand state) -- */
+.landing-pricing-details-panel {
+  @apply bg-white border border-slate-200 rounded-3xl p-6 sm:p-8;
+  box-shadow: 0 4px 14px -4px rgba(15, 23, 42, 0.08);
+}
+.landing-pricing-details-close {
+  @apply flex-shrink-0 w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors duration-200;
+}
+
+.landing-pricing-tier-card {
+  @apply bg-white border border-slate-200 rounded-xl p-4 flex flex-col transition-all duration-200 ease-out;
+}
+.landing-pricing-tier-card:hover {
+  @apply border-accent/40;
+  box-shadow: 0 8px 20px -8px rgba(217, 119, 6, 0.2);
+  transform: translateY(-2px);
+}
+.landing-pricing-tier-pages {
+  @apply text-sm font-semibold text-foreground;
+}
+.landing-pricing-tier-price-row {
+  @apply flex items-baseline gap-1.5 mt-2;
+}
+.landing-pricing-tier-price {
+  @apply text-lg font-bold text-foreground;
+}
+.landing-pricing-tier-price-strike {
+  @apply text-xs text-muted-foreground line-through;
+}
+.landing-pricing-tier-savings {
+  @apply text-xs text-emerald-600 font-semibold mt-1;
+}
+.landing-pricing-tier-select {
+  @apply w-full text-xs font-bold px-3 py-1.5 rounded-md transition-colors mt-3;
+}
+
 /* -- Comparison table -- */
 .landing-comparison-wrap {
   @apply bg-white border border-slate-200 rounded-2xl p-5 sm:p-7 overflow-x-auto;
@@ -561,11 +661,19 @@
 
 /* -- Trust indicators strip -- */
 .landing-trust-strip {
-  @apply grid grid-cols-2 sm:grid-cols-4 gap-4;
+  @apply grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-3xl mx-auto;
 }
 .landing-trust-strip-item {
-  @apply flex items-center gap-2.5 justify-center text-center sm:text-left sm:justify-start bg-white border border-slate-200 rounded-xl px-4 py-3.5;
+  @apply flex items-center justify-center text-center gap-2.5 rounded-xl border border-accent/15 px-4 py-4 transition-all duration-300;
+  background-image: linear-gradient(180deg, rgba(217, 119, 6, 0.05) 0%, rgba(255, 255, 255, 1) 60%);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
 }
+.landing-trust-strip-item:hover {
+  @apply border-accent/30;
+  box-shadow: 0 8px 20px -6px rgba(217, 119, 6, 0.16);
+  transform: translateY(-1px);
+}
+
 .landing-trust-strip-item svg {
   @apply text-emerald-600 flex-shrink-0;
 }
@@ -622,6 +730,14 @@
   @apply border-slate-300;
   box-shadow: 0 12px 32px -8px rgba(15, 23, 42, 0.1);
   transform: translateY(-2px);
+}
+
+.landing-review-track {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.landing-review-track::-webkit-scrollbar {
+  display: none;
 }
 
 /* ===== COVERAGE MAP ===== */
@@ -695,6 +811,9 @@
 .landing-footer-link {
   @apply text-white/80 hover:text-white text-sm transition-colors block py-1;
 }
+.landing-footer-link--soon {
+  @apply text-white/40 cursor-not-allowed inline-flex items-center;
+}
 
 .landing-footer-social {
   @apply w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors;
@@ -719,6 +838,13 @@
 
 .landing-section-subtitle {
   @apply text-base sm:text-lg text-muted-foreground mt-3.5 leading-relaxed;
+}
+
+/* Secondary/paired section heading — used where a page has two related
+   blocks sitting side by side (e.g. "Coverage" + "Our Journey", "Our
+   Office") and the full-weight .landing-section-title would be too heavy. */
+.landing-subsection-title {
+  @apply font-display font-bold text-xl sm:text-2xl tracking-tight;
 }
 
 .landing-container {

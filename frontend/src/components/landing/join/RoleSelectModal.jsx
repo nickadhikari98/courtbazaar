@@ -27,7 +27,7 @@ export default function RoleSelectModal({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="w-[calc(100%-1.5rem)] sm:w-full sm:max-w-2xl max-h-[85dvh] overflow-y-auto">
         {!selected ? (
           <>
             <DialogHeader>
@@ -40,9 +40,9 @@ export default function RoleSelectModal({
                   key={role.key}
                   type="button"
                   onClick={() => setSelected(role.key)}
-                  className="group relative flex flex-col items-center text-center gap-3 rounded-xl border-2 border-slate-200 p-6 transition-all duration-200 hover:border-accent hover:shadow-lg hover:-translate-y-0.5"
+                  className="group relative flex flex-col items-center text-center gap-3 rounded-xl border border-accent/15 bg-gradient-to-b from-accent/[0.04] to-white p-6 shadow-sm transition-all duration-300 ease-out hover:border-accent/50 hover:shadow-xl hover:shadow-accent/20 hover:-translate-y-1 hover:scale-[1.02]"
                 >
-                  <div className="w-16 h-16 rounded-full bg-slate-50 group-hover:bg-accent/10 flex items-center justify-center transition-colors overflow-hidden">
+                  <div className="w-16 h-16 rounded-full bg-white shadow-sm ring-1 ring-accent/10 group-hover:bg-accent/10 group-hover:ring-accent/30 flex items-center justify-center transition-all overflow-hidden">
                     {role.image ? (
                       <img src={role.image} alt="" className="w-full h-full object-cover" />
                     ) : (

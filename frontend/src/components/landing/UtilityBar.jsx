@@ -36,13 +36,13 @@ export default function UtilityBar({
 
   return (
     <div className="landing-utility-bar">
-      <div className="landing-container flex items-center justify-between h-9">
-        <div className="flex items-center gap-5">
-          <span className="landing-utility-link">
+      <div className="landing-container flex flex-col gap-2 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-0 sm:h-9 sm:py-0">
+        <div className="flex items-center gap-5 overflow-x-auto sm:overflow-visible">
+          <span className="landing-utility-link flex-shrink-0">
             <MapPin className="w-3.5 h-3.5" strokeWidth={2} />
             <span>{location}</span>
           </span>
-          <a href={`mailto:${email}`} className="landing-utility-link">
+          <a href={`mailto:${email}`} className="landing-utility-link flex-shrink-0">
             <Mail className="w-3.5 h-3.5" strokeWidth={2} />
             <span>{email}</span>
           </a>
@@ -60,6 +60,26 @@ export default function UtilityBar({
             type="button"
             onClick={() => setCounselOpen(true)}
             className="landing-utility-cta landing-utility-cta--highlight"
+          >
+            <Scale className="w-3.5 h-3.5" strokeWidth={2} />
+            <span>Join as Counsel / Proxy Counsel</span>
+          </button>
+        </div>
+        {/* Mobile-only: the desktop row above is hidden below sm, so these
+            triggers are the only way to reach the Join As forms on mobile. */}
+        <div className="flex flex-col gap-2 sm:hidden">
+          <button
+            type="button"
+            onClick={() => setVendorOpen(true)}
+            className="landing-utility-cta justify-center text-center"
+          >
+            <Briefcase className="w-3.5 h-3.5" strokeWidth={2} />
+            <span>Join as Vendor / Partner / Agent</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setCounselOpen(true)}
+            className="landing-utility-cta landing-utility-cta--highlight justify-center text-center"
           >
             <Scale className="w-3.5 h-3.5" strokeWidth={2} />
             <span>Join as Counsel / Proxy Counsel</span>

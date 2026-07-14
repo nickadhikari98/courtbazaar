@@ -1,5 +1,6 @@
 import React from "react";
 import { ArrowRight } from "lucide-react";
+import ComingSoonBadge from "@/components/shared/ComingSoonBadge";
 
 const colorMap = {
   amber: { bg: "bg-amber-50" },
@@ -16,7 +17,7 @@ export default function ServiceCard({ icon: Icon, name, description, color = "am
 
   return (
     <div className="landing-service-card group">
-      <span className="landing-coming-soon-badge">Coming Soon</span>
+      <ComingSoonBadge />
       <div className={`landing-service-icon ${colors.bg}`}>
         <Icon className="w-16 h-16" />
       </div>
@@ -24,7 +25,7 @@ export default function ServiceCard({ icon: Icon, name, description, color = "am
       {startingPrice && (
         <div className="landing-service-price">
           <span className="landing-service-price-dot" />
-          Starting at {startingPrice}
+          {startingPrice}
         </div>
       )}
       <p className="landing-service-desc">{description}</p>

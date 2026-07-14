@@ -5,15 +5,15 @@ import { MapPin, Navigation, LocateFixed, ExternalLink, ArrowRight } from "lucid
 import LiveCourtMap from "./LiveCourtMap";
 
 const delhiCourts = [
-  { name: "Dwarka Courts", lat: 28.5921, lng: 77.0460, address: "Sector 10, Dwarka, New Delhi, Delhi 110075" },
+  { name: "Dwarka Court", lat: 28.5921, lng: 77.0460, address: "Sector 10, Dwarka, New Delhi, Delhi 110075" },
+  { name: "Saket Court", lat: 28.5245, lng: 77.2066, address: "Sector 6, Pushp Vihar, New Delhi, Delhi 110017" },
+  { name: "Karkardooma Court", lat: 28.6528, lng: 77.3152, address: "Karkardooma, New Delhi, Delhi 110092" },
+  { name: "Tis Hazari Court", lat: 28.6690, lng: 77.2160, address: "Tis Hazari, New Delhi, Delhi 110054" },
+  { name: "Patiala House Court", lat: 28.6117, lng: 77.2295, address: "India Gate, New Delhi, Delhi 110001" },
   { name: "Delhi High Court", lat: 28.6273, lng: 77.2385, address: "Sher Shah Rd, India Gate, New Delhi, Delhi 110003" },
-  { name: "Karkardooma Courts", lat: 28.6528, lng: 77.3152, address: "Karkardooma, New Delhi, Delhi 110092" },
+  { name: "Rohini Court", lat: 28.7255, lng: 77.1325, address: "Sector 14, Rohini, New Delhi, Delhi 110085" },
   { name: "Supreme Court of India", lat: 28.6227, lng: 77.2394, address: "Tilak Marg, New Delhi, Delhi 110001" },
-  { name: "Patiala House Courts", lat: 28.6117, lng: 77.2295, address: "India Gate, New Delhi, Delhi 110001" },
-  { name: "Rohini Courts", lat: 28.7255, lng: 77.1325, address: "Sector 14, Rohini, New Delhi, Delhi 110085" },
-  { name: "Rouse Avenue Courts", lat: 28.6357, lng: 77.2245, address: "Rouse Avenue, New Delhi, Delhi 110002" },
-  { name: "Saket Courts", lat: 28.5245, lng: 77.2066, address: "Sector 6, Pushp Vihar, New Delhi, Delhi 110017" },
-  { name: "Tis Hazari Courts", lat: 28.6690, lng: 77.2160, address: "Tis Hazari, New Delhi, Delhi 110054" },
+  { name: "Rouse Avenue Court", lat: 28.6357, lng: 77.2245, address: "Rouse Avenue, New Delhi, Delhi 110002" },
 ];
 
 function haversineKm(lat1, lon1, lat2, lon2) {

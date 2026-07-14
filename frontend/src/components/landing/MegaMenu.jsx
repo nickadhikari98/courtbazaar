@@ -19,7 +19,7 @@ const menuRows = [
 
 const proxyCounsel = {
   image: "/images/illustrations/proxy-counsel-badge.png",
-  name: "Proxy Counsel",
+  name: "Counsel / Proxy Counsel",
   description: "Find and connect with verified proxy counsels across Delhi",
 };
 
@@ -32,7 +32,7 @@ export default function MegaMenu() {
             {row.map((s) => (
               <Link
                 key={s.name}
-                to="#services"
+                to="/#services"
                 className="flex items-start gap-3 p-3 rounded-lg hover:bg-slate-50 transition-colors"
               >
                 <div className="w-9 h-9 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
@@ -50,7 +50,7 @@ export default function MegaMenu() {
 
       {/* Proxy Counsel - flagship row */}
       <Link
-        to="#services"
+        to="/#services"
         className="landing-mega-featured mt-3 flex items-center justify-between gap-3 p-4 rounded-xl"
       >
         <div className="flex items-center gap-3.5">

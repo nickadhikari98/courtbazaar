@@ -1,8 +1,8 @@
 import React from "react";
-import { FileCheck2, ShieldCheck, Zap, Users } from "lucide-react";
+import { ShieldCheck, Zap, Users } from "lucide-react";
 
 const items = [
-  { icon: FileCheck2, label: "GST Invoice Available" },
+  // { icon: FileCheck2, label: "GST Invoice Available" },
   { icon: ShieldCheck, label: "Secure Payments" },
   { icon: Zap, label: "Fast Delivery" },
   { icon: Users, label: "Trusted by Delhi Advocates" },
