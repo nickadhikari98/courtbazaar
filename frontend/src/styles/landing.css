@@ -741,8 +741,15 @@
 }
 
 /* ===== COVERAGE MAP ===== */
+/* `isolate` is the actual fix here, not `overflow-hidden` (already present)
+   — Leaflet's own panes/controls carry z-index values up to 1000
+   (leaflet.css), while the sticky navbar is only z-40. Without a stacking
+   context of its own, this wrapper lets those values leak out and compare
+   directly against page chrome, so the map paints over the navbar wherever
+   it scrolls underneath it. `isolate` scopes the whole subtree's stacking
+   to this box, permanently containing any z-index Leaflet ships with. */
 .landing-map-container {
-  @apply relative rounded-2xl overflow-hidden bg-slate-100;
+  @apply relative isolate rounded-2xl overflow-hidden bg-slate-100;
 }
 
 .landing-court-item {
