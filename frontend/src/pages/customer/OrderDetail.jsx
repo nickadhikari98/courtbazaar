@@ -110,7 +110,7 @@ export default function OrderDetail() {
           key: data.key_id,
           amount: data.amount,
           currency: "INR",
-          name: "CourtBazaar",
+          name: "CourtBazaar™",
           description: `Order ${orderId}`,
           order_id: data.razorpay_order_id,
           handler: async (resp) => {

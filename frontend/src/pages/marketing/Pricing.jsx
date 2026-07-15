@@ -37,7 +37,7 @@ export default function Pricing() {
             <h1 className="landing-section-title">Pricing & Packages</h1>
             <p className="landing-section-subtitle">
               Choose the option that best fits your litigation workflow. Whether you need a single service
-              or complete filing support, CourtBazaar has a transparent pricing plan for you.
+              or complete filing support, CourtBazaar™ has a transparent pricing plan for you.
             </p>
           </div>
 

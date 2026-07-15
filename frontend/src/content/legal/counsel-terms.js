@@ -4,7 +4,7 @@ export default makeDoc({
   slug: "counsel-terms",
   title: "Counsel / Proxy Counsel Service Terms",
   summary:
-    "These Counsel/Proxy Counsel Service Terms govern the use of the Counsel/Proxy Counsel Discovery & Engagement Services available through the CourtBazaar Platform.",
+    "These Counsel/Proxy Counsel Service Terms govern the use of the Counsel/Proxy Counsel Discovery & Engagement Services available through the CourtBazaar™ Platform.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",

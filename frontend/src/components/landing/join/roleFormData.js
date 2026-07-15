@@ -95,8 +95,8 @@ export const proxyCounselSections = [
         items: [
           "I confirm that I am a duly enrolled Advocate.",
           "I certify that all information provided is true and correct.",
-          "I authorize CourtBazaar to verify my enrollment and professional credentials.",
-          "I agree to receive appearance assignments, notifications and communications from CourtBazaar.",
+          "I authorize CourtBazaar™ to verify my enrollment and professional credentials.",
+          "I agree to receive appearance assignments, notifications and communications from CourtBazaar™.",
         ],
       },
       { type: "file", label: "Digital Signature", required: true, hint: "PDF/JPG/PNG, Max 2MB", span: 2 },
@@ -169,8 +169,8 @@ export const counselSections = [
         items: [
           "I confirm that I am a duly enrolled Advocate.",
           "I certify that all information provided is true and correct.",
-          "I authorize CourtBazaar to verify my enrollment and professional credentials.",
-          "I agree to receive appearance assignments, notifications and communications from CourtBazaar.",
+          "I authorize CourtBazaar™ to verify my enrollment and professional credentials.",
+          "I agree to receive appearance assignments, notifications and communications from CourtBazaar™.",
         ],
       },
       { type: "file", label: "Digital Signature", required: true, hint: "PDF/JPG/PNG, Max 2MB", span: 2 },
@@ -247,7 +247,7 @@ export const vendorSections = [
       {
         type: "declaration", span: 2,
         items: [
-          "I hereby declare that all the information provided by me is true and correct. I agree to the terms and conditions of the CourtBazaar Vendor Policy and authorize CourtBazaar to verify my details and documents.",
+          "I hereby declare that all the information provided by me is true and correct. I agree to the terms and conditions of the CourtBazaar™ Vendor Policy and authorize CourtBazaar™ to verify my details and documents.",
         ],
       },
     ],
@@ -326,7 +326,7 @@ export const partnerSections = [
         items: [
           "I confirm that I am a duly enrolled Advocate and my enrollment is valid.",
           "I certify that all information provided is true and correct.",
-          "I authorize CourtBazaar to verify my credentials and bar enrollment details.",
+          "I authorize CourtBazaar™ to verify my credentials and bar enrollment details.",
           "I agree to provide e-filing services in a professional and timely manner.",
         ],
       },
@@ -396,7 +396,7 @@ export const agentSections = [
           "I confirm that all the information provided is true and correct.",
           "I understand that I will provide delivery services within the court premises only.",
           "I agree to follow all court rules and maintain professionalism.",
-          "I authorize CourtBazaar to verify my details and contact me for service assignments.",
+          "I authorize CourtBazaar™ to verify my details and contact me for service assignments.",
         ],
       },
       { type: "file", label: "Digital Signature", required: true, hint: "PDF/JPG/PNG, Max 2MB", span: 2 },

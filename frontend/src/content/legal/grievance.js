@@ -3,7 +3,7 @@ import { makeDoc } from "./_shared";
 export default makeDoc({
   slug: "grievance",
   title: "Grievance Redressal Policy",
-  summary: "This Grievance Redressal Policy establishes a fair, transparent, and efficient process for addressing complaints relating to the CourtBazaar Platform and its services.",
+  summary: "This Grievance Redressal Policy establishes a fair, transparent, and efficient process for addressing complaints relating to the CourtBazaar™ Platform and its services.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",

@@ -3,7 +3,7 @@ import { makeDoc } from "./_shared";
 export default makeDoc({
   slug: "data-retention",
   title: "Data Retention & Deletion Policy",
-  summary: "This Data Retention & Deletion Policy explains how we retain, archive, and securely delete personal information, documents, and other data collected through the CourtBazaar Platform.",
+  summary: "This Data Retention & Deletion Policy explains how we retain, archive, and securely delete personal information, documents, and other data collected through the CourtBazaar™ Platform.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",

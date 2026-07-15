@@ -13,7 +13,7 @@ const facets = [
     icon: Lock,
     title: "Data Encryption",
     status: "live",
-    desc: "All traffic between your browser and CourtBazaar is encrypted in transit over HTTPS/TLS.",
+    desc: "All traffic between your browser and CourtBazaar™ is encrypted in transit over HTTPS/TLS.",
   },
   {
     icon: KeyRound,
@@ -63,7 +63,7 @@ const facets = [
 export default function Security() {
   usePageSEO({
     title: "Security",
-    description: "How CourtBazaar protects your documents and data — encryption, access control, secure storage, and audit logging.",
+    description: "How CourtBazaar™ protects your documents and data — encryption, access control, secure storage, and audit logging.",
     path: "/security",
   });
   useStructuredData("security-breadcrumb", breadcrumbSchema([{ label: "Security" }]));
@@ -75,7 +75,7 @@ export default function Security() {
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-accent/10 mb-4">
             <ShieldCheck className="w-7 h-7 text-accent" strokeWidth={2} />
           </div>
-          <h1 className="landing-section-title">Security at CourtBazaar</h1>
+          <h1 className="landing-section-title">Security at CourtBazaar™</h1>
           <p className="landing-section-subtitle mt-3">
             How we protect the documents and data that pass through our platform.
           </p>

@@ -5,11 +5,19 @@
 /.pnp
 .pnp.js
 
+# this project is Yarn-canonical (see package.json "packageManager") — the
+# preinstall guard blocks `npm install`/`npm ci` from running, but ignore the
+# lockfile too so one can never be regenerated and accidentally committed
+package-lock.json
+
 # testing
 /coverage
 
 # production
 /build
+
+# generated at build time by scripts/generate-version.js — see prebuild script
+/public/version.json
 
 # misc
 .DS_Store

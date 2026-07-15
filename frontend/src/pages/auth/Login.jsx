@@ -70,7 +70,7 @@ export default function Login() {
               <Scale className="w-5 h-5 text-white" />
             </div>
             <div>
-              <div className="font-display font-black text-xl tracking-tight leading-none">CourtBazaar</div>
+              <div className="font-display font-black text-xl tracking-tight leading-none">CourtBazaar™</div>
               <div className="text-2xs uppercase tracking-[0.2em] text-white/70 font-bold mt-0.5">India</div>
             </div>
           </Link>
@@ -97,7 +97,7 @@ export default function Login() {
           <CardContent className="p-0">
             <div className="mb-8">
               <div className="cb-overline text-accent">Welcome back</div>
-              <h2 className="font-display font-black text-4xl mt-2 tracking-tighter">Sign in to CourtBazaar</h2>
+              <h2 className="font-display font-black text-4xl mt-2 tracking-tighter">Sign in to CourtBazaar™</h2>
               <p className="text-muted-foreground mt-2 font-medium">No account? <Link to="/register" className="text-accent font-bold hover:underline" data-testid="login-go-register">Create one</Link></p>
             </div>
 

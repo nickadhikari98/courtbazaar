@@ -12,7 +12,7 @@ export default function ContactMap({ className = "" }) {
       <Marker position={[lat, lng]} icon={mapPinIcon}>
         <Popup>
           <div className="text-sm">
-            <p className="font-display font-bold">CourtBazaar Office</p>
+            <p className="font-display font-bold">CourtBazaar™ Office</p>
             <p className="text-xs text-muted-foreground mt-1">Okhla, New Delhi</p>
             {companyInfo.officeAddress.needsConfig ? (
               <div className="mt-1.5">

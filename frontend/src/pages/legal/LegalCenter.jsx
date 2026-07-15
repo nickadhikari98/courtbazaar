@@ -37,7 +37,7 @@ export default function LegalCenter() {
 
   usePageSEO({
     title: "Legal Center",
-    description: "CourtBazaar's legal policies, user agreements, privacy commitments, and compliance documents.",
+    description: "CourtBazaar™'s legal policies, user agreements, privacy commitments, and compliance documents.",
     path: "/legal",
   });
   useStructuredData("legal-center-breadcrumb", breadcrumbSchema([{ label: "Legal Center" }]));
@@ -65,7 +65,7 @@ export default function LegalCenter() {
             </div>
             <h1 className="landing-section-title text-left">Legal Center</h1>
             <p className="text-muted-foreground mt-4 text-base leading-relaxed">
-              This page contains CourtBazaar's legal policies, user agreements, privacy commitments, operational
+              This page contains CourtBazaar™'s legal policies, user agreements, privacy commitments, operational
               policies, and compliance documents. We encourage every user, advocate, vendor, and partner to
               review the applicable policies before using our platform.
             </p>

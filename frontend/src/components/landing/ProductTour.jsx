@@ -5,7 +5,7 @@ import TourTooltip from "./TourTooltip";
 const steps = [
   {
     target: "#hero",
-    title: "Welcome to CourtBazaar",
+    title: "Welcome to CourtBazaar™",
     content: "Your one-stop platform for litigation support services. Let's take a quick look around the page.",
     placement: "bottom",
   },
@@ -30,7 +30,7 @@ const steps = [
   {
     target: "#reviews",
     title: "Reviews",
-    content: "See what advocates and law firms are saying about their experience with CourtBazaar.",
+    content: "See what advocates and law firms are saying about their experience with CourtBazaar™.",
     placement: "top",
   },
   {

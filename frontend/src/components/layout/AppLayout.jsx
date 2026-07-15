@@ -88,7 +88,7 @@ export default function AppLayout() {
               <Scale className="w-5 h-5 text-white" strokeWidth={2} />
             </div>
             <div className="flex flex-col leading-none">
-              <span className="font-display font-black text-lg tracking-tight">CourtBazaar</span>
+              <span className="font-display font-black text-lg tracking-tight">CourtBazaar™</span>
               <span className="text-2xs uppercase tracking-[0.18em] text-muted-foreground font-bold">India</span>
             </div>
           </Link>

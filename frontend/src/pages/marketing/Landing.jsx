@@ -230,7 +230,7 @@ export default function Landing() {
               <ShieldCheck className="w-7 h-7 text-accent" strokeWidth={1.75} />
             </div>
             <h2 className="text-center font-display font-bold text-3xl sm:text-4xl tracking-tight leading-tight">
-              Why Legal Professionals Trust CourtBazaar?
+              Why Legal Professionals Trust CourtBazaar™?
             </h2>
           </div>
           <div className="flex flex-wrap justify-center gap-x-6 gap-y-8 md:grid md:grid-cols-5 md:gap-6">

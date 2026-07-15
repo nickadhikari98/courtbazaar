@@ -3,7 +3,7 @@ import { makeDoc } from "./_shared";
 export default makeDoc({
   slug: "delivery",
   title: "Delivery Policy",
-  summary: "This Delivery Policy explains how documents, printed materials, and other eligible services are delivered through the CourtBazaar Platform.",
+  summary: "This Delivery Policy explains how documents, printed materials, and other eligible services are delivered through the CourtBazaar™ Platform.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",

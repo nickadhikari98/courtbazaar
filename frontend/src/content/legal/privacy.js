@@ -4,7 +4,7 @@ export default makeDoc({
   slug: "privacy",
   title: "Privacy Policy",
   summary:
-    "This Privacy Policy explains how CourtBazaar, operated by LexOrbit Technologies, collects, uses, stores, processes, and discloses personal information when you access or use our website, mobile applications, products, services, and platforms.",
+    "This Privacy Policy explains how CourtBazaar™, operated by LexOrbit Technologies, collects, uses, stores, processes, and discloses personal information when you access or use our website, mobile applications, products, services, and platforms.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",

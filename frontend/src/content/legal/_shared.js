@@ -22,7 +22,7 @@ export function pendingBody(sectionTitle) {
     {
       type: "callout",
       variant: "notice",
-      text: `This section ("${sectionTitle}") is pending final legal text from CourtBazaar's legal and compliance team. It will be replaced with the approved wording before this document is considered final.`,
+      text: `This section ("${sectionTitle}") is pending final legal text from CourtBazaar™'s legal and compliance team. It will be replaced with the approved wording before this document is considered final.`,
     },
   ];
 }

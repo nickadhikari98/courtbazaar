@@ -18,7 +18,7 @@ export default function VendorOnboarding() {
         <div className="max-w-7xl mx-auto px-6 lg:px-10 h-16 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2.5" data-testid="vendor-landing-logo">
             <div className="w-9 h-9 bg-primary rounded-lg flex items-center justify-center"><Scale className="w-5 h-5 text-white" /></div>
-            <span className="font-display font-black text-lg tracking-tight">CourtBazaar</span>
+            <span className="font-display font-black text-lg tracking-tight">CourtBazaar™</span>
           </Link>
           <Link to="/register"><Button className="bg-primary font-bold" data-testid="vendor-cta-nav">Apply Now <ArrowRight className="w-4 h-4 ml-1" /></Button></Link>
         </div>
@@ -29,7 +29,7 @@ export default function VendorOnboarding() {
           <div>
             <div className="cb-overline text-accent">For Print shops & service providers</div>
             <h1 className="font-display font-black text-5xl lg:text-6xl tracking-tighter mt-3 leading-[0.95]">
-              Grow your court-shop income with CourtBazaar.
+              Grow your court-shop income with CourtBazaar™.
             </h1>
             <p className="mt-5 text-lg text-muted-foreground font-medium">
               Photocopy. Print. Bind. Stamp. Notarize. We bring 12,400+ advocates straight to your shop. Daily payouts. Zero marketing cost.

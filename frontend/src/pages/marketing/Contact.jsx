@@ -35,7 +35,7 @@ function ContactCard({ icon: Icon, title, description, email, needsConfig }) {
 export default function Contact() {
   usePageSEO({
     title: "Contact Us",
-    description: "Get in touch with CourtBazaar for support, partnerships, or general enquiries.",
+    description: "Get in touch with CourtBazaar™ for support, partnerships, or general enquiries.",
     path: "/contact",
   });
   useStructuredData("contact-breadcrumb", breadcrumbSchema([{ label: "Contact Us" }]));
@@ -69,7 +69,7 @@ export default function Contact() {
           <ContactCard
             icon={Mail}
             title="General Enquiries"
-            description="Questions about CourtBazaar or how our platform works."
+            description="Questions about CourtBazaar™ or how our platform works."
             email={companyInfo.generalEmail.value}
             needsConfig={companyInfo.generalEmail.needsConfig}
           />

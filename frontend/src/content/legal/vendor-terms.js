@@ -3,7 +3,7 @@ import { makeDoc } from "./_shared";
 export default makeDoc({
   slug: "vendor-terms",
   title: "Vendor Terms & Conditions",
-  summary: "These Vendor Terms & Conditions govern the participation of vendors and service providers on the CourtBazaar Platform.",
+  summary: "These Vendor Terms & Conditions govern the participation of vendors and service providers on the CourtBazaar™ Platform.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",

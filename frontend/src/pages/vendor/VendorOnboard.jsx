@@ -67,7 +67,7 @@ export default function VendorOnboard() {
   return (
     <PageContainer className="max-w-3xl">
       <div className="cb-overline text-accent">Vendor onboarding</div>
-      <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-2">List your business on CourtBazaar</h1>
+      <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-2">List your business on CourtBazaar™</h1>
       <p className="text-muted-foreground font-medium mb-6">3-minute setup · GST optional · same 80/20 split for everyone</p>
 
       <Card className="dashboard-card border-none">

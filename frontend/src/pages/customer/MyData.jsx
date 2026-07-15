@@ -62,7 +62,7 @@ export default function MyData() {
       <Card className="mt-6 bg-emerald-50 border-emerald-200">
         <CardContent className="p-4 flex items-center gap-2">
           <ShieldCheck className="w-5 h-5 text-emerald-700" />
-          <div className="text-sm font-bold text-emerald-900">CourtBazaar is DPDP Act compliant. Your data is encrypted in transit and at rest.</div>
+          <div className="text-sm font-bold text-emerald-900">CourtBazaar™ is DPDP Act compliant. Your data is encrypted in transit and at rest.</div>
         </CardContent>
       </Card>
 

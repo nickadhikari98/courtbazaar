@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-const SITE_NAME = "CourtBazaar";
+const SITE_NAME = "CourtBazaar™";
 const DEFAULT_OG_IMAGE = "/images/cbLogo-navbar.png";
 
 function upsertMeta(attr, key, content) {

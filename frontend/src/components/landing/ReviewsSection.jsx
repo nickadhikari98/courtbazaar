@@ -80,7 +80,7 @@ export default function ReviewsSection() {
           </p>
           <h2 className="landing-section-title">From the Bar to the Bench.</h2>
           <p className="landing-section-subtitle">
-            Real feedback from advocates who use CourtBazaar every day.
+            Real feedback from advocates who use CourtBazaar™ every day.
           </p>
         </div>
 

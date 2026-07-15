@@ -13,7 +13,7 @@ const facets = [
     icon: Activity,
     title: "Platform Status",
     value: "Operational",
-    desc: "CourtBazaar's core services are up and running.",
+    desc: "CourtBazaar™'s core services are up and running.",
   },
   {
     icon: ShieldCheck,
@@ -61,7 +61,7 @@ const facets = [
 export default function Trust() {
   usePageSEO({
     title: "Trust Center",
-    description: "CourtBazaar's Trust Center — platform status, security, privacy, compliance, and document handling.",
+    description: "CourtBazaar™'s Trust Center — platform status, security, privacy, compliance, and document handling.",
     path: "/trust",
   });
   useStructuredData("trust-breadcrumb", breadcrumbSchema([{ label: "Trust Center" }]));
@@ -75,7 +75,7 @@ export default function Trust() {
           </div>
           <h1 className="landing-section-title">Trust Center</h1>
           <p className="landing-section-subtitle mt-3">
-            A single place to see how CourtBazaar handles security, privacy, and compliance.
+            A single place to see how CourtBazaar™ handles security, privacy, and compliance.
           </p>
         </div>
       </section>

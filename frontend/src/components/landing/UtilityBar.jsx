@@ -12,19 +12,19 @@ const vendorRoles = [
 ];
 
 const vendorForms = {
-  vendor: { title: "Join as Printing Vendor", description: "Partner with CourtBazaar and grow your business.", sections: vendorSections },
+  vendor: { title: "Join as Printing Vendor", description: "Partner with CourtBazaar™ and grow your business.", sections: vendorSections },
   partner: { title: "Join as E-Filing Partner", description: "Provide e-filing services to advocates across India.", sections: partnerSections },
   agent: { title: "Join as Court Premises Delivery Partner", description: "Document delivery & collection within court premises. No vehicle required.", sections: agentSections },
 };
 
 const counselRoles = [
-  { key: "counsel", label: "Join as Counsel", icon: Scale, description: "Empanel as an advocate on CourtBazaar" },
+  { key: "counsel", label: "Join as Counsel", icon: Scale, description: "Empanel as an advocate on CourtBazaar™" },
   { key: "proxyCounsel", label: "Join as Proxy Counsel", image: "/images/illustrations/proxy-counsel-badge.png", description: "Appear on behalf of advocates across Delhi courts" },
 ];
 
 const counselForms = {
-  counsel: { title: "Join as Counsel", description: "Empanel with CourtBazaar and receive briefed matters.", sections: counselSections },
-  proxyCounsel: { title: "Join as Proxy Counsel", description: "Fill in your details to become a verified Proxy Counsel on CourtBazaar.", sections: proxyCounselSections },
+  counsel: { title: "Join as Counsel", description: "Empanel with CourtBazaar™ and receive briefed matters.", sections: counselSections },
+  proxyCounsel: { title: "Join as Proxy Counsel", description: "Fill in your details to become a verified Proxy Counsel on CourtBazaar™.", sections: proxyCounselSections },
 };
 
 export default function UtilityBar({
@@ -91,7 +91,7 @@ export default function UtilityBar({
         open={vendorOpen}
         onOpenChange={setVendorOpen}
         heading="Select Your Role"
-        subheading="Choose how you'd like to partner with CourtBazaar."
+        subheading="Choose how you'd like to partner with CourtBazaar™."
         roles={vendorRoles}
         forms={vendorForms}
       />
@@ -99,7 +99,7 @@ export default function UtilityBar({
         open={counselOpen}
         onOpenChange={setCounselOpen}
         heading="Select Your Role"
-        subheading="Choose how you'd like to join CourtBazaar's legal network."
+        subheading="Choose how you'd like to join CourtBazaar™'s legal network."
         roles={counselRoles}
         forms={counselForms}
       />

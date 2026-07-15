@@ -3,7 +3,7 @@ import { makeDoc } from "./_shared";
 export default makeDoc({
   slug: "cookies",
   title: "Cookie Policy",
-  summary: "This Cookie Policy explains how CourtBazaar uses cookies and similar technologies when you visit our website, web application, or use our services.",
+  summary: "This Cookie Policy explains how CourtBazaar™ uses cookies and similar technologies when you visit our website, web application, or use our services.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",

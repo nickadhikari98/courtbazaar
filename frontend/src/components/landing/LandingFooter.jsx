@@ -100,7 +100,7 @@ export default function LandingFooter() {
             <Link to="/" className="inline-flex items-center bg-white rounded-lg px-3 py-2 mb-3">
               <img
                 src="/images/cbLogo-navbar.png"
-                alt="CourtBazaar - India's Premier Legal Operations & Services Platform"
+                alt="CourtBazaar™ - India's Premier Legal Operations & Services Platform"
                 className="h-8 w-auto object-contain"
               />
             </Link>
@@ -143,7 +143,7 @@ export default function LandingFooter() {
         <div className="landing-footer-divider" />
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <p className="text-sm text-white/60 text-center sm:text-left">
-            &copy; {new Date().getFullYear()} CourtBazaar &middot; Powered by LexOrbit Technologies
+            &copy; {new Date().getFullYear()} CourtBazaar&trade; &middot; Powered by LexOrbit Technologies
             <br className="sm:hidden" />
             <span className="hidden sm:inline"> &middot; </span>
             India's First Legal Operations Network &amp; Services Platform

@@ -3,7 +3,7 @@ import { makeDoc } from "./_shared";
 export default makeDoc({
   slug: "advocate-terms",
   title: "Advocate Terms & Conditions",
-  summary: "These Advocate Terms & Conditions govern the use of the CourtBazaar Platform by registered advocates.",
+  summary: "These Advocate Terms & Conditions govern the use of the CourtBazaar™ Platform by registered advocates.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",

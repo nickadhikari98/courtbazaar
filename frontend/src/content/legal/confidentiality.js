@@ -4,7 +4,7 @@ export default makeDoc({
   slug: "confidentiality",
   title: "Confidentiality & Document Handling Policy",
   summary:
-    "This Confidentiality & Document Handling Policy governs the collection, handling, access, use, storage, sharing, retention, and deletion of documents uploaded, transmitted, processed, or shared through the CourtBazaar Platform.",
+    "This Confidentiality & Document Handling Policy governs the collection, handling, access, use, storage, sharing, retention, and deletion of documents uploaded, transmitted, processed, or shared through the CourtBazaar™ Platform.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",

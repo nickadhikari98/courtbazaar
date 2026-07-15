@@ -23,7 +23,7 @@ export default function Register() {
     setLoading(true);
     try {
       await register(form);
-      toast.success("Account created. Welcome to CourtBazaar!");
+      toast.success("Account created. Welcome to CourtBazaar™!");
       navigate(form.role === "vendor" ? "/vendor/onboard" : "/dashboard");
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Registration failed");
@@ -39,7 +39,7 @@ export default function Register() {
               <Scale className="w-5 h-5 text-white" />
             </div>
             <div>
-              <div className="font-display font-black text-xl tracking-tight leading-none">CourtBazaar</div>
+              <div className="font-display font-black text-xl tracking-tight leading-none">CourtBazaar™</div>
               <div className="text-2xs uppercase tracking-[0.2em] text-muted-foreground font-bold">India</div>
             </div>
           </Link>

@@ -74,7 +74,7 @@ export default function WriteReviewModal({ open, onOpenChange }) {
       <DialogContent className="w-[calc(100%-1.5rem)] sm:w-full sm:max-w-md max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="font-display text-xl">Write a Review</DialogTitle>
-          <DialogDescription>Share your experience with CourtBazaar.</DialogDescription>
+          <DialogDescription>Share your experience with CourtBazaar™.</DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-6">

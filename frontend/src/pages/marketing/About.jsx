@@ -47,7 +47,7 @@ const stats = [
 ];
 
 const timeline = [
-  { year: "2026", label: "CourtBazaar Founded" },
+  { year: "2026", label: "CourtBazaar™ Founded" },
   { label: "Legal Operations Platform" },
   { label: "Vendor Network" },
   { label: "Proxy Counsel" },
@@ -57,7 +57,7 @@ const timeline = [
 export default function About() {
   usePageSEO({
     title: "About Us",
-    description: "CourtBazaar is India's first legal operations network and services platform — connecting advocates, law firms, and vendors on one platform.",
+    description: "CourtBazaar™ is India's first legal operations network and services platform — connecting advocates, law firms, and vendors on one platform.",
     path: "/about",
   });
   useStructuredData("about-breadcrumb", breadcrumbSchema([{ label: "About Us" }]));
@@ -68,10 +68,10 @@ export default function About() {
       <section className="landing-section pb-0">
         <div className="landing-container grid lg:grid-cols-[1fr_360px] gap-10 lg:gap-12 items-start">
           <div>
-            <div className="cb-overline text-accent mb-3">Welcome to CourtBazaar</div>
+            <div className="cb-overline text-accent mb-3">Welcome to CourtBazaar™</div>
             <h1 className="landing-section-title text-left">India's First Legal Operations Network &amp; Services Platform</h1>
             <p className="landing-section-subtitle mt-4 text-left">
-              CourtBazaar is India's First Legal Operations Network & Services Platform, built with a vision to
+              CourtBazaar™ is India's First Legal Operations Network & Services Platform, built with a vision to
               simplify and modernise the operational side of litigation and legal practice.
             </p>
             <p className="text-muted-foreground mt-4 text-base leading-relaxed">
@@ -81,7 +81,7 @@ export default function About() {
               These activities often reduce productivity and create unnecessary inefficiencies.
             </p>
             <p className="text-muted-foreground mt-4 text-base leading-relaxed">
-              CourtBazaar is established to bridge this gap by creating a trusted technology-driven ecosystem
+              CourtBazaar™ is established to bridge this gap by creating a trusted technology-driven ecosystem
               that connects advocates, law firms, and legal professionals with reliable legal operations
               services and professional networks through one integrated platform.
             </p>
@@ -118,7 +118,7 @@ export default function About() {
           <div className="landing-premium-card sm:p-8">
             <h3 className="font-display font-bold text-lg mb-1">What We Do</h3>
             <p className="text-sm text-muted-foreground mb-5">
-              CourtBazaar provides a comprehensive suite of legal operations and litigation support services,
+              CourtBazaar™ provides a comprehensive suite of legal operations and litigation support services,
               including:
             </p>
             <ul className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2.5">
@@ -141,7 +141,7 @@ export default function About() {
       <section className="landing-section bg-slate-50">
         <div className="landing-container">
           <div className="landing-section-header">
-            <h2 className="landing-section-title">Why CourtBazaar</h2>
+            <h2 className="landing-section-title">Why CourtBazaar™</h2>
             <p className="landing-section-subtitle">The principles behind how we operate.</p>
           </div>
           <div className="flex flex-wrap justify-center gap-x-6 gap-y-8 md:grid md:grid-cols-4 md:gap-6">
@@ -213,7 +213,7 @@ export default function About() {
               <div className="grid sm:grid-cols-2 gap-6">
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1">Company Name</p>
-                  <p className="text-sm text-foreground">{companyInfo.brandName}</p>
+                  <p className="text-sm text-foreground">{companyInfo.brandName}™</p>
                   <p className="text-sm text-muted-foreground">Powered by {companyInfo.legalName}</p>
                 </div>
                 <div>

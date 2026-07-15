@@ -4,7 +4,7 @@ export default makeDoc({
   slug: "terms",
   title: "Terms of Use",
   summary:
-    "These Terms of Use and Terms & Conditions govern your access to and use of the website, mobile applications, products, services, and platforms operated under the brand name CourtBazaar, a platform operated by LexOrbit Technologies.",
+    "These Terms of Use and Terms & Conditions govern your access to and use of the website, mobile applications, products, services, and platforms operated under the brand name CourtBazaar™, a platform operated by LexOrbit Technologies.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",

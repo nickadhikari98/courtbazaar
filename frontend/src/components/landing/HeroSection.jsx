@@ -41,7 +41,7 @@ export default function HeroSection() {
             </div>
 
             <p className="landing-hero-subtitle mb-7">
-              CourtBazaar is your one-stop platform for litigation support — from document processing to court assistance. We handle the operational work so you can focus entirely on winning your cases.
+              CourtBazaar™ is your one-stop platform for litigation support — from document processing to court assistance. We handle the operational work so you can focus entirely on winning your cases.
             </p>
 
             {/* Trust Points */}

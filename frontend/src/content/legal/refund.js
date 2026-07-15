@@ -13,7 +13,7 @@ export default makeDoc({
   slug: "refund",
   title: "Refund & Cancellation Policy",
   summary:
-    "This Refund & Cancellation Policy governs cancellations, refunds, and related matters concerning services facilitated through the CourtBazaar Platform.",
+    "This Refund & Cancellation Policy governs cancellations, refunds, and related matters concerning services facilitated through the CourtBazaar™ Platform.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",

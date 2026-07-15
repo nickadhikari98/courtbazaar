@@ -3,7 +3,7 @@ import { makeDoc } from "./_shared";
 export default makeDoc({
   slug: "disclaimer",
   title: "Disclaimer",
-  summary: "This Disclaimer governs your access to and use of the CourtBazaar Platform.",
+  summary: "This Disclaimer governs your access to and use of the CourtBazaar™ Platform.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",

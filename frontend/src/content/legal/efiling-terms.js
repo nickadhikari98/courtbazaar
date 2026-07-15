@@ -3,7 +3,7 @@ import { makeDoc } from "./_shared";
 export default makeDoc({
   slug: "efiling-terms",
   title: "E-Filing Service Terms",
-  summary: "These E-Filing Service Terms govern the use of E-Filing Services facilitated through the CourtBazaar Platform.",
+  summary: "These E-Filing Service Terms govern the use of E-Filing Services facilitated through the CourtBazaar™ Platform.",
   version: "1.0",
   effectiveDate: "2026-06-01",
   lastUpdated: "2026-06-01",
