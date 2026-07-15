@@ -17,6 +17,23 @@ module.exports = {
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)'
       },
+      // Micro label size — was reinvented 51x across the app as the arbitrary
+      // value `text-[10px]` instead of a shared class. See PRODUCT_DESIGN_SYSTEM.md §5.2.
+      // Font-size only (no paired line-height) so swapping `text-[10px]` -> `text-2xs`
+      // doesn't change inherited line-height at any of those call sites.
+      fontSize: {
+        '2xs': '0.625rem', // 10px
+      },
+      // Only adding `xs` — Tailwind v3 has no default shadow-xs. sm/md/lg/xl
+      // are intentionally left as Tailwind's own defaults: this codebase
+      // already uses shadow-sm/md/lg/xl extensively (button.jsx, input.jsx,
+      // dozens of pages), and overriding those keys with different rgba
+      // recipes would silently change rendered shadows across the whole app.
+      // PRODUCT_DESIGN_SYSTEM.md §4.4 has been corrected to document
+      // Tailwind's real default values instead of the old aspirational scale.
+      boxShadow: {
+        xs: '0 1px 2px 0 rgba(15, 23, 42, 0.05)',
+      },
       colors: {
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',

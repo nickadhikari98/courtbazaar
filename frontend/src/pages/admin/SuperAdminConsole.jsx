@@ -8,8 +8,8 @@ import {
   Package, Crown, AlertCircle, Activity, FileX, Database
 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis } from "recharts";
-
-const COLORS = ["#0F172A", "#D97706", "#10b981", "#3b82f6", "#a855f7", "#ec4899", "#06b6d4", "#f59e0b"];
+import { CHART_COLORS_EXTENDED as COLORS } from "@/lib/chartColors";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function SuperAdminConsole() {
   const [data, setData] = useState(null);
@@ -25,7 +25,7 @@ export default function SuperAdminConsole() {
   ].filter(x => x.value > 0);
 
   return (
-    <div className="p-6 lg:p-10 max-w-7xl mx-auto">
+    <PageContainer>
       <div className="flex items-start justify-between gap-3 mb-6">
         <div>
           <div className="cb-overline text-accent flex items-center gap-1.5"><Crown className="w-3 h-3" /> Super Admin · Command Center</div>
@@ -43,10 +43,10 @@ export default function SuperAdminConsole() {
             <div className="font-display font-black text-5xl tracking-tighter mt-2 text-accent">{formatINR(data.revenue.platform_total)}</div>
             <div className="text-sm font-semibold text-white/80 mt-1">across {data.revenue.paid_orders} paid orders · vendor payout: {formatINR(data.revenue.vendor_payout_total)}</div>
             <div className="mt-5 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-              <div data-testid="rev-commission"><div className="cb-overline text-white/60 text-[10px]">Commission 20%</div><div className="font-bold text-lg">{formatINR(data.revenue.platform_commission_20pct)}</div></div>
-              <div data-testid="rev-delivery"><div className="cb-overline text-white/60 text-[10px]">Delivery 50%</div><div className="font-bold text-lg">{formatINR(data.revenue.platform_delivery_share_50pct)}</div></div>
-              <div data-testid="rev-convenience"><div className="cb-overline text-white/60 text-[10px]">Convenience</div><div className="font-bold text-lg">{formatINR(data.revenue.platform_convenience_fee)}</div></div>
-              <div data-testid="rev-urgent"><div className="cb-overline text-white/60 text-[10px]">Urgent 20%</div><div className="font-bold text-lg">{formatINR(data.revenue.platform_urgent_share_20pct)}</div></div>
+              <div data-testid="rev-commission"><div className="cb-overline text-white/60 text-2xs">Commission 20%</div><div className="font-bold text-lg">{formatINR(data.revenue.platform_commission_20pct)}</div></div>
+              <div data-testid="rev-delivery"><div className="cb-overline text-white/60 text-2xs">Delivery 50%</div><div className="font-bold text-lg">{formatINR(data.revenue.platform_delivery_share_50pct)}</div></div>
+              <div data-testid="rev-convenience"><div className="cb-overline text-white/60 text-2xs">Convenience</div><div className="font-bold text-lg">{formatINR(data.revenue.platform_convenience_fee)}</div></div>
+              <div data-testid="rev-urgent"><div className="cb-overline text-white/60 text-2xs">Urgent 20%</div><div className="font-bold text-lg">{formatINR(data.revenue.platform_urgent_share_20pct)}</div></div>
             </div>
           </CardContent>
         </Card>
@@ -105,10 +105,10 @@ export default function SuperAdminConsole() {
           <Card key={s.label} className="dashboard-card border-none hover:shadow-md transition-all" data-testid={`kpi-${s.label.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')}`}>
             <CardContent className="p-4">
               <div className="w-8 h-8 rounded-lg bg-accent/10 text-accent flex items-center justify-center mb-2"><s.icon className="w-4 h-4" /></div>
-              <div className="cb-overline text-[10px]">{s.label}</div>
+              <div className="cb-overline text-2xs">{s.label}</div>
               <div className="font-display font-black text-xl tracking-tight mt-1 truncate">{s.val}</div>
-              <div className="text-[10px] text-muted-foreground font-bold uppercase tracking-wide">{s.sub}</div>
-              {s.link && <Link to={s.link} className="text-[10px] font-bold text-accent hover:underline mt-1 inline-block">View →</Link>}
+              <div className="text-2xs text-muted-foreground font-bold uppercase tracking-wide">{s.sub}</div>
+              {s.link && <Link to={s.link} className="text-2xs font-bold text-accent hover:underline mt-1 inline-block">View →</Link>}
             </CardContent>
           </Card>
         ))}
@@ -168,6 +168,6 @@ export default function SuperAdminConsole() {
           </div>
         </CardContent>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

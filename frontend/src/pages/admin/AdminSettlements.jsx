@@ -8,6 +8,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Download, Play, CheckCircle2, XCircle, Receipt, Loader2 } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
 
 const statusColor = { queued: "bg-amber-100 text-amber-700", paid: "bg-emerald-100 text-emerald-700", failed: "bg-rose-100 text-rose-700" };
 
@@ -62,13 +64,9 @@ export default function AdminSettlements() {
   };
 
   return (
-    <div className="p-6 lg:p-10 max-w-7xl mx-auto">
+    <PageContainer>
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
-        <div>
-          <div className="cb-overline text-accent">Admin · Settlements</div>
-          <h1 className="font-display font-black text-3xl tracking-tighter mt-1">Vendor payouts (T+1)</h1>
-          <p className="text-muted-foreground font-medium mt-1">Daily NEFT/UPI batches · auto-runs at 02:00 UTC · manual trigger available</p>
-        </div>
+        <PageHeader eyebrow="Admin · Settlements" title="Vendor payouts (T+1)" description="Daily NEFT/UPI batches · auto-runs at 02:00 UTC · manual trigger available" />
         <div className="flex gap-2">
           <Button onClick={() => runCycle(true)} variant="outline" className="font-bold" data-testid="run-dry-btn">Dry run</Button>
           <Button onClick={() => runCycle(false)} disabled={running} className="bg-primary font-bold" data-testid="run-cycle-btn">
@@ -118,8 +116,8 @@ export default function AdminSettlements() {
                     <td className="px-4 py-3 text-xs font-mono">{s.cycle_date}</td>
                     <td className="px-4 py-3 text-right font-bold">{s.order_count}</td>
                     <td className="px-4 py-3 text-right font-bold">{formatINR(s.amount)}</td>
-                    <td className="px-4 py-3"><Badge variant="outline" className="font-bold uppercase text-[10px]">{s.payment_mode}</Badge></td>
-                    <td className="px-4 py-3"><Badge className={`${statusColor[s.status] || ''} border-0 font-bold uppercase text-[10px]`}>{s.status}</Badge>{s.utr && <div className="text-[10px] font-mono mt-0.5">UTR: {s.utr}</div>}</td>
+                    <td className="px-4 py-3"><Badge variant="outline" className="font-bold uppercase text-2xs">{s.payment_mode}</Badge></td>
+                    <td className="px-4 py-3"><Badge className={`${statusColor[s.status] || ''} border-0 font-bold uppercase text-2xs`}>{s.status}</Badge>{s.utr && <div className="text-2xs font-mono mt-0.5">UTR: {s.utr}</div>}</td>
                     <td className="px-4 py-3">
                       {s.status === "queued" && (
                         <div className="flex gap-1">
@@ -149,6 +147,6 @@ export default function AdminSettlements() {
           <DialogFooter><Button onClick={markPaid} className="bg-emerald-600 font-bold" data-testid="confirm-paid-btn">Confirm paid</Button></DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </PageContainer>
   );
 }

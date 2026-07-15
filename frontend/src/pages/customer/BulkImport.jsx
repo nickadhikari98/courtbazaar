@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Upload, Download, CheckCircle2, XCircle, FileSpreadsheet, Loader2, AlertTriangle } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function BulkImport() {
   const { user } = useAuth();
@@ -38,7 +39,7 @@ export default function BulkImport() {
   };
 
   return (
-    <div className="p-6 lg:p-10 max-w-5xl mx-auto">
+    <PageContainer className="max-w-5xl">
       <div className="cb-overline text-accent">Law firm · Bulk import</div>
       <h1 className="font-display font-black text-3xl tracking-tighter mt-1">Matter-wise CSV bulk orders</h1>
       <p className="text-muted-foreground font-medium mt-1">Place dozens of orders across matters in one upload. Each row = one matter = one order.</p>
@@ -149,6 +150,6 @@ export default function BulkImport() {
           )}
         </div>
       )}
-    </div>
+    </PageContainer>
   );
 }

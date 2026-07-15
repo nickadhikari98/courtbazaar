@@ -11,6 +11,8 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Users, UserPlus, Trash2, Crown, ShieldCheck, Briefcase, Building2 } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
 
 const roleIcons = { owner: Crown, partner: ShieldCheck, associate: Briefcase, paralegal: Users };
 const roleLabels = { owner: "Owner", partner: "Partner", associate: "Associate", paralegal: "Paralegal" };
@@ -79,7 +81,7 @@ export default function FirmManagement() {
 
   if (!firmData?.onboarded) {
     return (
-      <div className="p-6 lg:p-10 max-w-3xl mx-auto">
+      <PageContainer className="max-w-3xl">
         <div className="cb-overline text-accent">Law firm</div>
         <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-6">Set up your firm or join one</h1>
 
@@ -124,7 +126,7 @@ export default function FirmManagement() {
             </CardContent>
           </Card>
         </div>
-      </div>
+      </PageContainer>
     );
   }
 
@@ -132,11 +134,10 @@ export default function FirmManagement() {
   const canInvite = ["owner", "partner"].includes(firmData.my_role);
 
   return (
-    <div className="p-6 lg:p-10 max-w-5xl mx-auto">
+    <PageContainer className="max-w-5xl">
       <div className="flex items-start justify-between gap-4 mb-6">
         <div>
-          <div className="cb-overline text-accent">Law firm</div>
-          <h1 className="font-display font-black text-3xl tracking-tighter mt-1">{firmData.firm.name}</h1>
+          <PageHeader eyebrow="Law firm" title={firmData.firm.name} />
           <div className="text-sm text-muted-foreground font-semibold mt-1">{firmData.firm.gst && `GST: ${firmData.firm.gst}`}</div>
         </div>
         {canInvite && (
@@ -204,6 +205,6 @@ export default function FirmManagement() {
           </div>
         </CardContent>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Search, Filter, ArrowRight } from "lucide-react";
 import * as Icons from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function Marketplace() {
   const navigate = useNavigate();
@@ -26,7 +27,7 @@ export default function Marketplace() {
   );
 
   return (
-    <div className="p-6 lg:p-10 max-w-7xl mx-auto">
+    <PageContainer>
       <div className="cb-overline text-accent">Service marketplace</div>
       <h1 className="font-display font-black text-3xl lg:text-4xl tracking-tighter mt-1">Browse {services.length}+ legal services</h1>
       <p className="text-muted-foreground font-medium mt-2">Transparent INR pricing. Verified vendors. Pan-India coverage.</p>
@@ -57,7 +58,7 @@ export default function Marketplace() {
                     <div className="w-11 h-11 rounded-xl bg-accent/10 flex items-center justify-center">
                       <Icon className="w-5 h-5 text-accent" />
                     </div>
-                    <Badge variant="outline" className="text-[10px] font-bold uppercase">{s.turnaround_hours}h TAT</Badge>
+                    <Badge variant="outline" className="text-2xs font-bold uppercase">{s.turnaround_hours}h TAT</Badge>
                   </div>
                   <div className="font-display font-bold text-base leading-tight">{s.name}</div>
                   <div className="cb-overline mt-1">{s.category}</div>
@@ -75,6 +76,6 @@ export default function Marketplace() {
             );
           })}
       </div>
-    </div>
+    </PageContainer>
   );
 }

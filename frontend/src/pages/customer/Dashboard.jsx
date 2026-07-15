@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import PageContainer from "@/components/layout/PageContainer";
 import {
   Plus, Printer, FileText, Gavel, Stamp, Package, BookOpen, Sparkles, Truck, ArrowRight,
   Wallet, ShieldCheck, TrendingUp, Clock, Type, Scale, FileSignature
@@ -47,7 +48,7 @@ export default function Dashboard() {
   ];
 
   return (
-    <div className="p-6 lg:p-10 max-w-7xl mx-auto">
+    <PageContainer>
       {/* Hero CTA */}
       <div className="relative bg-primary text-white rounded-3xl p-8 lg:p-10 mb-8 overflow-hidden" data-testid="dashboard-hero">
         <div className="absolute inset-0 cb-grain opacity-30"></div>
@@ -147,7 +148,7 @@ export default function Dashboard() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2 mb-1">
                             <span className="font-mono text-xs font-bold text-muted-foreground">{o.order_id}</span>
-                            <Badge className="bg-accent/10 text-accent border-0 text-[10px] uppercase font-bold">{o.status.replace("_", " ")}</Badge>
+                            <Badge className="bg-accent/10 text-accent border-0 text-2xs uppercase font-bold">{o.status.replace("_", " ")}</Badge>
                           </div>
                           <div className="font-display font-bold text-lg truncate">{o.court_name || o.court_id}</div>
                           <div className="text-sm text-muted-foreground font-medium mt-0.5">{o.services?.length || 0} services · {o.delivery_option} delivery</div>
@@ -207,6 +208,6 @@ export default function Dashboard() {
           </Card>
         </div>
       </div>
-    </div>
+    </PageContainer>
   );
 }

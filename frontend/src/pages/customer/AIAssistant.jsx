@@ -37,6 +37,10 @@ export default function AIAssistant() {
   };
 
   return (
+    // Intentionally not PageContainer: this is a full-viewport-height flex
+    // chat column (h-[calc(100vh-64px)] flex flex-col), not a simple padded
+    // content wrapper — a structurally different layout need, not a missed
+    // migration. See DESIGN_SYSTEM_AUDIT.md §5.
     <div className="p-6 lg:p-10 max-w-4xl mx-auto h-[calc(100vh-64px)] flex flex-col">
       <div className="mb-5">
         <div className="cb-overline text-accent flex items-center gap-2"><Sparkles className="w-3 h-3" /> AI Legal Assistant · Claude Sonnet</div>

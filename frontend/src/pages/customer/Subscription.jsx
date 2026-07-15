@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { CheckCircle2, Crown, Star, Building, Zap } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 const planIcon = { free: Star, advocate_pro: Zap, law_firm: Building, enterprise: Crown };
 
@@ -24,7 +25,7 @@ export default function Subscription() {
   };
 
   return (
-    <div className="p-6 lg:p-10 max-w-6xl mx-auto">
+    <PageContainer className="max-w-6xl">
       <div className="cb-overline text-accent">Plans & subscription</div>
       <h1 className="font-display font-black text-3xl lg:text-4xl tracking-tighter mt-1">Choose your tier</h1>
       <p className="text-muted-foreground font-medium mt-2">Cancel anytime. GST invoices auto-generated.</p>
@@ -67,6 +68,6 @@ export default function Subscription() {
           );
         })}
       </div>
-    </div>
+    </PageContainer>
   );
 }

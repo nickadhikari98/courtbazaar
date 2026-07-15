@@ -89,7 +89,7 @@ export default function AppLayout() {
             </div>
             <div className="flex flex-col leading-none">
               <span className="font-display font-black text-lg tracking-tight">CourtBazaar</span>
-              <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground font-bold">India</span>
+              <span className="text-2xs uppercase tracking-[0.18em] text-muted-foreground font-bold">India</span>
             </div>
           </Link>
           <button className="lg:hidden" onClick={() => setSidebarOpen(false)} data-testid="close-sidebar-btn">
@@ -118,7 +118,7 @@ export default function AppLayout() {
               <item.icon className="w-[18px] h-[18px]" strokeWidth={2} />
               <span>{item.label}</span>
               {item.highlight && (
-                <Badge variant="secondary" className="ml-auto bg-accent text-white border-0 text-[10px] h-5 px-1.5">FAST</Badge>
+                <Badge variant="secondary" className="ml-auto bg-accent text-white border-0 text-2xs h-5 px-1.5">FAST</Badge>
               )}
             </NavLink>
           ))}
@@ -171,7 +171,7 @@ export default function AppLayout() {
                 <DropdownMenuLabel>
                   <div className="font-bold">{user?.name}</div>
                   <div className="text-xs text-muted-foreground font-normal">{user?.email}</div>
-                  <Badge variant="outline" className="mt-1.5 text-[10px] capitalize">{user?.role?.replace("_", " ")}</Badge>
+                  <Badge variant="outline" className="mt-1.5 text-2xs capitalize">{user?.role?.replace("_", " ")}</Badge>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => navigate("/profile")} data-testid="menu-profile">

@@ -4,8 +4,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { TrendingUp, Users, Store, IndianRupee, ShoppingBag, AlertCircle } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, PieChart, Pie } from "recharts";
-
-const COLORS = ["#0F172A", "#D97706", "#10b981", "#3b82f6", "#a855f7"];
+import PageContainer from "@/components/layout/PageContainer";
+import { CHART_COLORS as COLORS } from "@/lib/chartColors";
 
 export default function AdminDashboard() {
   const [data, setData] = useState(null);
@@ -24,7 +24,7 @@ export default function AdminDashboard() {
   ];
 
   return (
-    <div className="p-6 lg:p-10 max-w-7xl mx-auto">
+    <PageContainer>
       <div className="cb-overline text-accent">Admin console</div>
       <h1 className="font-display font-black text-3xl lg:text-4xl tracking-tighter mt-1 mb-6">Platform analytics</h1>
 
@@ -33,7 +33,7 @@ export default function AdminDashboard() {
           <Card key={s.label} className="dashboard-card border-none" data-testid={`admin-stat-${s.label.toLowerCase().replace(/\s+/g, '-')}`}>
             <CardContent className="p-4">
               <div className={`w-9 h-9 rounded-lg ${s.color} flex items-center justify-center mb-2`}><s.icon className="w-4 h-4" /></div>
-              <div className="cb-overline text-[10px]">{s.label}</div>
+              <div className="cb-overline text-2xs">{s.label}</div>
               <div className="font-display font-black text-xl tracking-tight mt-1 truncate">{s.value}</div>
             </CardContent>
           </Card>
@@ -86,6 +86,6 @@ export default function AdminDashboard() {
           </CardContent>
         </Card>
       </div>
-    </div>
+    </PageContainer>
   );
 }

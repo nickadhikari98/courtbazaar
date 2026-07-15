@@ -4,9 +4,8 @@ import {
   Clock, Network, Activity, Shield, BadgeCheck, ShieldCheck,
 } from "lucide-react";
 
+import MarketingLayout from "@/components/layout/MarketingLayout";
 import {
-  UtilityBar,
-  LandingNav,
   HeroSection,
   ServiceCard,
   FeaturedServiceCard,
@@ -15,7 +14,6 @@ import {
   PricingSection,
   CoverageSection,
   ReviewsSection,
-  LandingFooter,
   ProductTour,
   PrintOutIcon,
   PhotocopyIcon,
@@ -163,13 +161,7 @@ export default function Landing() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Utility Bar */}
-      <UtilityBar />
-
-      {/* Navigation */}
-      <LandingNav onTakeTour={handleTakeTour} />
-
+    <MarketingLayout navProps={{ onTakeTour: handleTakeTour }}>
       {/* Guided Tour */}
       <ProductTour
         run={tourRun}
@@ -256,9 +248,6 @@ export default function Landing() {
 
       {/* Reviews / Testimonials */}
       <ReviewsSection />
-
-      {/* Footer */}
-      <LandingFooter />
-    </div>
+    </MarketingLayout>
   );
 }

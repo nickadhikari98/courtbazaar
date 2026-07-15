@@ -1,53 +1,74 @@
-import React, { useEffect } from "react";
+import React, { useEffect, Suspense, lazy } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
-import { Toaster } from "sonner";
+import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { setToken } from "@/lib/api";
 import ScrollToTop from "@/components/ScrollToTop";
-
-import Landing from "@/pages/marketing/Landing";
-import Pricing from "@/pages/marketing/Pricing";
-import VendorOnboarding from "@/pages/marketing/VendorOnboarding";
-import About from "@/pages/marketing/About";
-import Contact from "@/pages/marketing/Contact";
-import Security from "@/pages/marketing/Security";
-import Trust from "@/pages/marketing/Trust";
-import LegalCenter from "@/pages/legal/LegalCenter";
-import LegalDocument from "@/pages/legal/LegalDocument";
-import Login from "@/pages/auth/Login";
-import Register from "@/pages/auth/Register";
-import Dashboard from "@/pages/customer/Dashboard";
-import OrderWizard from "@/pages/customer/OrderWizard";
-import OrderDetail from "@/pages/customer/OrderDetail";
-import Orders from "@/pages/customer/Orders";
-import Marketplace from "@/pages/customer/Marketplace";
-import CourtDirectory from "@/pages/customer/CourtDirectory";
-import AIAssistant from "@/pages/customer/AIAssistant";
-import Wallet from "@/pages/customer/Wallet";
-import Subscription from "@/pages/customer/Subscription";
-import Profile from "@/pages/customer/Profile";
-import BulkImport from "@/pages/customer/BulkImport";
-import MyData from "@/pages/customer/MyData";
-import FirmManagement from "@/pages/customer/FirmManagement";
-import NotificationPrefs from "@/pages/customer/NotificationPrefs";
-import VendorDashboard from "@/pages/vendor/VendorDashboard";
-import VendorOnboard from "@/pages/vendor/VendorOnboard";
-import VendorSettlements from "@/pages/vendor/VendorSettlements";
-import AdminSettlements from "@/pages/admin/AdminSettlements";
-import AdminDashboard from "@/pages/admin/AdminDashboard";
-import AdminVendors from "@/pages/admin/AdminVendors";
-import AdminLeads from "@/pages/admin/AdminLeads";
-import AdminPricing from "@/pages/admin/AdminPricing";
-import AdminUsers from "@/pages/admin/AdminUsers";
-import AdminReconciliation from "@/pages/admin/AdminReconciliation";
-import AdminWhatsAppTemplates from "@/pages/admin/AdminWhatsAppTemplates";
-import AdminAuditLog from "@/pages/admin/AdminAuditLog";
-import AdminLeaderboard from "@/pages/admin/AdminLeaderboard";
-import SuperAdminConsole from "@/pages/admin/SuperAdminConsole";
-import DeliveryHub from "@/pages/delivery/DeliveryHub";
-import StenographerBooking from "@/pages/special/StenographerBooking";
+// AppLayout is the shared authenticated-app shell, not a route-level page —
+// it loads for every authenticated visit regardless of which page is under
+// it, so lazy-loading it separately would add a chunk with no benefit. See
+// PRODUCT_DESIGN_SYSTEM.md §3.2 / DESIGN_SYSTEM_AUDIT.md §7.4.
 import AppLayout from "@/components/layout/AppLayout";
+
+// Every page below is route-level code-split via React.lazy(). Each page is
+// its own chunk, fetched only when its route is visited — a marketing-page
+// visitor no longer downloads the admin console or vendor dashboard bundles.
+// See DESIGN_SYSTEM_AUDIT.md §7.4 for why this was the top performance
+// recommendation (bundle was ~643KB gzipped, eagerly loaded in full for
+// every visit before this change).
+const Landing = lazy(() => import("@/pages/marketing/Landing"));
+const Pricing = lazy(() => import("@/pages/marketing/Pricing"));
+const VendorOnboarding = lazy(() => import("@/pages/marketing/VendorOnboarding"));
+const About = lazy(() => import("@/pages/marketing/About"));
+const Contact = lazy(() => import("@/pages/marketing/Contact"));
+const Security = lazy(() => import("@/pages/marketing/Security"));
+const Trust = lazy(() => import("@/pages/marketing/Trust"));
+const LegalCenter = lazy(() => import("@/pages/legal/LegalCenter"));
+const LegalDocument = lazy(() => import("@/pages/legal/LegalDocument"));
+const Login = lazy(() => import("@/pages/auth/Login"));
+const Register = lazy(() => import("@/pages/auth/Register"));
+const Dashboard = lazy(() => import("@/pages/customer/Dashboard"));
+const OrderWizard = lazy(() => import("@/pages/customer/OrderWizard"));
+const OrderDetail = lazy(() => import("@/pages/customer/OrderDetail"));
+const Orders = lazy(() => import("@/pages/customer/Orders"));
+const Marketplace = lazy(() => import("@/pages/customer/Marketplace"));
+const CourtDirectory = lazy(() => import("@/pages/customer/CourtDirectory"));
+const AIAssistant = lazy(() => import("@/pages/customer/AIAssistant"));
+const Wallet = lazy(() => import("@/pages/customer/Wallet"));
+const Subscription = lazy(() => import("@/pages/customer/Subscription"));
+const Profile = lazy(() => import("@/pages/customer/Profile"));
+const BulkImport = lazy(() => import("@/pages/customer/BulkImport"));
+const MyData = lazy(() => import("@/pages/customer/MyData"));
+const FirmManagement = lazy(() => import("@/pages/customer/FirmManagement"));
+const NotificationPrefs = lazy(() => import("@/pages/customer/NotificationPrefs"));
+const VendorDashboard = lazy(() => import("@/pages/vendor/VendorDashboard"));
+const VendorOnboard = lazy(() => import("@/pages/vendor/VendorOnboard"));
+const VendorSettlements = lazy(() => import("@/pages/vendor/VendorSettlements"));
+const AdminSettlements = lazy(() => import("@/pages/admin/AdminSettlements"));
+const AdminDashboard = lazy(() => import("@/pages/admin/AdminDashboard"));
+const AdminVendors = lazy(() => import("@/pages/admin/AdminVendors"));
+const AdminLeads = lazy(() => import("@/pages/admin/AdminLeads"));
+const AdminPricing = lazy(() => import("@/pages/admin/AdminPricing"));
+const AdminUsers = lazy(() => import("@/pages/admin/AdminUsers"));
+const AdminReconciliation = lazy(() => import("@/pages/admin/AdminReconciliation"));
+const AdminWhatsAppTemplates = lazy(() => import("@/pages/admin/AdminWhatsAppTemplates"));
+const AdminAuditLog = lazy(() => import("@/pages/admin/AdminAuditLog"));
+const AdminLeaderboard = lazy(() => import("@/pages/admin/AdminLeaderboard"));
+const SuperAdminConsole = lazy(() => import("@/pages/admin/SuperAdminConsole"));
+const DeliveryHub = lazy(() => import("@/pages/delivery/DeliveryHub"));
+const StenographerBooking = lazy(() => import("@/pages/special/StenographerBooking"));
+
+/** Route-transition fallback — same spinner treatment already used by
+ * ProtectedRoute's auth-loading state and AuthCallback below, so a lazy
+ * chunk loading doesn't introduce a new visual pattern. */
+function RouteLoadingFallback() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="w-10 h-10 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
+    </div>
+  );
+}
 
 function AuthCallback() {
   const navigate = useNavigate();
@@ -103,6 +124,7 @@ function AppRouter() {
   return (
     <>
     <ScrollToTop />
+    <Suspense fallback={<RouteLoadingFallback />}>
     <Routes>
       <Route path="/" element={<Landing />} />
       <Route path="/pricing" element={<Pricing />} />
@@ -155,6 +177,7 @@ function AppRouter() {
 
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>
+    </Suspense>
     </>
   );
 }
@@ -164,7 +187,7 @@ function App() {
     <div className="App">
       <BrowserRouter>
         <AuthProvider>
-          <Toaster position="top-right" richColors />
+          <Toaster />
           <AppRouter />
         </AuthProvider>
       </BrowserRouter>

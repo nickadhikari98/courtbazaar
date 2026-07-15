@@ -12,6 +12,7 @@ import {
 import {
   Search, FileText, Download, CheckCircle2, XCircle, MessageSquareWarning, StickyNote,
 } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 import {
   adminListLeads, adminGetLead, adminChangeLeadStatus, adminAddLeadNote,
   adminGetLeadDocumentUrl, adminGetLeadStats,
@@ -118,7 +119,7 @@ function LeadDetailDialog({ leadId, open, onOpenChange, onChanged }) {
         <DialogHeader>
           <DialogTitle className="font-display text-xl flex items-center gap-2">
             {lead.full_name || "Unnamed applicant"}
-            <Badge className={`${STATUS_BADGE[lead.status]} border-0 font-bold uppercase text-[10px]`}>
+            <Badge className={`${STATUS_BADGE[lead.status]} border-0 font-bold uppercase text-2xs`}>
               {lead.status.replace("_", " ")}
             </Badge>
           </DialogTitle>
@@ -237,7 +238,7 @@ export default function AdminLeads() {
     : 0, [stats]);
 
   return (
-    <div className="p-6 lg:p-10 max-w-6xl mx-auto">
+    <PageContainer className="max-w-6xl">
       <div className="cb-overline text-accent">Admin · Leads</div>
       <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-6">Lead management</h1>
 
@@ -277,7 +278,7 @@ export default function AdminLeads() {
               <div>
                 <div className="flex items-center gap-2 mb-1">
                   <div className="font-display font-bold text-lg">{l.full_name || "Unnamed applicant"}</div>
-                  <Badge variant="outline" className="text-[10px] font-bold uppercase">{ROLE_LABELS[l.role_applied_for] || l.role_applied_for}</Badge>
+                  <Badge variant="outline" className="text-2xs font-bold uppercase">{ROLE_LABELS[l.role_applied_for] || l.role_applied_for}</Badge>
                 </div>
                 <div className="text-sm text-muted-foreground font-semibold">{l.email || "—"} · {l.phone || "—"}</div>
                 <div className="text-xs text-muted-foreground mt-1">{l.document_ids?.length || 0} documents · updated {new Date(l.updated_at).toLocaleDateString()}</div>
@@ -294,6 +295,6 @@ export default function AdminLeads() {
         onOpenChange={(v) => !v && setActiveLeadId(null)}
         onChanged={() => { load(); loadStats(); }}
       />
-    </div>
+    </PageContainer>
   );
 }

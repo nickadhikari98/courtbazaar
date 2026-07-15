@@ -4,7 +4,7 @@ import {
   Mail, Clock, Handshake, MessageSquareWarning, Newspaper, HeadphonesIcon,
   MapPin, Copy, Navigation, ExternalLink, ArrowRight, Landmark,
 } from "lucide-react";
-import { UtilityBar, LandingNav, LandingFooter } from "@/components/landing";
+import MarketingLayout from "@/components/layout/MarketingLayout";
 import ConfigRequiredBadge from "@/components/legal/ConfigRequiredBadge";
 import ContactMap from "@/components/legal/ContactMap";
 import { companyInfo } from "@/config/companyInfo";
@@ -51,10 +51,7 @@ export default function Contact() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <UtilityBar />
-      <LandingNav />
-
+    <MarketingLayout>
       <section className="landing-section pb-0">
         <div className="landing-container text-center max-w-2xl mx-auto">
           <div className="cb-overline text-accent mb-3">Get in Touch</div>
@@ -185,8 +182,6 @@ export default function Contact() {
           </a>
         </div>
       </section>
-
-      <LandingFooter />
-    </div>
+    </MarketingLayout>
   );
 }

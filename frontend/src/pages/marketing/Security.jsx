@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import {
   Lock, KeyRound, UploadCloud, Database, ClipboardList, ShieldCheck, BadgeCheck, ArrowRight,
 } from "lucide-react";
-import { UtilityBar, LandingNav, LandingFooter } from "@/components/landing";
+import MarketingLayout from "@/components/layout/MarketingLayout";
 import ComingSoonBadge from "@/components/shared/ComingSoonBadge";
 import usePageSEO from "@/hooks/usePageSEO";
 import useStructuredData, { breadcrumbSchema } from "@/hooks/useStructuredData";
@@ -69,10 +69,7 @@ export default function Security() {
   useStructuredData("security-breadcrumb", breadcrumbSchema([{ label: "Security" }]));
 
   return (
-    <div className="min-h-screen bg-background">
-      <UtilityBar />
-      <LandingNav />
-
+    <MarketingLayout>
       <section className="landing-section pb-0">
         <div className="landing-container text-center max-w-2xl mx-auto">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-accent/10 mb-4">
@@ -115,8 +112,6 @@ export default function Security() {
           </Link>
         </div>
       </section>
-
-      <LandingFooter />
-    </div>
+    </MarketingLayout>
   );
 }

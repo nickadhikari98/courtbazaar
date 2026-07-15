@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { ShieldCheck, Star, MapPin } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function AdminVendors() {
   const [vendors, setVendors] = useState([]);
@@ -23,7 +24,7 @@ export default function AdminVendors() {
   };
 
   return (
-    <div className="p-6 lg:p-10 max-w-6xl mx-auto">
+    <PageContainer className="max-w-6xl">
       <div className="cb-overline text-accent">Admin · Vendors</div>
       <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-6">Vendor management</h1>
 
@@ -62,6 +63,6 @@ export default function AdminVendors() {
           </Card>
         ))}
       </div>
-    </div>
+    </PageContainer>
   );
 }

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Search } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function AdminUsers() {
   const [users, setUsers] = useState([]);
@@ -17,7 +18,7 @@ export default function AdminUsers() {
   );
 
   return (
-    <div className="p-6 lg:p-10 max-w-6xl mx-auto">
+    <PageContainer className="max-w-6xl">
       <div className="cb-overline text-accent">Admin · Users</div>
       <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-6">All users ({users.length})</h1>
 
@@ -38,14 +39,14 @@ export default function AdminUsers() {
                     <div className="font-display font-bold text-sm">{u.name}</div>
                     <div className="text-xs text-muted-foreground">{u.email} · {u.phone || "—"}</div>
                   </div>
-                  <Badge className="bg-secondary text-foreground border-0 font-bold capitalize text-[10px]">{u.role?.replace('_', ' ')}</Badge>
-                  <Badge variant="outline" className="font-bold capitalize text-[10px]">{u.subscription}</Badge>
+                  <Badge className="bg-secondary text-foreground border-0 font-bold capitalize text-2xs">{u.role?.replace('_', ' ')}</Badge>
+                  <Badge variant="outline" className="font-bold capitalize text-2xs">{u.subscription}</Badge>
                 </div>
               );
             })}
           </div>
         </CardContent>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { toast } from "sonner";
 import { Loader2, User, ShieldCheck } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function Profile() {
   const { user, refresh } = useAuth();
@@ -35,7 +36,7 @@ export default function Profile() {
   const initials = (form.name || "U").split(" ").map(s => s[0]).slice(0, 2).join("").toUpperCase();
 
   return (
-    <div className="p-6 lg:p-10 max-w-3xl mx-auto">
+    <PageContainer className="max-w-3xl">
       <div className="cb-overline text-accent">Profile</div>
       <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-6">Your account</h1>
 
@@ -75,6 +76,6 @@ export default function Profile() {
           </Button>
         </CardContent>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

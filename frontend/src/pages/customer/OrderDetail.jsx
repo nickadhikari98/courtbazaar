@@ -12,6 +12,7 @@ import {
   CheckCircle2, Clock, Loader2, Truck, Package, FileText, Star,
   MapPin, ShieldCheck, Receipt, Download, AlertCircle, ArrowLeft
 } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 const STATUS_FLOW = [
   { key: "placed", label: "Order Placed" },
@@ -149,7 +150,7 @@ export default function OrderDetail() {
   const currentStepIdx = STATUS_FLOW.findIndex(s => s.key === order.status);
 
   return (
-    <div className="p-6 lg:p-10 max-w-5xl mx-auto">
+    <PageContainer className="max-w-5xl">
       <button onClick={() => navigate(-1)} className="text-sm font-semibold text-muted-foreground hover:text-foreground mb-4 flex items-center gap-1.5" data-testid="back-btn">
         <ArrowLeft className="w-4 h-4" /> Back
       </button>
@@ -162,8 +163,8 @@ export default function OrderDetail() {
             <Badge className={`${order.payment_status === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'} border-0 font-bold`} data-testid="order-payment-status">
               {order.payment_status === 'paid' ? 'PAID' : 'PAYMENT PENDING'}
             </Badge>
-            <Badge className="bg-primary text-white border-0 font-bold uppercase text-[10px]" data-testid="order-status-badge">{order.status.replace(/_/g, ' ')}</Badge>
-            {order.urgent && <Badge className="bg-destructive text-white border-0 font-bold uppercase text-[10px]">URGENT</Badge>}
+            <Badge className="bg-primary text-white border-0 font-bold uppercase text-2xs" data-testid="order-status-badge">{order.status.replace(/_/g, ' ')}</Badge>
+            {order.urgent && <Badge className="bg-destructive text-white border-0 font-bold uppercase text-2xs">URGENT</Badge>}
           </div>
         </div>
         <div className="text-right">
@@ -342,6 +343,6 @@ export default function OrderDetail() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </PageContainer>
   );
 }

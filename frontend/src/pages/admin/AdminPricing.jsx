@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { Edit3, Save } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function AdminPricing() {
   const [services, setServices] = useState([]);
@@ -28,7 +29,7 @@ export default function AdminPricing() {
   };
 
   return (
-    <div className="p-6 lg:p-10 max-w-5xl mx-auto">
+    <PageContainer className="max-w-5xl">
       <div className="cb-overline text-accent">Admin · Pricing</div>
       <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-6">Service pricing controls</h1>
 
@@ -78,6 +79,6 @@ export default function AdminPricing() {
           </div>
         </CardContent>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

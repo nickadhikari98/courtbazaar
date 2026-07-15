@@ -40,7 +40,7 @@ export default function Register() {
             </div>
             <div>
               <div className="font-display font-black text-xl tracking-tight leading-none">CourtBazaar</div>
-              <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground font-bold">India</div>
+              <div className="text-2xs uppercase tracking-[0.2em] text-muted-foreground font-bold">India</div>
             </div>
           </Link>
           <h1 className="font-display font-black text-5xl tracking-tighter leading-[0.95]">

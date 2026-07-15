@@ -4,7 +4,7 @@ import {
   Target, Eye, Check, Cpu, ShieldCheck, Zap, Lock as LockIcon, Handshake, Award, Users2,
   Building2, Landmark, Scale, ArrowRight, MapPinned, MapPin,
 } from "lucide-react";
-import { UtilityBar, LandingNav, LandingFooter } from "@/components/landing";
+import MarketingLayout from "@/components/layout/MarketingLayout";
 import ComingSoonBadge from "@/components/shared/ComingSoonBadge";
 import { companyInfo } from "@/config/companyInfo";
 import usePageSEO from "@/hooks/usePageSEO";
@@ -63,10 +63,7 @@ export default function About() {
   useStructuredData("about-breadcrumb", breadcrumbSchema([{ label: "About Us" }]));
 
   return (
-    <div className="min-h-screen bg-background">
-      <UtilityBar />
-      <LandingNav />
-
+    <MarketingLayout>
       {/* Hero + Mission / Vision */}
       <section className="landing-section pb-0">
         <div className="landing-container grid lg:grid-cols-[1fr_360px] gap-10 lg:gap-12 items-start">
@@ -243,8 +240,6 @@ export default function About() {
           </Link>
         </div>
       </section>
-
-      <LandingFooter />
-    </div>
+    </MarketingLayout>
   );
 }

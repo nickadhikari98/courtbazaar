@@ -29,6 +29,45 @@ let webpackConfig = {
       rules: {
         "react-hooks/rules-of-hooks": "error",
         "react-hooks/exhaustive-deps": "warn",
+        // --- Design-system drift guardrails ---
+        // See PRODUCT_DESIGN_SYSTEM.md §8.4 (Do/Don't) and DESIGN_SYSTEM_AUDIT.md
+        // for the history behind each of these. Warnings, not errors: `npm run
+        // build` doesn't set CI=true, so these surface in the console without
+        // blocking a build — bump to "error" if the team wants them enforced.
+        "no-restricted-syntax": [
+          "warn",
+          {
+            // Raw hex colors bypass the design tokens in tailwind.config.js /
+            // index.css. Import the token (bg-primary, text-accent, etc.)
+            // instead of a literal like "#0F172A".
+            selector: "Literal[value=/#[0-9a-fA-F]{3}([0-9a-fA-F]{3}([0-9a-fA-F]{2})?)?\\b/]",
+            message:
+              "Avoid hardcoded hex colors — use a design token from tailwind.config.js/index.css instead (see PRODUCT_DESIGN_SYSTEM.md §4.1).",
+          },
+          {
+            // The exact magic number this pass just tokenized as `text-2xs`
+            // (PRODUCT_DESIGN_SYSTEM.md §5.2) — guards against it creeping back in.
+            selector: "Literal[value=/text-\\[10px\\]/]",
+            message: "Use `text-2xs` instead of the arbitrary value `text-[10px]` — see PRODUCT_DESIGN_SYSTEM.md §5.2.",
+          },
+          {
+            // Inline style props bypass the token system entirely and can't be
+            // themed/audited the way a Tailwind class can. Computed values
+            // (widths, transforms) are the accepted exception — this only
+            // warns, so those aren't blocked, just flagged for a second look.
+            selector: "JSXAttribute[name.name='style']",
+            message:
+              "Inline style props bypass design tokens — prefer a Tailwind class. If the value is genuinely computed at runtime (e.g. a progress-bar width), this warning is expected to be suppressed inline, not worked around.",
+          },
+        ],
+        // Deliberately NOT lint-enforcing "no raw <button>": the audit found
+        // 40+ raw <button> call sites, and a real chunk of them are filter
+        // chips, selection cards, and Popover/Combobox triggers that are
+        // correctly NOT the Button component (see DESIGN_SYSTEM_AUDIT.md §2.G).
+        // A mechanical AST rule can't tell those apart from a standard action
+        // button styled by hand, so it would train the team to ignore this
+        // rule's warnings rather than catch real drift. Enforce this one via
+        // code review against PRODUCT_DESIGN_SYSTEM.md §8.4 instead.
       },
     },
   },

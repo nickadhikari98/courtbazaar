@@ -10,6 +10,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { Loader2, ShieldCheck } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function VendorOnboard() {
   const navigate = useNavigate();
@@ -64,7 +65,7 @@ export default function VendorOnboard() {
   };
 
   return (
-    <div className="p-6 lg:p-10 max-w-3xl mx-auto">
+    <PageContainer className="max-w-3xl">
       <div className="cb-overline text-accent">Vendor onboarding</div>
       <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-2">List your business on CourtBazaar</h1>
       <p className="text-muted-foreground font-medium mb-6">3-minute setup · GST optional · same 80/20 split for everyone</p>
@@ -166,6 +167,6 @@ export default function VendorOnboard() {
           </Button>
         </CardContent>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

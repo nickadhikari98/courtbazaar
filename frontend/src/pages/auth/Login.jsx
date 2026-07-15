@@ -71,7 +71,7 @@ export default function Login() {
             </div>
             <div>
               <div className="font-display font-black text-xl tracking-tight leading-none">CourtBazaar</div>
-              <div className="text-[10px] uppercase tracking-[0.2em] text-white/70 font-bold mt-0.5">India</div>
+              <div className="text-2xs uppercase tracking-[0.2em] text-white/70 font-bold mt-0.5">India</div>
             </div>
           </Link>
           <div className="space-y-6 max-w-md">

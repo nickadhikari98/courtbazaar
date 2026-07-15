@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Building2, ShieldCheck, Search, MapPin, Lock } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function CourtDirectory() {
   const [states, setStates] = useState([]);
@@ -30,7 +31,7 @@ export default function CourtDirectory() {
   const filtered = courts.filter(c => !q || c.name.toLowerCase().includes(q.toLowerCase()));
 
   return (
-    <div className="p-6 lg:p-10 max-w-7xl mx-auto">
+    <PageContainer>
       <div className="cb-overline text-accent">Court directory</div>
       <h1 className="font-display font-black text-3xl lg:text-4xl tracking-tighter mt-1">India → State → Court</h1>
       <p className="text-muted-foreground font-medium mt-2">Browse our vendor network across India's legal forums.</p>
@@ -66,13 +67,13 @@ export default function CourtDirectory() {
                       <div className="font-display font-bold text-base leading-tight">{c.name}</div>
                       <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1.5"><MapPin className="w-3 h-3" /> {c.address}</div>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <Badge className="bg-emerald-100 text-emerald-700 border-0 text-[10px] uppercase font-bold">{c.type?.replace('_', ' ')}</Badge>
+                        <Badge className="bg-emerald-100 text-emerald-700 border-0 text-2xs uppercase font-bold">{c.type?.replace('_', ' ')}</Badge>
                         {c.serviceable !== false ? (
-                          <Badge variant="outline" className="text-[10px] font-bold flex items-center gap-1 border-emerald-300 text-emerald-700">
+                          <Badge variant="outline" className="text-2xs font-bold flex items-center gap-1 border-emerald-300 text-emerald-700">
                             <ShieldCheck className="w-3 h-3" /> Serviceable
                           </Badge>
                         ) : (
-                          <Badge variant="outline" className="text-[10px] font-bold flex items-center gap-1 border-amber-300 text-amber-700">
+                          <Badge variant="outline" className="text-2xs font-bold flex items-center gap-1 border-amber-300 text-amber-700">
                             <Lock className="w-3 h-3" /> Coming Soon
                           </Badge>
                         )}
@@ -85,6 +86,6 @@ export default function CourtDirectory() {
           </div>
         </div>
       </div>
-    </div>
+    </PageContainer>
   );
 }

@@ -6,6 +6,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { Wallet, CheckCircle2, Clock, XCircle, Banknote, Receipt } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
 
 const statusColor = {
   queued: "bg-amber-100 text-amber-700 border-amber-300",
@@ -43,13 +45,13 @@ export default function VendorSettlements() {
   const failedTotal = data.settlements.filter(s => s.status === "failed").reduce((a, b) => a + (b.amount || 0), 0);
 
   return (
-    <div className="p-6 lg:p-10 max-w-7xl mx-auto" data-testid="vendor-settlements-page">
+    <PageContainer data-testid="vendor-settlements-page">
       <div className="mb-6">
-        <div className="cb-overline text-accent">Vendor · Settlements</div>
-        <h1 className="font-display font-black text-3xl tracking-tighter mt-1">My payouts</h1>
-        <p className="text-muted-foreground font-medium mt-1">
-          T+1 NEFT/UPI settlements · processed daily at 02:00 UTC for the previous day&apos;s delivered+paid orders
-        </p>
+        <PageHeader
+          eyebrow="Vendor · Settlements"
+          title="My payouts"
+          description="T+1 NEFT/UPI settlements · processed daily at 02:00 UTC for the previous day's delivered+paid orders"
+        />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
@@ -146,16 +148,16 @@ export default function VendorSettlements() {
                         <td className="px-4 py-3 text-right font-bold">{s.order_count}</td>
                         <td className="px-4 py-3 text-right font-display font-black text-base">{formatINR(s.amount)}</td>
                         <td className="px-4 py-3">
-                          <Badge variant="outline" className="font-bold uppercase text-[10px]">
+                          <Badge variant="outline" className="font-bold uppercase text-2xs">
                             <Banknote className="w-3 h-3 mr-1" />{s.payment_mode}
                           </Badge>
-                          <div className="text-[10px] font-mono text-muted-foreground mt-0.5">{s.bank_account ? `••${s.bank_account.slice(-4)}` : "UPI"}</div>
+                          <div className="text-2xs font-mono text-muted-foreground mt-0.5">{s.bank_account ? `••${s.bank_account.slice(-4)}` : "UPI"}</div>
                         </td>
                         <td className="px-4 py-3 text-xs font-mono">
                           {s.utr || s.failure_reason || "—"}
                         </td>
                         <td className="px-4 py-3">
-                          <Badge className={`${statusColor[s.status]} border font-bold uppercase text-[10px]`}>
+                          <Badge className={`${statusColor[s.status]} border font-bold uppercase text-2xs`}>
                             <SI className="w-3 h-3 mr-1" />{s.status}
                           </Badge>
                         </td>
@@ -174,6 +176,6 @@ export default function VendorSettlements() {
           )}
         </CardContent>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

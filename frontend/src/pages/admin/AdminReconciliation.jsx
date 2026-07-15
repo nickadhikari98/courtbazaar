@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Download, AlertTriangle, CheckCircle2, XCircle, Clock } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
 
 export default function AdminReconciliation() {
   const [data, setData] = useState(null);
@@ -41,17 +43,13 @@ export default function AdminReconciliation() {
       complete: ["bg-emerald-100 text-emerald-700", CheckCircle2],
     };
     const [cls, Icon] = map[s] || ["bg-secondary text-foreground", Clock];
-    return <Badge className={`${cls} border-0 font-bold uppercase text-[10px] flex items-center gap-1`}><Icon className="w-3 h-3" /> {s}</Badge>;
+    return <Badge className={`${cls} border-0 font-bold uppercase text-2xs flex items-center gap-1`}><Icon className="w-3 h-3" /> {s}</Badge>;
   };
 
   return (
-    <div className="p-6 lg:p-10 max-w-7xl mx-auto">
+    <PageContainer>
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
-        <div>
-          <div className="cb-overline text-accent">Admin · Payments</div>
-          <h1 className="font-display font-black text-3xl tracking-tighter mt-1">Reconciliation report</h1>
-          <p className="text-muted-foreground font-medium mt-1">Stripe ↔ Razorpay cross-check</p>
-        </div>
+        <PageHeader eyebrow="Admin · Payments" title="Reconciliation report" description="Stripe ↔ Razorpay cross-check" />
         <Button onClick={exportCSV} variant="outline" className="font-bold" data-testid="export-csv-btn">
           <Download className="w-4 h-4 mr-1.5" /> Export CSV
         </Button>
@@ -149,7 +147,7 @@ export default function AdminReconciliation() {
                   <tr key={r.session_id + i} className={`hover:bg-secondary/40 ${r.mismatch ? 'bg-rose-50' : ''}`} data-testid={`recon-row-${i}`}>
                     <td className="px-4 py-3 font-mono text-xs">{r.session_id?.slice(0, 24)}{r.session_id?.length > 24 && '…'}</td>
                     <td className="px-4 py-3">
-                      <Badge className={`${r.gateway === 'stripe' ? 'bg-blue-100 text-blue-700' : 'bg-accent/15 text-accent'} border-0 font-bold uppercase text-[10px]`}>{r.gateway}{r.simulated && ' SIM'}</Badge>
+                      <Badge className={`${r.gateway === 'stripe' ? 'bg-blue-100 text-blue-700' : 'bg-accent/15 text-accent'} border-0 font-bold uppercase text-2xs`}>{r.gateway}{r.simulated && ' SIM'}</Badge>
                     </td>
                     <td className="px-4 py-3 font-mono text-xs">{r.order_id}</td>
                     <td className="px-4 py-3 font-bold">{formatINR(r.amount)}</td>
@@ -166,6 +164,6 @@ export default function AdminReconciliation() {
           </div>
         </CardContent>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

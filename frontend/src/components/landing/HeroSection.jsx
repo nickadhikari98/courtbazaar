@@ -113,7 +113,7 @@ export default function HeroSection() {
                       </span>
                     </div>
                     <p className="font-semibold text-xs lg:text-sm">{step.label}</p>
-                    <p className="text-[10px] lg:text-xs text-muted-foreground mt-0.5 hidden sm:block leading-tight">
+                    <p className="text-2xs lg:text-xs text-muted-foreground mt-0.5 hidden sm:block leading-tight">
                       {step.desc}
                     </p>
                   </div>

@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Wallet } from "lucide-react";
-import { UtilityBar, LandingNav, LandingFooter } from "@/components/landing";
+import MarketingLayout from "@/components/layout/MarketingLayout";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { individualPricing, packages, addOnServices, formatINR } from "@/lib/pricingData";
 import PricingServiceRow from "@/components/landing/pricing/PricingServiceRow";
 import PackageSavingsBanner from "@/components/landing/pricing/PackageSavingsBanner";
-import PricingPackageCard from "@/components/landing/pricing/PricingPackageCard";
+import PricingCard from "@/components/landing/PricingCard";
 import PricingDetailsPanel from "@/components/landing/pricing/PricingDetailsPanel";
 import PricingComparisonTable from "@/components/landing/pricing/PricingComparisonTable";
 import TrustIndicatorsStrip from "@/components/landing/pricing/TrustIndicatorsStrip";
@@ -26,10 +26,7 @@ export default function Pricing() {
   }, [activeSlug]);
 
   return (
-    <div className="min-h-screen bg-background">
-      <UtilityBar />
-      <LandingNav />
-
+    <MarketingLayout>
       {/* Header */}
       <section className="landing-section pb-0">
         <div className="landing-container">
@@ -75,8 +72,9 @@ export default function Pricing() {
                 </Link>
               </div>
               <div className="max-w-md mx-auto">
-                <PricingPackageCard
+                <PricingCard
                   pkg={activePackage}
+                  variant="full"
                   isExpanded={expandedSlug === activePackage.slug}
                   onToggleDetails={toggleDetails}
                 />
@@ -100,8 +98,9 @@ export default function Pricing() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 items-stretch gap-7 lg:gap-8">
                   {packages.map((pkg) => (
                     <div key={pkg.slug} className="flex">
-                      <PricingPackageCard
+                      <PricingCard
                         pkg={pkg}
+                        variant="full"
                         isExpanded={expandedSlug === pkg.slug}
                         onToggleDetails={toggleDetails}
                       />
@@ -162,8 +161,6 @@ export default function Pricing() {
           </div>
         </div>
       </section>
-
-      <LandingFooter />
-    </div>
+    </MarketingLayout>
   );
 }

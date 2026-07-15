@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Package, Search, ArrowRight } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function Orders() {
   const [orders, setOrders] = useState([]);
@@ -34,8 +35,8 @@ export default function Orders() {
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 mb-1">
                 <span className="font-mono text-xs font-bold text-muted-foreground">{o.order_id}</span>
-                <Badge className="bg-accent/10 text-accent border-0 text-[10px] uppercase font-bold">{o.status.replace(/_/g, ' ')}</Badge>
-                <Badge variant="outline" className={`text-[10px] font-bold ${o.payment_status === 'paid' ? 'border-emerald-300 text-emerald-700' : ''}`}>
+                <Badge className="bg-accent/10 text-accent border-0 text-2xs uppercase font-bold">{o.status.replace(/_/g, ' ')}</Badge>
+                <Badge variant="outline" className={`text-2xs font-bold ${o.payment_status === 'paid' ? 'border-emerald-300 text-emerald-700' : ''}`}>
                   {o.payment_status === 'paid' ? 'PAID' : 'UNPAID'}
                 </Badge>
               </div>
@@ -53,7 +54,7 @@ export default function Orders() {
   );
 
   return (
-    <div className="p-6 lg:p-10 max-w-6xl mx-auto">
+    <PageContainer className="max-w-6xl">
       <div className="cb-overline text-accent">Order history</div>
       <h1 className="font-display font-black text-3xl lg:text-4xl tracking-tighter mt-1 mb-6">My Orders</h1>
 
@@ -83,6 +84,6 @@ export default function Orders() {
           </TabsContent>
         ))}
       </Tabs>
-    </div>
+    </PageContainer>
   );
 }

@@ -128,7 +128,7 @@
   @apply flex items-center justify-between w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-muted-foreground hover:border-accent/40 transition-colors mb-1;
 }
 .legal-search-kbd {
-  @apply bg-slate-100 border border-slate-300 rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold text-slate-500;
+  @apply bg-slate-100 border border-slate-300 rounded px-1.5 py-0.5 text-2xs font-mono font-semibold text-slate-500;
 }
 
 /* -- Actions -- */

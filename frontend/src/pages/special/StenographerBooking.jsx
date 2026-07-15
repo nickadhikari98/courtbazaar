@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Mic, Clock, Star, ShieldCheck, Loader2 } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function StenographerBooking() {
   const navigate = useNavigate();
@@ -70,7 +71,7 @@ export default function StenographerBooking() {
   };
 
   return (
-    <div className="p-6 lg:p-10 max-w-5xl mx-auto">
+    <PageContainer className="max-w-5xl">
       <div className="cb-overline text-accent flex items-center gap-1.5"><Mic className="w-3 h-3" /> Stenographer services</div>
       <h1 className="font-display font-black text-3xl tracking-tighter mt-1">Book a stenographer · hourly</h1>
       <p className="text-muted-foreground font-medium mt-1">Court hearings, depositions, transcriptions, dictations — verified, on-demand.</p>
@@ -158,6 +159,6 @@ export default function StenographerBooking() {
           </CardContent></Card>
         </div>
       </div>
-    </div>
+    </PageContainer>
   );
 }

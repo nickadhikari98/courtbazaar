@@ -224,7 +224,7 @@
    color and bold uppercase typography, but laid out in normal flow with no
    rotation, a pill radius, and a gentle "breathing" glow instead. */
 .landing-coming-soon-badge {
-  @apply absolute z-10 bg-accent text-white text-[10px] font-bold uppercase tracking-wide text-center rounded-sm;
+  @apply absolute z-10 bg-accent text-white text-2xs font-bold uppercase tracking-wide text-center rounded-sm;
   top: 16px;
   right: -36px;
   width: 135px;

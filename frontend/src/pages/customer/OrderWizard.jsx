@@ -16,6 +16,7 @@ import {
   Truck, Home, Building2, Cloud, Zap, ShieldCheck, Sparkles, AlertCircle, AlertTriangle, Lock
 } from "lucide-react";
 import * as Icons from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 const STEPS = ["Upload", "Services", "Court", "Delivery", "Review"];
 
@@ -159,7 +160,7 @@ export default function OrderWizard() {
   ];
 
   return (
-    <div className="p-6 lg:p-10 max-w-5xl mx-auto">
+    <PageContainer className="max-w-5xl">
       <div className="mb-8">
         <div className="cb-overline text-accent">Smart order wizard</div>
         <h1 className="font-display font-black text-3xl lg:text-4xl tracking-tighter mt-1">Place a new order</h1>
@@ -168,7 +169,7 @@ export default function OrderWizard() {
           <div className="mt-3 flex justify-between text-xs font-bold">
             {STEPS.map((s, i) => (
               <div key={s} className={`flex items-center gap-1.5 ${i <= step ? 'text-foreground' : 'text-muted-foreground'}`} data-testid={`step-indicator-${i}`}>
-                <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${i < step ? 'bg-accent text-white' : i === step ? 'bg-primary text-white' : 'bg-secondary'}`}>
+                <div className={`w-5 h-5 rounded-full flex items-center justify-center text-2xs ${i < step ? 'bg-accent text-white' : i === step ? 'bg-primary text-white' : 'bg-secondary'}`}>
                   {i < step ? <Check className="w-3 h-3" /> : i + 1}
                 </div>
                 <span className="hidden sm:inline">{s}</span>
@@ -303,7 +304,7 @@ export default function OrderWizard() {
                               {selected && (
                                 <div className="flex items-center gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
                                   <Input type="number" min="1" value={selectedServices[s.service_id]} onChange={(e) => setQty(s.service_id, e.target.value)} className="w-20 h-8 text-sm" data-testid={`qty-${s.service_id}`} />
-                                  <button onClick={() => toggleService(s.service_id)} className="text-xs font-bold text-destructive hover:underline" data-testid={`remove-svc-${s.service_id}`}>Remove</button>
+                                  <Button variant="link" onClick={() => toggleService(s.service_id)} className="h-auto p-0 text-xs font-bold text-destructive" data-testid={`remove-svc-${s.service_id}`}>Remove</Button>
                                 </div>
                               )}
                             </div>
@@ -464,6 +465,6 @@ export default function OrderWizard() {
           </div>
         </CardContent>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

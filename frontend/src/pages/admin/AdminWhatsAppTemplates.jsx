@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Send, CheckCircle2, XCircle, Plus, FileText, Trash2, Edit3, Clock } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 const statusStyle = {
   draft: "bg-secondary text-foreground",
@@ -85,7 +86,7 @@ export default function AdminWhatsAppTemplates() {
   };
 
   return (
-    <div className="p-6 lg:p-10 max-w-6xl mx-auto">
+    <PageContainer className="max-w-6xl">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
         <div>
           <div className="cb-overline text-accent">Admin · WhatsApp</div>
@@ -158,9 +159,9 @@ export default function AdminWhatsAppTemplates() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-display font-bold text-base">{t.name}</span>
-                    <Badge className={`${statusStyle[t.status]} border-0 font-bold uppercase text-[10px]`} data-testid={`status-${t.template_id}`}>{t.status}</Badge>
-                    <Badge variant="outline" className="text-[10px] uppercase font-bold">{t.category}</Badge>
-                    <Badge variant="outline" className="text-[10px] uppercase font-bold">{t.language}</Badge>
+                    <Badge className={`${statusStyle[t.status]} border-0 font-bold uppercase text-2xs`} data-testid={`status-${t.template_id}`}>{t.status}</Badge>
+                    <Badge variant="outline" className="text-2xs uppercase font-bold">{t.category}</Badge>
+                    <Badge variant="outline" className="text-2xs uppercase font-bold">{t.language}</Badge>
                   </div>
                   {t.description && <div className="text-xs text-muted-foreground font-semibold mt-1">{t.description}</div>}
                 </div>
@@ -190,7 +191,7 @@ export default function AdminWhatsAppTemplates() {
               <div className="bg-secondary rounded-lg p-3 text-sm font-mono leading-relaxed">{t.body}</div>
               {t.variables?.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {t.variables.map((v, i) => <Badge key={i} variant="outline" className="text-[10px] font-bold font-mono">{"{{" + (i+1) + "}} = " + v}</Badge>)}
+                  {t.variables.map((v, i) => <Badge key={i} variant="outline" className="text-2xs font-bold font-mono">{"{{" + (i+1) + "}} = " + v}</Badge>)}
                 </div>
               )}
               {t.twilio_sid && <div className="mt-2 text-xs font-mono text-muted-foreground">Twilio SID: {t.twilio_sid}</div>}
@@ -217,6 +218,6 @@ export default function AdminWhatsAppTemplates() {
           <DialogFooter><Button onClick={reject} className="bg-rose-600 font-bold" data-testid="reject-submit">Reject</Button></DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </PageContainer>
   );
 }

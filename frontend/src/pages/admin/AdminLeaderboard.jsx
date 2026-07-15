@@ -3,6 +3,8 @@ import { api, formatINR } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Trophy, Crown, Star, TrendingUp, Clock, ShieldCheck, Award } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
 
 const gradeColors = {
   "A+": "bg-emerald-600 text-white",
@@ -24,10 +26,12 @@ export default function AdminLeaderboard() {
   const rest = vendors.slice(3);
 
   return (
-    <div className="p-6 lg:p-10 max-w-7xl mx-auto">
-      <div className="cb-overline text-accent">Admin · Performance</div>
-      <h1 className="font-display font-black text-3xl tracking-tighter mt-1">Vendor leaderboard & SLA</h1>
-      <p className="text-muted-foreground font-medium mt-1">Ranked by composite SLA score (on-time × 35% + completion × 25% + rating × 25% + dispute-free × 15%)</p>
+    <PageContainer>
+      <PageHeader
+        eyebrow="Admin · Performance"
+        title="Vendor leaderboard & SLA"
+        description="Ranked by composite SLA score (on-time × 35% + completion × 25% + rating × 25% + dispute-free × 15%)"
+      />
 
       {loading ? <div className="mt-6">Loading…</div> : (
         <>
@@ -106,6 +110,6 @@ export default function AdminLeaderboard() {
           )}
         </>
       )}
-    </div>
+    </PageContainer>
   );
 }

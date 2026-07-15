@@ -119,7 +119,7 @@ export default function WriteReviewModal({ open, onOpenChange }) {
                 accept="image/jpeg,image/png,image/webp"
                 onChange={handlePhotoChange}
               />
-              <p className="text-[10px] text-muted-foreground/70 text-center mt-1 w-16">Max 5MB</p>
+              <p className="text-2xs text-muted-foreground/70 text-center mt-1 w-16">Max 5MB</p>
             </div>
 
             <div className="flex-1 pt-0.5">

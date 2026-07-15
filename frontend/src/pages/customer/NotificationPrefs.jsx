@@ -7,6 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Bell, Mail, MessageSquare, Phone, ShieldCheck, AlertCircle } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function NotificationPrefs() {
   const { user, refresh } = useAuth();
@@ -33,7 +34,7 @@ export default function NotificationPrefs() {
   ];
 
   return (
-    <div className="p-6 lg:p-10 max-w-3xl mx-auto">
+    <PageContainer className="max-w-3xl">
       <div className="cb-overline text-accent">Notifications</div>
       <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-6">Stay in the loop</h1>
 
@@ -48,8 +49,8 @@ export default function NotificationPrefs() {
                 <div>
                   <div className="font-display font-bold flex items-center gap-2">{c.label}
                     {c.enabled ?
-                      <Badge className="bg-emerald-100 text-emerald-700 border-0 text-[10px] font-bold flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> LIVE</Badge> :
-                      <Badge className="bg-amber-100 text-amber-700 border-0 text-[10px] font-bold flex items-center gap-1"><AlertCircle className="w-3 h-3" /> MOCK</Badge>
+                      <Badge className="bg-emerald-100 text-emerald-700 border-0 text-2xs font-bold flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> LIVE</Badge> :
+                      <Badge className="bg-amber-100 text-amber-700 border-0 text-2xs font-bold flex items-center gap-1"><AlertCircle className="w-3 h-3" /> MOCK</Badge>
                     }
                   </div>
                   <div className="text-xs text-muted-foreground font-medium">{c.desc}</div>
@@ -70,6 +71,6 @@ export default function NotificationPrefs() {
           <div>• WhatsApp templates must be pre-approved in Twilio Console (sandbox available immediately)</div>
         </CardContent>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

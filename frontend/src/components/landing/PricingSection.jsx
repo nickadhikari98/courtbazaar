@@ -41,7 +41,7 @@ export default function PricingSection() {
         >
           {packages.map((pkg) => (
             <motion.div key={pkg.name} className="h-full grid" variants={cardVariants}>
-              <PricingCard {...pkg} />
+              <PricingCard pkg={pkg} variant="teaser" />
             </motion.div>
           ))}
         </motion.div>

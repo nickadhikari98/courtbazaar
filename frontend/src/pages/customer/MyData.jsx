@@ -7,6 +7,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Download, Trash2, ShieldCheck, Database, AlertTriangle } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
 
 export default function MyData() {
   const { user } = useAuth();
@@ -50,10 +52,12 @@ export default function MyData() {
   };
 
   return (
-    <div className="p-6 lg:p-10 max-w-3xl mx-auto">
-      <div className="cb-overline text-accent">DPDP Act compliance</div>
-      <h1 className="font-display font-black text-3xl tracking-tighter mt-1">My data & privacy</h1>
-      <p className="text-muted-foreground font-medium mt-1">Exercise your rights under India's Digital Personal Data Protection Act, 2023.</p>
+    <PageContainer className="max-w-3xl">
+      <PageHeader
+        eyebrow="DPDP Act compliance"
+        title="My data & privacy"
+        description="Exercise your rights under India's Digital Personal Data Protection Act, 2023."
+      />
 
       <Card className="mt-6 bg-emerald-50 border-emerald-200">
         <CardContent className="p-4 flex items-center gap-2">
@@ -116,6 +120,6 @@ export default function MyData() {
           </Dialog>
         </CardContent>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Truck, MapPin, Package, CheckCircle2, Bike, Navigation } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function DeliveryHub() {
   const [orders, setOrders] = useState([]);
@@ -52,7 +53,7 @@ export default function DeliveryHub() {
   };
 
   return (
-    <div className="p-6 lg:p-10 max-w-5xl mx-auto">
+    <PageContainer className="max-w-5xl">
       <div className="cb-overline text-accent">Delivery hub</div>
       <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-2">Pickup & dispatch</h1>
 
@@ -77,8 +78,8 @@ export default function DeliveryHub() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="font-mono text-xs font-bold text-muted-foreground">{o.order_id}</span>
-                    <Badge className="bg-accent/10 text-accent border-0 text-[10px] uppercase font-bold">{o.status.replace(/_/g, ' ')}</Badge>
-                    <Badge variant="outline" className="text-[10px] capitalize">{o.delivery_option}</Badge>
+                    <Badge className="bg-accent/10 text-accent border-0 text-2xs uppercase font-bold">{o.status.replace(/_/g, ' ')}</Badge>
+                    <Badge variant="outline" className="text-2xs capitalize">{o.delivery_option}</Badge>
                   </div>
                   <div className="font-display font-bold">{o.court_name}</div>
                   <div className="text-xs text-muted-foreground font-medium mt-1 flex items-center gap-1.5"><MapPin className="w-3 h-3" /> {o.delivery_address || o.court_name}</div>
@@ -122,6 +123,6 @@ export default function DeliveryHub() {
           <DialogFooter><Button onClick={completeDelivery} className="bg-emerald-600 font-bold" data-testid="delivery-otp-submit">Confirm delivery</Button></DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </PageContainer>
   );
 }

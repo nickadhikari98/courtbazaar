@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Store, Package, TrendingUp, ShieldCheck, ArrowRight, Star, AlertCircle, Crown, Rocket, Trophy, Clock } from "lucide-react";
+import PageContainer from "@/components/layout/PageContainer";
 
 export default function VendorDashboard() {
   const { user } = useAuth();
@@ -38,7 +39,7 @@ export default function VendorDashboard() {
 
   if (!vendor?.onboarded) {
     return (
-      <div className="p-10 max-w-3xl mx-auto text-center">
+      <PageContainer className="p-10 max-w-3xl text-center">
         <div className="w-16 h-16 mx-auto rounded-2xl bg-accent/10 flex items-center justify-center mb-4">
           <Store className="w-8 h-8 text-accent" />
         </div>
@@ -47,7 +48,7 @@ export default function VendorDashboard() {
         <Link to="/vendor/onboard">
           <Button className="mt-6 bg-accent font-bold" data-testid="start-onboard-btn">Start onboarding</Button>
         </Link>
-      </div>
+      </PageContainer>
     );
   }
 
@@ -58,13 +59,13 @@ export default function VendorDashboard() {
   const platformCommissionPaid = orders.reduce((s, o) => s + (o.pricing?.split_details?.platform_commission_20pct || 0), 0);
 
   return (
-    <div className="p-6 lg:p-10 max-w-7xl mx-auto">
+    <PageContainer>
       <div className="flex items-start justify-between gap-4 mb-6">
         <div>
           <div className="cb-overline text-accent">Vendor hub</div>
           <h1 className="font-display font-black text-3xl tracking-tighter mt-1 flex items-center gap-2">{vendor.shop_name}
             {vendor.kyc_status === 'approved' && <ShieldCheck className="w-6 h-6 text-emerald-600" />}
-            {vendor.sponsored && <Badge className="bg-gradient-to-r from-accent to-amber-500 text-white border-0 font-bold uppercase text-[10px]"><Crown className="w-3 h-3 mr-1" /> Sponsored</Badge>}
+            {vendor.sponsored && <Badge className="bg-gradient-to-r from-accent to-amber-500 text-white border-0 font-bold uppercase text-2xs"><Crown className="w-3 h-3 mr-1" /> Sponsored</Badge>}
           </h1>
           <div className="text-sm text-muted-foreground font-semibold flex items-center gap-2 mt-1">
             <Star className="w-3.5 h-3.5 text-accent fill-accent" /> {vendor.rating?.toFixed(1) || "—"} · {vendor.total_orders} orders · {vendor.court_ids?.length || 0} courts
@@ -124,7 +125,7 @@ export default function VendorDashboard() {
         <Card className="dashboard-card border-none" data-testid="vendor-stat-pending"><CardContent className="p-5"><div className="cb-overline">Pending</div><div className="font-display font-black text-3xl mt-1">{pending.length}</div></CardContent></Card>
         <Card className="dashboard-card border-none" data-testid="vendor-stat-active"><CardContent className="p-5"><div className="cb-overline">In Production</div><div className="font-display font-black text-3xl mt-1">{active.length}</div></CardContent></Card>
         <Card className="dashboard-card border-none" data-testid="vendor-stat-completed"><CardContent className="p-5"><div className="cb-overline">Completed</div><div className="font-display font-black text-3xl mt-1">{completed.length}</div></CardContent></Card>
-        <Card className="dashboard-card border-none" data-testid="vendor-stat-earnings"><CardContent className="p-5"><div className="cb-overline">Your earnings (80%)</div><div className="font-display font-black text-3xl mt-1 text-accent">{formatINR(earnings)}</div><div className="text-[10px] text-muted-foreground font-bold uppercase mt-1">Platform took {formatINR(platformCommissionPaid)} (20%)</div></CardContent></Card>
+        <Card className="dashboard-card border-none" data-testid="vendor-stat-earnings"><CardContent className="p-5"><div className="cb-overline">Your earnings (80%)</div><div className="font-display font-black text-3xl mt-1 text-accent">{formatINR(earnings)}</div><div className="text-2xs text-muted-foreground font-bold uppercase mt-1">Platform took {formatINR(platformCommissionPaid)} (20%)</div></CardContent></Card>
       </div>
 
       {/* SLA scorecard */}
@@ -149,7 +150,7 @@ export default function VendorDashboard() {
                 { label: "Dispute rate", val: `${sla.dispute_rate}%`, icon: AlertCircle, color: sla.dispute_rate < 5 ? 'text-emerald-600' : 'text-rose-600' },
               ].map(m => (
                 <div key={m.label} className="bg-secondary rounded-lg p-3" data-testid={`sla-${m.label.toLowerCase().replace(/\s+/g, '-')}`}>
-                  <div className="cb-overline text-[10px] flex items-center gap-1"><m.icon className="w-3 h-3" /> {m.label}</div>
+                  <div className="cb-overline text-2xs flex items-center gap-1"><m.icon className="w-3 h-3" /> {m.label}</div>
                   <div className={`font-display font-black text-2xl mt-1 ${m.color}`}>{m.val}</div>
                 </div>
               ))}
@@ -171,7 +172,7 @@ export default function VendorDashboard() {
                   <div className="font-mono text-xs font-bold text-muted-foreground mb-1">{o.order_id}</div>
                   <div className="font-display font-bold text-lg">{o.court_name}</div>
                   <div className="text-sm text-muted-foreground">{o.services?.length} services · {o.delivery_option}</div>
-                  <Badge className="bg-accent/10 text-accent border-0 text-[10px] mt-2 uppercase font-bold">{o.status.replace(/_/g, ' ')}</Badge>
+                  <Badge className="bg-accent/10 text-accent border-0 text-2xs mt-2 uppercase font-bold">{o.status.replace(/_/g, ' ')}</Badge>
                 </div>
                 <div className="text-right">
                   <div className="font-display font-black text-xl text-accent">{formatINR(o.pricing?.vendor_payout || 0)}</div>
@@ -183,6 +184,6 @@ export default function VendorDashboard() {
           </Link>
         ))}
       </div>
-    </div>
+    </PageContainer>
   );
 }
