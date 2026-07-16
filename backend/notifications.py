@@ -44,6 +44,14 @@ SENDGRID_KEY = os.environ.get("SENDGRID_API_KEY")
 EMAIL_FROM = os.environ.get("EMAIL_FROM_ADDRESS")
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "CourtBazaar")
 
+# Comma-separated list of addresses that get an email whenever something needs
+# admin attention outside the per-user notify() path below (e.g. a new review
+# submitted for moderation). Unset -> those alerts just log, same fail-soft
+# behaviour as an unconfigured EMAIL_PROVIDER. This is the extension point for
+# any future "notify admins" need — add a new tmpl_*/notify_admins_* pair
+# rather than routing more things through this one.
+ADMIN_ALERT_EMAILS = [e.strip() for e in os.environ.get("ADMIN_ALERT_EMAILS", "").split(",") if e.strip()]
+
 FAST2SMS_API_KEY = os.environ.get("FAST2SMS_API_KEY")
 MSG91_AUTH_KEY = os.environ.get("MSG91_AUTH_KEY")
 MSG91_SENDER_ID = os.environ.get("MSG91_SENDER_ID", "CRTBZR")
@@ -306,6 +314,33 @@ def tmpl_lead_more_info_requested(lead, remark=None):
             f"{remark_html}"
         ),
     }
+
+
+def tmpl_review_submitted(review: dict) -> dict:
+    stars = "★" * review.get("rating", 0) + "☆" * (5 - review.get("rating", 0))
+    who = review.get("name") or "Someone"
+    org = f" ({review['organization']})" if review.get("organization") else ""
+    return {
+        "email_subject": f"New review awaiting approval — {who}",
+        "email_html": (
+            f"<p>A new review was submitted on CourtBazaar and is pending moderation.</p>"
+            f"<p><b>{who}</b>{org} — {stars}</p>"
+            f"<p>{review.get('review', '')}</p>"
+            f"<p>Review it in the admin console: Admin → Reviews.</p>"
+        ),
+    }
+
+
+def notify_admins_new_review(review: dict) -> list:
+    """Extension point for "notify admins" alerts — currently the only one,
+    fires whenever a landing-page review is submitted (status=pending).
+    Fail-soft/no-op if ADMIN_ALERT_EMAILS isn't configured, same convention
+    as every other channel in this module."""
+    if not ADMIN_ALERT_EMAILS:
+        logger.info(f"[MOCK admin alert] new review pending approval: review_id={review.get('review_id')}")
+        return []
+    tmpl = tmpl_review_submitted(review)
+    return [send_email(addr, tmpl["email_subject"], tmpl["email_html"]) for addr in ADMIN_ALERT_EMAILS]
 
 
 def notify(user: dict, event: str, ctx: dict = None) -> list:

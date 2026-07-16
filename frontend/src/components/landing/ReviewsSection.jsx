@@ -2,25 +2,33 @@ import React, { useEffect, useRef, useState } from "react";
 import { Star, PenLine, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import WriteReviewModal from "./WriteReviewModal";
+import { listApprovedReviews } from "@/lib/reviewsApi";
 
-const testimonials = [
+// Fallback shown only until at least one admin-approved review exists —
+// once real reviews are live, these are replaced entirely (see
+// ReviewsSection's effect below). Not a permanent display; kept only so the
+// section isn't empty on a fresh install with zero approved reviews yet.
+const FALLBACK_TESTIMONIALS = [
   {
     name: "Adv. Priya Mehta",
     court: "Delhi High Court",
     text: "Civil & Commercial Litigation. The platform is extremely easy to use. Uploading documents took less than a minute, and the team handled scanning, bookmarking, and document preparation efficiently. This service is particularly useful for busy advocates managing multiple matters.",
     photoUrl: null,
+    rating: 5,
   },
   {
     name: "Adv. Arjun Verma",
     court: "Delhi High Court",
     text: "High Court Practitioner. What I appreciate most is the convenience. CourtBazaar combines printing, photocopying, OCR, and filing assistance in one place. It reduces coordination with multiple vendors and helps me focus on legal work rather than administrative tasks.",
     photoUrl: null,
+    rating: 5,
   },
   {
     name: "Adv. Neha Gupta",
     court: "Delhi High Court",
     text: "Independent Advocate. As a young practitioner, I need cost-effective solutions. CourtBazaar's package pricing is transparent and affordable. The chamber delivery option is a major advantage and saves valuable time during busy filing periods.",
     photoUrl: null,
+    rating: 5,
   },
 ];
 
@@ -53,7 +61,28 @@ function ReviewAvatar({ photoUrl, name }) {
 export default function ReviewsSection() {
   const [writeOpen, setWriteOpen] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [approvedReviews, setApprovedReviews] = useState(null); // null = not loaded yet
   const trackRef = useRef(null);
+
+  const loadApprovedReviews = () => {
+    listApprovedReviews()
+      .then((reviews) => setApprovedReviews(reviews.map((r) => ({
+        id: r.review_id,
+        name: r.name,
+        court: r.organization || r.designation || "",
+        text: r.review,
+        photoUrl: r.photo_url,
+        rating: r.rating,
+      }))))
+      .catch(() => setApprovedReviews([])); // fail-soft: fall back to placeholders, not an error state
+  };
+
+  useEffect(() => { loadApprovedReviews(); }, []);
+
+  // Real approved reviews replace the placeholders entirely once at least
+  // one exists; until then (fresh install, or fetch still pending/failed)
+  // the placeholders keep the section from looking empty.
+  const testimonials = approvedReviews && approvedReviews.length > 0 ? approvedReviews : FALLBACK_TESTIMONIALS;
 
   // Auto-advance one card at a time; smooth via native scroll-snap, wraps
   // back to the start at the end. Pauses on hover/focus and whenever the
@@ -69,7 +98,7 @@ export default function ReviewsSection() {
       el.scrollTo({ left: atEnd ? 0 : el.scrollLeft + step, behavior: "smooth" });
     }, AUTO_SCROLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [paused, writeOpen]);
+  }, [paused, writeOpen, testimonials.length]);
 
   return (
     <section id="reviews" className="landing-section bg-slate-50">
@@ -94,11 +123,11 @@ export default function ReviewsSection() {
         >
           {testimonials.map((t) => (
             <div
-              key={t.name}
+              key={t.id || t.name}
               data-review-card
               className="landing-review-card snap-start flex-shrink-0 flex flex-col w-[85%] sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)]"
             >
-              <Stars />
+              <Stars count={t.rating || 5} />
               <p className="text-sm text-slate-700 leading-relaxed mt-4">"{t.text}"</p>
               <div className="mt-auto pt-4 border-t border-slate-100 flex items-center gap-3">
                 <ReviewAvatar photoUrl={t.photoUrl} name={t.name} />

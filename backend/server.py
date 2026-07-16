@@ -46,6 +46,10 @@ ALLOWED_UPLOAD_EXTENSIONS = {'pdf', 'jpg', 'jpeg', 'png'}
 ALLOWED_UPLOAD_CONTENT_TYPES = {
     'application/pdf', 'image/jpeg', 'image/jpg', 'image/png',
 }
+# Image-only subset for review photos — KYC lead documents (validate_upload
+# above) legitimately need 'pdf'; a review's profile photo never does.
+ALLOWED_IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png'}
+ALLOWED_IMAGE_CONTENT_TYPES = {'image/jpeg', 'image/jpg', 'image/png'}
 
 app = FastAPI(title="CourtBazaar API")
 api_router = APIRouter(prefix="/api")
@@ -98,6 +102,20 @@ def validate_upload(filename: str, content_type: Optional[str], size: int) -> No
     if ext not in ALLOWED_UPLOAD_EXTENSIONS:
         raise HTTPException(400, f"Unsupported file type '.{ext}'. Allowed: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}")
     if content_type and content_type.lower() not in ALLOWED_UPLOAD_CONTENT_TYPES:
+        raise HTTPException(400, f"Unsupported content type '{content_type}'")
+    if size > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(400, f"File too large. Max size is {MAX_UPLOAD_SIZE_BYTES // (1024*1024)}MB")
+    if size == 0:
+        raise HTTPException(400, "Uploaded file is empty")
+
+
+def validate_image_upload(filename: str, content_type: Optional[str], size: int) -> None:
+    """Same shape as validate_upload, but image-only (no 'pdf') — for review
+    photos, which unlike KYC documents are always meant to be a picture."""
+    ext = filename.rsplit(".", 1)[-1].lower() if filename and "." in filename else ""
+    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported file type '.{ext}'. Allowed: {', '.join(sorted(ALLOWED_IMAGE_EXTENSIONS))}")
+    if content_type and content_type.lower() not in ALLOWED_IMAGE_CONTENT_TYPES:
         raise HTTPException(400, f"Unsupported content type '{content_type}'")
     if size > MAX_UPLOAD_SIZE_BYTES:
         raise HTTPException(400, f"File too large. Max size is {MAX_UPLOAD_SIZE_BYTES // (1024*1024)}MB")
@@ -238,6 +256,7 @@ class LeadDraftCreate(BaseModel):
     role_applied_for: str
     form_data: Dict[str, Any] = {}
     current_step: int = 0
+    captcha_token: Optional[str] = None  # only checked if CAPTCHA_PROVIDER is configured — see captcha.py
 
 class LeadDraftUpdate(BaseModel):
     draft_token: str
@@ -254,6 +273,25 @@ class LeadStatusChange(BaseModel):
 class LeadNote(BaseModel):
     note: str
 
+class ReviewUpdate(BaseModel):
+    name: Optional[str] = None
+    designation: Optional[str] = None
+    organization: Optional[str] = None
+    rating: Optional[int] = None
+    review: Optional[str] = None
+    featured: Optional[bool] = None
+    display_order: Optional[int] = None
+
+class ReviewStatusChange(BaseModel):
+    status: str
+
+class ReviewBulkAction(BaseModel):
+    review_ids: List[str]
+    action: str  # approve | reject | delete | feature | unfeature
+
+class ReviewReorder(BaseModel):
+    review_ids: List[str]  # full ordered list; position = display_order
+
 # ===== Startup: seed data =====
 @app.on_event("startup")
 async def startup():
@@ -268,6 +306,10 @@ async def startup():
 async def seed_initial_data():
     if not await ensure_db_ready():
         return
+    import leads as leads_svc
+    import reviews as reviews_svc
+    await leads_svc.ensure_indexes(db)
+    await reviews_svc.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -673,12 +715,19 @@ async def my_files(user=Depends(get_current_user)):
 # ---------- LEADS (public: landing-page "Join as..." applications) ----------
 import leads as leads_svc
 from fastapi.responses import HTMLResponse
+from captcha import verify_captcha
 
+# request.client.host is the real visitor IP, not nginx's, only because
+# uvicorn is launched with --proxy-headers (deploy/courtbazaar.service) and
+# trusts nginx's loopback connection to rewrite it from X-Forwarded-For
+# (see FORWARDED_ALLOW_IPS in .env.example). Without that flag this would
+# silently be "127.0.0.1" for every request.
 @api_router.post("/leads/draft")
 async def leads_create_draft(payload: LeadDraftCreate, request: Request):
     client_ip = request.client.host if request.client else "unknown"
+    verify_captcha(payload.captcha_token, client_ip)
     leads_svc.check_draft_rate_limit(client_ip)
-    return await leads_svc.create_draft(db, payload.role_applied_for, payload.form_data, payload.current_step)
+    return await leads_svc.create_draft(db, payload.role_applied_for, payload.form_data, payload.current_step, client_ip=client_ip)
 
 @api_router.put("/leads/{lead_id}/draft")
 async def leads_update_draft(lead_id: str, payload: LeadDraftUpdate):
@@ -762,6 +811,92 @@ async def admin_leads_document_url(lead_id: str, doc_id: str, user=Depends(get_c
         raise HTTPException(404, "Document not found")
     url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"))
     return {"url": url, "filename": rec.get("original_filename")}
+
+# ---------- REVIEWS (public: landing-page "Write a Review") ----------
+import reviews as reviews_svc
+
+REVIEW_PHOTO_URL_TTL_SECONDS = 24 * 60 * 60  # public listing is fetched live on each page load, so a
+                                              # day-long signed URL comfortably outlives one visit/cache cycle
+
+def _review_photo_url(storage_path: str) -> str:
+    return presigned_download_url(storage_path, expires_in=REVIEW_PHOTO_URL_TTL_SECONDS)
+
+@api_router.post("/reviews")
+async def reviews_create(
+    request: Request,
+    name: str = Form(...),
+    rating: int = Form(...),
+    review: str = Form(...),
+    designation: Optional[str] = Form(None),
+    organization: Optional[str] = Form(None),
+    captcha_token: Optional[str] = Form(None),
+    photo: Optional[UploadFile] = File(None),
+):
+    # See the comment on leads_create_draft above re: --proxy-headers.
+    client_ip = request.client.host if request.client else "unknown"
+    verify_captcha(captcha_token, client_ip)
+    reviews_svc.check_review_rate_limit(client_ip)
+    photo_file = None
+    if photo is not None and photo.filename:
+        data = await photo.read()
+        photo_file = {"filename": photo.filename, "content_type": photo.content_type or "application/octet-stream", "data": data}
+    result = await reviews_svc.create_review(
+        db, put_object, validate_image_upload, name, designation, organization, rating, review, photo_file, client_ip,
+    )
+    return {**result, "message": "Thank you. Your review has been submitted for approval."}
+
+@api_router.get("/reviews")
+async def reviews_list_public():
+    return await reviews_svc.list_public_reviews(db, _review_photo_url)
+
+# ---------- ADMIN: REVIEWS ----------
+@api_router.get("/admin/reviews/stats")
+async def admin_reviews_stats(user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await reviews_svc.review_stats(db)
+
+@api_router.get("/admin/reviews")
+async def admin_reviews_list(user=Depends(get_current_user), status: Optional[str] = None, q: Optional[str] = None):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await reviews_svc.admin_list_reviews(db, status, q)
+
+@api_router.get("/admin/reviews/{review_id}")
+async def admin_reviews_detail(review_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await reviews_svc.admin_get_review(db, review_id)
+
+@api_router.put("/admin/reviews/{review_id}")
+async def admin_reviews_update(review_id: str, payload: ReviewUpdate, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await reviews_svc.admin_update_review(db, review_id, payload.model_dump(exclude_unset=True))
+
+@api_router.put("/admin/reviews/{review_id}/status")
+async def admin_reviews_status(review_id: str, payload: ReviewStatusChange, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await reviews_svc.admin_change_status(db, review_id, payload.status, user)
+
+@api_router.delete("/admin/reviews/{review_id}")
+async def admin_reviews_delete(review_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await reviews_svc.admin_delete_review(db, review_id, delete_object, user)
+
+@api_router.post("/admin/reviews/bulk")
+async def admin_reviews_bulk(payload: ReviewBulkAction, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await reviews_svc.admin_bulk_action(db, payload.review_ids, payload.action, delete_object, user)
+
+@api_router.post("/admin/reviews/reorder")
+async def admin_reviews_reorder(payload: ReviewReorder, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await reviews_svc.admin_reorder(db, payload.review_ids)
 
 # ---------- ORDERS ----------
 ORDER_STATUSES = ["placed", "matched", "accepted", "processing", "quality_check", "ready", "out_for_delivery", "delivered", "completed", "cancelled"]

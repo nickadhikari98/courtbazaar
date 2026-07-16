@@ -7,9 +7,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { submitReview } from "@/lib/reviewsApi";
 
 const MAX_PHOTO_SIZE = 5 * 1024 * 1024; // 5MB
-const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
+// Kept in sync with the backend's ALLOWED_UPLOAD_CONTENT_TYPES (server.py) —
+// webp isn't accepted there, so it's not offered here either.
+const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png"];
 
 export default function WriteReviewModal({ open, onOpenChange }) {
   const [rating, setRating] = useState(5);
@@ -17,6 +20,9 @@ export default function WriteReviewModal({ open, onOpenChange }) {
   const [submitting, setSubmitting] = useState(false);
   const [photo, setPhoto] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
+  const [name, setName] = useState("");
+  const [court, setCourt] = useState("");
+  const [reviewText, setReviewText] = useState("");
   const photoInputId = useId();
 
   // Preview URL is session-only, never persisted — revoke on unmount so we
@@ -31,7 +37,7 @@ export default function WriteReviewModal({ open, onOpenChange }) {
     e.target.value = "";
     if (!file) return;
     if (!ALLOWED_PHOTO_TYPES.includes(file.type)) {
-      toast.error("Please upload a JPG, PNG, or WEBP image.");
+      toast.error("Please upload a JPG or PNG image.");
       return;
     }
     if (file.size > MAX_PHOTO_SIZE) {
@@ -53,20 +59,37 @@ export default function WriteReviewModal({ open, onOpenChange }) {
     setPhoto(null);
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!rating) {
       toast.error("Please select a rating before submitting.");
       return;
     }
+    if (!name.trim() || !reviewText.trim()) {
+      toast.error("Please fill in your name and review before submitting.");
+      return;
+    }
     setSubmitting(true);
-    setTimeout(() => {
-      setSubmitting(false);
-      toast.success("Thank you for your review! It will appear after moderation.");
+    try {
+      const { message } = await submitReview({
+        name: name.trim(),
+        organization: court.trim() || undefined,
+        rating,
+        review: reviewText.trim(),
+        photo,
+      });
+      toast.success(message || "Thank you. Your review has been submitted for approval.");
       setRating(5);
+      setName("");
+      setCourt("");
+      setReviewText("");
       removePhoto();
       onOpenChange(false);
-    }, 500);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "We couldn't submit your review. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -151,17 +174,17 @@ export default function WriteReviewModal({ open, onOpenChange }) {
 
           <div>
             <label className="text-sm font-semibold text-foreground block mb-1.5">Full Name</label>
-            <Input placeholder="Enter your name" required />
+            <Input placeholder="Enter your name" value={name} onChange={(e) => setName(e.target.value)} required />
           </div>
 
           <div>
             <label className="text-sm font-semibold text-foreground block mb-1.5">Court</label>
-            <Input placeholder="e.g. Delhi High Court" />
+            <Input placeholder="e.g. Delhi High Court" value={court} onChange={(e) => setCourt(e.target.value)} />
           </div>
 
           <div>
             <label className="text-sm font-semibold text-foreground block mb-1.5">Your Review</label>
-            <Textarea placeholder="Tell us about your experience..." rows={4} required />
+            <Textarea placeholder="Tell us about your experience..." rows={4} value={reviewText} onChange={(e) => setReviewText(e.target.value)} required />
           </div>
 
           <DialogFooter className="pt-3">

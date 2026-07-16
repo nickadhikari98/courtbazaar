@@ -18,6 +18,8 @@ CRITICAL_ACTIONS = {
     "delivery.accept", "delivery.complete",
     "dpdp.data_export", "dpdp.data_deletion_request", "dpdp.data_deletion_executed",
     "file.upload", "file.delete",
+    "lead.created", "lead.duplicate_blocked",
+    "review.submitted", "review.approved", "review.rejected", "review.deleted",
 }
 
 
