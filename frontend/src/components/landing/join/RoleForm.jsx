@@ -6,54 +6,16 @@ import { renderField } from "./FieldKit";
 import useDraftForm from "./useDraftForm";
 import SubmissionSuccess from "./SubmissionSuccess";
 import { submitLead, toBackendRole } from "@/lib/leadsApi";
+import { fieldKey, getFieldError, validateSection } from "./formValidation";
 
-function slugify(str) {
-  return String(str).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/(^_+|_+$)/g, "");
-}
-
-function fieldKey(sectionTitle, field, index) {
-  const base = field.label || field.type || `field_${index}`;
-  return `${slugify(sectionTitle)}__${slugify(base)}`;
-}
-
-function isValueFilled(field, value) {
-  if (field.type === "declaration") {
-    return Array.isArray(value) && value.length === (field.items?.length || 0);
-  }
-  if (field.type === "checkboxes" || field.type === "file") {
-    return Array.isArray(value) && value.length > 0;
-  }
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === "string") return value.trim().length > 0;
-  return value !== undefined && value !== null && value !== "";
-}
-
-// Each wizard step only has its own fields mounted in the DOM, so native
-// HTML `required` validation can't see earlier/later steps — this replaces
-// it with an equivalent per-step check run before Next/Submit, preserving
-// the same required-field semantics the single-page form relied on.
-function validateSection(section, values) {
-  let missing = false;
-  section.fields.forEach((field, i) => {
-    const key = fieldKey(section.title, field, i);
-    const isRequired = field.required || field.type === "signature";
-    if (isRequired && !isValueFilled(field, values[key])) missing = true;
-    if (field.type === "date" && field.max === "today" && values[key]) {
-      const today = new Date().toLocaleDateString("en-CA");
-      if (values[key] > today) missing = true;
-    }
-    if (field.type === "turnaroundTime" && values[key] === "Custom Time") {
-      if (!values[`${key}__from`] || !values[`${key}__to`]) missing = true;
-    }
-    if (field.other || field.otherTriggerValues) {
-      const isOtherSelected = field.otherTriggerValues
-        ? field.otherTriggerValues.includes(values[key])
-        : values[key] === "Other";
-      if (isOtherSelected && !isValueFilled({ type: "text" }, values[`${key}__other`])) missing = true;
-    }
-  });
-  return !missing;
-}
+// Typed free-text inputs defer their first validation to onBlur (so an error
+// doesn't flash mid-keystroke on the very first attempt); once shown (or
+// once the field has been blurred at least once) it re-validates live on
+// every change so it can clear itself the moment the value becomes valid.
+// Everything else (select/radio/checkbox/file/date/...) is a discrete "pick"
+// action, so it validates immediately on change — there's no meaningful
+// "still mid-typing" state to protect against.
+const DEFERRED_VALIDATION_TYPES = new Set([undefined, "text", "tel", "email", "number", "textarea"]);
 
 function buildInitialValues(sections) {
   const values = {};
@@ -90,7 +52,10 @@ export default function RoleForm({ roleLabel, roleKey, sections = [], onDone }) 
 
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [errors, setErrors] = useState({});
+  const [touched, setTouched] = useState({});
   const stepHeadingRef = useRef(null);
+  const fieldRefs = useRef({});
 
   // A draft needs to exist server-side before a file field can attach an
   // upload to it — a document can be the very first thing a user fills in,
@@ -110,12 +75,74 @@ export default function RoleForm({ roleLabel, roleKey, sections = [], onDone }) 
     requestAnimationFrame(() => stepHeadingRef.current?.focus());
   };
 
+  const setFieldError = (key, message) => {
+    setErrors((prev) => {
+      if (!message) {
+        if (!(key in prev)) return prev;
+        const { [key]: _drop, ...rest } = prev;
+        return rest;
+      }
+      if (prev[key] === message) return prev;
+      return { ...prev, [key]: message };
+    });
+  };
+
+  const handleFieldChange = (field, key, val) => {
+    setValue(key, val);
+    const nextValues = { ...values, [key]: val };
+    if (!DEFERRED_VALIDATION_TYPES.has(field.type)) {
+      setTouched((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+      setFieldError(key, getFieldError(field, key, nextValues));
+    } else if (touched[key]) {
+      setFieldError(key, getFieldError(field, key, nextValues));
+    }
+  };
+
+  const handleFieldBlur = (field, key) => {
+    setTouched((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+    setFieldError(key, getFieldError(field, key, values));
+  };
+
+  const focusFirstError = (sectionErrors) => {
+    const firstKey = section.fields
+      .map((field, i) => fieldKey(section.title, field, i))
+      .find((k) => sectionErrors[k]);
+    const node = firstKey && fieldRefs.current[firstKey];
+    if (!node) return;
+    node.scrollIntoView({ behavior: "smooth", block: "center" });
+    node.querySelector("input, textarea, button, [role='combobox']")?.focus();
+  };
+
+  // Runs before Next/Submit: validates every field on the current step (not
+  // just the ones already touched), so a field the user never interacted
+  // with — e.g. skipped straight past — still gets caught here instead of
+  // silently passing.
+  const validateCurrentStep = () => {
+    const sectionErrors = validateSection(section, values);
+    setErrors((prev) => {
+      const next = { ...prev };
+      section.fields.forEach((field, i) => {
+        const key = fieldKey(section.title, field, i);
+        if (sectionErrors[key]) next[key] = sectionErrors[key];
+        else delete next[key];
+      });
+      return next;
+    });
+    setTouched((prev) => {
+      const next = { ...prev };
+      section.fields.forEach((field, i) => { next[fieldKey(section.title, field, i)] = true; });
+      return next;
+    });
+    if (Object.keys(sectionErrors).length > 0) {
+      focusFirstError(sectionErrors);
+      return false;
+    }
+    return true;
+  };
+
   const handleNext = () => {
     if (isLastStep) return;
-    if (!validateSection(section, values)) {
-      toast.error("Please fill in all required fields correctly before continuing.");
-      return;
-    }
+    if (!validateCurrentStep()) return;
     goToStep(currentStep + 1);
   };
   const handlePrevious = () => {
@@ -134,10 +161,7 @@ export default function RoleForm({ roleLabel, roleKey, sections = [], onDone }) 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!isLastStep) return;
-    if (!validateSection(section, values)) {
-      toast.error("Please fill in all required fields correctly before submitting.");
-      return;
-    }
+    if (!validateCurrentStep()) return;
     setSubmitting(true);
     try {
       const ids = await ensureLeadDraft();
@@ -207,13 +231,17 @@ export default function RoleForm({ roleLabel, roleKey, sections = [], onDone }) 
 
             const ctx = {
               value: values[key],
-              onChange: (v) => setValue(key, v),
+              onChange: (v) => handleFieldChange(field, key, v),
+              onBlur: () => handleFieldBlur(field, key),
+              error: errors[key] || null,
+              registerRef: (node) => { fieldRefs.current[key] = node; },
             };
             if (field.type === "district") ctx.stateValue = lastStateValue;
             if (field.type === "file") {
               ctx.leadId = leadId;
               ctx.draftToken = draftToken;
               ctx.fieldKey = key;
+              ctx.onValidationError = (message) => setFieldError(key, message);
             }
             if (field.other || field.otherTriggerValues) {
               const otherKey = `${key}__other`;

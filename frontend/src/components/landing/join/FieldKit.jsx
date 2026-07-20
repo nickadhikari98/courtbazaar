@@ -25,7 +25,12 @@ function FieldLabel({ label, required }) {
   );
 }
 
-export function TextField({ label, required, placeholder, type = "text", value, onChange, min, max }) {
+// Shared red-border treatment for the field types that own a single native
+// input — kept as one class string so the "invalid" look is identical
+// everywhere instead of being redefined per component.
+const invalidInputClass = "border-red-500 focus-visible:ring-red-500 focus-visible:ring-1";
+
+export function TextField({ label, required, placeholder, type = "text", value, onChange, onBlur, error, min, max }) {
   return (
     <div>
       <FieldLabel label={label} required={required} />
@@ -35,6 +40,9 @@ export function TextField({ label, required, placeholder, type = "text", value, 
         required={required}
         value={value ?? ""}
         onChange={(e) => onChange?.(e.target.value)}
+        onBlur={onBlur}
+        aria-invalid={!!error}
+        className={cn(error && invalidInputClass)}
         min={type === "date" ? resolveDateBound(min) : min}
         max={type === "date" ? resolveDateBound(max) : max}
       />
@@ -42,7 +50,7 @@ export function TextField({ label, required, placeholder, type = "text", value, 
   );
 }
 
-export function TextareaField({ label, required, placeholder, rows = 3, value, onChange }) {
+export function TextareaField({ label, required, placeholder, rows = 3, value, onChange, onBlur, error }) {
   return (
     <div>
       <FieldLabel label={label} required={required} />
@@ -52,17 +60,20 @@ export function TextareaField({ label, required, placeholder, rows = 3, value, o
         rows={rows}
         value={value ?? ""}
         onChange={(e) => onChange?.(e.target.value)}
+        onBlur={onBlur}
+        aria-invalid={!!error}
+        className={cn(error && invalidInputClass)}
       />
     </div>
   );
 }
 
-export function SelectField({ label, required, options = [], placeholder = "Select an option", value, onChange }) {
+export function SelectField({ label, required, options = [], placeholder = "Select an option", value, onChange, error }) {
   return (
     <div>
       <FieldLabel label={label} required={required} />
       <Select value={value || ""} onValueChange={onChange}>
-        <SelectTrigger>
+        <SelectTrigger aria-invalid={!!error} className={cn(error && invalidInputClass)}>
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>
         <SelectContent>
@@ -178,7 +189,20 @@ function formatFileSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function FileField({ label, required, hint, multiple, value, onChange, leadId, draftToken, fieldKey }) {
+// Mirrors server.py's validate_upload extension whitelist exactly — catching
+// an unsupported type here is purely a faster round-trip, not a new rule.
+const ALLOWED_FILE_EXTENSIONS = new Set(["pdf", "jpg", "jpeg", "png"]);
+
+// Field hints are free text like "PDF/JPG/PNG, Max 5MB" — parsed rather than
+// duplicated into a separate maxSizeMB prop on every one of the ~20 file
+// fields across roleFormData.js, so the hint text stays the single source
+// of truth for the limit shown to the user and the limit enforced here.
+function parseMaxSizeBytes(hint) {
+  const m = /(\d+)\s*MB/i.exec(hint || "");
+  return m ? Number(m[1]) * 1024 * 1024 : null;
+}
+
+export function FileField({ label, required, hint, multiple, value, onChange, onValidationError, error, leadId, draftToken, fieldKey }) {
   const id = useId();
   const files = Array.isArray(value) ? value : [];
   const [previewUrls, setPreviewUrls] = useState({});
@@ -194,6 +218,25 @@ export function FileField({ label, required, hint, multiple, value, onChange, le
   const handleFiles = async (fileList) => {
     const picked = Array.from(fileList || []);
     if (!picked.length) return;
+
+    // Client-side type/size check first — inline, not a toast, so a bad
+    // file is reported the same way every other invalid field is (and
+    // without a wasted upload request).
+    const maxBytes = parseMaxSizeBytes(hint);
+    const maxLabel = /\d+\s*MB/i.exec(hint || "")?.[0];
+    for (const f of picked) {
+      const ext = f.name.includes(".") ? f.name.split(".").pop().toLowerCase() : "";
+      if (!ALLOWED_FILE_EXTENSIONS.has(ext)) {
+        onValidationError?.(`${f.name}: unsupported file type. Allowed: PDF, JPG, PNG.`);
+        return;
+      }
+      if (maxBytes && f.size > maxBytes) {
+        onValidationError?.(`${f.name}: file is too large${maxLabel ? ` (max ${maxLabel})` : ""}.`);
+        return;
+      }
+    }
+    onValidationError?.(null);
+
     if (!leadId || !draftToken) {
       toast.error("Still setting up your application — please wait a moment and try again.");
       return;
@@ -322,9 +365,14 @@ export function FileField({ label, required, hint, multiple, value, onChange, le
       {(!hasFiles || multiple) && (
         <label
           htmlFor={id}
-          className="flex items-center gap-2.5 border-2 border-dashed border-slate-200 rounded-lg px-3.5 py-3 cursor-pointer hover:border-accent/50 hover:bg-accent/[0.03] transition-colors"
+          className={cn(
+            "flex items-center gap-2.5 border-2 border-dashed rounded-lg px-3.5 py-3 cursor-pointer transition-colors",
+            error
+              ? "border-red-400 bg-red-50/50 hover:border-red-500"
+              : "border-slate-200 hover:border-accent/50 hover:bg-accent/[0.03]",
+          )}
         >
-          <UploadCloud className="w-4 h-4 text-accent flex-shrink-0" />
+          <UploadCloud className={cn("w-4 h-4 flex-shrink-0", error ? "text-red-500" : "text-accent")} />
           <span className="text-sm text-muted-foreground truncate">
             {hasFiles ? "Add more files" : "Click to upload"}
           </span>
@@ -437,22 +485,35 @@ export function TurnaroundTimeField({
 
 /* Field type -> component dispatch. `ctx` carries the controlled value/onChange
    for this field (keyed upstream by RoleForm) plus any cross-field context a
-   field type needs (e.g. a district field reading its sibling state's value). */
+   field type needs (e.g. a district field reading its sibling state's value).
+
+   Error display is handled once, here, for every field type uniformly — the
+   message renders directly below whatever the field type renders, and the
+   wrapping div is what gets scrolled/focused when RoleForm jumps to the
+   first invalid field on a blocked Next/Submit. Only the field types with a
+   single native input (Text/Textarea/Select/File) additionally get a red
+   border on that input — the rest (radio/checkbox groups, date, state/
+   district, ...) rely on the message + outer highlight alone. */
 export function renderField(field, key, ctx = {}) {
   const span = field.span === 2 ? "sm:col-span-2" : "";
   const {
-    value, onChange, stateValue, otherValue, onOtherChange, fromValue, onFromChange, toValue, onToChange,
-    leadId, draftToken, fieldKey: ctxFieldKey,
+    value, onChange, onBlur, error, onValidationError, stateValue, otherValue, onOtherChange,
+    fromValue, onFromChange, toValue, onToChange, leadId, draftToken, fieldKey: ctxFieldKey, registerRef,
   } = ctx;
+
+  let outerClassName = span;
+  let body;
 
   switch (field.type) {
     case "select":
-      return <div key={key} className={span}><SelectField {...field} value={value} onChange={onChange} /></div>;
+      body = <SelectField {...field} value={value} onChange={onChange} error={error} />;
+      break;
     case "date":
-      return <div key={key} className={span}><DateField {...field} value={value} onChange={onChange} /></div>;
+      body = <DateField {...field} value={value} onChange={onChange} />;
+      break;
     case "barCouncil":
-      return (
-        <div key={key} className={span}>
+      body = (
+        <>
           <FieldLabel label={field.label} required={field.required} />
           <SingleSelectCombobox
             options={field.options}
@@ -463,65 +524,69 @@ export function renderField(field, key, ctx = {}) {
             onOtherChange={onOtherChange}
             placeholder="Select your State Bar Council"
           />
-        </div>
+        </>
       );
+      break;
     case "courtOfPractice":
-      return (
-        <div key={key} className={span}>
-          <CourtOfPracticeField label={field.label} required={field.required} value={value} onChange={onChange} />
-        </div>
-      );
+      body = <CourtOfPracticeField label={field.label} required={field.required} value={value} onChange={onChange} />;
+      break;
     case "textarea":
-      return <div key={key} className={span}><TextareaField {...field} value={value} onChange={onChange} /></div>;
+      body = <TextareaField {...field} value={value} onChange={onChange} onBlur={onBlur} error={error} />;
+      break;
     case "radio":
-      return (
-        <div key={key} className={cn(span, field.spacing === "loose" && "mt-2 sm:mt-3")}>
-          <RadioField {...field} value={value} onChange={onChange} otherValue={otherValue} onOtherChange={onOtherChange} />
-        </div>
-      );
+      outerClassName = cn(span, field.spacing === "loose" && "mt-2 sm:mt-3");
+      body = <RadioField {...field} value={value} onChange={onChange} otherValue={otherValue} onOtherChange={onOtherChange} />;
+      break;
     case "checkboxes":
-      return (
-        <div key={key} className={span}>
-          <CheckboxGroupField {...field} value={value} onChange={onChange} otherValue={otherValue} onOtherChange={onOtherChange} />
-        </div>
-      );
+      body = <CheckboxGroupField {...field} value={value} onChange={onChange} otherValue={otherValue} onOtherChange={onOtherChange} />;
+      break;
     case "file":
-      return (
-        <div key={key} className={span}>
-          <FileField {...field} value={value} onChange={onChange} leadId={leadId} draftToken={draftToken} fieldKey={ctxFieldKey} />
-        </div>
+      body = (
+        <FileField
+          {...field} value={value} onChange={onChange} error={error} onValidationError={onValidationError}
+          leadId={leadId} draftToken={draftToken} fieldKey={ctxFieldKey}
+        />
       );
+      break;
     case "declaration":
-      return <div key={key} className="sm:col-span-2"><DeclarationField items={field.items} value={value} onChange={onChange} /></div>;
+      outerClassName = "sm:col-span-2";
+      body = <DeclarationField items={field.items} value={value} onChange={onChange} />;
+      break;
     case "signature":
-      return <div key={key} className={span}><SignatureField value={value} onChange={onChange} /></div>;
+      body = <SignatureField value={value} onChange={onChange} />;
+      break;
     case "state":
-      return (
-        <div key={key} className={span}>
-          <StateDistrictField type="state" label={field.label} required={field.required} value={value} onChange={onChange} multiple={field.multiple} />
-        </div>
-      );
+      body = <StateDistrictField type="state" label={field.label} required={field.required} value={value} onChange={onChange} multiple={field.multiple} />;
+      break;
     case "district":
-      return (
-        <div key={key} className={span}>
-          <StateDistrictField type="district" label={field.label} required={field.required} value={value} onChange={onChange} stateValue={stateValue} multiple={field.multiple} />
-        </div>
+      body = (
+        <StateDistrictField
+          type="district" label={field.label} required={field.required} value={value} onChange={onChange}
+          stateValue={stateValue} multiple={field.multiple}
+        />
       );
+      break;
     case "turnaroundTime":
-      return (
-        <div key={key} className={span}>
-          <TurnaroundTimeField
-            {...field}
-            value={value}
-            onChange={onChange}
-            fromValue={fromValue}
-            onFromChange={onFromChange}
-            toValue={toValue}
-            onToChange={onToChange}
-          />
-        </div>
+      body = (
+        <TurnaroundTimeField
+          {...field}
+          value={value}
+          onChange={onChange}
+          fromValue={fromValue}
+          onFromChange={onFromChange}
+          toValue={toValue}
+          onToChange={onToChange}
+        />
       );
+      break;
     default:
-      return <div key={key} className={span}><TextField {...field} value={value} onChange={onChange} /></div>;
+      body = <TextField {...field} value={value} onChange={onChange} onBlur={onBlur} error={error} />;
   }
+
+  return (
+    <div key={key} className={outerClassName} ref={registerRef}>
+      {body}
+      {error && <p className="text-xs font-medium text-red-600 mt-1.5">{error}</p>}
+    </div>
+  );
 }

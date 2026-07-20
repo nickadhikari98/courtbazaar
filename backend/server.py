@@ -465,10 +465,39 @@ async def root():
     return {"message": "CourtBazaar API - India's Legal Marketplace", "version": "1.0"}
 
 # ---------- AUTH ----------
+# Roles that must never be created by any self-service signup path
+# (/auth/register, /auth/otp/verify) — checked centrally here rather than
+# per-endpoint so a future signup path can't reintroduce this gap by
+# forgetting the check.
+#   - "vendor": goes through the admin-vetted Leads pipeline instead
+#     (leads.py's "Join as..." forms), which KYC-reviews the applicant
+#     before an account (and its login credentials) ever exists.
+#     partner/agent/counsel/proxy_counsel were never reachable from these
+#     endpoints' role vocabulary to begin with, so only "vendor" needs an
+#     explicit block — it's a real ROLES value also used post-registration
+#     (vendor_onboard, etc.), so it can't just be absent from ROLES.
+#   - "admin": must only ever be created by scripts/create_admin.py (run
+#     manually, once, directly against the database) — self-service signup
+#     must never be able to mint an admin account, at all, for any role
+#     string a client sends.
+SELF_REGISTER_BLOCKED_ROLES = {
+    "vendor": (
+        "Vendor accounts are created only after our team reviews your application. "
+        "Please apply via the vendor application form on the homepage — you'll receive "
+        "login details by email once approved."
+    ),
+    "admin": "Admin accounts cannot be created through sign-up. Contact an existing administrator.",
+}
+
+def _reject_self_register_blocked_role(role: str) -> None:
+    if role in SELF_REGISTER_BLOCKED_ROLES:
+        raise HTTPException(400, SELF_REGISTER_BLOCKED_ROLES[role])
+
 @api_router.post("/auth/register")
 async def register(req: RegisterRequest):
     if req.role not in ROLES:
         raise HTTPException(400, "Invalid role")
+    _reject_self_register_blocked_role(req.role)
     if await db.users.find_one({"email": req.email}):
         raise HTTPException(400, "Email already registered")
     user_id = f"user_{uuid.uuid4().hex[:12]}"
@@ -561,6 +590,9 @@ async def otp_verify(req: OtpVerify):
     await db.otp_codes.update_one({"_id": rec["_id"]}, {"$set": {"used": True}})
     user = await db.users.find_one({"phone": req.phone}, {"_id": 0})
     if not user:
+        if req.role not in ROLES:
+            raise HTTPException(400, "Invalid role")
+        _reject_self_register_blocked_role(req.role)
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         user = {
             "user_id": user_id,

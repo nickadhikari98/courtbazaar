@@ -62,8 +62,8 @@ export const proxyCounselSections = [
   {
     title: "Identity Information",
     fields: [
-      { label: "Aadhaar Number", required: true, type: "text" },
-      { label: "PAN Number", type: "text" },
+      { label: "Aadhaar Number", required: true, type: "text", validate: "aadhaar" },
+      { label: "PAN Number", type: "text", validate: "pan" },
       { label: "Upload Aadhaar Card", required: true, type: "file", hint: "PDF/JPG/PNG, Max 5MB" },
       { label: "Upload PAN Card", type: "file", hint: "PDF/JPG/PNG, Max 5MB" },
       { label: "Upload Recent Passport Size Photograph", required: true, type: "file", hint: "JPG/PNG, Max 2MB", span: 2 },
@@ -136,8 +136,8 @@ export const counselSections = [
   {
     title: "Identity Information",
     fields: [
-      { label: "Aadhaar Number", required: true, type: "text" },
-      { label: "PAN Number", type: "text" },
+      { label: "Aadhaar Number", required: true, type: "text", validate: "aadhaar" },
+      { label: "PAN Number", type: "text", validate: "pan" },
       { label: "Upload Aadhaar Card", required: true, type: "file", hint: "PDF/JPG/PNG, Max 5MB" },
       { label: "Upload PAN Card", type: "file", hint: "PDF/JPG/PNG, Max 5MB" },
       { label: "Upload Recent Passport Size Photograph", required: true, type: "file", hint: "JPG/PNG, Max 2MB", span: 2 },
@@ -190,8 +190,8 @@ export const vendorSections = [
       { label: "Email Address", required: true, type: "email" },
       { label: "Business Type", required: true, type: "select", options: ["Printout/ Photocopy Shop", "Digital Print Studio", "Other"] },
       { label: "Constitution Type", required: true, type: "select", options: ["Sole Proprietorship", "Partnership", "Private Limited", "LLP"] },
-      { label: "GST Number", type: "text" },
-      { label: "PAN Number", required: true, type: "text" },
+      { label: "GST Number", type: "text", validate: "gst" },
+      { label: "PAN Number", required: true, type: "text", validate: "pan" },
       { label: "Shop / Business Registration Number", type: "text" },
       { label: "Date of Establishment", required: true, type: "date" },
     ],
@@ -203,7 +203,7 @@ export const vendorSections = [
       { label: "State", required: true, type: "state" },
       { label: "District", required: true, type: "district" },
       { label: "City", type: "text" },
-      { label: "Pincode", required: true, type: "text" },
+      { label: "Pincode", required: true, type: "text", validate: "pincode" },
       { label: "Landmark (Optional)", type: "text" },
     ],
   },
@@ -268,7 +268,7 @@ export const partnerSections = [
       { label: "City", type: "text" },
       { label: "Residence Address", required: true, type: "textarea", span: 2 },
       { label: "Current City", required: true, type: "text" },
-      { label: "Pincode", required: true, type: "text" },
+      { label: "Pincode", required: true, type: "text", validate: "pincode" },
     ],
   },
   {
@@ -290,8 +290,8 @@ export const partnerSections = [
   {
     title: "Identity Information",
     fields: [
-      { label: "Aadhaar Number", required: true, type: "text" },
-      { label: "PAN Number", type: "text" },
+      { label: "Aadhaar Number", required: true, type: "text", validate: "aadhaar" },
+      { label: "PAN Number", type: "text", validate: "pan" },
       { label: "Upload Aadhaar Card", required: true, type: "file", hint: "PDF/JPG/PNG, Max 5MB" },
       { label: "Upload PAN Card", type: "file", hint: "PDF/JPG/PNG, Max 5MB" },
       { label: "Upload Recent Passport Size Photo", required: true, type: "file", hint: "JPG/PNG, Max 2MB", span: 2 },
@@ -352,14 +352,14 @@ export const agentSections = [
       { label: "District", required: true, type: "district" },
       { label: "City", required: true, type: "text" },
       { label: "Current Address / Residential Address", required: true, type: "textarea", span: 2 },
-      { label: "Pincode", required: true, type: "text" },
+      { label: "Pincode", required: true, type: "text", validate: "pincode" },
     ],
   },
   {
     title: "Identity Information",
     fields: [
-      { label: "Aadhaar Number", required: true, type: "text" },
-      { label: "PAN Number (Optional)", type: "text" },
+      { label: "Aadhaar Number", required: true, type: "text", validate: "aadhaar" },
+      { label: "PAN Number (Optional)", type: "text", validate: "pan" },
       { label: "Upload Aadhaar Card", required: true, type: "file", hint: "PDF/JPG/PNG, Max 2MB" },
       { label: "Upload PAN Card (Optional)", type: "file", hint: "PDF/JPG/PNG, Max 2MB" },
       { label: "Upload Recent Photograph", required: true, type: "file", hint: "JPG/PNG, Max 2MB", span: 2 },

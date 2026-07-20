@@ -8,8 +8,21 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { ArrowRight, Loader2 } from "lucide-react";
+import { ArrowRight, Loader2, ShieldCheck } from "lucide-react";
 import Logo from "@/components/shared/Logo";
+import RoleSelectModal from "@/components/landing/join/RoleSelectModal";
+import { vendorSections } from "@/components/landing/join/roleFormData";
+
+// Vendor accounts are admin-vetted via the "Join as Vendor" lead pipeline
+// (leads.py), not created directly here — see the matching
+// SELF_REGISTER_BLOCKED_ROLES guard on the backend's /auth/register. This
+// reuses the exact same modal/form the landing page's UtilityBar opens, just
+// pre-scoped to the one role, so applying here and applying from the
+// homepage go through identical logic.
+const VENDOR_JOIN_ROLES = [{ key: "vendor", label: "Join as Vendor", icon: ShieldCheck, description: "Printing, photocopy & scanning services" }];
+const VENDOR_JOIN_FORMS = {
+  vendor: { title: "Join as Printing Vendor", description: "Partner with CourtBazaar™ and grow your business.", sections: vendorSections },
+};
 
 export default function Register() {
   const navigate = useNavigate();
@@ -17,15 +30,17 @@ export default function Register() {
   const [loading, setLoading] = useState(false);
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", phone: "", password: "", role: "advocate" });
+  const [vendorJoinOpen, setVendorJoinOpen] = useState(false);
+  const isVendorRole = form.role === "vendor";
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!agreedToTerms) return;
+    if (!agreedToTerms || isVendorRole) return;
     setLoading(true);
     try {
       await register(form);
       toast.success("Account created. Welcome to CourtBazaar™!");
-      navigate(form.role === "vendor" ? "/vendor/onboard" : "/dashboard");
+      navigate("/dashboard");
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Registration failed");
     } finally { setLoading(false); }
@@ -72,10 +87,12 @@ export default function Register() {
                 <Label>Email</Label>
                 <Input type="email" value={form.email} onChange={(e) => setForm({...form, email: e.target.value})} required placeholder="you@chambers.in" data-testid="register-email-input" />
               </div>
-              <div>
-                <Label>Password</Label>
-                <Input type="password" value={form.password} onChange={(e) => setForm({...form, password: e.target.value})} required minLength={6} placeholder="Min 6 chars" data-testid="register-password-input" />
-              </div>
+              {!isVendorRole && (
+                <div>
+                  <Label>Password</Label>
+                  <Input type="password" value={form.password} onChange={(e) => setForm({...form, password: e.target.value})} required minLength={6} placeholder="Min 6 chars" data-testid="register-password-input" />
+                </div>
+              )}
               <div>
                 <Label>I am a…</Label>
                 <Select value={form.role} onValueChange={(v) => setForm({...form, role: v})}>
@@ -90,37 +107,67 @@ export default function Register() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="flex items-start gap-2.5">
-                <Checkbox
-                  id="agree-terms"
-                  checked={agreedToTerms}
-                  onCheckedChange={(v) => setAgreedToTerms(v === true)}
-                  className="mt-0.5"
-                  data-testid="register-agree-terms"
-                />
-                <label htmlFor="agree-terms" className="text-sm text-muted-foreground leading-relaxed cursor-pointer">
-                  I have read and agree to the{" "}
-                  <Link to="/legal/terms" target="_blank" rel="noopener noreferrer" className="text-accent font-semibold hover:underline">
-                    Terms
-                  </Link>
-                  ,{" "}
-                  <Link to="/legal/privacy" target="_blank" rel="noopener noreferrer" className="text-accent font-semibold hover:underline">
-                    Privacy Policy
-                  </Link>
-                  , and{" "}
-                  <Link to="/legal/refund" target="_blank" rel="noopener noreferrer" className="text-accent font-semibold hover:underline">
-                    Refund Policy
-                  </Link>
-                  .
-                </label>
-              </div>
-              <Button type="submit" disabled={loading || !agreedToTerms} className="w-full bg-primary hover:bg-primary/90 h-12 font-bold" data-testid="register-submit-btn">
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Create account <ArrowRight className="w-4 h-4 ml-2" /></>}
-              </Button>
+
+              {isVendorRole ? (
+                <div className="rounded-lg border border-accent/20 bg-accent/5 p-4 text-sm">
+                  <p className="font-bold text-foreground">Vendor accounts are reviewed before activation.</p>
+                  <p className="text-muted-foreground mt-1">
+                    Vendors join through our application form — our team verifies every vendor before granting
+                    access. Approved applicants receive their login details by email.
+                  </p>
+                  <Button
+                    type="button"
+                    onClick={() => setVendorJoinOpen(true)}
+                    className="w-full mt-3 bg-primary hover:bg-primary/90 font-bold"
+                    data-testid="register-vendor-apply-btn"
+                  >
+                    Open Vendor Application <ArrowRight className="w-4 h-4 ml-2" />
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-start gap-2.5">
+                    <Checkbox
+                      id="agree-terms"
+                      checked={agreedToTerms}
+                      onCheckedChange={(v) => setAgreedToTerms(v === true)}
+                      className="mt-0.5"
+                      data-testid="register-agree-terms"
+                    />
+                    <label htmlFor="agree-terms" className="text-sm text-muted-foreground leading-relaxed cursor-pointer">
+                      I have read and agree to the{" "}
+                      <Link to="/legal/terms" target="_blank" rel="noopener noreferrer" className="text-accent font-semibold hover:underline">
+                        Terms
+                      </Link>
+                      ,{" "}
+                      <Link to="/legal/privacy" target="_blank" rel="noopener noreferrer" className="text-accent font-semibold hover:underline">
+                        Privacy Policy
+                      </Link>
+                      , and{" "}
+                      <Link to="/legal/refund" target="_blank" rel="noopener noreferrer" className="text-accent font-semibold hover:underline">
+                        Refund Policy
+                      </Link>
+                      .
+                    </label>
+                  </div>
+                  <Button type="submit" disabled={loading || !agreedToTerms} className="w-full bg-primary hover:bg-primary/90 h-12 font-bold" data-testid="register-submit-btn">
+                    {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Create account <ArrowRight className="w-4 h-4 ml-2" /></>}
+                  </Button>
+                </>
+              )}
             </form>
           </CardContent>
         </Card>
       </div>
+
+      <RoleSelectModal
+        open={vendorJoinOpen}
+        onOpenChange={setVendorJoinOpen}
+        heading="Join as Vendor"
+        subheading="Partner with CourtBazaar™ and grow your business."
+        roles={VENDOR_JOIN_ROLES}
+        forms={VENDOR_JOIN_FORMS}
+      />
     </div>
   );
 }
