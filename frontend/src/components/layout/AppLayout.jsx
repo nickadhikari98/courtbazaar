@@ -5,30 +5,81 @@ import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
   User, Settings, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck,
   Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic, Banknote,
-  UserPlus, Star,
+  UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
 import { formatINR } from "@/lib/api";
+import { isFeatureEnabled } from "@/config/featureFlags";
+import Logo from "@/components/shared/Logo";
 
-const navItems = (role) => {
-  const common = [
-    { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
+// Workspace shell for the default (advocate / future proxy-counsel) account
+// type — everything else (vendor/delivery_partner/admin below) is untouched
+// legacy nav, not yet migrated to the workspace model. `{ section }` entries
+// are non-clickable group headers, not links — see the render loop below.
+// Grouped by user intent (Home / Services / Workspace / Finance / Account)
+// rather than one flat list — same items, gates, and flags as before, just
+// re-bucketed; no `to` target, capability gate, or flag was added or removed.
+// "My Practice"/"Earnings" only appear once the account's capabilities
+// (server.py's get_current_user) include the matching capability — a plain
+// advocate account sees exactly what it saw before this nav gained sections.
+const buildWorkspaceNav = (user) => {
+  const capabilities = user?.capabilities || [];
+
+  const services = [
     { to: "/order/new", icon: Plus, label: "New Order", highlight: true },
+    ...(capabilities.includes("can_hire_proxy_counsel")
+      ? [
+          { to: "/hire-counsel", icon: Scale, label: "Hire Counsel", flag: "services.hireCounsel" },
+          { to: "/hire-proxy-counsel", icon: Gavel, label: "Hire Proxy Counsel" },
+        ]
+      : []),
     { to: "/orders", icon: Package, label: "My Orders" },
     { to: "/marketplace", icon: Store, label: "Marketplace" },
     { to: "/stenographer", icon: Mic, label: "Stenographer" },
     { to: "/courts", icon: Building2, label: "Courts" },
-    { to: "/ai", icon: Sparkles, label: "AI Assistant" },
-    { to: "/firm", icon: Users, label: "Law Firm" },
-    { to: "/firm/bulk-import", icon: FileSpreadsheet, label: "Bulk Import" },
-    { to: "/wallet", icon: Wallet, label: "Wallet" },
-    { to: "/my-data", icon: Database, label: "My Data" },
-    { to: "/notifications", icon: Bell, label: "Notifications" },
-    { to: "/subscription", icon: CreditCard, label: "Plans" },
+    { to: "/subscription", icon: CreditCard, label: "Packages" },
   ];
+
+  const workspace = [
+    ...(capabilities.includes("can_practice_proxy_counsel") || capabilities.includes("can_manage_shop")
+      ? [{ to: "/practice", icon: Briefcase, label: "My Practice" }]
+      : []),
+    { to: "/documents", icon: FileText, label: "Documents" },
+    { to: "/calendar", icon: CalendarDays, label: "Calendar" },
+    // sidebar.aiAssistant/lawFirm/bulkImport: off the founder-approved MVP
+    // nav for now — routes/APIs stay registered (App.js), just not
+    // discoverable from here. See config/featureFlags.js.
+    { to: "/ai", icon: Sparkles, label: "AI Assistant", flag: "sidebar.aiAssistant" },
+    { to: "/notifications", icon: Bell, label: "Notifications" },
+    { to: "/firm", icon: Users, label: "Law Firm", flag: "sidebar.lawFirm" },
+    { to: "/firm/bulk-import", icon: FileSpreadsheet, label: "Bulk Import", flag: "sidebar.bulkImport" },
+  ];
+
+  const finance = [
+    { to: "/wallet", icon: Wallet, label: "Wallet" },
+    ...(capabilities.includes("can_earn") ? [{ to: "/earnings", icon: Wallet, label: "Earnings" }] : []),
+  ];
+
+  const account = [
+    { to: "/my-data", icon: Database, label: "My Data", flag: "sidebar.myData" },
+    { to: "/profile", icon: User, label: "Profile" },
+  ];
+
+  const items = [
+    { to: "/dashboard", icon: LayoutDashboard, label: "Home" },
+    { section: "Services" }, ...services,
+    { section: "Workspace" }, ...workspace,
+    { section: "Finance" }, ...finance,
+    { section: "Account" }, ...account,
+  ];
+  return items.filter((item) => !item.flag || isFeatureEnabled(item.flag));
+};
+
+const navItems = (user) => {
+  const role = user?.role;
   if (role === "vendor") {
     return [
       { to: "/vendor", icon: LayoutDashboard, label: "Vendor Hub" },
@@ -56,6 +107,7 @@ const navItems = (role) => {
       { to: "/admin/users", icon: User, label: "Users" },
       { to: "/admin/reconciliation", icon: Receipt, label: "Reconciliation" },
       { to: "/admin/settlements", icon: Banknote, label: "Settlements" },
+      { to: "/admin/hearing-verification", icon: Gavel, label: "Hearing Verification" },
       { to: "/admin/whatsapp", icon: MessageSquare, label: "WhatsApp Templates" },
       { to: "/admin/leaderboard", icon: Trophy, label: "Leaderboard" },
       { to: "/admin/audit-log", icon: Activity, label: "Audit Log" },
@@ -64,14 +116,14 @@ const navItems = (role) => {
       { to: "/courts", icon: Building2, label: "Courts" },
     ];
   }
-  return common;
+  return buildWorkspaceNav(user);
 };
 
 export default function AppLayout() {
   const { user, logout } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const navigate = useNavigate();
-  const items = navItems(user?.role);
+  const items = navItems(user);
   const initials = (user?.name || "U").split(" ").map(s => s[0]).slice(0, 2).join("").toUpperCase();
 
   const handleLogout = async () => {
@@ -84,15 +136,7 @@ export default function AppLayout() {
       {/* Sidebar */}
       <aside className={`fixed lg:static inset-y-0 left-0 z-40 w-72 bg-white border-r border-border transform transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0 flex flex-col`}>
         <div className="px-6 py-5 border-b border-border flex items-center justify-between">
-          <Link to="/dashboard" className="flex items-center gap-2.5" data-testid="sidebar-logo">
-            <div className="w-9 h-9 bg-primary rounded-lg flex items-center justify-center">
-              <Scale className="w-5 h-5 text-white" strokeWidth={2} />
-            </div>
-            <div className="flex flex-col leading-none">
-              <span className="font-display font-black text-lg tracking-tight">CourtBazaar™</span>
-              <span className="text-2xs uppercase tracking-[0.18em] text-muted-foreground font-bold">India</span>
-            </div>
-          </Link>
+          <Logo to="/dashboard" size="sm" data-testid="sidebar-logo" />
           <button className="lg:hidden" onClick={() => setSidebarOpen(false)} data-testid="close-sidebar-btn">
             <X className="w-5 h-5" />
           </button>
@@ -100,6 +144,14 @@ export default function AppLayout() {
 
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
           {items.map((item) => (
+            item.section ? (
+              <div
+                key={`section-${item.section}`}
+                className="px-3 pt-4 pb-1 first:pt-0 text-2xs font-bold uppercase tracking-wide text-muted-foreground/70"
+              >
+                {item.section}
+              </div>
+            ) : (
             <NavLink
               key={item.to}
               to={item.to}
@@ -122,6 +174,7 @@ export default function AppLayout() {
                 <Badge variant="secondary" className="ml-auto bg-accent text-white border-0 text-2xs h-5 px-1.5">FAST</Badge>
               )}
             </NavLink>
+            )
           ))}
         </nav>
 
@@ -154,7 +207,7 @@ export default function AppLayout() {
               <Wallet className="w-4 h-4 text-accent" />
               <span className="text-sm font-bold">{formatINR(user?.wallet_balance || 0)}</span>
             </Link>
-            <button className="relative p-2 hover:bg-secondary rounded-lg" data-testid="notifications-btn">
+            <button className="relative p-2 hover:bg-secondary rounded-lg" data-testid="notifications-btn" onClick={() => navigate("/notifications")}>
               <Bell className="w-5 h-5" />
               <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-accent rounded-full"></span>
             </button>

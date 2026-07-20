@@ -1,0 +1,553 @@
+"""Hearing Requests — the "Hire Proxy Counsel" marketplace. A first-class
+domain entity, deliberately NOT modeled as an order: its own status
+machine/timeline, own documents, own communication thread, own ratings —
+none of it shares a collection or status enum with db.orders.
+
+This module owns OPERATIONAL workflow only — broadcast/accept/documents/
+hearing/verification — never payment math or state. A hearing's fee is paid
+through escrow.py (create_and_hold/release/refund, its own independent
+created->captured->held->released|refunded state machine); this module only
+reacts to "payment confirmed" as a business event via mark_payment_confirmed,
+and calls into escrow.py for release/refund. See escrow.py's module
+docstring for why that split exists.
+
+Lifecycle (workflow.StateMachine):
+    broadcast -> accepted -> payment_pending -> documents_shared -> preparation
+    -> hearing_scheduled -> hearing_completed -> verification_pending
+    -> verified -> completed -> rated (rated is a terminal relabel, not a
+    flag alongside completed — same as before this refactor: whichever side
+    rates first flips status to "rated", second rater keeps it there)
+Off-ramps: rejected (targeted-request decline), cancelled, disputed, expired.
+Auto-chained transitions (same precedent as the original requested->broadcast
+chain below) fire on a real event, never a timer: documents_shared->
+preparation->hearing_scheduled on the first case-document upload,
+hearing_completed->verification_pending on the order-sheet upload.
+
+Matching is broadcast-based by default (unlike vendor order auto-matching in
+server.py): any available proxy counsel can see and accept an open request;
+whoever accepts first wins (race-safe — see accept_hearing_request()).
+Declining is personal (`declined_by`), not global — one proxy counsel
+declining doesn't cancel the request for everyone else.
+
+`target_advocate_id` (nullable) is the integration point for a separate,
+not-yet-built advocate search/select workstream: when set, the request is
+addressed to exactly that advocate (only they can see/accept/reject it, and
+a reject is a global, terminal `rejected` — not a personal decline). When
+absent, the request behaves exactly as the broadcast case above always has.
+"""
+import uuid
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any, List
+
+from fastapi import HTTPException
+from pymongo import ReturnDocument
+
+from workflow import StateMachine, IllegalTransition
+
+HEARING_STATUSES = (
+    "requested", "broadcast", "accepted", "payment_pending", "documents_shared", "preparation",
+    "hearing_scheduled", "hearing_completed", "verification_pending", "verified",
+    "completed", "rated", "rejected", "cancelled", "disputed", "expired",
+)
+
+HEARING_TRANSITIONS = {
+    ("requested", "broadcast"): "broadcast",  # one-call chain in create_hearing_request — see there
+    ("broadcast", "accept"): "accepted",
+    ("broadcast", "reject"): "rejected",          # targeted request only — see accept_hearing_request/reject_hearing_request
+    ("broadcast", "cancel"): "cancelled",
+    ("broadcast", "expire"): "expired",           # reserved — no scheduled job drives this yet
+    ("accepted", "initiate_payment"): "payment_pending",
+    ("accepted", "cancel"): "cancelled",
+    ("payment_pending", "confirm_payment"): "documents_shared",
+    ("payment_pending", "cancel"): "cancelled",
+    ("documents_shared", "share_documents"): "preparation",
+    ("documents_shared", "cancel"): "cancelled",  # money already held — see cancel_hearing_request's refund call
+    ("preparation", "schedule"): "hearing_scheduled",
+    ("preparation", "cancel"): "cancelled",
+    ("hearing_scheduled", "cancel"): "cancelled",
+    ("hearing_scheduled", "conduct"): "hearing_completed",
+    ("hearing_completed", "cancel"): "cancelled",
+    ("hearing_completed", "upload_order_sheet"): "verification_pending",
+    ("verification_pending", "verify"): "verified",
+    ("verification_pending", "reject_verification"): "disputed",
+    ("disputed", "resubmit"): "verification_pending",   # admin resolves — back for another look
+    ("disputed", "refund_and_cancel"): "cancelled",     # admin resolves — refund, close out
+    ("verified", "release_payout"): "completed",        # Verify and Release are always two separate calls — see server.py
+    ("completed", "rate"): "rated",
+    ("rated", "rate"): "rated",                         # both sides can rate; second rating doesn't re-transition
+}
+
+# Statuses from which cancelling means money is already held and must be
+# refunded (see cancel_hearing_request) rather than simply walked back.
+_CANCEL_REQUIRES_REFUND = {"documents_shared", "preparation", "hearing_scheduled", "hearing_completed"}
+
+# service_id is nullable on escrow_transactions in general, but hearings
+# aren't a db.services catalog row — this constant keeps every hearing
+# escrow record groupable/reportable by service anyway (see escrow.py).
+ESCROW_SERVICE_ID = "hire_proxy_counsel"
+
+
+def new_hearing_id() -> str:
+    return f"hearing_{uuid.uuid4().hex[:12]}"
+
+
+async def ensure_indexes(db) -> None:
+    await db.hearing_requests.create_index([("status", 1), ("created_at", -1)], name="status_created")
+    await db.hearing_requests.create_index([("requesting_user_id", 1)], name="requester")
+    await db.hearing_requests.create_index([("proxy_counsel_user_id", 1)], name="assigned_proxy_counsel")
+    await db.hearing_messages.create_index([("hearing_id", 1), ("created_at", 1)], name="hearing_thread")
+    await db.professional_ratings.create_index([("rated_user_id", 1)], name="rated_user")
+
+
+async def create_hearing_request(db, requesting_user_id: str, court_id: str, hearing_date: str,
+                                  case_details: str, fee: Optional[float], matter_id: Optional[str],
+                                  target_advocate_id: Optional[str] = None,
+                                  service_type: str = "proxy_counsel",
+                                  request_details: Optional[dict] = None) -> dict:
+    if not court_id or not hearing_date or not case_details:
+        raise HTTPException(400, "Court, hearing date, and case details are required")
+    now = datetime.now(timezone.utc)
+    doc = {
+        "hearing_id": new_hearing_id(),
+        "requesting_user_id": requesting_user_id,
+        "proxy_counsel_user_id": None,
+        "target_advocate_id": target_advocate_id,  # set -> addressed to one advocate; None -> broadcast to all
+        "court_id": court_id,
+        "hearing_date": hearing_date,
+        "case_details": case_details,
+        "matter_id": matter_id,
+        "fee": fee,
+        # `service_type` is a discriminator for the generic Legal Service
+        # Request architecture (frontend LegalServiceRequestForm) — rows
+        # created before this field existed are read as "proxy_counsel" by
+        # any consumer. `request_details` is a free-form, structured bag
+        # ({common: {...}, service_specific: {...}}) built entirely on the
+        # frontend; the backend never branches on its contents, so adding
+        # fields to it (or onboarding a new service_type) never requires a
+        # schema change here.
+        "service_type": service_type,
+        "request_details": request_details,
+        "status": "requested",
+        "declined_by": [],
+        "document_ids": [],
+        "order_sheet_doc_id": None,
+        "hearing_notes": [],
+        "rated_by": [],
+        "timeline": [{"status": "requested", "at": now.isoformat(), "note": "Request created"}],
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+    await db.hearing_requests.insert_one(doc)
+
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    doc["status"] = "requested"
+    await _transition(db, sm, doc, "requested", "broadcast", None,
+                       note="Assigned directly to one advocate" if target_advocate_id else "Broadcast to available proxy counsel")
+    doc["status"] = "broadcast"
+    doc.pop("_id", None)
+    return doc
+
+
+def _make_timeline_hook(db):
+    async def hook(entity: dict, from_status: str, to_status: str, actor: Optional[dict]) -> None:
+        await db.hearing_requests.update_one(
+            {"hearing_id": entity["hearing_id"]},
+            {"$push": {"timeline": {
+                "status": to_status, "at": datetime.now(timezone.utc).isoformat(),
+                "note": f"{from_status} -> {to_status}", "by": actor["user_id"] if actor else "system",
+            }}},
+        )
+    return hook
+
+
+async def _push_activity(db, hearing_id: str, note: str, actor_user_id: Optional[str] = None) -> None:
+    """Non-transition activity events (document uploaded, payment initiated,
+    escrow held/released amounts) land in the same `timeline` array as status
+    transitions — the array is the canonical activity history for a hearing,
+    not just its status changes."""
+    await db.hearing_requests.update_one(
+        {"hearing_id": hearing_id},
+        {"$push": {"timeline": {
+            "at": datetime.now(timezone.utc).isoformat(), "note": note, "by": actor_user_id or "system",
+        }}},
+    )
+
+
+async def _transition(db, sm: StateMachine, entity: dict, from_status: str, action: str,
+                       actor: Optional[dict], note: Optional[str] = None) -> str:
+    """`workflow.StateMachine.apply` validates + fires the hook (timeline
+    push); this wrapper also does the actual status persistence, since every
+    call site needs both and used to repeat the same two lines."""
+    to_status = await sm.apply(entity, from_status, action, actor)
+    update: Dict[str, Any] = {"status": to_status, "updated_at": datetime.now(timezone.utc).isoformat()}
+    await db.hearing_requests.update_one({"hearing_id": entity["hearing_id"]}, {"$set": update})
+    if note:
+        await _push_activity(db, entity["hearing_id"], note, actor["user_id"] if actor else None)
+    return to_status
+
+
+async def list_hearing_requests(db, user: dict) -> List[dict]:
+    capabilities = user.get("capabilities") or []
+    clauses = [{"requesting_user_id": user["user_id"]}]
+    if "can_practice_proxy_counsel" in capabilities:
+        clauses.append({
+            "status": "broadcast", "declined_by": {"$ne": user["user_id"]},
+            "$or": [{"target_advocate_id": None}, {"target_advocate_id": user["user_id"]}],
+        })
+        clauses.append({"proxy_counsel_user_id": user["user_id"]})
+    return await db.hearing_requests.find({"$or": clauses}, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+
+async def get_hearing_request(db, hearing_id: str, user: dict) -> dict:
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    _check_visible(hearing, user)
+    return hearing
+
+
+def _check_visible(hearing: dict, user: dict) -> None:
+    is_requester = hearing["requesting_user_id"] == user["user_id"]
+    is_assigned = hearing.get("proxy_counsel_user_id") == user["user_id"]
+    is_targeted_at_me = hearing.get("target_advocate_id") in (None, user["user_id"])
+    is_open_to_me = hearing["status"] == "broadcast" and "can_practice_proxy_counsel" in (user.get("capabilities") or []) \
+        and is_targeted_at_me
+    if not (is_requester or is_assigned or is_open_to_me or user.get("role") == "admin"):
+        raise HTTPException(403, "Forbidden")
+
+
+async def accept_hearing_request(db, hearing_id: str, user: dict) -> dict:
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    # Conditional update on status=="broadcast" (+ target match) is what makes
+    # this race-safe: two proxy counsel accepting at the same moment can't
+    # both win — whichever commits first flips status away from "broadcast",
+    # the other's update matches nothing.
+    updated = await db.hearing_requests.find_one_and_update(
+        {
+            "hearing_id": hearing_id, "status": "broadcast",
+            "$or": [{"target_advocate_id": None}, {"target_advocate_id": user["user_id"]}],
+        },
+        {"$set": {
+            "status": "accepted", "proxy_counsel_user_id": user["user_id"],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, "$push": {"timeline": {
+            "status": "accepted", "at": datetime.now(timezone.utc).isoformat(), "by": user["user_id"],
+        }}},
+        projection={"_id": 0}, return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        if hearing.get("target_advocate_id") not in (None, user["user_id"]):
+            raise HTTPException(403, "This request wasn't sent to you")
+        raise HTTPException(409, "This request has already been taken by another proxy counsel")
+    return updated
+
+
+async def reject_hearing_request(db, hearing_id: str, user: dict) -> dict:
+    """Targeted requests only — a global, terminal reject (customer
+    notified), distinct from decline_hearing_request's personal/broadcast
+    `declined_by` below. See module docstring."""
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    if hearing.get("target_advocate_id") != user["user_id"]:
+        raise HTTPException(403, "Only the advocate this request was sent to can reject it")
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    try:
+        await _transition(db, sm, hearing, hearing["status"], "reject", user)
+    except IllegalTransition:
+        raise HTTPException(400, "This request can no longer be rejected")
+    return {"ok": True, "status": "rejected"}
+
+
+async def decline_hearing_request(db, hearing_id: str, user: dict) -> dict:
+    """Personal, not global — hides this request from this proxy counsel's
+    own open-requests view without affecting anyone else's (broadcast
+    requests only; a targeted request uses reject_hearing_request instead)."""
+    result = await db.hearing_requests.update_one(
+        {"hearing_id": hearing_id}, {"$addToSet": {"declined_by": user["user_id"]}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(404, "Hearing request not found")
+    return {"ok": True}
+
+
+async def cancel_hearing_request(db, hearing_id: str, user: dict) -> dict:
+    import escrow as escrow_svc
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    if hearing["requesting_user_id"] != user["user_id"] and user.get("role") != "admin":
+        raise HTTPException(403, "Forbidden")
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    try:
+        await _transition(db, sm, hearing, hearing["status"], "cancel", user)
+    except IllegalTransition:
+        raise HTTPException(400, "This request can no longer be cancelled")
+    if hearing["status"] in _CANCEL_REQUIRES_REFUND:
+        await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason="Hearing cancelled after payment was held")
+        await _push_activity(db, hearing_id, "Escrow refunded — hearing cancelled after payment was held", user["user_id"])
+    return {"ok": True}
+
+
+async def add_note(db, hearing_id: str, user: dict, note: str) -> dict:
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    _check_participant(hearing, user)
+    entry = {"text": note, "user_id": user["user_id"], "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$push": {"hearing_notes": entry}})
+    return entry
+
+
+def _check_participant(hearing: dict, user: dict) -> None:
+    if hearing["requesting_user_id"] != user["user_id"] and hearing.get("proxy_counsel_user_id") != user["user_id"] \
+            and user.get("role") != "admin":
+        raise HTTPException(403, "Forbidden")
+
+
+async def add_document(db, put_object_fn, validate_upload_fn, hearing_id: str, user: dict,
+                        kind: str, filename: str, content_type: str, data: bytes) -> dict:
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    _check_participant(hearing, user)
+    validate_upload_fn(filename, content_type, len(data))
+    doc_id = str(uuid.uuid4())
+    ext = filename.rsplit(".", 1)[-1].lower() if filename and "." in filename else "bin"
+    path = f"hearings/{hearing_id}/{doc_id}.{ext}"
+    result = put_object_fn(path, data, content_type)
+    record = {
+        "doc_id": doc_id,
+        "hearing_id": hearing_id,
+        "kind": kind,  # "order_sheet" | "case_document"
+        "original_filename": filename,
+        "content_type": content_type,
+        "size": result.get("size", len(data)),
+        "storage_path": result["path"],
+        "is_deleted": False,
+        "uploaded_by": user["user_id"],
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.hearing_documents.insert_one(record)
+    update: Dict[str, Any] = {"$push": {"document_ids": doc_id}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}}
+    if kind == "order_sheet":
+        update["$set"]["order_sheet_doc_id"] = doc_id
+    await db.hearing_requests.update_one({"hearing_id": hearing_id}, update)
+    await _push_activity(db, hearing_id, f"{'Order sheet' if kind == 'order_sheet' else 'Case document'} uploaded: {filename}", user["user_id"])
+
+    # Auto-chained status progressions — a real upload event, not a timer.
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    if kind == "case_document" and hearing["status"] == "documents_shared":
+        hearing["status"] = await _transition(db, sm, hearing, "documents_shared", "share_documents", user)
+        hearing["status"] = await _transition(db, sm, hearing, "preparation", "schedule", None,
+                                               note="Hearing date already confirmed at request creation")
+    elif kind == "order_sheet" and hearing["status"] == "hearing_completed":
+        await _transition(db, sm, hearing, "hearing_completed", "upload_order_sheet", user)
+
+    record.pop("_id", None)
+    return record
+
+
+async def list_documents(db, hearing_id: str) -> List[dict]:
+    return await db.hearing_documents.find({"hearing_id": hearing_id, "is_deleted": False}, {"_id": 0}).to_list(100)
+
+
+async def add_message(db, hearing_id: str, user: dict, text: str) -> dict:
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    _check_participant(hearing, user)
+    message = {
+        "message_id": f"msg_{uuid.uuid4().hex[:12]}",
+        "hearing_id": hearing_id,
+        "sender_user_id": user["user_id"],
+        "text": text,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.hearing_messages.insert_one(message)
+    message.pop("_id", None)
+    return message
+
+
+async def list_messages(db, hearing_id: str) -> List[dict]:
+    return await db.hearing_messages.find({"hearing_id": hearing_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+
+
+# ---------------------------------------------------------------------------
+# Payment — hands off to escrow.py immediately; this module never computes
+# commission/payout math itself. See server.py for the Razorpay create-order/
+# verify endpoints that call these.
+# ---------------------------------------------------------------------------
+async def initiate_payment(db, hearing_id: str, user: dict) -> dict:
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    if hearing["requesting_user_id"] != user["user_id"]:
+        raise HTTPException(403, "Only the requester can pay for this hearing")
+    if not hearing.get("fee"):
+        raise HTTPException(400, "A fee must be set before payment can be collected")
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    try:
+        await _transition(db, sm, hearing, hearing["status"], "initiate_payment", user)
+    except IllegalTransition:
+        raise HTTPException(400, "Payment can't be started from this request's current status")
+    return {"ok": True, "status": "payment_pending", "fee": hearing["fee"]}
+
+
+async def mark_payment_confirmed(db, hearing_id: str, user: dict) -> dict:
+    """Called after escrow.create_and_hold succeeds — a separate, explicit
+    call into this module's own state machine (payment_pending ->
+    documents_shared) so payment state and operational state never share one
+    transition."""
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    if hearing["requesting_user_id"] != user["user_id"]:
+        raise HTTPException(403, "Only the requester can confirm payment for this hearing")
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    try:
+        await _transition(db, sm, hearing, hearing["status"], "confirm_payment", user,
+                           note="Payment held by CourtBazaar — share case documents to proceed")
+    except IllegalTransition:
+        raise HTTPException(400, "This request isn't awaiting payment")
+    return {"ok": True, "status": "documents_shared"}
+
+
+async def mark_hearing_conducted(db, hearing_id: str, user: dict) -> dict:
+    """Advocate action — replaces the old complete_hearing_request. No
+    payout side effect: that only happens after admin verification +
+    a separate, explicit release-payout action (see server.py)."""
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    if hearing.get("proxy_counsel_user_id") != user["user_id"] and user.get("role") != "admin":
+        raise HTTPException(403, "Only the assigned proxy counsel can mark this hearing conducted")
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    try:
+        await _transition(db, sm, hearing, hearing["status"], "conduct", user)
+    except IllegalTransition:
+        raise HTTPException(400, "This hearing can't be marked conducted from its current status")
+    return {"ok": True, "status": "hearing_completed"}
+
+
+# ---------------------------------------------------------------------------
+# Admin verification — Verify and Release Payout are always two separate,
+# explicitly-triggered actions (never bundled) so a payout can't happen
+# without a distinct verification step immediately before it.
+# ---------------------------------------------------------------------------
+async def verify_order_sheet(db, hearing_id: str, user: dict) -> dict:
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    try:
+        await _transition(db, sm, hearing, hearing["status"], "verify", user)
+    except IllegalTransition:
+        raise HTTPException(400, "This hearing isn't awaiting verification")
+    return {"ok": True, "status": "verified"}
+
+
+async def reject_order_sheet(db, hearing_id: str, user: dict, remark: Optional[str] = None) -> dict:
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    try:
+        await _transition(db, sm, hearing, hearing["status"], "reject_verification", user, note=remark)
+    except IllegalTransition:
+        raise HTTPException(400, "This hearing isn't awaiting verification")
+    return {"ok": True, "status": "disputed"}
+
+
+async def resolve_dispute(db, hearing_id: str, user: dict, action: str, remark: Optional[str] = None) -> dict:
+    """`action`: "resubmit" (back to verification_pending for another look)
+    or "refund" (refund escrow, close the request as cancelled)."""
+    import escrow as escrow_svc
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    sm_action = "resubmit" if action == "resubmit" else "refund_and_cancel"
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    try:
+        new_status = await _transition(db, sm, hearing, hearing["status"], sm_action, user, note=remark)
+    except IllegalTransition:
+        raise HTTPException(400, "This hearing isn't currently disputed")
+    if sm_action == "refund_and_cancel":
+        await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason=remark or "Dispute resolved with refund")
+    return {"ok": True, "status": new_status}
+
+
+async def release_hearing_payout(db, hearing_id: str, user: dict) -> dict:
+    """verified -> completed, only reachable once verify_order_sheet has
+    already run — see the transition table. Calls escrow.release, which owns
+    the actual wallet credit/withdrawable math."""
+    import escrow as escrow_svc
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    try:
+        await _transition(db, sm, hearing, hearing["status"], "release_payout", user)
+    except IllegalTransition:
+        raise HTTPException(400, "This hearing must be verified before its payout can be released")
+    escrow = await escrow_svc.release(db, context_type="hearing", context_id=hearing_id, released_by_user_id=user["user_id"])
+    await _push_activity(db, hearing_id, f"Payout of ₹{escrow['payee_amount']} released to advocate wallet", user["user_id"])
+    await db.proxy_counsel_profiles.update_one(
+        {"user_id": hearing["proxy_counsel_user_id"]}, {"$inc": {"cases_completed": 1}},
+    )
+    return {"ok": True, "status": "completed", "escrow": escrow}
+
+
+async def list_hearings_for_admin(db, status: Optional[str] = None) -> List[dict]:
+    query: Dict[str, Any] = {}
+    if status:
+        query["status"] = status
+    return await db.hearing_requests.find(query, {"_id": 0}).sort("updated_at", -1).to_list(200)
+
+
+async def rate_hearing_request(db, hearing_id: str, user: dict, rating: int, review: Optional[str]) -> dict:
+    if not isinstance(rating, int) or not 1 <= rating <= 5:
+        raise HTTPException(400, "Rating must be a whole number from 1 to 5")
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    _check_participant(hearing, user)
+    if user["user_id"] in hearing.get("rated_by", []):
+        raise HTTPException(400, "You've already rated this hearing")
+
+    is_requester = user["user_id"] == hearing["requesting_user_id"]
+    rated_user_id = hearing["proxy_counsel_user_id"] if is_requester else hearing["requesting_user_id"]
+    if not rated_user_id:
+        raise HTTPException(400, "Nothing to rate yet")
+
+    await db.professional_ratings.insert_one({
+        "rating_id": f"prating_{uuid.uuid4().hex[:12]}",
+        "rated_user_id": rated_user_id,
+        "rated_by_user_id": user["user_id"],
+        "context_type": "hearing",
+        "context_id": hearing_id,
+        "rating": rating,
+        "review": review,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    try:
+        await _transition(db, sm, hearing, hearing["status"], "rate", user)
+    except IllegalTransition:
+        raise HTTPException(400, "This hearing can't be rated yet")
+    await db.hearing_requests.update_one(
+        {"hearing_id": hearing_id}, {"$addToSet": {"rated_by": user["user_id"]}},
+    )
+
+    # Recompute the rated professional's average — same pattern as
+    # server.py's rate_order recomputing db.vendors.rating.
+    if is_requester:
+        cursor = db.professional_ratings.find({"rated_user_id": rated_user_id}, {"rating": 1})
+        ratings = [d["rating"] async for d in cursor]
+        if ratings:
+            avg = sum(ratings) / len(ratings)
+            await db.proxy_counsel_profiles.update_one({"user_id": rated_user_id}, {"$set": {"rating": round(avg, 2)}})
+    return {"ok": True}

@@ -1,16 +1,29 @@
 import React, { useEffect, useState, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, formatINR } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search, Filter, ArrowRight } from "lucide-react";
+import { Search, Filter, ArrowRight, Gavel, Scale, CreditCard, Building2 } from "lucide-react";
 import * as Icons from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
+import { isFeatureEnabled } from "@/config/featureFlags";
+
+// Non-catalog offerings (not `db.services` rows — separate pages) that
+// still belong on Marketplace per the founder's visible-service list.
+const PROFESSIONAL_SERVICES = [
+  { to: "/hire-proxy-counsel", icon: Gavel, label: "Hire Proxy Counsel", detail: "Request an advocate to appear on your behalf", capability: "can_hire_proxy_counsel" },
+  { to: "/hire-counsel", icon: Scale, label: "Hire Counsel", detail: "Full legal representation — onboarding in progress", capability: "can_hire_proxy_counsel", flag: "services.hireCounsel" },
+  { to: "/subscription", icon: CreditCard, label: "Packages", detail: "Subscription bundles for frequent filers" },
+  { to: "/courts", icon: Building2, label: "Court Directory", detail: "Browse every court CourtBazaar covers" },
+];
 
 export default function Marketplace() {
   const navigate = useNavigate();
+  const { hasCapability } = useAuth();
   const [services, setServices] = useState([]);
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("all");
@@ -28,9 +41,9 @@ export default function Marketplace() {
 
   return (
     <PageContainer>
-      <div className="cb-overline text-accent">Service marketplace</div>
-      <h1 className="font-display font-black text-3xl lg:text-4xl tracking-tighter mt-1">Browse {services.length}+ legal services</h1>
-      <p className="text-muted-foreground font-medium mt-2">Transparent INR pricing. Verified vendors. Pan-India coverage.</p>
+      <PageHeader eyebrow="Service marketplace" title={`Browse ${services.length}+ legal services`}
+                  description="Transparent INR pricing. Verified vendors. Pan-India coverage."
+                  titleClassName="lg:text-4xl" />
 
       <div className="mt-6 flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
@@ -41,9 +54,13 @@ export default function Marketplace() {
 
       {/* Category chips */}
       <div className="mt-5 flex gap-2 overflow-x-auto pb-2">
-        <button onClick={() => setCat("all")} className={`px-4 py-2 rounded-full text-sm font-bold shrink-0 ${cat === "all" ? 'bg-primary text-white' : 'bg-secondary text-foreground'}`} data-testid="cat-all">All</button>
+        <Button type="button" size="sm" variant={cat === "all" ? "default" : "ghost"}
+                className={`rounded-full shrink-0 font-bold ${cat === "all" ? "" : "bg-secondary text-foreground hover:bg-secondary/80"}`}
+                onClick={() => setCat("all")} data-testid="cat-all">All</Button>
         {categories.map(c => (
-          <button key={c} onClick={() => setCat(c)} className={`px-4 py-2 rounded-full text-sm font-bold shrink-0 ${cat === c ? 'bg-primary text-white' : 'bg-secondary text-foreground'}`} data-testid={`cat-${c.replace(/\s+/g, '-').toLowerCase()}`}>{c}</button>
+          <Button key={c} type="button" size="sm" variant={cat === c ? "default" : "ghost"}
+                  className={`rounded-full shrink-0 font-bold ${cat === c ? "" : "bg-secondary text-foreground hover:bg-secondary/80"}`}
+                  onClick={() => setCat(c)} data-testid={`cat-${c.replace(/\s+/g, '-').toLowerCase()}`}>{c}</Button>
         ))}
       </div>
 
@@ -75,6 +92,27 @@ export default function Marketplace() {
               </Card>
             );
           })}
+      </div>
+
+      {/* Non-catalog offerings — Proxy Counsel/Counsel/Packages/Court
+          Directory aren't db.services rows, so they're links here rather
+          than part of the filtered grid above. */}
+      <div className="mt-10">
+        <div className="cb-overline text-accent">Beyond the catalog</div>
+        <h2 className="font-display font-bold text-2xl mt-1 tracking-tight mb-4">Professional Legal Services</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {PROFESSIONAL_SERVICES
+            .filter((s) => (!s.capability || hasCapability(s.capability)) && (!s.flag || isFeatureEnabled(s.flag)))
+            .map((s) => (
+              <Link key={s.to} to={s.to} className="dashboard-card border-none hover:shadow-md transition-all p-5 block" data-testid={`marketplace-pro-${s.to.replace(/\//g, '')}`}>
+                <div className="w-11 h-11 rounded-xl bg-accent/10 flex items-center justify-center mb-3">
+                  <s.icon className="w-5 h-5 text-accent" />
+                </div>
+                <div className="font-display font-bold text-base leading-tight">{s.label}</div>
+                <div className="text-xs text-muted-foreground font-medium mt-1">{s.detail}</div>
+              </Link>
+            ))}
+        </div>
       </div>
     </PageContainer>
   );

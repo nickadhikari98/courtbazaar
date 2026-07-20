@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Search, ArrowRight, FileText, ShieldCheck, RotateCcw, Truck, Cookie, AlertTriangle,
-  Lock, Database, MessageSquareWarning, Store, Scale, Users, FileUp, Scale3d,
+  Lock, Database, MessageSquareWarning, Store, Scale, Users, FileUp,
 } from "lucide-react";
 import { UtilityBar, LandingNav, LandingFooter } from "@/components/landing";
 import Breadcrumb from "@/components/legal/Breadcrumb";
@@ -61,7 +61,7 @@ export default function LegalCenter() {
 
           <div className="mt-6 max-w-3xl">
             <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-accent/10 mb-4">
-              <Scale3d className="w-7 h-7 text-accent" strokeWidth={2} />
+              <Scale className="w-7 h-7 text-accent" strokeWidth={2} />
             </div>
             <h1 className="landing-section-title text-left">Legal Center</h1>
             <p className="text-muted-foreground mt-4 text-base leading-relaxed">

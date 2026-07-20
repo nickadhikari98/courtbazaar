@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { Wallet as WalletIcon, Plus, ArrowDownLeft, ArrowUpRight } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
 
 export default function Wallet() {
   const { user, refresh } = useAuth();
@@ -33,11 +34,11 @@ export default function Wallet() {
 
   return (
     <PageContainer className="max-w-4xl">
-      <div className="cb-overline text-accent">Wallet</div>
-      <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-6">Manage your balance</h1>
+      <PageHeader eyebrow="Wallet" title="Manage your balance" className="mb-6" />
 
-      <Card className="bg-gradient-to-br from-primary to-slate-800 text-white border-none mb-6" data-testid="wallet-balance-card">
-        <CardContent className="p-8">
+      <Card className="relative bg-primary text-white border-none mb-6 overflow-hidden" data-testid="wallet-balance-card">
+        <div className="absolute inset-0 cb-grain opacity-30"></div>
+        <CardContent className="relative p-8">
           <div className="cb-overline text-white/60">Current balance</div>
           <div className="font-display font-black text-5xl mt-2 tracking-tighter">{formatINR(user?.wallet_balance || 0)}</div>
           <div className="mt-5 flex flex-wrap items-center gap-3">
@@ -55,7 +56,7 @@ export default function Wallet() {
         <CardContent className="p-0">
           {txns.length === 0 ? (
             <div className="p-10 text-center">
-              <WalletIcon className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
+              <WalletIcon className="w-10 h-10 mx-auto text-muted-foreground mb-3" strokeWidth={1.5} />
               <div className="font-display font-bold">No transactions yet</div>
             </div>
           ) : (

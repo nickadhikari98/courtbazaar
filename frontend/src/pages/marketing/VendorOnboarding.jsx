@@ -2,7 +2,8 @@ import React from "react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Scale, ArrowRight, TrendingUp, ShieldCheck, Wallet, Users, CheckCircle2 } from "lucide-react";
+import { ArrowRight, TrendingUp, ShieldCheck, Wallet, Users, CheckCircle2 } from "lucide-react";
+import Logo from "@/components/shared/Logo";
 
 const benefits = [
   { icon: TrendingUp, t: "Steady order flow", d: "Get matched to advocates across India needing your services daily." },
@@ -16,10 +17,7 @@ export default function VendorOnboarding() {
     <div className="min-h-screen bg-background">
       <nav className="sticky top-0 z-30 bg-white/80 backdrop-blur-xl border-b border-border">
         <div className="max-w-7xl mx-auto px-6 lg:px-10 h-16 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2.5" data-testid="vendor-landing-logo">
-            <div className="w-9 h-9 bg-primary rounded-lg flex items-center justify-center"><Scale className="w-5 h-5 text-white" /></div>
-            <span className="font-display font-black text-lg tracking-tight">CourtBazaar™</span>
-          </Link>
+          <Logo size="sm" data-testid="vendor-landing-logo" />
           <Link to="/register"><Button className="bg-primary font-bold" data-testid="vendor-cta-nav">Apply Now <ArrowRight className="w-4 h-4 ml-1" /></Button></Link>
         </div>
       </nav>

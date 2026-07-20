@@ -722,9 +722,17 @@
 }
 
 /* ===== REVIEWS / TESTIMONIALS ===== */
+/* min-height matches the natural height of the original hardcoded
+   testimonials (~5 lines of review text + stars + footer). Dynamic reviews
+   vary in length, so this keeps every card the same height regardless of
+   content: short reviews leave whitespace, long reviews are capped by
+   line-clamp-5 on the text (see ReviewsSection.jsx) instead of growing the
+   card. Single value across breakpoints — content length doesn't change per
+   breakpoint, only card width does. */
 .landing-review-card {
   @apply bg-white border border-slate-200 rounded-2xl p-7 transition-all duration-300;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+  min-height: 300px;
 }
 .landing-review-card:hover {
   @apply border-slate-300;

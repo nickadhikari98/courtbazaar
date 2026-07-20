@@ -85,8 +85,19 @@ export const AuthProvider = ({ children }) => {
     return data;
   };
 
+  // `active_roles`/`capabilities` come from the backend's get_current_user
+  // capability computation (server.py) — active_roles is the legacy-compatible
+  // projection (includes the base `role` plus every professional profile type
+  // the account has gained), capabilities is the forward-looking permission
+  // check new dashboard code should prefer.
+  const hasRole = (role) => !!user && (user.role === role || !!user.active_roles?.includes(role));
+  const hasCapability = (capability) => !!user?.capabilities?.includes(capability);
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, otpRequest, otpVerify, googleLogin, exchangeGoogleSession, logout, refresh, checkAuth }}>
+    <AuthContext.Provider value={{
+      user, loading, login, register, otpRequest, otpVerify, googleLogin,
+      exchangeGoogleSession, logout, refresh, checkAuth, hasRole, hasCapability,
+    }}>
       {children}
     </AuthContext.Provider>
   );

@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Package, Search, ArrowRight } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
 
 export default function Orders() {
   const [orders, setOrders] = useState([]);
@@ -55,8 +56,7 @@ export default function Orders() {
 
   return (
     <PageContainer className="max-w-6xl">
-      <div className="cb-overline text-accent">Order history</div>
-      <h1 className="font-display font-black text-3xl lg:text-4xl tracking-tighter mt-1 mb-6">My Orders</h1>
+      <PageHeader eyebrow="Order history" title="My Orders" titleClassName="lg:text-4xl" className="mb-6" />
 
       <div className="relative mb-6">
         <Search className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
@@ -75,7 +75,7 @@ export default function Orders() {
               filter(list).length === 0 ? (
                 <Card className="border-dashed border-2">
                   <CardContent className="p-10 text-center">
-                    <Package className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
+                    <Package className="w-10 h-10 mx-auto text-muted-foreground mb-3" strokeWidth={1.5} />
                     <div className="font-display font-bold">No orders yet</div>
                     <p className="text-sm text-muted-foreground mt-1">Place your first order — it takes 30 seconds.</p>
                   </CardContent>

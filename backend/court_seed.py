@@ -143,3 +143,69 @@ SERVICE_CATALOG = [
     {"service_id": "svc_steno_transcription", "name": "Stenographer — Audio Transcription", "category": "Stenographer Services", "base_price": 600.0, "unit": "per hour", "platform_commission_pct": 0.20, "icon": "FileText", "turnaround_hours": 24, "booking_type": "hourly", "min_hours": 1},
     {"service_id": "svc_steno_dictation", "name": "Stenographer — Dictation Session", "category": "Stenographer Services", "base_price": 500.0, "unit": "per hour", "platform_commission_pct": 0.20, "icon": "Mic", "turnaround_hours": 2, "booking_type": "hourly", "min_hours": 1},
 ]
+
+# ---------------------------------------------------------------------------
+# Service visibility — product configuration, not seed logic. Every service
+# gets `active` (master kill switch — all True today, nothing is disabled,
+# only hidden from specific discovery surfaces) and `visibility` (independent
+# per-surface flags), so a service can be shown in Marketplace without being
+# on Landing, or vice versa, without editing this file again. These land on
+# every db.services row and are DB-editable after first seed via
+# PUT /admin/services/{id}/pricing — the constants below only decide what a
+# *fresh* database seeds with.
+# ---------------------------------------------------------------------------
+
+# Founder-approved MVP categories — Binding/Legal Typing/Affidavit/Notary/
+# Stamp/Court-Support are real, built, and stay orderable directly, just not
+# surfaced in Marketplace's default discovery view until they're launched.
+MARKETPLACE_VISIBLE_CATEGORIES = {"Document Services", "E-Filing Services", "Stenographer Services"}
+
+# Landing is a small curated highlight reel, not "everything Marketplace
+# shows" — matches today's actual Landing page tiles, plus Stenographer
+# (a real route/page that was missing from Landing/MegaMenu — see refinement
+# audit) as its own representative entry rather than every hourly variant.
+LANDING_SERVICE_META = {
+    # `landing_name` is marketing copy distinct from the catalog `name` (e.g.
+    # "Black & White Printing" stays the functional name everywhere else —
+    # Marketplace, orders, invoices — while Landing keeps its existing
+    # customer-facing phrasing). Only read by GET /services/public.
+    "svc_bw_print": {"landing_name": "Print-Out Service", "description": "High quality printing of court documents with fast turnaround.", "display_order": 1},
+    "svc_bw_photocopy": {"landing_name": "Photocopy Services", "description": "Bulk and urgent photocopy services across Delhi courts.", "display_order": 2},
+    "svc_scanning": {"landing_name": "Scanning Services", "description": "High resolution scanning with quick delivery.", "display_order": 3},
+    "svc_ocr": {"landing_name": "OCR & Bookmarking", "description": "Searchable PDFs with bookmarks for easy navigation.", "display_order": 4},
+    "svc_efile_district": {"landing_name": "E-Filing District Court", "description": "Fast, expert e-filing support for Delhi District Courts.", "display_order": 5},
+    "svc_efile_hc": {"landing_name": "E-Filing High Court", "description": "Complete e-filing support for the Delhi High Court.", "display_order": 6},
+    "svc_steno_hearing": {"landing_name": "Stenographer Services", "description": "Professional stenographers for court hearing coverage, on demand.", "display_order": 7},
+}
+
+# Dashboard quick-order tiles. Restricted to ids already in
+# MARKETPLACE_VISIBLE_CATEGORIES — Dashboard must be single-source-of-truth
+# aligned with Landing/Marketplace, so a service hidden from Marketplace
+# (Notary/Legal Typing/Affidavit/Court Support categories) can't still surface
+# as a Dashboard quick-order tile. Visibility is still independent per-surface
+# in the schema (a service could in principle be sidebar-only) — this set
+# just doesn't currently choose to use that independence for any hidden
+# category.
+SIDEBAR_QUICK_SERVICE_IDS = {
+    "svc_bw_photocopy", "svc_bw_print", "svc_spiral_binding", "svc_hard_binding",
+    "svc_efile_hc", "svc_efile_district", "svc_ocr",
+}
+
+
+def _apply_service_visibility(catalog):
+    for svc in catalog:
+        svc.setdefault("active", True)
+        landing_meta = LANDING_SERVICE_META.get(svc["service_id"])
+        svc["visibility"] = {
+            "landing": landing_meta is not None,
+            "marketplace": svc["category"] in MARKETPLACE_VISIBLE_CATEGORIES,
+            "sidebar": svc["service_id"] in SIDEBAR_QUICK_SERVICE_IDS,
+        }
+        if landing_meta:
+            svc["landing_name"] = landing_meta["landing_name"]
+            svc["description"] = landing_meta["description"]
+            svc["display_order"] = landing_meta["display_order"]
+    return catalog
+
+
+SERVICE_CATALOG = _apply_service_visibility(SERVICE_CATALOG)

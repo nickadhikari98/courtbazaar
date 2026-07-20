@@ -1,20 +1,9 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { MapPin, Navigation, LocateFixed, ExternalLink, ArrowRight } from "lucide-react";
 import LiveCourtMap from "./LiveCourtMap";
-
-const delhiCourts = [
-  { name: "Dwarka Court", lat: 28.5921, lng: 77.0460, address: "Sector 10, Dwarka, New Delhi, Delhi 110075" },
-  { name: "Saket Court", lat: 28.5245, lng: 77.2066, address: "Sector 6, Pushp Vihar, New Delhi, Delhi 110017" },
-  { name: "Karkardooma Court", lat: 28.6528, lng: 77.3152, address: "Karkardooma, New Delhi, Delhi 110092" },
-  { name: "Tis Hazari Court", lat: 28.6690, lng: 77.2160, address: "Tis Hazari, New Delhi, Delhi 110054" },
-  { name: "Patiala House Court", lat: 28.6117, lng: 77.2295, address: "India Gate, New Delhi, Delhi 110001" },
-  { name: "Delhi High Court", lat: 28.6273, lng: 77.2385, address: "Sher Shah Rd, India Gate, New Delhi, Delhi 110003" },
-  { name: "Rohini Court", lat: 28.7255, lng: 77.1325, address: "Sector 14, Rohini, New Delhi, Delhi 110085" },
-  { name: "Supreme Court of India", lat: 28.6227, lng: 77.2394, address: "Tilak Marg, New Delhi, Delhi 110001" },
-  { name: "Rouse Avenue Court", lat: 28.6357, lng: 77.2245, address: "Rouse Avenue, New Delhi, Delhi 110002" },
-];
+import { getMapCourts } from "@/lib/referenceDataApi";
 
 function haversineKm(lat1, lon1, lat2, lon2) {
   const toRad = (d) => (d * Math.PI) / 180;
@@ -29,8 +18,10 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 
 function CourtHighlightPanel({ court, userLocation, locationState, onRequestLocation }) {
   if (!court) return null;
-  const mapsUrl = `https://www.google.com/maps?q=${court.lat},${court.lng}`;
-  const distance = userLocation ? haversineKm(userLocation.lat, userLocation.lng, court.lat, court.lng) : null;
+  const mapsUrl = `https://www.google.com/maps?q=${court.latitude},${court.longitude}`;
+  const distance = userLocation
+    ? haversineKm(userLocation.lat, userLocation.lng, court.latitude, court.longitude)
+    : null;
 
   return (
     <div className="landing-court-highlight">
@@ -75,12 +66,22 @@ function CourtHighlightPanel({ court, userLocation, locationState, onRequestLoca
   );
 }
 
-export default function CoverageSection({ courts = delhiCourts }) {
-  const [activeCourt, setActiveCourt] = useState(
-    courts.find((c) => c.name === "Delhi High Court") || courts[0]
-  );
+export default function CoverageSection() {
+  const [courts, setCourts] = useState([]);
+  const [activeCourt, setActiveCourt] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
   const [locationState, setLocationState] = useState("idle"); // idle | granted | denied | unsupported
+
+  useEffect(() => {
+    getMapCourts()
+      .then((data) => {
+        setCourts(data);
+        // No court is singled out by name — the first serviceable court
+        // returned is the default highlight, same as every other court.
+        setActiveCourt(data[0] || null);
+      })
+      .catch(() => setCourts([]));
+  }, []);
 
   const requestLocation = () => {
     if (!navigator.geolocation) {
@@ -110,11 +111,11 @@ export default function CoverageSection({ courts = delhiCourts }) {
             <div className="mt-8 grid grid-cols-2 gap-x-6 gap-y-3">
               {courts.map((court) => (
                 <button
-                  key={court.name}
+                  key={court.court_id || court.name}
                   type="button"
                   onMouseEnter={() => setActiveCourt(court)}
                   onClick={() => setActiveCourt(court)}
-                  className={`landing-court-item text-left w-full ${activeCourt?.name === court.name ? "landing-court-item--active" : ""}`}
+                  className={`landing-court-item text-left w-full ${(activeCourt?.court_id || activeCourt?.name) === (court.court_id || court.name) ? "landing-court-item--active" : ""}`}
                 >
                   <div className="w-5 h-5 rounded-full bg-accent/10 flex items-center justify-center flex-shrink-0">
                     <MapPin className="w-3 h-3 text-accent" strokeWidth={2.5} />

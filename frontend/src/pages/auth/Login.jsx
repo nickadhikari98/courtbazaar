@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -7,8 +7,9 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "sonner";
-import { Scale, ArrowRight, Phone, Mail, Loader2 } from "lucide-react";
+import { ArrowRight, Phone, Mail, Loader2 } from "lucide-react";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
+import Logo from "@/components/shared/Logo";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -20,6 +21,16 @@ export default function Login() {
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
+
+  useEffect(() => {
+    // Set by the axios interceptor (see lib/api.js) when an already-logged-in
+    // session gets 401'd because the account was deactivated mid-session.
+    const msg = sessionStorage.getItem("cb_auth_message");
+    if (msg) {
+      sessionStorage.removeItem("cb_auth_message");
+      toast.error(msg);
+    }
+  }, []);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -65,14 +76,12 @@ export default function Login() {
         <div className="absolute inset-0 cb-grain opacity-30"></div>
         <img src="https://images.unsplash.com/photo-1593115057322-e94b77572f20?crop=entropy&cs=srgb&fm=jpg&q=85&w=1200" className="absolute inset-0 w-full h-full object-cover opacity-30" alt="" />
         <div className="relative h-full p-12 flex flex-col justify-between text-white">
-          <Link to="/" className="flex items-center gap-2.5" data-testid="login-logo">
-            <div className="w-10 h-10 bg-accent rounded-lg flex items-center justify-center">
-              <Scale className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <div className="font-display font-black text-xl tracking-tight leading-none">CourtBazaar™</div>
-              <div className="text-2xs uppercase tracking-[0.2em] text-white/70 font-bold mt-0.5">India</div>
-            </div>
+          <Link to="/" className="flex flex-col mb-1" data-testid="login-logo">
+            {/* Wordmark variant, not the image lockup — the approved asset
+                is black/orange text on a transparent background and would
+                be unreadable on this dark bg-primary hero panel. */}
+            <Logo variant="wordmark" clickable={false} />
+            <div className="text-2xs uppercase tracking-[0.2em] text-white/70 font-bold mt-0.5">India</div>
           </Link>
           <div className="space-y-6 max-w-md">
             <h1 className="font-display font-black text-5xl tracking-tighter leading-[0.95]">

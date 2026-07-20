@@ -1,9 +1,30 @@
-"""Vendor payout settlement automation (T+1).
-Aggregates paid + completed orders into per-vendor settlement batches with NEFT/UPI export."""
+"""Settlement engine — the one bank-payout mechanism every earning role
+plugs into. Two origins write into the same db.settlements collection/shape:
+  - `run_settlement_cycle` below: automated T+1 batch for vendor orders
+    (settlement_type="vendor_payout", unchanged logic from before).
+  - `POST /earnings/withdraw` (server.py): a user-initiated withdrawal of
+    their existing wallet_balance (settlement_type="withdrawal").
+`payee_type`/`payee_id` are the generalized identity fields; `vendor_id` is
+kept as-is (never removed) as the vendor-specific alias so none of the
+existing vendor settlement admin/export/reporting code needs to change.
+
+Status transitions (queued -> paid | failed) go through
+workflow.StateMachine — the first settlement-side use of the same engine
+already wired for leads (Lead->Professional) and hearings."""
 import uuid
 import csv
 import io
 from datetime import datetime, timezone, timedelta
+from typing import Optional
+
+from fastapi import HTTPException
+
+from workflow import StateMachine, IllegalTransition
+
+SETTLEMENT_TRANSITIONS = {
+    ("queued", "mark_paid"): "paid",
+    ("queued", "mark_failed"): "failed",
+}
 
 
 def _parse_dt(s):
@@ -51,7 +72,10 @@ async def run_settlement_cycle(db, cycle_date: str = None, dry_run: bool = False
         settle_id = f"STL{target_date.strftime('%Y%m%d')}{uuid.uuid4().hex[:6].upper()}"
         doc = {
             "settlement_id": settle_id,
-            "vendor_id": vid,
+            "settlement_type": "vendor_payout",
+            "payee_type": "vendor",
+            "payee_id": vid,
+            "vendor_id": vid,  # kept as the pre-existing vendor-specific alias
             "shop_name": vendor.get("shop_name"),
             "bank_account": vendor.get("bank_account"),
             "bank_ifsc": vendor.get("bank_ifsc"),
@@ -73,13 +97,19 @@ async def run_settlement_cycle(db, cycle_date: str = None, dry_run: bool = False
             )
             # Mock-notify vendor
             try:
-                from notifications import send_email
+                from notifications import send_email, record_notification_event
                 vu = await db.users.find_one({"user_id": vid}, {"_id": 0})
                 if vu and vu.get("email"):
                     send_email(
                         vu["email"],
                         f"CourtBazaar Settlement {settle_id} — ₹{doc['amount']:.2f}",
                         f"<p>Hi {vu.get('name')},</p><p>Settlement <b>{settle_id}</b> queued for {doc['order_count']} orders. Amount: <b>₹{doc['amount']:.2f}</b> via {doc['payment_mode']}.</p>",
+                    )
+                if vu:
+                    await record_notification_event(
+                        db, vid, "settlement_queued", "Settlement queued",
+                        f"₹{doc['amount']:.2f} queued for payout via {doc['payment_mode']}.",
+                        "settlement", settle_id,
                     )
             except Exception:
                 pass
@@ -162,4 +192,68 @@ def neft_csv_legacy(settlements: list) -> str:
             s.get("gst_number") or "NON-GST",
             f"CourtBazaar settlement {s.get('order_count', 0)} orders",
         ])
+    return buf.getvalue()
+
+
+def _make_settlement_hook(db, send_email_fn):
+    async def hook(entity: dict, from_status: str, to_status: str, actor: Optional[dict]) -> None:
+        payee_id = entity.get("payee_id") or entity.get("vendor_id")
+        payee = await db.users.find_one({"user_id": payee_id}) if payee_id else None
+
+        if to_status == "failed" and entity.get("settlement_type") == "withdrawal" and payee:
+            # The wallet was already debited when the withdrawal was
+            # requested (server.py's /earnings/withdraw) — refund it since
+            # the actual bank transfer didn't go through.
+            new_balance = payee.get("wallet_balance", 0) + entity["amount"]
+            await db.users.update_one({"user_id": payee_id}, {"$set": {"wallet_balance": new_balance}})
+            await db.wallet_transactions.insert_one({
+                "user_id": payee_id, "amount": entity["amount"], "type": "credit",
+                "description": f"Withdrawal {entity['settlement_id']} failed — refunded",
+                "context_type": "withdrawal_refund", "related_entity_id": entity["settlement_id"],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+        if not payee:
+            return
+        from notifications import record_notification_event
+        if to_status == "paid":
+            if payee.get("email"):
+                send_email_fn(
+                    payee["email"], f"CourtBazaar Settlement {entity['settlement_id']} — Paid",
+                    f"<p>Hi {payee.get('name')},</p><p>Settlement <b>{entity['settlement_id']}</b> "
+                    f"for ₹{entity['amount']:.2f} has been paid.</p>",
+                )
+            await record_notification_event(
+                db, payee_id, "settlement_paid", "Settlement paid",
+                f"₹{entity['amount']:.2f} has been paid out.", "settlement", entity["settlement_id"],
+            )
+        elif to_status == "failed":
+            await record_notification_event(
+                db, payee_id, "settlement_failed", "Settlement failed",
+                f"Settlement {entity['settlement_id']} could not be processed.", "settlement", entity["settlement_id"],
+            )
+    return hook
+
+
+async def change_settlement_status(db, send_email_fn, settlement_id: str, action: str, admin_user: dict,
+                                    utr: str = "", reason: str = "") -> dict:
+    settlement = await db.settlements.find_one({"settlement_id": settlement_id})
+    if not settlement:
+        raise HTTPException(404, "Settlement not found")
+    sm = StateMachine(SETTLEMENT_TRANSITIONS, _make_settlement_hook(db, send_email_fn))
+    try:
+        to_status = await sm.apply(settlement, settlement["status"], action, admin_user)
+    except IllegalTransition:
+        raise HTTPException(400, "Invalid settlement status transition")
+
+    update: dict = {"status": to_status}
+    if to_status == "paid":
+        update.update({"paid_at": datetime.now(timezone.utc).isoformat(), "utr": utr, "paid_by": admin_user["user_id"]})
+    elif to_status == "failed":
+        update["failure_reason"] = reason or "Unknown"
+    await db.settlements.update_one({"settlement_id": settlement_id}, {"$set": update})
+
+    if to_status == "failed" and settlement.get("order_ids"):
+        await db.orders.update_many({"order_id": {"$in": settlement["order_ids"]}}, {"$unset": {"settlement_id": ""}})
+    return {"ok": True, "status": to_status}
     return buf.getvalue()

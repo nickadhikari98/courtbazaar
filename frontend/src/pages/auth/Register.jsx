@@ -8,7 +8,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { Scale, ArrowRight, Loader2 } from "lucide-react";
+import { ArrowRight, Loader2 } from "lucide-react";
+import Logo from "@/components/shared/Logo";
 
 export default function Register() {
   const navigate = useNavigate();
@@ -34,15 +35,7 @@ export default function Register() {
     <div className="min-h-screen bg-background flex items-center justify-center p-6">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 max-w-6xl w-full items-center">
         <div className="hidden lg:block">
-          <Link to="/" className="flex items-center gap-2.5 mb-10" data-testid="register-logo">
-            <div className="w-10 h-10 bg-primary rounded-lg flex items-center justify-center">
-              <Scale className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <div className="font-display font-black text-xl tracking-tight leading-none">CourtBazaar™</div>
-              <div className="text-2xs uppercase tracking-[0.2em] text-muted-foreground font-bold">India</div>
-            </div>
-          </Link>
+          <Logo size="lg" className="mb-10" data-testid="register-logo" />
           <h1 className="font-display font-black text-5xl tracking-tighter leading-[0.95]">
             Join 12,400+ advocates simplifying their court life.
           </h1>

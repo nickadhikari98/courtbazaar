@@ -13,6 +13,7 @@ import {
   MapPin, ShieldCheck, Receipt, Download, AlertCircle, ArrowLeft
 } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
 
 const STATUS_FLOW = [
   { key: "placed", label: "Order Placed" },
@@ -155,22 +156,21 @@ export default function OrderDetail() {
         <ArrowLeft className="w-4 h-4" /> Back
       </button>
 
-      <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
-        <div>
-          <div className="cb-overline text-accent">Order detail</div>
-          <h1 className="font-display font-black text-3xl mt-1 tracking-tighter font-mono">{order.order_id}</h1>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Badge className={`${order.payment_status === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'} border-0 font-bold`} data-testid="order-payment-status">
-              {order.payment_status === 'paid' ? 'PAID' : 'PAYMENT PENDING'}
-            </Badge>
-            <Badge className="bg-primary text-white border-0 font-bold uppercase text-2xs" data-testid="order-status-badge">{order.status.replace(/_/g, ' ')}</Badge>
-            {order.urgent && <Badge className="bg-destructive text-white border-0 font-bold uppercase text-2xs">URGENT</Badge>}
+      <PageHeader
+        eyebrow="Order detail" title={order.order_id} titleClassName="font-mono" className="mb-2"
+        action={(
+          <div className="text-right shrink-0">
+            <div className="cb-overline">Total</div>
+            <div className="font-display font-black text-3xl text-accent tracking-tight">{formatINR(order.pricing?.total)}</div>
           </div>
-        </div>
-        <div className="text-right">
-          <div className="cb-overline">Total</div>
-          <div className="font-display font-black text-3xl text-accent tracking-tight">{formatINR(order.pricing?.total)}</div>
-        </div>
+        )}
+      />
+      <div className="mb-6 flex flex-wrap items-center gap-2">
+        <Badge className={`${order.payment_status === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'} border-0 font-bold`} data-testid="order-payment-status">
+          {order.payment_status === 'paid' ? 'PAID' : 'PAYMENT PENDING'}
+        </Badge>
+        <Badge className="bg-primary text-white border-0 font-bold uppercase text-2xs" data-testid="order-status-badge">{order.status.replace(/_/g, ' ')}</Badge>
+        {order.urgent && <Badge className="bg-destructive text-white border-0 font-bold uppercase text-2xs">URGENT</Badge>}
       </div>
 
       {statusPolling && (

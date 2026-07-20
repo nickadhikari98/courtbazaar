@@ -9,7 +9,9 @@ before this refactor.
 """
 import os
 import logging
+import uuid
 import requests
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -243,6 +245,15 @@ def tmpl_otp(otp):
     return {"sms": base, "whatsapp": base}
 
 
+def tmpl_hearing_event(title, body):
+    """One generic template for every Hire Proxy Counsel lifecycle event
+    (new request, accept/reject, payment held, verified, payout released) —
+    proportionate to how internal/status-update these are, matching the
+    founder's "Notifications Triggered" panel without a template per event."""
+    return {"sms": f"CourtBazaar: {body}", "whatsapp": f"CourtBazaar: {body}",
+            "email_subject": f"CourtBazaar — {title}", "email_html": f"<p>{body}</p>"}
+
+
 LEAD_ROLE_LABELS = {
     "proxy_counsel": "Proxy Counsel",
     "counsel": "Counsel",
@@ -256,14 +267,46 @@ def _lead_role_label(lead):
     return LEAD_ROLE_LABELS.get(lead.get("role_applied_for"), "CourtBazaar")
 
 
+def _lead_identity_phrase(lead):
+    """Identity vs. capability, in the one place lead-approval copy states it
+    to the applicant: a proxy_counsel lead becomes an Advocate account with
+    Proxy Counsel *enabled*, not a person whose identity is "Proxy Counsel"
+    (LEAD_ROLE_LABELS/_lead_role_label stay as-is for email subjects and
+    admin-facing lead-type labels — those describe the application queue,
+    not the applicant's identity)."""
+    if lead.get("role_applied_for") == "proxy_counsel":
+        return "an <b>Advocate</b>, with <b>Proxy Counsel</b> enabled"
+    return f"a <b>{_lead_role_label(lead)}</b>"
+
+
+def tmpl_set_password(lead, set_password_url):
+    """Sent once, when an approved proxy_counsel/counsel lead produces a
+    brand-new account (no existing account matched by email) — the
+    Lead->Professional bridge in leads.py's _activate_professional."""
+    name = lead.get("full_name") or "there"
+    identity_phrase = _lead_identity_phrase(lead)
+    return {
+        "email_subject": "Welcome to CourtBazaar — set your password",
+        "email_html": (
+            f"<p>Hi {name},</p>"
+            f"<p>Your application to join CourtBazaar as {identity_phrase} has been approved "
+            f"and your account is ready.</p>"
+            f"<p>Set your password to log in:</p>"
+            f"<p><a href=\"{set_password_url}\">Set my password</a></p>"
+            f"<p>This link expires in 7 days.</p>"
+        ),
+    }
+
+
 def tmpl_lead_submitted(lead, verify_url):
     name = lead.get("full_name") or "there"
     role_label = _lead_role_label(lead)
+    identity_phrase = _lead_identity_phrase(lead)
     return {
         "email_subject": f"We've received your {role_label} application",
         "email_html": (
             f"<p>Hi {name},</p>"
-            f"<p>Thanks for applying to join CourtBazaar as a <b>{role_label}</b>. "
+            f"<p>Thanks for applying to join CourtBazaar as {identity_phrase}. "
             f"Our team will review your application and get back to you shortly.</p>"
             f"<p>Please confirm your email address to keep your application moving:</p>"
             f"<p><a href=\"{verify_url}\">Verify my email address</a></p>"
@@ -358,6 +401,8 @@ def notify(user: dict, event: str, ctx: dict = None) -> list:
         tmpl = tmpl_order_status(user, ctx["order"], ctx["status"])
     elif event == "otp":
         tmpl = tmpl_otp(ctx["otp"])
+    elif event == "hearing_event":
+        tmpl = tmpl_hearing_event(ctx["title"], ctx["body"])
     else:
         return results
 
@@ -368,6 +413,28 @@ def notify(user: dict, event: str, ctx: dict = None) -> list:
     if email and prefs.get("email", True) and tmpl.get("email_subject"):
         results.append(send_email(email, tmpl["email_subject"], tmpl["email_html"]))
     return results
+
+
+async def record_notification_event(db, user_id: str, event_type: str, title: str, body: str,
+                                     related_entity_type: Optional[str] = None,
+                                     related_entity_id: Optional[str] = None) -> None:
+    """Writes the in-app Notification Center feed entry for an event. Called
+    alongside notify() (not from inside it — notify() is sync and has no db
+    handle) at call sites that have a real user_id to attach the event to;
+    the anonymous OTP path has no such user and is skipped. Single unified
+    event -> fans out to email/SMS/WhatsApp (notify()) and the in-app feed
+    (this) from one call site each, not a parallel notification system."""
+    await db.notification_events.insert_one({
+        "notification_id": f"notif_{uuid.uuid4().hex[:14]}",
+        "user_id": user_id,
+        "event_type": event_type,
+        "title": title,
+        "body": body,
+        "related_entity_type": related_entity_type,
+        "related_entity_id": related_entity_id,
+        "read_at": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
 
 
 def status() -> dict:

@@ -10,6 +10,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { toast } from "sonner";
 import { Loader2, User, ShieldCheck } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
+import CapabilitiesCard from "@/components/shared/CapabilitiesCard";
 
 export default function Profile() {
   const { user, refresh } = useAuth();
@@ -37,8 +39,7 @@ export default function Profile() {
 
   return (
     <PageContainer className="max-w-3xl">
-      <div className="cb-overline text-accent">Profile</div>
-      <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-6">Your account</h1>
+      <PageHeader eyebrow="Profile" title="Your account" className="mb-6" />
 
       <Card className="dashboard-card border-none mb-6">
         <CardContent className="p-6 flex items-center gap-5">
@@ -56,6 +57,8 @@ export default function Profile() {
           </div>
         </CardContent>
       </Card>
+
+      {user?.role === "advocate" && <CapabilitiesCard user={user} />}
 
       <Card className="dashboard-card border-none">
         <CardContent className="p-6 space-y-4">

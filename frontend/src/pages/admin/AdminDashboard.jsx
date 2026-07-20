@@ -5,6 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { TrendingUp, Users, Store, IndianRupee, ShoppingBag, AlertCircle } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, PieChart, Pie } from "recharts";
 import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
+import StatGrid from "@/components/shared/StatGrid";
 import { CHART_COLORS as COLORS } from "@/lib/chartColors";
 
 export default function AdminDashboard() {
@@ -25,20 +27,9 @@ export default function AdminDashboard() {
 
   return (
     <PageContainer>
-      <div className="cb-overline text-accent">Admin console</div>
-      <h1 className="font-display font-black text-3xl lg:text-4xl tracking-tighter mt-1 mb-6">Platform analytics</h1>
+      <PageHeader eyebrow="Admin console" title="Platform analytics" titleClassName="lg:text-4xl" className="mb-6" />
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
-        {stats.map(s => (
-          <Card key={s.label} className="dashboard-card border-none" data-testid={`admin-stat-${s.label.toLowerCase().replace(/\s+/g, '-')}`}>
-            <CardContent className="p-4">
-              <div className={`w-9 h-9 rounded-lg ${s.color} flex items-center justify-center mb-2`}><s.icon className="w-4 h-4" /></div>
-              <div className="cb-overline text-2xs">{s.label}</div>
-              <div className="font-display font-black text-xl tracking-tight mt-1 truncate">{s.value}</div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      <StatGrid stats={stats} columns="grid-cols-2 lg:grid-cols-6" className="mb-8" testIdPrefix="admin-stat" />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card className="dashboard-card border-none">

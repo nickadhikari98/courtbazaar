@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { useSearchParams, useLocation } from "react-router-dom";
 import {
-  Clock, Network, Activity, Shield, BadgeCheck, ShieldCheck,
+  Clock, Network, Activity, Shield, BadgeCheck, ShieldCheck, Mic,
 } from "lucide-react";
 
 import MarketingLayout from "@/components/layout/MarketingLayout";
+import { listPublicServices, formatServicePrice } from "@/lib/servicesApi";
 import {
   HeroSection,
   ServiceCard,
@@ -30,50 +31,21 @@ import {
 
 /* ===== DATA CONSTANTS ===== */
 
-const coreServices = [
-  {
-    icon: PrintOutIcon,
-    name: "Print-Out Service",
-    description: "High quality printing of court documents with fast turnaround.",
-    color: "amber",
-    startingPrice: "₹2/page",
-  },
-  {
-    icon: PhotocopyIcon,
-    name: "Photocopy Services",
-    description: "Bulk and urgent photocopy services across Delhi courts.",
-    color: "blue",
-    startingPrice: "₹1/page",
-  },
-  {
-    icon: ScanningIcon,
-    name: "Scanning Services",
-    description: "High resolution scanning with quick delivery.",
-    color: "emerald",
-    startingPrice: "₹1/page",
-  },
-  {
-    icon: OcrBookmarkIcon,
-    name: "OCR & Bookmarking",
-    description: "Searchable PDFs with bookmarks for easy navigation.",
-    color: "purple",
-    startingPrice: "₹3/page",
-  },
-  {
-    icon: EFilingDistrictIcon,
-    name: "E-Filing District Court",
-    description: "Fast, expert e-filing support for Delhi District Courts.",
-    color: "rose",
-    startingPrice: "₹499/file",
-  },
-  {
-    icon: EFilingHighIcon,
-    name: "E-Filing High Court",
-    description: "Complete e-filing support for the Delhi High Court.",
-    color: "cyan",
-    startingPrice: "₹1,999/file",
-  },
-];
+// Presentation-only lookup — bespoke illustration + accent color per curated
+// landing service. The service list itself (which ids appear, name, price,
+// description, order) comes from the backend (`visibility.landing`, see
+// court_seed.py) so Landing/MegaMenu/Pricing/Dashboard never drift again;
+// this map only decides *how* a known id is drawn, with a generic fallback
+// for anything visible on landing that isn't in this bespoke set yet.
+const LANDING_ILLUSTRATIONS = {
+  svc_bw_print: { icon: PrintOutIcon, color: "amber" },
+  svc_bw_photocopy: { icon: PhotocopyIcon, color: "blue" },
+  svc_scanning: { icon: ScanningIcon, color: "emerald" },
+  svc_ocr: { icon: OcrBookmarkIcon, color: "purple" },
+  svc_efile_district: { icon: EFilingDistrictIcon, color: "rose" },
+  svc_efile_hc: { icon: EFilingHighIcon, color: "cyan" },
+  svc_steno_hearing: { icon: Mic, color: "orange" },
+};
 
 const proxyCounselService = {
   image: "/images/illustrations/proxy-counsel-badge.png",
@@ -131,6 +103,23 @@ export default function Landing() {
   const location = useLocation();
   const [tourRun, setTourRun] = useState(false);
   const [tourStep, setTourStep] = useState(0);
+  const [coreServices, setCoreServices] = useState([]);
+
+  useEffect(() => {
+    listPublicServices("landing")
+      .then((services) => setCoreServices(services.map((s) => {
+        const presentation = LANDING_ILLUSTRATIONS[s.service_id] || { icon: PrintOutIcon, color: "amber" };
+        return {
+          key: s.service_id,
+          icon: presentation.icon,
+          name: s.landing_name || s.name,
+          description: s.description,
+          color: presentation.color,
+          startingPrice: formatServicePrice(s),
+        };
+      })))
+      .catch(() => setCoreServices([]));
+  }, []);
 
   useEffect(() => {
     if (searchParams.get("tour") === "1") {
@@ -184,8 +173,8 @@ export default function Landing() {
           </div>
           <div className="lg:grid lg:grid-cols-[1fr_300px] xl:grid-cols-[1fr_340px] lg:gap-7 lg:items-stretch">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-7">
-              {coreServices.map((service) => (
-                <ServiceCard key={service.name} {...service} />
+              {coreServices.map(({ key, ...service }) => (
+                <ServiceCard key={key} {...service} />
               ))}
             </div>
             <FeaturedServiceCard

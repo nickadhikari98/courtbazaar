@@ -614,6 +614,91 @@ async def add_note(db, lead_id: str, note: str, admin_user: dict) -> dict:
     return {"ok": True}
 
 
+async def _find_linked_registered_user(db, lead: dict) -> Optional[dict]:
+    """A lead's applicant may already be a *registered* CourtBazaar user —
+    either because this exact lead was approved and bridged into an account
+    (`converted_user_id`, set by `_activate_professional`), or because they
+    separately self-registered under the same email (e.g. a vendor who
+    signed up directly via /auth/register + /vendors/onboard, independent of
+    the lead pipeline — see module docstring). Matching by normalized email
+    mirrors the exact lookup `_activate_professional` itself uses, so this
+    isn't a new linking rule. Returns None (not a match) for an account
+    that's already deactivated — nothing left to deactivate there."""
+    converted_user_id = lead.get("converted_user_id")
+    if converted_user_id:
+        user = await db.users.find_one(
+            {"user_id": converted_user_id, "deleted": {"$ne": True}}, {"_id": 0, "password_hash": 0}
+        )
+        if user:
+            return user
+    email_normalized = lead.get("email_normalized")
+    if email_normalized:
+        return await db.users.find_one(
+            {"email": email_normalized, "deleted": {"$ne": True}}, {"_id": 0, "password_hash": 0}
+        )
+    return None
+
+
+async def delete_lead(db, delete_object_fn, lead_id: str, admin_user: dict) -> dict:
+    """Admin "Delete" action on a lead request — behavior branches on whether
+    the applicant already has a live registered account:
+
+    - Not yet registered (no matching account, or the lead was never
+      approved into one): a plain application with no account tied to it,
+      so this hard-deletes the lead row, its uploaded KYC documents (DB row
+      + underlying storage object), and its status history outright.
+    - Already registered (see `_find_linked_registered_user`): the "lead" is
+      really just the paper trail behind a real account now. Hard-deleting
+      that account would destroy order/payment/audit history it's linked
+      to, so this soft-deletes (deactivates) the account instead — see
+      `audit_log.deactivate_user` — and leaves the lead row itself alone,
+      preserving that history. The caller (admin_leads_delete) still removes
+      it from the admin's on-screen list either way.
+    """
+    lead = await db.leads.find_one({"lead_id": lead_id}, {"_id": 0})
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+
+    from audit_log import log_audit
+
+    linked_user = await _find_linked_registered_user(db, lead)
+    if linked_user:
+        from audit_log import deactivate_user
+        try:
+            await deactivate_user(db, linked_user["user_id"], admin_user["user_id"])
+        except Exception as e:
+            logger.error(f"lead.delete -> user.deactivated FAILED: lead_id={lead_id} user_id={linked_user['user_id']} error={e}")
+            await log_audit(db, "admin.user_deactivated", admin_user, {
+                "target_user_id": linked_user["user_id"], "target_email": linked_user.get("email"),
+                "lead_id": lead_id, "trigger": "lead_delete_button", "result": "failure", "error": str(e),
+            })
+            raise HTTPException(500, "Could not deactivate the linked user account")
+        logger.info(f"lead.delete -> user.deactivated: lead_id={lead_id} user_id={linked_user['user_id']} email={linked_user.get('email')}")
+        await log_audit(db, "admin.user_deactivated", admin_user, {
+            "target_user_id": linked_user["user_id"], "target_email": linked_user.get("email"),
+            "lead_id": lead_id, "role_applied_for": lead.get("role_applied_for"),
+            "trigger": "lead_delete_button", "result": "success",
+        })
+        return {"ok": True, "action": "deactivated", "user_id": linked_user["user_id"]}
+
+    docs = await db.lead_documents.find({"lead_id": lead_id}, {"_id": 0}).to_list(200)
+    for doc in docs:
+        if not doc.get("is_deleted"):
+            try:
+                delete_object_fn(doc["storage_path"])
+            except Exception:
+                logger.warning(f"lead.delete: failed to purge storage object for doc_id={doc['doc_id']}", exc_info=True)
+    await db.lead_documents.delete_many({"lead_id": lead_id})
+    await db.lead_status_history.delete_many({"lead_id": lead_id})
+    await db.leads.delete_one({"lead_id": lead_id})
+
+    await log_audit(db, "lead.deleted", admin_user, {
+        "lead_id": lead_id, "role_applied_for": lead.get("role_applied_for"),
+        "status_at_deletion": lead.get("status"), "email": lead.get("email"),
+    })
+    return {"ok": True, "action": "deleted"}
+
+
 async def lead_stats(db) -> dict:
     by_status = {s: await db.leads.count_documents({"status": s}) for s in LEAD_STATUSES}
     by_role = {r: await db.leads.count_documents({"role_applied_for": r}) for r in LEAD_ROLES}

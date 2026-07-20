@@ -1,21 +1,24 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  Printer, Copy, ScanLine, FileText, Landmark, Building2, ArrowRight, Sparkles,
+  Printer, Copy, ScanLine, FileText, Landmark, Building2, Mic, ArrowRight, Sparkles,
 } from "lucide-react";
+import { listPublicServices } from "@/lib/servicesApi";
 
-const menuRows = [
-  [
-    { icon: Printer, name: "Print-Out Service", description: "Fast, high quality court document printing" },
-    { icon: Copy, name: "Photocopy", description: "Bulk & urgent photocopying across Delhi courts" },
-    { icon: ScanLine, name: "Scanning", description: "High resolution scanning, quick turnaround" },
-  ],
-  [
-    { icon: FileText, name: "OCR + Bookmarking", description: "Searchable, filing-ready PDFs" },
-    { icon: Landmark, name: "E-Filing District Court", description: "Delhi District Court e-filing support" },
-    { icon: Building2, name: "E-Filing High Court", description: "Delhi High Court e-filing support" },
-  ],
-];
+// Same "which id gets which small icon" idea as Landing.jsx's
+// LANDING_ILLUSTRATIONS, kept separate since the mega menu deliberately uses
+// plain lucide glyphs rather than the bespoke landing illustrations — the
+// service list itself (names/descriptions/order) still comes from the same
+// backend surface="landing" call, so it can never drift from Landing.jsx again.
+const MEGAMENU_ICONS = {
+  svc_bw_print: Printer,
+  svc_bw_photocopy: Copy,
+  svc_scanning: ScanLine,
+  svc_ocr: FileText,
+  svc_efile_district: Landmark,
+  svc_efile_hc: Building2,
+  svc_steno_hearing: Mic,
+};
 
 const proxyCounsel = {
   image: "/images/illustrations/proxy-counsel-badge.png",
@@ -24,28 +27,33 @@ const proxyCounsel = {
 };
 
 export default function MegaMenu() {
+  const [services, setServices] = useState([]);
+
+  useEffect(() => {
+    listPublicServices("landing").then(setServices).catch(() => setServices([]));
+  }, []);
+
   return (
     <div className="landing-mega-menu">
-      <div className="space-y-1">
-        {menuRows.map((row, i) => (
-          <div key={i} className="grid grid-cols-3 gap-1">
-            {row.map((s) => (
-              <Link
-                key={s.name}
-                to="/#services"
-                className="flex items-start gap-3 p-3 rounded-lg hover:bg-slate-50 transition-colors"
-              >
-                <div className="w-9 h-9 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
-                  <s.icon className="w-4 h-4 text-accent" />
-                </div>
-                <div>
-                  <div className="text-sm font-semibold leading-tight">{s.name}</div>
-                  <div className="text-xs text-muted-foreground mt-0.5 leading-snug">{s.description}</div>
-                </div>
-              </Link>
-            ))}
-          </div>
-        ))}
+      <div className="grid grid-cols-3 gap-1">
+        {services.map((s) => {
+          const Icon = MEGAMENU_ICONS[s.service_id] || FileText;
+          return (
+            <Link
+              key={s.service_id}
+              to="/#services"
+              className="flex items-start gap-3 p-3 rounded-lg hover:bg-slate-50 transition-colors"
+            >
+              <div className="w-9 h-9 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
+                <Icon className="w-4 h-4 text-accent" />
+              </div>
+              <div>
+                <div className="text-sm font-semibold leading-tight">{s.landing_name || s.name}</div>
+                <div className="text-xs text-muted-foreground mt-0.5 leading-snug">{s.description}</div>
+              </div>
+            </Link>
+          );
+        })}
       </div>
 
       {/* Proxy Counsel - flagship row */}

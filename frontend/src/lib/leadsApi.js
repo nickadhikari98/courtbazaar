@@ -77,6 +77,11 @@ export async function adminAddLeadNote(leadId, note) {
   return data;
 }
 
+export async function adminDeleteLead(leadId) {
+  const { data } = await api.delete(`/admin/leads/${leadId}`);
+  return data;
+}
+
 export async function adminGetLeadDocumentUrl(leadId, docId) {
   const { data } = await api.get(`/admin/leads/${leadId}/documents/${docId}/download-url`);
   return data; // { url, filename }

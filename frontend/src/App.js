@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { setToken } from "@/lib/api";
 import ScrollToTop from "@/components/ScrollToTop";
+import Logo from "@/components/shared/Logo";
 // AppLayout is the shared authenticated-app shell, not a route-level page —
 // it loads for every authenticated visit regardless of which page is under
 // it, so lazy-loading it separately would add a chunk with no benefit. See
@@ -28,7 +29,10 @@ const LegalCenter = lazy(() => import("@/pages/legal/LegalCenter"));
 const LegalDocument = lazy(() => import("@/pages/legal/LegalDocument"));
 const Login = lazy(() => import("@/pages/auth/Login"));
 const Register = lazy(() => import("@/pages/auth/Register"));
+const SetPassword = lazy(() => import("@/pages/auth/SetPassword"));
 const Dashboard = lazy(() => import("@/pages/customer/Dashboard"));
+const HireProxyCounsel = lazy(() => import("@/pages/customer/HireProxyCounsel"));
+const HireCounsel = lazy(() => import("@/pages/customer/HireCounsel"));
 const OrderWizard = lazy(() => import("@/pages/customer/OrderWizard"));
 const OrderDetail = lazy(() => import("@/pages/customer/OrderDetail"));
 const Orders = lazy(() => import("@/pages/customer/Orders"));
@@ -42,10 +46,16 @@ const BulkImport = lazy(() => import("@/pages/customer/BulkImport"));
 const MyData = lazy(() => import("@/pages/customer/MyData"));
 const FirmManagement = lazy(() => import("@/pages/customer/FirmManagement"));
 const NotificationPrefs = lazy(() => import("@/pages/customer/NotificationPrefs"));
+const Practice = lazy(() => import("@/pages/workspace/Practice"));
+const Earnings = lazy(() => import("@/pages/workspace/Earnings"));
+const Documents = lazy(() => import("@/pages/workspace/Documents"));
+const Calendar = lazy(() => import("@/pages/workspace/Calendar"));
+const Notifications = lazy(() => import("@/pages/workspace/Notifications"));
 const VendorDashboard = lazy(() => import("@/pages/vendor/VendorDashboard"));
 const VendorOnboard = lazy(() => import("@/pages/vendor/VendorOnboard"));
 const VendorSettlements = lazy(() => import("@/pages/vendor/VendorSettlements"));
 const AdminSettlements = lazy(() => import("@/pages/admin/AdminSettlements"));
+const AdminHearingVerification = lazy(() => import("@/pages/admin/AdminHearingVerification"));
 const AdminDashboard = lazy(() => import("@/pages/admin/AdminDashboard"));
 const AdminVendors = lazy(() => import("@/pages/admin/AdminVendors"));
 const AdminLeads = lazy(() => import("@/pages/admin/AdminLeads"));
@@ -65,7 +75,8 @@ const StenographerBooking = lazy(() => import("@/pages/special/StenographerBooki
  * chunk loading doesn't introduce a new visual pattern. */
 function RouteLoadingFallback() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
+    <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-background">
+      <Logo size="md" clickable={false} />
       <div className="w-10 h-10 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
     </div>
   );
@@ -101,17 +112,25 @@ function AuthCallback() {
   );
 }
 
-function ProtectedRoute({ children, roles }) {
+function ProtectedRoute({ children, roles, capabilities }) {
   const { user, loading } = useAuth();
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-background">
+        <Logo size="md" clickable={false} />
         <div className="w-10 h-10 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
       </div>
     );
   }
   if (!user) return <Navigate to="/login" replace />;
-  if (roles && !roles.includes(user.role)) {
+  // Additive: a plain single-role account passes exactly as it always did
+  // (user.role in roles); an account that has gained additional professional
+  // profiles (active_roles, from get_current_user's capability computation)
+  // also passes without its original `role` route access changing at all.
+  if (roles && !roles.some((r) => user.role === r || user.active_roles?.includes(r))) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  if (capabilities && !capabilities.some((c) => user.capabilities?.includes(c))) {
     return <Navigate to="/dashboard" replace />;
   }
   return children;
@@ -131,6 +150,7 @@ function AppRouter() {
       <Route path="/pricing" element={<Pricing />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/auth/set-password" element={<SetPassword />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/vendor-signup" element={<VendorOnboarding />} />
       <Route path="/about" element={<About />} />
@@ -154,7 +174,17 @@ function AppRouter() {
         <Route path="/firm" element={<FirmManagement />} />
         <Route path="/firm/bulk-import" element={<BulkImport />} />
         <Route path="/my-data" element={<MyData />} />
-        <Route path="/notifications" element={<NotificationPrefs />} />
+        <Route path="/notifications" element={<Notifications />} />
+        <Route path="/notifications/prefs-legacy" element={<NotificationPrefs />} />
+        <Route path="/documents" element={<Documents />} />
+        <Route path="/calendar" element={<Calendar />} />
+        {/* Capability-gated: hidden until the account has gained a matching
+            professional profile (see get_current_user's capability computation,
+            server.py) — a plain advocate/customer account never sees these. */}
+        <Route path="/practice" element={<ProtectedRoute capabilities={["can_practice_proxy_counsel", "can_manage_shop"]}><Practice /></ProtectedRoute>} />
+        <Route path="/hire-proxy-counsel" element={<ProtectedRoute capabilities={["can_hire_proxy_counsel"]}><HireProxyCounsel /></ProtectedRoute>} />
+        <Route path="/hire-counsel" element={<ProtectedRoute capabilities={["can_hire_proxy_counsel"]}><HireCounsel /></ProtectedRoute>} />
+        <Route path="/earnings" element={<ProtectedRoute capabilities={["can_earn"]}><Earnings /></ProtectedRoute>} />
         <Route path="/delivery" element={<ProtectedRoute roles={["delivery_partner", "admin"]}><DeliveryHub /></ProtectedRoute>} />
 
         <Route path="/vendor" element={<ProtectedRoute roles={["vendor", "admin"]}><VendorDashboard /></ProtectedRoute>} />
@@ -162,6 +192,7 @@ function AppRouter() {
         <Route path="/vendor/settlements" element={<ProtectedRoute roles={["vendor"]}><VendorSettlements /></ProtectedRoute>} />
 
         <Route path="/admin/settlements" element={<ProtectedRoute roles={["admin"]}><AdminSettlements /></ProtectedRoute>} />
+        <Route path="/admin/hearing-verification" element={<ProtectedRoute roles={["admin"]}><AdminHearingVerification /></ProtectedRoute>} />
 
         <Route path="/admin" element={<ProtectedRoute roles={["admin"]}><AdminDashboard /></ProtectedRoute>} />
         <Route path="/admin/vendors" element={<ProtectedRoute roles={["admin"]}><AdminVendors /></ProtectedRoute>} />

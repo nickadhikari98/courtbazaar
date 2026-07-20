@@ -52,6 +52,9 @@ __pycache__/
 venv/
 .venv/
 
+# Local script run output
+backend/scripts/*.log
+
 # Development tools
 chainlit.md
 .chainlit

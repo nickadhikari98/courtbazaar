@@ -9,7 +9,10 @@ import { toast } from "sonner";
 import { Bell, Mail, MessageSquare, Phone, ShieldCheck, AlertCircle } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 
-export default function NotificationPrefs() {
+/* Extracted from the page wrapper below so the new Notification Center
+   (pages/workspace/Notifications.jsx) can embed it as a "Settings" tab
+   without a second nested PageContainer. */
+export function NotificationPrefsCard() {
   const { user, refresh } = useAuth();
   const [prefs, setPrefs] = useState(user?.notif_prefs || { sms: true, whatsapp: true, email: true });
   const [status, setStatus] = useState({});
@@ -34,10 +37,7 @@ export default function NotificationPrefs() {
   ];
 
   return (
-    <PageContainer className="max-w-3xl">
-      <div className="cb-overline text-accent">Notifications</div>
-      <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-6">Stay in the loop</h1>
-
+    <>
       <Card className="dashboard-card border-none">
         <CardContent className="p-6 space-y-4">
           {channels.map(c => (
@@ -71,6 +71,19 @@ export default function NotificationPrefs() {
           <div>• WhatsApp templates must be pre-approved in Twilio Console (sandbox available immediately)</div>
         </CardContent>
       </Card>
+    </>
+  );
+}
+
+/* Kept as a standalone route-able page (no longer linked from the sidebar —
+   see AppLayout's workspace nav — but left working in case anything still
+   deep-links to it) — same rendered output as before this refactor. */
+export default function NotificationPrefs() {
+  return (
+    <PageContainer className="max-w-3xl">
+      <div className="cb-overline text-accent">Notifications</div>
+      <h1 className="font-display font-black text-3xl tracking-tighter mt-1 mb-6">Stay in the loop</h1>
+      <NotificationPrefsCard />
     </PageContainer>
   );
 }

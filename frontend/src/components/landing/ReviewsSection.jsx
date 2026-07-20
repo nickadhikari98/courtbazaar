@@ -128,7 +128,7 @@ export default function ReviewsSection() {
               className="landing-review-card snap-start flex-shrink-0 flex flex-col w-[85%] sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)]"
             >
               <Stars count={t.rating || 5} />
-              <p className="text-sm text-slate-700 leading-relaxed mt-4">"{t.text}"</p>
+              <p className="text-sm text-slate-700 leading-relaxed mt-4 flex-1 line-clamp-5">"{t.text}"</p>
               <div className="mt-auto pt-4 border-t border-slate-100 flex items-center gap-3">
                 <ReviewAvatar photoUrl={t.photoUrl} name={t.name} />
                 <div>

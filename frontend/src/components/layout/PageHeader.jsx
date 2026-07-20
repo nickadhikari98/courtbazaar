@@ -20,16 +20,22 @@ export default function PageHeader({
   description,
   titleClassName,
   className,
+  action,
 }) {
   return (
     <div className={className}>
-      <div className={cn("cb-overline text-accent", EyebrowIcon && "flex items-center gap-1.5")}>
-        {EyebrowIcon && <EyebrowIcon className="w-3 h-3" />}
-        {eyebrow}
+      <div className={cn(action && "flex items-start justify-between gap-4")}>
+        <div>
+          <div className={cn("cb-overline text-accent", EyebrowIcon && "flex items-center gap-1.5")}>
+            {EyebrowIcon && <EyebrowIcon className="w-3 h-3" />}
+            {eyebrow}
+          </div>
+          <h1 className={cn("font-display font-black text-3xl tracking-tighter mt-1", titleClassName)}>
+            {title}
+          </h1>
+        </div>
+        {action}
       </div>
-      <h1 className={cn("font-display font-black text-3xl tracking-tighter mt-1", titleClassName)}>
-        {title}
-      </h1>
       {description && <p className="text-muted-foreground font-medium mt-1">{description}</p>}
     </div>
   );

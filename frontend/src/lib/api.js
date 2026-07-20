@@ -18,7 +18,21 @@ api.interceptors.response.use(
   (r) => r,
   (err) => {
     if (err?.response?.status === 401) {
-      // optionally clear token
+      const hadToken = !!localStorage.getItem("cb_token");
+      const detail = err.response?.data?.detail;
+      if (hadToken) {
+        localStorage.removeItem("cb_token");
+        // A deactivated/deleted account (see server.py's get_current_user) is
+        // the one 401 case that needs an explicit explanation + a forced,
+        // full-page redirect (not client-side navigate — there's no router
+        // instance reachable from an axios interceptor, and a hard reload
+        // also guarantees any in-memory user state is wiped, not just the
+        // token) rather than just silently rejecting the failed request.
+        if (typeof detail === "string" && detail.toLowerCase().includes("deactivated") && window.location.pathname !== "/login") {
+          sessionStorage.setItem("cb_auth_message", detail);
+          window.location.href = "/login";
+        }
+      }
     }
     return Promise.reject(err);
   }

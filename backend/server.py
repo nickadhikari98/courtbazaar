@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import hashlib
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
@@ -143,6 +144,41 @@ def make_jwt(user_id: str, role: str) -> str:
 def decode_jwt(token: str) -> dict:
     return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
 
+# Default capability bundle granted by each profile type / legacy role. Purely
+# additive to the existing single-`role` authorization system — nothing reads
+# these yet (Phase 1 of the role-based-dashboard rollout), they exist so
+# `active_roles`/`capabilities` are correct on `/auth/me` from day one and new
+# endpoints in later phases have something real to check against instead of
+# introducing yet another ad-hoc permission scheme per feature.
+ROLE_CAPABILITIES: Dict[str, List[str]] = {
+    "vendor": ["can_earn", "can_manage_shop"],
+    "delivery_partner": ["can_earn"],
+    "efiling_agent": ["can_earn"],
+    "legal_typist": ["can_earn"],
+    "notary": ["can_earn"],
+    "stamp_vendor": ["can_earn"],
+    "franchise": ["can_earn"],
+    "law_firm": ["can_manage_firm", "can_hire_proxy_counsel"],
+    "proxy_counsel": ["can_earn", "can_practice_proxy_counsel", "can_hire_proxy_counsel"],
+    "advocate": ["can_hire_proxy_counsel"],
+    "admin": ["is_admin"],
+}
+
+
+def _enrich_user_with_roles_and_capabilities(user: dict) -> dict:
+    """Merges `active_roles`/`capabilities` into a user doc — computed fresh
+    per request from fields already on the doc (no extra query), never
+    persisted. `active_roles` is a one-line projection kept only for the
+    existing ~30 `user["role"] == ...` / `ProtectedRoute roles={[...]}` checks
+    to keep working untouched; new code should check `capabilities` instead."""
+    profile_types = user.get("professional_profile_types") or [user.get("role")]
+    active_roles = sorted(set(filter(None, [*profile_types, user.get("role")])))
+    capabilities = sorted(set(
+        cap for role in active_roles for cap in ROLE_CAPABILITIES.get(role, [])
+    ))
+    return {**user, "active_roles": active_roles, "capabilities": capabilities}
+
+
 async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ", 1)[1]
@@ -160,16 +196,16 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
             if not user:
                 raise HTTPException(401, "User not found")
             if user.get("deleted"):
-                raise HTTPException(401, "Account has been deleted")
-            return user
+                raise HTTPException(401, "Your account has been deactivated. Please contact the administrator.")
+            return _enrich_user_with_roles_and_capabilities(user)
         try:
             payload = decode_jwt(token)
             user = await db.users.find_one({"user_id": payload["user_id"]}, {"_id": 0})
             if not user:
                 raise HTTPException(401, "User not found")
             if user.get("deleted"):
-                raise HTTPException(401, "Account has been deleted")
-            return user
+                raise HTTPException(401, "Your account has been deactivated. Please contact the administrator.")
+            return _enrich_user_with_roles_and_capabilities(user)
         except jwt.PyJWTError:
             raise HTTPException(401, "Invalid token")
     raise HTTPException(401, "Not authenticated")
@@ -197,6 +233,10 @@ class OtpVerify(BaseModel):
     name: Optional[str] = None
     role: str = "advocate"
 
+class SetPasswordRequest(BaseModel):
+    token: str
+    password: str
+
 class UserProfile(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
@@ -215,6 +255,7 @@ class OrderCreate(BaseModel):
     file_ids: List[str] = []
     urgent: bool = False
     notes: Optional[str] = None
+    matter_id: Optional[str] = None  # forward-ready: no Matter UI yet, always null until it ships
 
 class VendorOnboard(BaseModel):
     shop_name: str
@@ -238,6 +279,8 @@ class PricingUpdate(BaseModel):
     base_price: float
     platform_commission_pct: Optional[float] = None
     convenience_fee: Optional[float] = None
+    active: Optional[bool] = None
+    visibility: Optional[Dict[str, bool]] = None  # partial — merged per-surface, not replaced (see handler)
 
 class ChatMessage(BaseModel):
     session_id: str
@@ -292,6 +335,85 @@ class ReviewBulkAction(BaseModel):
 class ReviewReorder(BaseModel):
     review_ids: List[str]  # full ordered list; position = display_order
 
+class CalendarEventCreate(BaseModel):
+    title: str
+    date: str  # ISO date (YYYY-MM-DD)
+    kind: str = "meeting"  # meeting | deadline | other
+
+class MatterCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    court_id: Optional[str] = None
+
+class MatterUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    court_id: Optional[str] = None
+    status: Optional[str] = None
+
+MATTER_STATUSES = ("open", "closed", "archived")
+
+class ProxyCounselProfileUpdate(BaseModel):
+    practice_areas: Optional[List[str]] = None
+    courts: Optional[List[str]] = None
+    languages: Optional[List[str]] = None
+    experience_years: Optional[int] = None
+    education: Optional[str] = None
+    bio: Optional[str] = None
+    office_address: Optional[str] = None
+    fee_structure: Optional[str] = None
+    availability_mode: Optional[bool] = None
+    instant_booking: Optional[bool] = None
+
+class AvailabilitySlotCreate(BaseModel):
+    kind: str
+    day_of_week: Optional[int] = None  # 0=Monday..6=Sunday, for recurring_weekly
+    date: Optional[str] = None  # ISO date, for custom_date/holiday_block/emergency_unavailable
+    court_id: Optional[str] = None
+    start_time: Optional[str] = None  # "HH:MM"
+    end_time: Optional[str] = None
+
+class HearingRequestCreate(BaseModel):
+    court_id: str
+    hearing_date: str
+    case_details: str
+    fee: Optional[float] = None
+    matter_id: Optional[str] = None
+    # Integration point for a separate advocate search/select workstream —
+    # set -> request is addressed to one advocate; omitted -> today's
+    # broadcast-to-all behavior, unchanged. See hearings.py's module docstring.
+    target_advocate_id: Optional[str] = None
+    # Generic Legal Service Request architecture (frontend LegalServiceRequestForm
+    # + config/serviceRequestFields.js) — service_type discriminates which
+    # SERVICE_CONFIGS entry built the request; request_details is a free-form,
+    # frontend-structured bag ({common: {...}, service_specific: {...}}) the
+    # backend stores as-is and never branches on. Additive only — every
+    # existing hearing-lifecycle/escrow/payment code path is unaffected.
+    service_type: str = "proxy_counsel"
+    request_details: Optional[dict] = None
+
+class HearingDisputeResolve(BaseModel):
+    action: str  # "resubmit" | "refund"
+    remark: Optional[str] = None
+
+class HearingVerificationReject(BaseModel):
+    remark: Optional[str] = None
+
+class HearingNoteCreate(BaseModel):
+    note: str
+
+class HearingMessageCreate(BaseModel):
+    text: str
+
+class HearingRatingCreate(BaseModel):
+    rating: int
+    review: Optional[str] = None
+
+class WithdrawRequest(BaseModel):
+    amount: float
+    bank_account: Optional[str] = None
+    bank_ifsc: Optional[str] = None
+
 # ===== Startup: seed data =====
 @app.on_event("startup")
 async def startup():
@@ -308,8 +430,12 @@ async def seed_initial_data():
         return
     import leads as leads_svc
     import reviews as reviews_svc
+    import hearings as hearings_svc
+    import escrow as escrow_svc
     await leads_svc.ensure_indexes(db)
     await reviews_svc.ensure_indexes(db)
+    await hearings_svc.ensure_indexes(db)
+    await escrow_svc.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -322,7 +448,8 @@ async def seed_initial_data():
         for court in state["courts"]:
             court_doc = {**court, "state_id": state["state_id"], "state_name": state["name"]}
             await db.courts.update_one({"court_id": court["court_id"]}, {"$set": court_doc}, upsert=True)
-    if await db.services.count_documents({}) == 0 or await db.services.count_documents({"category": "Stenographer Services"}) == 0:
+    if await db.services.count_documents({}) == 0 or await db.services.count_documents({"category": "Stenographer Services"}) == 0 \
+            or await db.services.count_documents({"visibility": {"$exists": False}}) > 0:
         for svc in SERVICE_CATALOG:
             await db.services.update_one({"service_id": svc["service_id"]}, {"$set": svc}, upsert=True)
         # Unified 20% commission for all services
@@ -355,17 +482,30 @@ async def register(req: RegisterRequest):
         "verified": False,
         "wallet_balance": 0.0,
         "subscription": "free",
+        # Which typed professional-profile collections this account has a row in
+        # (vendors, proxy_counsel_profiles, ...) — seeded with the base role so no
+        # history is lost even where `role` itself later gets overwritten by
+        # vendor/firm onboarding (see server.py:583,1431). Source of truth for
+        # active_roles/capabilities computed in get_current_user(), not `role` alone.
+        "professional_profile_types": [req.role],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.users.insert_one(user_doc)
     token = make_jwt(user_id, req.role)
     user_doc.pop("password_hash", None)
     user_doc.pop("_id", None)
-    return {"token": token, "user": user_doc}
+    return {"token": token, "user": _enrich_user_with_roles_and_capabilities(user_doc)}
 
 @api_router.post("/auth/login")
 async def login(req: LoginRequest, request: Request):
     user = await db.users.find_one({"email": req.email}, {"_id": 0})
+    # Checked ahead of the password comparison (not folded into the generic
+    # "Invalid credentials" branch below): a deactivated account's
+    # password_hash is cleared (see audit_log.deactivate_user), so the
+    # comparison would always fail anyway — but a deactivated user deserves
+    # the actual reason, not a misleading "wrong password".
+    if user and user.get("deleted"):
+        raise HTTPException(401, "Your account has been deactivated. Please contact the administrator.")
     if not user or not verify_password(req.password, user.get("password_hash", "")):
         raise HTTPException(401, "Invalid credentials")
     token = make_jwt(user["user_id"], user["role"])
@@ -375,7 +515,7 @@ async def login(req: LoginRequest, request: Request):
         await log_audit(db, "auth.login", user, {}, request)
     except Exception:
         pass
-    return {"token": token, "user": user}
+    return {"token": token, "user": _enrich_user_with_roles_and_capabilities(user)}
 
 OTP_TTL_SECONDS = 300
 OTP_RESEND_COOLDOWN_SECONDS = 60
@@ -431,13 +571,14 @@ async def otp_verify(req: OtpVerify):
             "verified": True,
             "wallet_balance": 0.0,
             "subscription": "free",
+            "professional_profile_types": [req.role],
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.users.insert_one(user)
     token = make_jwt(user["user_id"], user["role"])
     user.pop("password_hash", None)
     user.pop("_id", None)
-    return {"token": token, "user": user}
+    return {"token": token, "user": _enrich_user_with_roles_and_capabilities(user)}
 
 @api_router.post("/auth/google/session")
 async def google_session(payload: dict, response: Response):
@@ -474,6 +615,7 @@ async def google_session(payload: dict, response: Response):
             "verified": True,
             "wallet_balance": 0.0,
             "subscription": "free",
+            "professional_profile_types": [payload.get("role", "advocate")],
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
     session_token = data["session_token"]
@@ -489,7 +631,29 @@ async def google_session(payload: dict, response: Response):
         secure=True, samesite="none", path="/", max_age=7 * 24 * 3600,
     )
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
-    return {"token": session_token, "user": user}
+    return {"token": session_token, "user": _enrich_user_with_roles_and_capabilities(user)}
+
+@api_router.post("/auth/set-password")
+async def set_password(req: SetPasswordRequest):
+    """One-time link, emailed by leads.py's Lead->Professional bridge when an
+    approved proxy_counsel/counsel lead creates a brand-new account (no
+    existing account matched by email). Mirrors leads.py's own
+    email_verify_token pattern — hashed token, expiring, single-use."""
+    token_hash = hashlib.sha256(req.token.encode()).hexdigest()
+    user = await db.users.find_one({"set_password_token_hash": token_hash})
+    if not user:
+        raise HTTPException(400, "Invalid or expired link")
+    expires_at = user.get("set_password_token_expires_at")
+    if expires_at and datetime.now(timezone.utc) > datetime.fromisoformat(expires_at):
+        raise HTTPException(400, "This link has expired")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"password_hash": hash_password(req.password)},
+         "$unset": {"set_password_token_hash": "", "set_password_token_expires_at": ""}},
+    )
+    token = make_jwt(user["user_id"], user["role"])
+    fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
+    return {"token": token, "user": _enrich_user_with_roles_and_capabilities(fresh)}
 
 @api_router.get("/auth/me")
 async def auth_me(user=Depends(get_current_user)):
@@ -518,7 +682,7 @@ async def list_states():
     return states
 
 @api_router.get("/courts")
-async def list_courts(state_id: Optional[str] = None, q: Optional[str] = None, serviceable_only: bool = False):
+async def list_courts(state_id: Optional[str] = None, q: Optional[str] = None, serviceable_only: bool = False, has_coordinates: bool = False):
     query: Dict[str, Any] = {}
     if state_id:
         query["state_id"] = state_id
@@ -526,6 +690,9 @@ async def list_courts(state_id: Optional[str] = None, q: Optional[str] = None, s
         query["name"] = {"$regex": q, "$options": "i"}
     if serviceable_only:
         query["serviceable"] = True
+    if has_coordinates:
+        query["latitude"] = {"$ne": None}
+        query["longitude"] = {"$ne": None}
     courts = await db.courts.find(query, {"_id": 0}).sort("name", 1).to_list(2000)
     return courts
 
@@ -538,25 +705,50 @@ async def get_court(court_id: str):
     return {**court, "vendor_count": vendor_count}
 
 # ---------- SERVICES ----------
+# One backend-driven catalog feeds every surface (Marketplace, Landing,
+# MegaMenu, Dashboard quick-tiles, Pricing) — each surface just asks for its
+# own visibility flag instead of maintaining its own hardcoded list. See
+# court_seed.py's `_apply_service_visibility` for what seeds each flag.
 @api_router.get("/services")
-async def list_services(category: Optional[str] = None):
+async def list_services(category: Optional[str] = None, include_hidden: bool = False):
     query: Dict[str, Any] = {"active": {"$ne": False}}
+    if not include_hidden:
+        query["visibility.marketplace"] = {"$ne": False}
     if category:
         query["category"] = category
     services = await db.services.find(query, {"_id": 0}).to_list(500)
     return services
 
 @api_router.get("/services/categories")
-async def service_categories():
-    pipeline = [{"$group": {"_id": "$category", "count": {"$sum": 1}}}, {"$sort": {"_id": 1}}]
+async def service_categories(include_hidden: bool = False):
+    match: Dict[str, Any] = {"active": {"$ne": False}}
+    if not include_hidden:
+        match["visibility.marketplace"] = {"$ne": False}
+    pipeline = [{"$match": match}, {"$group": {"_id": "$category", "count": {"$sum": 1}}}, {"$sort": {"_id": 1}}]
     cats = []
     async for doc in db.services.aggregate(pipeline):
         if doc["_id"]:
             cats.append({"category": doc["_id"], "count": doc["count"]})
     return cats
 
+@api_router.get("/services/public")
+async def list_public_services(surface: str):
+    """No-auth read path for marketing/quick-access surfaces (Landing,
+    MegaMenu, Dashboard quick-tiles, Pricing) — replaces what used to be a
+    separate hardcoded array per surface. `surface` is a visibility key
+    (landing|marketplace|sidebar), not a page name."""
+    if surface not in ("landing", "marketplace", "sidebar"):
+        raise HTTPException(400, "Invalid surface")
+    query = {"active": {"$ne": False}, f"visibility.{surface}": {"$ne": False}}
+    services = await db.services.find(query, {"_id": 0}).sort("display_order", 1).to_list(500)
+    return services
+
 @api_router.get("/services/{service_id}")
 async def get_service(service_id: str):
+    # Deliberately unfiltered by visibility — a deep link (e.g. /order/new?service=X
+    # from an existing order, or a Dashboard quick-tile) must keep resolving
+    # even when the service isn't on a discovery surface; visibility gates
+    # *listing*, not direct access.
     svc = await db.services.find_one({"service_id": service_id}, {"_id": 0})
     if not svc:
         raise HTTPException(404, "Service not found")
@@ -580,7 +772,16 @@ async def vendor_onboard(payload: VendorOnboard, user=Depends(get_current_user))
     else:
         doc["created_at"] = datetime.now(timezone.utc).isoformat()
         await db.vendors.insert_one(doc)
-    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"role": "vendor"}})
+    # $addToSet (not just $set role) so onboarding as a vendor doesn't erase
+    # whatever professional profile types this account already had — `role`
+    # itself is still overwritten for backward compat with existing
+    # `user["role"] == "vendor"` checks scattered across this file; fully
+    # retiring that overwrite is a followup once those checks read
+    # active_roles/capabilities instead (see get_current_user).
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"role": "vendor"}, "$addToSet": {"professional_profile_types": "vendor"}},
+    )
     doc.pop("_id", None)
     return doc
 
@@ -686,6 +887,7 @@ async def upload_file(file: UploadFile = File(...), user=Depends(get_current_use
         "size": result.get("size", len(data)),
         "page_count": page_count,
         "is_deleted": False,
+        "matter_id": None,  # forward-ready: no Matter UI yet, always null until it ships
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.files.insert_one(record)
@@ -801,6 +1003,12 @@ async def admin_leads_add_note(lead_id: str, payload: LeadNote, user=Depends(get
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
     return await leads_svc.add_note(db, lead_id, payload.note, user)
+
+@api_router.delete("/admin/leads/{lead_id}")
+async def admin_leads_delete(lead_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await leads_svc.delete_lead(db, delete_object, lead_id, user)
 
 @api_router.get("/admin/leads/{lead_id}/documents/{doc_id}/download-url")
 async def admin_leads_document_url(lead_id: str, doc_id: str, user=Depends(get_current_user)):
@@ -1003,6 +1211,7 @@ async def create_order(req: OrderCreate, user=Depends(get_current_user)):
         "file_ids": req.file_ids,
         "urgent": req.urgent,
         "notes": req.notes,
+        "matter_id": req.matter_id,
         "pricing": pricing,
         "vendor_id": vendor["vendor_id"] if vendor else None,
         "vendor_name": vendor["shop_name"] if vendor else None,
@@ -1016,8 +1225,11 @@ async def create_order(req: OrderCreate, user=Depends(get_current_user)):
     order.pop("_id", None)
     # Notify
     try:
-        from notifications import notify
+        from notifications import notify, record_notification_event
         notify(user, "order_placed", {"order": order})
+        await record_notification_event(db, user["user_id"], "order_placed",
+                                         "Order placed", f"Order {order_id} has been placed.",
+                                         "order", order_id)
     except Exception as e:
         logger.error(f"notify error: {e}")
     try:
@@ -1078,8 +1290,12 @@ async def update_order_status(order_id: str, payload: dict, user=Depends(get_cur
     try:
         customer = await db.users.find_one({"user_id": order["user_id"]}, {"_id": 0})
         if customer:
-            from notifications import notify
+            from notifications import notify, record_notification_event
             notify(customer, "order_status", {"order": {**order, "status": new_status}, "status": new_status})
+            await record_notification_event(db, customer["user_id"], "order_status",
+                                             f"Order {new_status.replace('_', ' ')}",
+                                             f"Order {order_id} is now {new_status.replace('_', ' ')}.",
+                                             "order", order_id)
     except Exception as e:
         logger.error(f"notify status error: {e}")
     return {"ok": True, "status": new_status}
@@ -1187,9 +1403,81 @@ async def wallet_add(payload: dict, user=Depends(get_current_user)):
     await db.wallet_transactions.insert_one({
         "user_id": user["user_id"], "amount": amt, "type": "credit",
         "description": payload.get("description", "Wallet top-up"),
+        "matter_id": None,  # forward-ready: no Matter UI yet, always null until it ships
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     return {"balance": new_balance}
+
+
+# ============================================================================
+# EARNINGS — the single earnings engine every capability="can_earn" role
+# plugs into. Wallet (available balance) is already unified across every
+# role (users.wallet_balance); what was missing was a way to convert that
+# balance into an actual bank payout — withdraw() creates a db.settlements
+# row (settlement_type="withdrawal") and reuses the exact same queued/paid/
+# failed pipeline vendor payouts already go through (see settlements.py).
+# ============================================================================
+@api_router.get("/earnings/me")
+async def get_earnings_me(user=Depends(get_current_user)):
+    _require_capability(user, "can_earn")
+    txns = await db.wallet_transactions.find({"user_id": user["user_id"]}, {"_id": 0, "amount": 1, "type": 1, "created_at": 1}).to_list(5000)
+    lifetime = sum(t["amount"] for t in txns if t["type"] == "credit")
+    month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+    monthly = sum(t["amount"] for t in txns if t["type"] == "credit" and (t.get("created_at") or "").startswith(month_prefix))
+    pending_settlements = await db.settlements.find(
+        {"payee_id": user["user_id"], "status": "queued"}, {"amount": 1},
+    ).to_list(500)
+    pending = sum(s["amount"] for s in pending_settlements)
+    return {
+        "available": round(user.get("wallet_balance", 0), 2),
+        "pending": round(pending, 2),
+        "lifetime": round(lifetime, 2),
+        "monthly": round(monthly, 2),
+    }
+
+@api_router.post("/earnings/withdraw")
+async def withdraw_earnings(payload: WithdrawRequest, user=Depends(get_current_user)):
+    _require_capability(user, "can_earn")
+    if payload.amount <= 0:
+        raise HTTPException(400, "Invalid amount")
+    if payload.amount > user.get("wallet_balance", 0):
+        raise HTTPException(400, "Insufficient wallet balance")
+    new_balance = user.get("wallet_balance", 0) - payload.amount
+    now = datetime.now(timezone.utc)
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"wallet_balance": new_balance}})
+    await db.wallet_transactions.insert_one({
+        "user_id": user["user_id"], "amount": payload.amount, "type": "debit",
+        "description": "Withdrawal requested", "context_type": "withdrawal_request",
+        "created_at": now.isoformat(),
+    })
+    settlement_id = f"STL{now.strftime('%Y%m%d')}{uuid.uuid4().hex[:6].upper()}"
+    await db.settlements.insert_one({
+        "settlement_id": settlement_id,
+        "settlement_type": "withdrawal",
+        "payee_type": user["role"],
+        "payee_id": user["user_id"],
+        "vendor_id": None,
+        "shop_name": user.get("name"),
+        "bank_account": payload.bank_account,
+        "bank_ifsc": payload.bank_ifsc,
+        "has_gst": False,
+        "gst_number": None,
+        "cycle_date": now.date().isoformat(),
+        "order_ids": [],
+        "order_count": 0,
+        "amount": round(payload.amount, 2),
+        "payment_mode": "NEFT" if payload.bank_account else "UPI",
+        "status": "queued",
+        "created_at": now.isoformat(),
+    })
+    return {"ok": True, "settlement_id": settlement_id, "balance": round(new_balance, 2)}
+
+@api_router.get("/earnings/settlements")
+async def get_earnings_settlements(user=Depends(get_current_user)):
+    _require_capability(user, "can_earn")
+    return await db.settlements.find(
+        {"$or": [{"payee_id": user["user_id"]}, {"vendor_id": user["user_id"]}]}, {"_id": 0},
+    ).sort("created_at", -1).to_list(200)
 
 # ---------- AI ASSISTANT ----------
 @api_router.post("/ai/chat")
@@ -1298,6 +1586,16 @@ async def admin_analytics(user=Depends(get_current_user)):
         "top_services": top_services, "court_demand": court_demand,
     }
 
+@api_router.get("/admin/escrow-transactions")
+async def admin_escrow_transactions(user=Depends(get_current_user), context_type: Optional[str] = None, status: Optional[str] = None):
+    """Read-only reporting/finance path over every escrow-held payment on the
+    platform — not hearing-specific, so any future escrow-using service is
+    visible here without new code (see escrow.py's module docstring)."""
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    import escrow as escrow_svc
+    return await escrow_svc.list_transactions(db, context_type=context_type, status=status)
+
 @api_router.get("/admin/vendors")
 async def admin_vendors(user=Depends(get_current_user), status: Optional[str] = None):
     if user["role"] != "admin":
@@ -1311,7 +1609,14 @@ async def admin_vendors(user=Depends(get_current_user), status: Optional[str] = 
 async def update_service_pricing(service_id: str, payload: PricingUpdate, user=Depends(get_current_user)):
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
-    update = {k: v for k, v in payload.model_dump().items() if v is not None and k != "service_id"}
+    data = payload.model_dump(exclude={"service_id", "visibility"})
+    update = {k: v for k, v in data.items() if v is not None}
+    if payload.visibility:
+        # Dotted-path $set so toggling one surface (e.g. visibility.landing)
+        # never clobbers the others — this is the "founder can flip
+        # Marketplace/Landing/Sidebar independently" admin control point.
+        for surface, value in payload.visibility.items():
+            update[f"visibility.{surface}"] = value
     await db.services.update_one({"service_id": service_id}, {"$set": update})
     return {"ok": True}
 
@@ -1323,6 +1628,35 @@ async def admin_users(user=Depends(get_current_user), role: Optional[str] = None
     if role:
         q["role"] = role
     return await db.users.find(q, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(200)
+
+@api_router.put("/admin/users/{user_id}/deactivate")
+async def admin_deactivate_user(user_id: str, user=Depends(get_current_user), request: Request = None):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    if user_id == user["user_id"]:
+        raise HTTPException(400, "You cannot deactivate your own account")
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("role") == "admin":
+        raise HTTPException(400, "Admin accounts cannot be deactivated from this screen")
+    if target.get("deleted"):
+        return {"ok": True, "already_deactivated": True}
+    from audit_log import deactivate_user, log_audit
+    try:
+        await deactivate_user(db, user_id, user["user_id"])
+    except Exception as e:
+        logger.error(f"admin.user_deactivated FAILED: admin={user['user_id']} target={user_id} error={e}")
+        await log_audit(db, "admin.user_deactivated", user, {
+            "target_user_id": user_id, "target_email": target.get("email"), "result": "failure", "error": str(e),
+        }, request)
+        raise HTTPException(500, "Could not deactivate this user")
+    logger.info(f"admin.user_deactivated: admin={user['user_id']} target={user_id} email={target.get('email')}")
+    await log_audit(db, "admin.user_deactivated", user, {
+        "target_user_id": user_id, "target_email": target.get("email"),
+        "target_role": target.get("role"), "result": "success",
+    }, request)
+    return {"ok": True}
 
 # ---------- SUBSCRIPTION ----------
 SUBSCRIPTION_PLANS = {
@@ -1428,7 +1762,8 @@ async def create_firm(payload: FirmCreate, user=Depends(get_current_user)):
     }
     await db.firms.insert_one(doc)
     await db.users.update_one({"user_id": user["user_id"]},
-        {"$set": {"firm_id": firm_id, "firm_role": "owner", "role": "law_firm"}})
+        {"$set": {"firm_id": firm_id, "firm_role": "owner", "role": "law_firm"},
+         "$addToSet": {"professional_profile_types": "law_firm"}})
     await db.firm_members.insert_one({
         "firm_id": firm_id, "user_id": user["user_id"], "name": user["name"], "email": user["email"],
         "role": "owner", "status": "active", "joined_at": datetime.now(timezone.utc).isoformat(),
@@ -1478,7 +1813,8 @@ async def accept_invite(payload: dict, user=Depends(get_current_user)):
     if not inv:
         raise HTTPException(404, "Invite not found or expired")
     await db.users.update_one({"user_id": user["user_id"]},
-        {"$set": {"firm_id": inv["firm_id"], "firm_role": inv["role"], "role": "law_firm"}})
+        {"$set": {"firm_id": inv["firm_id"], "firm_role": inv["role"], "role": "law_firm"},
+         "$addToSet": {"professional_profile_types": "law_firm"}})
     await db.firm_members.insert_one({
         "firm_id": inv["firm_id"], "user_id": user["user_id"], "name": user["name"], "email": user["email"],
         "role": inv["role"], "status": "active", "joined_at": datetime.now(timezone.utc).isoformat(),
@@ -1706,6 +2042,392 @@ async def update_notif_prefs(payload: dict, user=Depends(get_current_user)):
     prefs = {k: bool(v) for k, v in payload.items() if k in ("sms", "whatsapp", "email")}
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"notif_prefs": prefs}})
     return {"ok": True, "notif_prefs": prefs}
+
+@api_router.get("/notifications")
+async def list_notifications(user=Depends(get_current_user), unread_only: bool = False):
+    """The in-app Notification Center feed — every hearing/order/payment/
+    document/AI/support event fans out here via notifications.record_notification_event,
+    alongside whatever SMS/WhatsApp/email channels notify() already dispatches to."""
+    query: Dict[str, Any] = {"user_id": user["user_id"]}
+    if unread_only:
+        query["read_at"] = None
+    return await db.notification_events.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+
+@api_router.put("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str, user=Depends(get_current_user)):
+    result = await db.notification_events.update_one(
+        {"notification_id": notification_id, "user_id": user["user_id"]},
+        {"$set": {"read_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(404, "Notification not found")
+    return {"ok": True}
+
+
+# ============================================================================
+# CALENDAR — aggregation view (hearings once they exist, orders, manual
+# entries, court holidays). Not a new data owner beyond calendar_events/
+# court_holidays; recent orders are surfaced by created_at as reference
+# context, not plotted as "scheduled" dates — orders don't carry a real
+# scheduled date today, so labeling them that way on a calendar would be
+# dishonest about what the data actually means.
+# ============================================================================
+@api_router.post("/calendar/events")
+async def create_calendar_event(req: CalendarEventCreate, user=Depends(get_current_user)):
+    event = {
+        "event_id": f"cal_{uuid.uuid4().hex[:12]}",
+        "user_id": user["user_id"],
+        "title": req.title,
+        "date": req.date,
+        "kind": req.kind,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.calendar_events.insert_one(event)
+    event.pop("_id", None)
+    return event
+
+@api_router.delete("/calendar/events/{event_id}")
+async def delete_calendar_event(event_id: str, user=Depends(get_current_user)):
+    result = await db.calendar_events.delete_one({"event_id": event_id, "user_id": user["user_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Event not found")
+    return {"ok": True}
+
+@api_router.get("/calendar")
+async def get_calendar(user=Depends(get_current_user)):
+    events = await db.calendar_events.find({"user_id": user["user_id"]}, {"_id": 0}).sort("date", 1).to_list(200)
+    holidays = await db.court_holidays.find({}, {"_id": 0}).to_list(200)
+    recent_orders = await db.orders.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "order_id": 1, "court_name": 1, "status": 1, "created_at": 1},
+    ).sort("created_at", -1).to_list(20)
+    return {"events": events, "holidays": holidays, "recent_orders": recent_orders}
+
+
+# ============================================================================
+# MATTERS — schema-ready for the future "everything belongs to a Matter"
+# model (hearings, orders, documents, payments). No workspace/UI ships with
+# this phase; basic CRUD exists now purely so those entities have somewhere
+# real to point their nullable matter_id at, instead of a backfill later.
+# ============================================================================
+@api_router.post("/matters")
+async def create_matter(req: MatterCreate, user=Depends(get_current_user)):
+    matter_id = f"matter_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "matter_id": matter_id,
+        "owner_user_id": user["user_id"],
+        "firm_id": user.get("firm_id"),
+        "title": req.title,
+        "description": req.description,
+        "court_id": req.court_id,
+        "status": "open",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.matters.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api_router.get("/matters")
+async def list_matters(user=Depends(get_current_user)):
+    query: Dict[str, Any] = {"owner_user_id": user["user_id"]}
+    if user.get("firm_id"):
+        query = {"$or": [{"owner_user_id": user["user_id"]}, {"firm_id": user["firm_id"]}]}
+    return await db.matters.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+@api_router.get("/matters/{matter_id}")
+async def get_matter(matter_id: str, user=Depends(get_current_user)):
+    matter = await db.matters.find_one({"matter_id": matter_id}, {"_id": 0})
+    if not matter:
+        raise HTTPException(404, "Matter not found")
+    if matter["owner_user_id"] != user["user_id"] and matter.get("firm_id") != user.get("firm_id") and user["role"] != "admin":
+        raise HTTPException(403, "Forbidden")
+    return matter
+
+@api_router.put("/matters/{matter_id}")
+async def update_matter(matter_id: str, req: MatterUpdate, user=Depends(get_current_user)):
+    matter = await db.matters.find_one({"matter_id": matter_id})
+    if not matter:
+        raise HTTPException(404, "Matter not found")
+    if matter["owner_user_id"] != user["user_id"] and user["role"] != "admin":
+        raise HTTPException(403, "Forbidden")
+    update = {k: v for k, v in req.model_dump(exclude_unset=True).items() if v is not None}
+    if "status" in update and update["status"] not in MATTER_STATUSES:
+        raise HTTPException(400, "Invalid status")
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.matters.update_one({"matter_id": matter_id}, {"$set": update})
+    return {"ok": True}
+
+
+# ============================================================================
+# MY PRACTICE (Proxy Counsel) — profile + availability. Gated by capability,
+# not role string, so a future practice-type profile (e.g. E-Filing Partner)
+# can reuse the same route shape without a ProtectedRoute rewrite.
+# ============================================================================
+import practice as practice_svc
+
+def _require_capability(user: dict, capability: str) -> None:
+    if capability not in (user.get("capabilities") or []):
+        raise HTTPException(403, "Not available for this account")
+
+@api_router.get("/practice/profile")
+async def get_practice_profile(user=Depends(get_current_user)):
+    _require_capability(user, "can_practice_proxy_counsel")
+    return await practice_svc.get_or_create_profile(db, user["user_id"])
+
+@api_router.put("/practice/profile")
+async def put_practice_profile(payload: ProxyCounselProfileUpdate, user=Depends(get_current_user)):
+    _require_capability(user, "can_practice_proxy_counsel")
+    return await practice_svc.update_profile(db, user["user_id"], payload.model_dump(exclude_unset=True))
+
+@api_router.get("/practice/availability")
+async def get_practice_availability(user=Depends(get_current_user)):
+    _require_capability(user, "can_practice_proxy_counsel")
+    return await practice_svc.list_slots(db, user["user_id"])
+
+@api_router.post("/practice/availability")
+async def post_practice_availability(payload: AvailabilitySlotCreate, user=Depends(get_current_user)):
+    _require_capability(user, "can_practice_proxy_counsel")
+    return await practice_svc.add_slot(db, user["user_id"], payload.kind, payload.day_of_week,
+                                        payload.date, payload.court_id, payload.start_time, payload.end_time)
+
+@api_router.delete("/practice/availability/{slot_id}")
+async def delete_practice_availability(slot_id: str, user=Depends(get_current_user)):
+    _require_capability(user, "can_practice_proxy_counsel")
+    return await practice_svc.remove_slot(db, user["user_id"], slot_id)
+
+@api_router.get("/practice/performance")
+async def get_practice_performance(user=Depends(get_current_user)):
+    _require_capability(user, "can_practice_proxy_counsel")
+    return await practice_svc.performance(db, user["user_id"])
+
+
+# ============================================================================
+# HEARING REQUESTS — the "Hire Proxy Counsel" marketplace. First-class
+# entity (see hearings.py's module docstring for why it doesn't reuse orders).
+# Payment/escrow is a separate concern (escrow.py) — endpoints below call
+# both modules but neither module reaches into the other's state.
+# ============================================================================
+import hearings as hearings_svc
+import escrow as escrow_svc
+
+async def _notify_hearing_event(user_id: str, title: str, body: str, hearing_id: str) -> None:
+    """Fire-and-forget in-app + SMS/WhatsApp/email notification for a hearing
+    lifecycle event — same try/except-log, non-fatal pattern as every other
+    notify() call site in this file."""
+    try:
+        from notifications import notify, record_notification_event
+        recipient = await db.users.find_one({"user_id": user_id})
+        if not recipient:
+            return
+        notify(recipient, "hearing_event", {"title": title, "body": body})
+        await record_notification_event(db, user_id, "hearing_event", title, body, "hearing", hearing_id)
+    except Exception as e:
+        logger.error(f"hearing notify error: {e}")
+
+@api_router.post("/hearing-requests")
+async def create_hearing_request(payload: HearingRequestCreate, user=Depends(get_current_user)):
+    _require_capability(user, "can_hire_proxy_counsel")
+    hearing = await hearings_svc.create_hearing_request(
+        db, user["user_id"], payload.court_id, payload.hearing_date, payload.case_details, payload.fee,
+        payload.matter_id, payload.target_advocate_id, payload.service_type, payload.request_details,
+    )
+    if payload.target_advocate_id:
+        await _notify_hearing_event(payload.target_advocate_id, "New hearing request",
+                                     f"You've received a hearing request for {payload.court_id} on {payload.hearing_date}.",
+                                     hearing["hearing_id"])
+    return hearing
+
+@api_router.get("/hearing-requests")
+async def list_hearing_requests(user=Depends(get_current_user)):
+    return await hearings_svc.list_hearing_requests(db, user)
+
+@api_router.get("/hearing-requests/{hearing_id}")
+async def get_hearing_request(hearing_id: str, user=Depends(get_current_user)):
+    return await hearings_svc.get_hearing_request(db, hearing_id, user)
+
+@api_router.put("/hearing-requests/{hearing_id}/accept")
+async def accept_hearing_request(hearing_id: str, user=Depends(get_current_user)):
+    _require_capability(user, "can_practice_proxy_counsel")
+    hearing = await hearings_svc.accept_hearing_request(db, hearing_id, user)
+    await _notify_hearing_event(hearing["requesting_user_id"], "Request accepted",
+                                 f"Your hearing request for {hearing['court_id']} was accepted. Proceed to payment.",
+                                 hearing_id)
+    return hearing
+
+@api_router.put("/hearing-requests/{hearing_id}/decline")
+async def decline_hearing_request(hearing_id: str, user=Depends(get_current_user)):
+    _require_capability(user, "can_practice_proxy_counsel")
+    return await hearings_svc.decline_hearing_request(db, hearing_id, user)
+
+@api_router.put("/hearing-requests/{hearing_id}/reject")
+async def reject_hearing_request(hearing_id: str, user=Depends(get_current_user)):
+    """Targeted requests only — a global, terminal reject. Broadcast requests
+    use /decline (personal, non-terminal) instead — see hearings.py."""
+    _require_capability(user, "can_practice_proxy_counsel")
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    result = await hearings_svc.reject_hearing_request(db, hearing_id, user)
+    await _notify_hearing_event(hearing["requesting_user_id"], "Request declined",
+                                 f"Your hearing request for {hearing['court_id']} was declined by the advocate.",
+                                 hearing_id)
+    return result
+
+@api_router.put("/hearing-requests/{hearing_id}/cancel")
+async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)):
+    return await hearings_svc.cancel_hearing_request(db, hearing_id, user)
+
+@api_router.post("/hearing-requests/{hearing_id}/payment/create-order")
+async def create_hearing_payment_order(hearing_id: str, user=Depends(get_current_user)):
+    import razorpay_svc
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    await hearings_svc.initiate_payment(db, hearing_id, user)
+    rzp = razorpay_svc.create_order(hearing["fee"], hearing_id, notes={"hearing_id": hearing_id, "user_id": user["user_id"]})
+    await db.payment_transactions.insert_one({
+        "session_id": rzp["razorpay_order_id"],
+        "razorpay_order_id": rzp["razorpay_order_id"],
+        "context_type": "hearing", "context_id": hearing_id,
+        "user_id": user["user_id"],
+        "amount": hearing["fee"],
+        "currency": "INR",
+        "gateway": "razorpay",
+        "status": "initiated",
+        "payment_status": "pending",
+        "simulated": rzp.get("simulated", False),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return rzp
+
+@api_router.post("/hearing-requests/{hearing_id}/payment/verify")
+async def verify_hearing_payment(hearing_id: str, payload: dict, user=Depends(get_current_user)):
+    import razorpay_svc
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    if hearing["requesting_user_id"] != user["user_id"]:
+        raise HTTPException(403, "Only the requester can verify payment for this hearing")
+    rzp_order_id = payload.get("razorpay_order_id")
+    rzp_payment_id = payload.get("razorpay_payment_id") or f"pay_sim_{uuid.uuid4().hex[:14]}"
+    rzp_signature = payload.get("razorpay_signature") or "simulated"
+    if not razorpay_svc.verify_payment(rzp_order_id, rzp_payment_id, rzp_signature):
+        raise HTTPException(400, "Payment verification failed")
+    tx = await db.payment_transactions.find_one({"razorpay_order_id": rzp_order_id, "context_type": "hearing", "context_id": hearing_id})
+    if not tx:
+        raise HTTPException(404, "Payment transaction not found")
+    await db.payment_transactions.update_one(
+        {"razorpay_order_id": rzp_order_id},
+        {"$set": {"payment_status": "paid", "status": "complete", "razorpay_payment_id": rzp_payment_id}},
+    )
+    await escrow_svc.create_and_hold(
+        db, context_type="hearing", context_id=hearing_id, service_id=hearings_svc.ESCROW_SERVICE_ID,
+        matter_id=hearing.get("matter_id"), payer_user_id=user["user_id"], payee_user_id=hearing["proxy_counsel_user_id"],
+        amount=hearing["fee"], platform_commission_pct=PLATFORM_COMMISSION_PCT,
+        razorpay_order_id=rzp_order_id, razorpay_payment_id=rzp_payment_id,
+    )
+    await hearings_svc.mark_payment_confirmed(db, hearing_id, user)
+    await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Payment held",
+                                 f"Payment for the {hearing['court_id']} hearing is held by CourtBazaar — share case documents to proceed.",
+                                 hearing_id)
+    return {"ok": True, "payment_id": rzp_payment_id, "status": "documents_shared"}
+
+@api_router.get("/hearing-requests/{hearing_id}/escrow")
+async def get_hearing_escrow(hearing_id: str, user=Depends(get_current_user)):
+    """Read-only — escrow amount/commission/payout for one hearing, used by
+    the requester/advocate's own detail view and the admin verification
+    queue (see escrow_svc.get_for_context)."""
+    await hearings_svc.get_hearing_request(db, hearing_id, user)  # visibility check
+    return await escrow_svc.get_for_context(db, "hearing", hearing_id)
+
+@api_router.put("/hearing-requests/{hearing_id}/mark-conducted")
+async def mark_hearing_conducted(hearing_id: str, user=Depends(get_current_user)):
+    return await hearings_svc.mark_hearing_conducted(db, hearing_id, user)
+
+@api_router.post("/hearing-requests/{hearing_id}/rate")
+async def rate_hearing_request(hearing_id: str, payload: HearingRatingCreate, user=Depends(get_current_user)):
+    return await hearings_svc.rate_hearing_request(db, hearing_id, user, payload.rating, payload.review)
+
+@api_router.post("/hearing-requests/{hearing_id}/notes")
+async def add_hearing_note(hearing_id: str, payload: HearingNoteCreate, user=Depends(get_current_user)):
+    return await hearings_svc.add_note(db, hearing_id, user, payload.note)
+
+@api_router.get("/hearing-requests/{hearing_id}/messages")
+async def list_hearing_messages(hearing_id: str, user=Depends(get_current_user)):
+    await hearings_svc.get_hearing_request(db, hearing_id, user)  # visibility check
+    return await hearings_svc.list_messages(db, hearing_id)
+
+@api_router.post("/hearing-requests/{hearing_id}/messages")
+async def post_hearing_message(hearing_id: str, payload: HearingMessageCreate, user=Depends(get_current_user)):
+    return await hearings_svc.add_message(db, hearing_id, user, payload.text)
+
+@api_router.get("/hearing-requests/{hearing_id}/documents")
+async def get_hearing_documents(hearing_id: str, user=Depends(get_current_user)):
+    await hearings_svc.get_hearing_request(db, hearing_id, user)  # visibility check
+    return await hearings_svc.list_documents(db, hearing_id)
+
+@api_router.post("/hearing-requests/{hearing_id}/documents")
+async def upload_hearing_document(
+    hearing_id: str,
+    kind: str = Form(...),
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
+    data = await file.read()
+    content_type = file.content_type or "application/octet-stream"
+    return await hearings_svc.add_document(
+        db, put_object, validate_upload, hearing_id, user, kind, file.filename, content_type, data,
+    )
+
+@api_router.get("/hearing-requests/{hearing_id}/documents/{doc_id}/download-url")
+async def get_hearing_document_url(hearing_id: str, doc_id: str, user=Depends(get_current_user)):
+    await hearings_svc.get_hearing_request(db, hearing_id, user)  # visibility check
+    rec = await db.hearing_documents.find_one({"doc_id": doc_id, "hearing_id": hearing_id, "is_deleted": False}, {"_id": 0})
+    if not rec:
+        raise HTTPException(404, "Document not found")
+    url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"))
+    return {"url": url, "filename": rec.get("original_filename")}
+
+
+# ----------------------------------------------------------------------
+# Admin hearing verification — Verify and Release Payout are always two
+# separate, explicitly-triggered endpoints (never bundled into one call),
+# per the founder's ask to reduce operational mistakes.
+# ----------------------------------------------------------------------
+@api_router.get("/admin/hearing-requests")
+async def admin_list_hearing_requests(user=Depends(get_current_user), status: Optional[str] = None):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await hearings_svc.list_hearings_for_admin(db, status)
+
+@api_router.put("/hearing-requests/{hearing_id}/verify")
+async def verify_hearing_order_sheet(hearing_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    result = await hearings_svc.verify_order_sheet(db, hearing_id, user)
+    await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Order sheet verified",
+                                 f"Your order sheet for the {hearing['court_id']} hearing was verified. Payout release is next.",
+                                 hearing_id)
+    return result
+
+@api_router.put("/hearing-requests/{hearing_id}/reject-verification")
+async def reject_hearing_order_sheet(hearing_id: str, payload: HearingVerificationReject, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await hearings_svc.reject_order_sheet(db, hearing_id, user, payload.remark)
+
+@api_router.put("/hearing-requests/{hearing_id}/resolve-dispute")
+async def resolve_hearing_dispute(hearing_id: str, payload: HearingDisputeResolve, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await hearings_svc.resolve_dispute(db, hearing_id, user, payload.action, payload.remark)
+
+@api_router.put("/hearing-requests/{hearing_id}/release-payout")
+async def release_hearing_payout(hearing_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    result = await hearings_svc.release_hearing_payout(db, hearing_id, user)
+    await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Payout released",
+                                 f"Your payout for the {hearing['court_id']} hearing has been released to your wallet.",
+                                 hearing_id)
+    return result
 
 
 # ============================================================================
@@ -2335,8 +3057,11 @@ async def book_stenographer(req: StenoBooking, user=Depends(get_current_user)):
     await db.orders.insert_one(booking)
     booking.pop("_id", None)
     try:
-        from notifications import notify
+        from notifications import notify, record_notification_event
         notify(user, "order_placed", {"order": booking})
+        await record_notification_event(db, user["user_id"], "order_placed",
+                                         "Stenographer booking placed", f"Booking {order_id} has been placed.",
+                                         "order", order_id)
     except Exception:
         pass
     try:
@@ -2410,16 +3135,15 @@ async def mark_settlement_paid(settlement_id: str, payload: dict = None, user=De
         raise HTTPException(403, "Admin only")
     payload = payload or {}
     ref = payload.get("utr") or payload.get("reference", "")
-    await db.settlements.update_one(
-        {"settlement_id": settlement_id},
-        {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat(), "utr": ref, "paid_by": user["user_id"]}},
-    )
+    from settlements import change_settlement_status
+    from notifications import send_email
+    result = await change_settlement_status(db, send_email, settlement_id, "mark_paid", user, utr=ref)
     try:
         from audit_log import log_audit
         await log_audit(db, "admin.settlement_paid", user, {"settlement_id": settlement_id, "utr": ref})
     except Exception:
         pass
-    return {"ok": True}
+    return result
 
 
 @api_router.post("/admin/settlements/{settlement_id}/mark-failed")
@@ -2427,16 +3151,15 @@ async def mark_settlement_failed(settlement_id: str, payload: dict = None, user=
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
     payload = payload or {}
-    s = await db.settlements.find_one({"settlement_id": settlement_id}, {"_id": 0})
-    if not s:
-        raise HTTPException(404, "Settlement not found")
-    await db.settlements.update_one(
-        {"settlement_id": settlement_id},
-        {"$set": {"status": "failed", "failure_reason": payload.get("reason", "Unknown")}},
-    )
-    # Release orders so they can be re-settled
-    await db.orders.update_many({"order_id": {"$in": s.get("order_ids", [])}}, {"$unset": {"settlement_id": ""}})
-    return {"ok": True}
+    from settlements import change_settlement_status
+    from notifications import send_email
+    result = await change_settlement_status(db, send_email, settlement_id, "mark_failed", user, reason=payload.get("reason", "Unknown"))
+    try:
+        from audit_log import log_audit
+        await log_audit(db, "admin.settlement_failed", user, {"settlement_id": settlement_id, "reason": payload.get("reason", "Unknown")})
+    except Exception:
+        pass
+    return result
 
 
 @api_router.get("/admin/settlements/export")

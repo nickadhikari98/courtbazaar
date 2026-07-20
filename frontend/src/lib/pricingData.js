@@ -1,15 +1,10 @@
-/* Single source of truth for CourtBazaar pricing — used by the landing
-   pricing teaser and the full /pricing detail page. */
-
-export const individualPricing = [
-  { label: "Print-Out (B&W)", price: "₹2/page", icon: "print", description: "Court-ready black & white printing" },
-  { label: "Photocopy", price: "₹1/page", icon: "photocopy", description: "Sharp, reliable duplicate copies" },
-  { label: "Scanning", price: "₹1/page", icon: "scan", description: "High-resolution digital scans" },
-  { label: "OCR & Bookmarking", price: "₹3/page", icon: "ocr", description: "Searchable text with indexed bookmarks" },
-  { label: "E-Filing District Court (Delhi)", price: "₹499/file", icon: "efiling-district", description: "Filed directly with the District Court" },
-  { label: "E-Filing High Court (Delhi)", price: "₹1,999/file", icon: "efiling-high", description: "Filed directly with the Delhi High Court" },
-  { label: "E-Filing Supreme Court", price: "₹3,999/file", icon: "efiling-supreme", description: "Filed directly with the Supreme Court of India" },
-];
+/* Pricing data — the per-service "Individual Pricing" list used to live here
+   too (individualPricing) but now comes from the backend service catalog
+   (GET /services/public?surface=landing, same source Landing.jsx/MegaMenu.jsx
+   use — see Pricing.jsx) so it can't drift from what's actually on Landing.
+   `packages`/`addOnServices` below are a genuinely separate concept
+   (subscription bundle economics, not per-service catalog data) and stay
+   here unchanged. */
 
 export const packages = [
   {

@@ -1,14 +1,10 @@
 import React from "react";
-import { Link } from "react-router-dom";
+import Logo from "@/components/shared/Logo";
 
+/* Thin wrapper kept for backward compatibility — LandingNav.jsx and any
+   other existing import of NavbarLogo needs no change. The canonical
+   implementation now lives in components/shared/Logo.jsx, shared with the
+   rest of the app (sidebar, auth pages, loading screens). */
 export default function NavbarLogo({ to = "/", className = "" }) {
-  return (
-    <Link to={to} className={`flex items-center h-10 sm:h-12 shrink-0 ${className}`}>
-      <img
-        src="/images/cbLogo-navbar.png"
-        alt="CourtBazaar™ - India's Premier Legal Operations & Services Platform"
-        className="h-full w-auto object-contain"
-      />
-    </Link>
-  );
+  return <Logo to={to} size="lg" className={className} />;
 }

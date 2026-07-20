@@ -3,7 +3,22 @@ import { Link, useLocation } from "react-router-dom";
 import { Wallet } from "lucide-react";
 import MarketingLayout from "@/components/layout/MarketingLayout";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { individualPricing, packages, addOnServices, formatINR } from "@/lib/pricingData";
+import { packages, addOnServices, formatINR } from "@/lib/pricingData";
+import { listPublicServices, formatServicePrice } from "@/lib/servicesApi";
+
+// Same short icon keys PricingServiceRow.jsx already maps internally
+// (print/photocopy/scan/ocr/efiling-district/efiling-high) — the service
+// *list* itself (which ids, name, price, order) now comes from the backend
+// (visibility.landing, same surface Landing.jsx/MegaMenu.jsx use) so this
+// page can't drift from them again.
+const PRICING_ICON_KEY = {
+  svc_bw_print: "print",
+  svc_bw_photocopy: "photocopy",
+  svc_scanning: "scan",
+  svc_ocr: "ocr",
+  svc_efile_district: "efiling-district",
+  svc_efile_hc: "efiling-high",
+};
 import PricingServiceRow from "@/components/landing/pricing/PricingServiceRow";
 import PackageSavingsBanner from "@/components/landing/pricing/PackageSavingsBanner";
 import PricingCard from "@/components/landing/PricingCard";
@@ -20,10 +35,22 @@ export default function Pricing() {
   const [expandedSlug, setExpandedSlug] = useState(null);
   const expandedPackage = expandedSlug ? packages.find((pkg) => pkg.slug === expandedSlug) : null;
   const toggleDetails = (slug) => setExpandedSlug((current) => (current === slug ? null : slug));
+  const [individualPricing, setIndividualPricing] = useState([]);
 
   useEffect(() => {
     setExpandedSlug(null);
   }, [activeSlug]);
+
+  useEffect(() => {
+    listPublicServices("landing")
+      .then((services) => setIndividualPricing(services.map((s) => ({
+        label: s.landing_name || s.name,
+        price: formatServicePrice(s),
+        description: s.description,
+        icon: PRICING_ICON_KEY[s.service_id],
+      }))))
+      .catch(() => setIndividualPricing([]));
+  }, []);
 
   return (
     <MarketingLayout>

@@ -1,0 +1,29 @@
+# Installed as /etc/systemd/system/courtbazaar.service — the unit name is
+# `courtbazaar` (not `courtbazaar-backend`), matching what's actually
+# running in production. Confirm WorkingDirectory/ExecStart below still
+# match your real checkout path (`sudo systemctl cat courtbazaar` on the
+# VPS) before relying on this file — see DEPLOYMENT.md §2.
+[Unit]
+Description=CourtBazaar backend (FastAPI/Uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=courtbazaar
+WorkingDirectory=/var/www/courtbazaar/backend
+EnvironmentFile=/var/www/courtbazaar/backend/.env
+# --proxy-headers makes explicit (rather than relying on uvicorn's default,
+# which happens to currently agree) that X-Forwarded-For/X-Forwarded-Proto
+# from nginx.conf are trusted to populate request.client — required for
+# rate limiting, audit logging, and CAPTCHA to see the real visitor IP
+# instead of nginx's own loopback address. Only trusted when the connecting
+# peer itself is in FORWARDED_ALLOW_IPS (set in .env; uvicorn defaults this
+# to 127.0.0.1 if unset, matching nginx's proxy_pass target) — a header
+# forged by an arbitrary internet client, arriving directly rather than via
+# that trusted nginx hop, is never honored. See backend/.env.example.
+ExecStart=/var/www/courtbazaar/backend/venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000 --workers 2 --proxy-headers
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -18,7 +18,8 @@ CRITICAL_ACTIONS = {
     "delivery.accept", "delivery.complete",
     "dpdp.data_export", "dpdp.data_deletion_request", "dpdp.data_deletion_executed",
     "file.upload", "file.delete",
-    "lead.created", "lead.duplicate_blocked",
+    "lead.created", "lead.duplicate_blocked", "lead.deleted",
+    "admin.user_deactivated",
     "review.submitted", "review.approved", "review.rejected", "review.deleted",
 }
 
@@ -65,6 +66,33 @@ async def export_user_data(db, user_id: str) -> dict:
         "ai_messages": ai_messages,
         "audit_log": audit_entries,
     }
+
+
+async def deactivate_user(db, user_id: str, admin_user_id: str) -> dict:
+    """Admin-initiated soft delete of a *registered* account (e.g. an admin
+    removing a vendor/counsel/proxy-counsel/partner/agent who no longer
+    wants to be associated with CourtBazaar) — deliberately distinct from
+    delete_user_data (the DPDP self-service erasure request) above:
+    delete_user_data anonymizes PII because that's what a legal erasure
+    request means; this only revokes access and leaves name/email/phone
+    intact so orders/audit logs/admin views stay attributable, per
+    "preserve historical data" in the deactivation UX.
+
+    Reuses the exact `deleted`/`deleted_at` flags get_current_user already
+    rejects on every authenticated request (see server.py), so a
+    deactivated account is locked out everywhere instantly — no separate
+    auth-guard change was needed. password_hash is cleared too, as
+    defense-in-depth against a login path that ever forgets the `deleted`
+    check. Nothing here is destructive: a future "Restore User" feature
+    only needs to clear `deleted` and let the user (or an admin) set a new
+    password."""
+    now = datetime.now(timezone.utc).isoformat()
+    result = await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {"deleted": True, "deleted_at": now, "password_hash": "", "deactivated_by": admin_user_id}},
+    )
+    await db.user_sessions.delete_many({"user_id": user_id})
+    return {"matched": result.matched_count > 0}
 
 
 async def delete_user_data(db, user_id: str) -> dict:

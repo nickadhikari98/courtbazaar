@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { api, formatINR } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +9,8 @@ import {
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis } from "recharts";
 import { CHART_COLORS_EXTENDED as COLORS } from "@/lib/chartColors";
 import PageContainer from "@/components/layout/PageContainer";
+import PageHeader from "@/components/layout/PageHeader";
+import StatGrid from "@/components/shared/StatGrid";
 
 export default function SuperAdminConsole() {
   const [data, setData] = useState(null);
@@ -26,19 +27,17 @@ export default function SuperAdminConsole() {
 
   return (
     <PageContainer>
-      <div className="flex items-start justify-between gap-3 mb-6">
-        <div>
-          <div className="cb-overline text-accent flex items-center gap-1.5"><Crown className="w-3 h-3" /> Super Admin · Command Center</div>
-          <h1 className="font-display font-black text-4xl tracking-tighter mt-1">Platform overview</h1>
-          <p className="text-muted-foreground font-medium mt-1">Centralised view of revenue, orders, vendors, users, compliance.</p>
-        </div>
-        <Badge className="bg-emerald-100 text-emerald-700 border-0 font-bold flex items-center gap-1.5"><Activity className="w-3 h-3 live-dot" /> LIVE</Badge>
-      </div>
+      <PageHeader
+        eyebrow="Super Admin · Command Center" eyebrowIcon={Crown} title="Platform overview"
+        description="Centralised view of revenue, orders, vendors, users, compliance." className="mb-6"
+        action={<Badge className="bg-emerald-100 text-emerald-700 border-0 font-bold flex items-center gap-1.5"><Activity className="w-3 h-3 live-dot" /> LIVE</Badge>}
+      />
 
       {/* Revenue Hero */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-        <Card className="lg:col-span-2 bg-gradient-to-br from-primary to-slate-800 text-white border-none" data-testid="hero-revenue">
-          <CardContent className="p-7">
+        <Card className="relative lg:col-span-2 bg-primary text-white border-none overflow-hidden" data-testid="hero-revenue">
+          <div className="absolute inset-0 cb-grain opacity-30"></div>
+          <CardContent className="relative p-7">
             <div className="cb-overline text-white/60">Total platform revenue</div>
             <div className="font-display font-black text-5xl tracking-tighter mt-2 text-accent">{formatINR(data.revenue.platform_total)}</div>
             <div className="text-sm font-semibold text-white/80 mt-1">across {data.revenue.paid_orders} paid orders · vendor payout: {formatINR(data.revenue.vendor_payout_total)}</div>
@@ -87,32 +86,23 @@ export default function SuperAdminConsole() {
       </Card>
 
       {/* KPI Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-6">
-        {[
-          { label: "Orders 7d", val: data.orders.last_7_days, sub: `${data.orders.last_7_days_paid} paid`, icon: Package, link: "/orders" },
-          { label: "Total orders", val: data.orders.total, sub: "all time", icon: Package },
-          { label: "Vendors", val: data.vendors.approved, sub: `${data.vendors.pending_kyc} pending`, icon: Store, link: "/admin/vendors" },
-          { label: "Sponsored", val: data.vendors.sponsored, sub: "active", icon: Crown },
-          { label: "GST vendors", val: data.vendors.with_gst, sub: `${data.vendors.without_gst} non-GST`, icon: Receipt },
-          { label: "Users", val: data.users.total, sub: `${data.compliance.deleted_users} deleted`, icon: Users, link: "/admin/users" },
-          { label: "Audit log", val: data.compliance.audit_entries, sub: "entries", icon: Activity, link: "/admin/audit-log" },
-          { label: "Files purged", val: data.compliance.files_purged, sub: "DPDP", icon: FileX },
-          { label: "Pending KYC", val: data.vendors.pending_kyc, sub: "review", icon: AlertCircle, link: "/admin/vendors" },
-          { label: "Deletion req.", val: data.compliance.pending_deletions, sub: "DPDP", icon: ShieldCheck },
-          { label: "GST collected", val: formatINR(data.revenue.gst_collected), sub: "to govt", icon: IndianRupee },
-          { label: "Vendor payout", val: formatINR(data.revenue.vendor_payout_total), sub: "lifetime", icon: TrendingUp },
-        ].map(s => (
-          <Card key={s.label} className="dashboard-card border-none hover:shadow-md transition-all" data-testid={`kpi-${s.label.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')}`}>
-            <CardContent className="p-4">
-              <div className="w-8 h-8 rounded-lg bg-accent/10 text-accent flex items-center justify-center mb-2"><s.icon className="w-4 h-4" /></div>
-              <div className="cb-overline text-2xs">{s.label}</div>
-              <div className="font-display font-black text-xl tracking-tight mt-1 truncate">{s.val}</div>
-              <div className="text-2xs text-muted-foreground font-bold uppercase tracking-wide">{s.sub}</div>
-              {s.link && <Link to={s.link} className="text-2xs font-bold text-accent hover:underline mt-1 inline-block">View →</Link>}
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      <StatGrid
+        columns="grid-cols-2 lg:grid-cols-6" className="mb-6" testIdPrefix="kpi"
+        stats={[
+          { label: "Orders 7d", value: data.orders.last_7_days, sub: `${data.orders.last_7_days_paid} paid`, icon: Package, color: "bg-accent/10 text-accent", link: "/orders" },
+          { label: "Total orders", value: data.orders.total, sub: "all time", icon: Package, color: "bg-accent/10 text-accent" },
+          { label: "Vendors", value: data.vendors.approved, sub: `${data.vendors.pending_kyc} pending`, icon: Store, color: "bg-accent/10 text-accent", link: "/admin/vendors" },
+          { label: "Sponsored", value: data.vendors.sponsored, sub: "active", icon: Crown, color: "bg-accent/10 text-accent" },
+          { label: "GST vendors", value: data.vendors.with_gst, sub: `${data.vendors.without_gst} non-GST`, icon: Receipt, color: "bg-accent/10 text-accent" },
+          { label: "Users", value: data.users.total, sub: `${data.compliance.deleted_users} deleted`, icon: Users, color: "bg-accent/10 text-accent", link: "/admin/users" },
+          { label: "Audit log", value: data.compliance.audit_entries, sub: "entries", icon: Activity, color: "bg-accent/10 text-accent", link: "/admin/audit-log" },
+          { label: "Files purged", value: data.compliance.files_purged, sub: "DPDP", icon: FileX, color: "bg-accent/10 text-accent" },
+          { label: "Pending KYC", value: data.vendors.pending_kyc, sub: "review", icon: AlertCircle, color: "bg-accent/10 text-accent", link: "/admin/vendors" },
+          { label: "Deletion req.", value: data.compliance.pending_deletions, sub: "DPDP", icon: ShieldCheck, color: "bg-accent/10 text-accent" },
+          { label: "GST collected", value: formatINR(data.revenue.gst_collected), sub: "to govt", icon: IndianRupee, color: "bg-accent/10 text-accent" },
+          { label: "Vendor payout", value: formatINR(data.revenue.vendor_payout_total), sub: "lifetime", icon: TrendingUp, color: "bg-accent/10 text-accent" },
+        ]}
+      />
 
       {/* Vendors by category + Orders by status */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

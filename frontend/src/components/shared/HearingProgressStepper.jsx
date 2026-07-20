@@ -1,0 +1,94 @@
+import React from "react";
+import { Check, X, Ban, ShieldAlert, Clock } from "lucide-react";
+
+/* Prospective, at-a-glance progress for the Hire Proxy Counsel journey —
+   complements HearingTimeline (the retrospective activity log) rather than
+   replacing it. Maps the real hearing.status values (backend/hearings.py's
+   HEARING_STATUSES) onto the founder's reference stages; "Search advocate /
+   View profile / Select advocate" aren't included here — those steps happen
+   before a hearing_request exists and belong to the separate (deferred)
+   advocate-discovery workstream. */
+const STAGES = [
+  { statuses: ["requested", "broadcast"], label: "Requested" },
+  { statuses: ["accepted"], label: "Accepted" },
+  { statuses: ["payment_pending"], label: "Payment Secured" },
+  { statuses: ["documents_shared"], label: "Documents Shared" },
+  { statuses: ["preparation"], label: "Preparation" },
+  { statuses: ["hearing_scheduled"], label: "Hearing Conducted" },
+  { statuses: ["hearing_completed"], label: "Order Sheet Uploaded" },
+  { statuses: ["verification_pending", "verified"], label: "Verified" },
+  { statuses: ["completed"], label: "Payout Released" },
+  { statuses: ["rated"], label: "Reviewed" },
+];
+
+const TERMINATED = {
+  rejected: { label: "Rejected", icon: X },
+  cancelled: { label: "Cancelled", icon: Ban },
+  disputed: { label: "Disputed — under review", icon: ShieldAlert },
+  expired: { label: "Expired", icon: Clock },
+};
+
+function stageIndexFor(status) {
+  // "Payment Secured"/"Verified" cover two backend statuses each (the
+  // in-flight one and the one it settles into) so the stepper doesn't
+  // regress a step the instant a payment or verification actually lands.
+  const idx = STAGES.findIndex((s) => s.statuses.includes(status));
+  return idx === -1 ? 0 : idx;
+}
+
+export default function HearingProgressStepper({ status, compact = false }) {
+  const terminated = TERMINATED[status];
+
+  if (terminated) {
+    const Icon = terminated.icon;
+    return (
+      <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-red-600" data-testid="hearing-stepper-terminated">
+        <Icon className="w-3.5 h-3.5" /> {terminated.label}
+      </div>
+    );
+  }
+
+  const currentIndex = stageIndexFor(status);
+
+  if (compact) {
+    return (
+      <div className="text-xs font-semibold text-muted-foreground" data-testid="hearing-stepper-compact">
+        Step {currentIndex + 1} of {STAGES.length}: <span className="text-foreground font-bold">{STAGES[currentIndex].label}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full overflow-x-auto" data-testid="hearing-stepper">
+      <div className="flex items-center min-w-max">
+        {STAGES.map((stage, i) => {
+          const done = i < currentIndex;
+          const active = i === currentIndex;
+          return (
+            <div key={stage.label} className="flex items-center">
+              <div className="flex flex-col items-center gap-1 w-24">
+                <div
+                  className={`w-6 h-6 rounded-full flex items-center justify-center text-2xs font-bold border-2 ${
+                    done
+                      ? "bg-accent border-accent text-white"
+                      : active
+                        ? "border-accent text-accent bg-accent/10"
+                        : "border-border text-muted-foreground bg-white"
+                  }`}
+                >
+                  {done ? <Check className="w-3 h-3" /> : i + 1}
+                </div>
+                <div className={`text-2xs text-center leading-tight font-semibold ${active ? "text-foreground" : "text-muted-foreground"}`}>
+                  {stage.label}
+                </div>
+              </div>
+              {i < STAGES.length - 1 && (
+                <div className={`h-0.5 w-6 -mt-4 ${done ? "bg-accent" : "bg-border"}`} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
