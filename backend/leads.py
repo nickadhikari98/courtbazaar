@@ -1,10 +1,15 @@
 """Leads pipeline — anonymous applicant submissions from the landing page's
 "Join as..." forms (Proxy Counsel, Counsel, Vendor, Partner, Agent).
 
-Leads are intentionally isolated from the `users` collection. Approving a
-lead is a manual admin status change today, not an automatic account
-creation — converting an approved lead into a real user is a deliberately
-deferred future phase, not built here.
+Leads are intentionally isolated from the `users` collection while still a
+draft/submission. Approving a `proxy_counsel`/`counsel` lead now runs the
+Lead->Professional workflow (`_activate_professional`, wired through
+`workflow.StateMachine` in `admin_change_status`): it links to an existing
+account (matched by normalized email) or creates a new one, seeds a
+`proxy_counsel_profiles` row for proxy counsel specifically, and emails a
+one-time set-password link for a brand-new account. Vendor/partner/agent
+leads are unaffected — those still go through the pre-existing vendor
+onboarding flow once the applicant registers/logs in themselves.
 
 Applicants aren't logged in while filling the form, so there's no
 `get_current_user` to scope a draft to. Ownership of an in-progress draft is
@@ -22,6 +27,7 @@ blocked. See `check_duplicate` and `ensure_indexes`.
 """
 import hashlib
 import logging
+import os
 import re
 import uuid
 import secrets
@@ -32,6 +38,7 @@ from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
 from rate_limiter import get_limiter
+from workflow import StateMachine, IllegalTransition
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +51,26 @@ EDITABLE_STATUSES = ("draft", "more_info_requested")
 # rejected talks to the CourtBazaar team to be reinstated, they don't get a
 # silent second attempt.
 SUBMITTED_STATUSES = ("submitted", "approved", "rejected", "more_info_requested")
+
+# Statuses an admin can move a lead to via admin_change_status, and the
+# transition table wiring that through workflow.StateMachine. Every one of
+# the 5 LEAD_STATUSES is a legal "from" state for each of these — matching
+# today's actual (fully permissive) admin behavior exactly: the admin UI's
+# Approve/Reject/Request-More-Info buttons are always available regardless
+# of current status, so narrowing this table would be a behavior change,
+# not just a refactor.
+ADMIN_SETTABLE_STATUSES = ("approved", "rejected", "more_info_requested")
+LEAD_ADMIN_TRANSITIONS = {
+    (from_status, to_status): to_status
+    for from_status in LEAD_STATUSES
+    for to_status in ADMIN_SETTABLE_STATUSES
+}
+
+# leads.py's role_applied_for vocabulary isn't identical to the users
+# collection's role vocabulary — "counsel" (empanelled advocate) maps onto
+# the existing "advocate" role rather than inventing a redundant parallel
+# role string; "proxy_counsel" is the one genuinely new role/profile type.
+LEAD_ROLE_TO_ACCOUNT_ROLE = {"proxy_counsel": "proxy_counsel", "counsel": "advocate"}
 
 DRAFT_EXPIRY_DAYS = 90
 EMAIL_VERIFY_TOKEN_TTL_DAYS = 7
@@ -171,12 +198,25 @@ async def ensure_indexes(db) -> None:
     index, because Mongo unique indexes enforce "this exact key
     combination is unique", not an OR across two independent keys — so
     "same email OR same phone" needs one unique index per identity field.
-    Each index is partial (`status: {$ne: "draft"}` + the field actually
-    present) so:
+    Each index is partial (`submitted_at` actually set + the identity field
+    actually present) so:
       - in-progress drafts never collide with each other or with a real
         submission while someone is still filling the form out, and
       - a lead with no phone captured yet doesn't collide with every other
         phone-less lead under a null-equals-null match.
+
+    The filter is expressed via `submitted_at: {$type: "string"}` rather
+    than the more literal `status: {$ne: "draft"}` because Mongo partial
+    indexes only support a small operator set in partialFilterExpression
+    (equality, $exists: true, $gt/$gte/$lt/$lte, $type, top-level $and) —
+    $ne is rejected outright with "Expression not supported in partial
+    index: $not" at index-creation time, on every Mongo version, which
+    previously made this index impossible to create at all and silently
+    aborted the rest of seed_initial_data() (states/courts never got
+    seeded) every time this ran against a fresh database. `submitted_at`
+    is None on a draft and an ISO timestamp the instant `submit_lead` runs
+    (see below), so `$type: "string"` picks out exactly the same documents
+    $ne: "draft" was meant to for the normal submit flow.
 
     This is the actual race-condition-proof guarantee: two concurrent
     `submit` calls for the same email+role will have exactly one succeed
@@ -186,13 +226,13 @@ async def ensure_indexes(db) -> None:
     await db.leads.create_index(
         [("role_applied_for", 1), ("email_normalized", 1)],
         unique=True,
-        partialFilterExpression={"status": {"$ne": "draft"}, "email_normalized": {"$type": "string"}},
+        partialFilterExpression={"submitted_at": {"$type": "string"}, "email_normalized": {"$type": "string"}},
         name="uniq_role_email_submitted",
     )
     await db.leads.create_index(
         [("role_applied_for", 1), ("phone_normalized", 1)],
         unique=True,
-        partialFilterExpression={"status": {"$ne": "draft"}, "phone_normalized": {"$type": "string"}},
+        partialFilterExpression={"submitted_at": {"$type": "string"}, "phone_normalized": {"$type": "string"}},
         name="uniq_role_phone_submitted",
     )
     # Supports admin search/listing (leads.py:list_leads) and the
@@ -461,16 +501,94 @@ async def get_lead_detail(db, lead_id: str) -> dict:
     return {**lead, "documents": documents, "status_history": history}
 
 
+async def _activate_professional(db, lead: dict) -> None:
+    """Side effect of an approved proxy_counsel/counsel lead: link to an
+    existing account (matched by normalized email) or create a new one,
+    then ensure a proxy_counsel_profiles row exists for proxy counsel
+    specifically. This is the Lead->Professional bridge — an approved
+    application now produces a usable, logged-in professional account
+    instead of just a lead-status change (see module docstring)."""
+    account_role = LEAD_ROLE_TO_ACCOUNT_ROLE.get(lead["role_applied_for"])
+    if not account_role:
+        return
+    email_normalized = lead.get("email_normalized") or normalize_email(lead.get("email"))
+    existing = await db.users.find_one({"email": email_normalized}) if email_normalized else None
+
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one({"user_id": user_id}, {"$addToSet": {"professional_profile_types": account_role}})
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        set_password_token = secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)
+        await db.users.insert_one({
+            "user_id": user_id,
+            "email": lead.get("email"),
+            "name": lead.get("full_name") or "New Professional",
+            "phone": lead.get("phone"),
+            "role": account_role,
+            "password_hash": "",  # unusable until set via the emailed token link
+            "verified": True,  # already came through lead email verification
+            "wallet_balance": 0.0,
+            "subscription": "free",
+            "professional_profile_types": [account_role],
+            "set_password_token_hash": hash_token(set_password_token),
+            "set_password_token_expires_at": (now + timedelta(days=EMAIL_VERIFY_TOKEN_TTL_DAYS)).isoformat(),
+            "created_at": now.isoformat(),
+        })
+        from notifications import tmpl_set_password, send_email
+        frontend_base = (os.environ.get("CORS_ORIGINS", "").split(",")[0] or "").strip() or "https://courtbazaar.in"
+        set_password_url = f"{frontend_base}/auth/set-password?token={set_password_token}"
+        tmpl = tmpl_set_password(lead, set_password_url)
+        send_email(lead["email"], tmpl["email_subject"], tmpl["email_html"])
+
+    if account_role == "proxy_counsel":
+        import practice as practice_svc
+        await practice_svc.get_or_create_profile(db, user_id)
+
+    await db.leads.update_one({"lead_id": lead["lead_id"]}, {"$set": {"converted_user_id": user_id}})
+
+
 async def admin_change_status(db, send_email_fn, lead_id: str, new_status: str,
                                remark: Optional[str], admin_user: dict) -> dict:
-    if new_status not in LEAD_STATUSES:
+    if new_status not in ADMIN_SETTABLE_STATUSES:
         raise HTTPException(400, "Invalid status")
     lead = await db.leads.find_one({"lead_id": lead_id}, {"_id": 0})
     if not lead:
         raise HTTPException(404, "Lead not found")
     old_status = lead["status"]
+
+    async def on_transition(entity: dict, from_status: str, to_status: str, actor: Optional[dict]) -> None:
+        # Single hook point: applicant email (existing behavior, now
+        # centralized here instead of inline) + the Lead->Professional
+        # activation side effect, both driven by the same status change.
+        if entity.get("email"):
+            from notifications import tmpl_lead_approved, tmpl_lead_rejected, tmpl_lead_more_info_requested
+            tmpl_fn = {
+                "approved": tmpl_lead_approved,
+                "rejected": tmpl_lead_rejected,
+                "more_info_requested": tmpl_lead_more_info_requested,
+            }[to_status]
+            tmpl = tmpl_fn(entity, remark)
+            send_email_fn(entity["email"], tmpl["email_subject"], tmpl["email_html"])
+        if to_status == "approved":
+            await _activate_professional(db, entity)
+
+    sm = StateMachine(LEAD_ADMIN_TRANSITIONS, on_transition)
+    try:
+        await sm.apply(lead, old_status, new_status, admin_user)
+    except IllegalTransition:
+        raise HTTPException(400, "Invalid status")
+
     now = datetime.now(timezone.utc).isoformat()
     update: Dict[str, Any] = {"status": new_status, "updated_at": now, "reviewed_by": admin_user["user_id"]}
+    if not lead.get("submitted_at"):
+        # An admin can move a lead straight out of "draft" without the
+        # applicant ever calling submit_lead (see LEAD_ADMIN_TRANSITIONS —
+        # every status is a legal "from" state). Backfill submitted_at so
+        # this lead is still covered by ensure_indexes's uniqueness check,
+        # which keys off submitted_at rather than status (see ensure_indexes).
+        update["submitted_at"] = now
     if remark:
         update["admin_remarks"] = lead.get("admin_remarks", []) + [{
             "text": remark, "admin_id": admin_user["user_id"],
@@ -478,16 +596,6 @@ async def admin_change_status(db, send_email_fn, lead_id: str, new_status: str,
         }]
     await db.leads.update_one({"lead_id": lead_id}, {"$set": update})
     await log_status_change(db, lead_id, old_status, new_status, admin_user["user_id"], remark)
-
-    if lead.get("email") and new_status in ("approved", "rejected", "more_info_requested"):
-        from notifications import tmpl_lead_approved, tmpl_lead_rejected, tmpl_lead_more_info_requested
-        tmpl_fn = {
-            "approved": tmpl_lead_approved,
-            "rejected": tmpl_lead_rejected,
-            "more_info_requested": tmpl_lead_more_info_requested,
-        }[new_status]
-        tmpl = tmpl_fn(lead, remark)
-        send_email_fn(lead["email"], tmpl["email_subject"], tmpl["email_html"])
     return {"ok": True, "status": new_status}
 
 
