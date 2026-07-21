@@ -614,6 +614,46 @@ async def add_note(db, lead_id: str, note: str, admin_user: dict) -> dict:
     return {"ok": True}
 
 
+async def resend_set_password_email(db, send_email_fn, lead_id: str) -> dict:
+    """Manual recovery for the one welcome email `_activate_professional`
+    sends exactly once on account creation: `send_email` is fail-soft (see
+    notifications.py) so a provider-side rejection (unverified sender,
+    quota, transient network error) is only ever logged server-side —
+    neither the admin nor the applicant ever finds out the account exists
+    but is unreachable. Re-issues a fresh token (the original may have
+    expired) and surfaces a real failure to the admin this time instead of
+    swallowing it, so a repeat failure is at least visible."""
+    lead = await db.leads.find_one({"lead_id": lead_id}, {"_id": 0})
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    user_id = lead.get("converted_user_id")
+    if not user_id:
+        raise HTTPException(400, "This application hasn't been converted to an account yet.")
+    user = await db.users.find_one({"user_id": user_id, "deleted": {"$ne": True}})
+    if not user:
+        raise HTTPException(404, "Linked account not found.")
+
+    set_password_token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "set_password_token_hash": hash_token(set_password_token),
+            "set_password_token_expires_at": (now + timedelta(days=EMAIL_VERIFY_TOKEN_TTL_DAYS)).isoformat(),
+        }},
+    )
+    frontend_base = (os.environ.get("CORS_ORIGINS", "").split(",")[0] or "").strip() or "https://courtbazaar.in"
+    set_password_url = f"{frontend_base}/auth/set-password?token={set_password_token}"
+    from notifications import tmpl_set_password
+    tmpl = tmpl_set_password(lead, set_password_url)
+    result = send_email_fn(user["email"], tmpl["email_subject"], tmpl["email_html"])
+    if result.get("status") == "failed":
+        raise HTTPException(502, f"Email provider rejected the send: {result.get('error', 'unknown error')}")
+    if result.get("status") == "mocked":
+        raise HTTPException(400, "Email sending isn't configured on this server (EMAIL_PROVIDER/BREVO_API_KEY/EMAIL_FROM_ADDRESS) — the link was only logged to the server console, not delivered.")
+    return {"ok": True, "email": user["email"]}
+
+
 async def _find_linked_registered_user(db, lead: dict) -> Optional[dict]:
     """A lead's applicant may already be a *registered* CourtBazaar user —
     either because this exact lead was approved and bridged into an account

@@ -11,12 +11,12 @@ import {
   Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import {
-  Search, FileText, Download, CheckCircle2, XCircle, MessageSquareWarning, StickyNote, Trash2,
+  Search, FileText, Download, CheckCircle2, XCircle, MessageSquareWarning, StickyNote, Trash2, Mail,
 } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import {
   adminListLeads, adminGetLead, adminChangeLeadStatus, adminAddLeadNote,
-  adminGetLeadDocumentUrl, adminGetLeadStats, adminDeleteLead,
+  adminGetLeadDocumentUrl, adminGetLeadStats, adminDeleteLead, adminResendWelcomeEmail,
 } from "@/lib/leadsApi";
 
 const STATUS_TABS = [
@@ -235,6 +235,18 @@ function LeadDetailDialog({ leadId, open, onOpenChange, onChanged, onDeleteReque
     }
   };
 
+  const resendWelcomeEmail = async () => {
+    setBusy(true);
+    try {
+      const { email } = await adminResendWelcomeEmail(leadId);
+      toast.success(`Set-password email resent to ${email}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not resend the email");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!lead) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -337,12 +349,23 @@ function LeadDetailDialog({ leadId, open, onOpenChange, onChanged, onDeleteReque
             <Button type="button" disabled={busy} onClick={() => changeStatus("rejected")} variant="outline" className="font-bold text-red-600 border-red-200 hover:bg-red-50">
               <XCircle className="w-4 h-4 mr-1.5" /> Reject
             </Button>
+            {lead.converted_user_id && (
+              <Button
+                type="button"
+                disabled={busy}
+                onClick={resendWelcomeEmail}
+                variant="outline"
+                className="font-bold ml-auto"
+              >
+                <Mail className="w-4 h-4 mr-1.5" /> Resend Set-Password Email
+              </Button>
+            )}
             <Button
               type="button"
               disabled={busy}
               onClick={() => onDeleteRequest(lead)}
               variant="destructive"
-              className="font-bold ml-auto"
+              className={`font-bold ${lead.converted_user_id ? "" : "ml-auto"}`}
             >
               <Trash2 className="w-4 h-4 mr-1.5" /> {lead.converted_user_id ? "Deactivate User" : "Delete"}
             </Button>

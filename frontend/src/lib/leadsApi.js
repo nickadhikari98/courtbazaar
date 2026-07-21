@@ -82,6 +82,11 @@ export async function adminDeleteLead(leadId) {
   return data;
 }
 
+export async function adminResendWelcomeEmail(leadId) {
+  const { data } = await api.post(`/admin/leads/${leadId}/resend-welcome-email`);
+  return data;
+}
+
 export async function adminGetLeadDocumentUrl(leadId, docId) {
   const { data } = await api.get(`/admin/leads/${leadId}/documents/${docId}/download-url`);
   return data; // { url, filename }

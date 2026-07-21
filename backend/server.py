@@ -1030,6 +1030,13 @@ async def admin_leads_status(lead_id: str, payload: LeadStatusChange, user=Depen
     from notifications import send_email
     return await leads_svc.admin_change_status(db, send_email, lead_id, payload.status, payload.remark, user)
 
+@api_router.post("/admin/leads/{lead_id}/resend-welcome-email")
+async def admin_leads_resend_welcome_email(lead_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    from notifications import send_email
+    return await leads_svc.resend_set_password_email(db, send_email, lead_id)
+
 @api_router.post("/admin/leads/{lead_id}/notes")
 async def admin_leads_add_note(lead_id: str, payload: LeadNote, user=Depends(get_current_user)):
     if user["role"] != "admin":
