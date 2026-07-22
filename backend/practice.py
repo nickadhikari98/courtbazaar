@@ -37,6 +37,7 @@ async def get_or_create_profile(db, user_id: str) -> dict:
         "office_address": None,
         "fee_structure": None,
         "kyc_status": "pending",  # admin-verified, not self-settable — see PROFILE_EDITABLE_FIELDS
+        "bar_council_verified": False,  # admin-verified, not self-settable — see PROFILE_EDITABLE_FIELDS
         "availability_mode": False,
         "instant_booking": False,
         "rating": 0,

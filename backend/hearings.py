@@ -95,8 +95,18 @@ async def ensure_indexes(db) -> None:
     await db.hearing_requests.create_index([("status", 1), ("created_at", -1)], name="status_created")
     await db.hearing_requests.create_index([("requesting_user_id", 1)], name="requester")
     await db.hearing_requests.create_index([("proxy_counsel_user_id", 1)], name="assigned_proxy_counsel")
+    # Ahead of its data on purpose: no hearing is written with match_tier_deadline_at
+    # yet (Counsel Matching Agent roadmap M1) — this is the index the M13 scheduler
+    # poll will run against once M9/M10 start stamping that field.
+    await db.hearing_requests.create_index(
+        [("status", 1), ("proxy_counsel_user_id", 1), ("match_tier_deadline_at", 1)],
+        name="match_tier_deadline",
+    )
     await db.hearing_messages.create_index([("hearing_id", 1), ("created_at", 1)], name="hearing_thread")
     await db.professional_ratings.create_index([("rated_user_id", 1)], name="rated_user")
+    # One doc per hearing's matching lifecycle (Counsel Matching Agent, counsel_matching.py — M7+).
+    await db.counsel_matching_log.create_index([("hearing_id", 1)], name="matching_log_hearing", unique=True)
+    await db.counsel_matching_log.create_index([("match_id", 1)], name="matching_log_match_id", unique=True)
 
 
 async def create_hearing_request(db, requesting_user_id: str, court_id: str, hearing_date: str,
