@@ -612,3 +612,141 @@ Phase 5 — Escalation & refund
 Phase 6 — Hardening
 - [ ] M17 — End-to-end regression + performance validation
 - [ ] M18 — Observability KPIs (stretch)
+
+=============================================================================
+
+/*
+M1 — Schema & Collections Bootstrap
+
+Two files need changes, both purely additive:
+
+1. hearings.py — ensure_indexes()
+Adding the compound index the M13 scheduler will eventually poll against (status + proxy_counsel_user_id + match_tier_deadline_at), plus two indexes on the new counsel_matching_log collection. No hearing document writes any of these fields yet — that starts in M6/M9/M10/M13 — so this index sits ahead of its data, which is why I'm leaving one short comment explaining that (otherwise it reads as dead code to anyone hitting this file before M13 lands). counsel_matching_log doesn't have an owning module yet (that's counsel_matching.py, created in M7), so per the roadmap I'm hosting its indexes here — consistent with hearings.py already owning indexes for professional_ratings and hearing_messages, neither of which it exclusively "owns" conceptually either.
+
+I'm treating counsel_matching_log as one document per hearing's matching lifecycle (per the LLD), so both hearing_id and match_id get unique indexes, not just lookup indexes.
+
+2. practice.py — get_or_create_profile()
+Adding bar_council_verified: False as a new default field, grouped right next to kyc_status since they're the same kind of thing (admin-verified, not self-settable). I'm deliberately not adding it to PROFILE_EDITABLE_FIELDS — that list is what update_profile() filters against, so leaving it out is what stops a counsel from self-declaring their own bar verification, exactly like kyc_status today.
+
+One backward-compatibility consequence worth flagging up front: get_or_create_profile returns early (if profile: return profile) for any profile that already exists, so existing profiles won't get this field until they're re-created — they'll simply lack it. That's expected and matches this codebase's existing convention everywhere else (e.g. vendor.get("sponsored", False)) — no backfill migration, callers read with .get("bar_council_verified", False). I'm not writing a backfill script since nothing in M1 reads this field yet — that's for M7's eligibility filter.
+
+Now applying both edits.
+
+● Update(backend\hearings.py)
+Added 10 lines
+    await db.hearing_requests.create_index([("status", 1),
+ ("created_at", -1)], name="status_created")
+    await db.hearing_requests.create_index([("requesting_u
+ser_id", 1)], name="requester")
+    await db.hearing_requests.create_index([("proxy_counse
+l_user_id", 1)], name="assigned_proxy_counsel")
+    # Ahead of its data on purpose: no hearing is written
+with match_tier_deadline_at
+    # yet (Counsel Matching Agent roadmap M1) — this is th
+e index the M13 scheduler
+    # poll will run against once M9/M10 start stamping tha
+t field.
+    await db.hearing_requests.create_index(
+        [("status", 1), ("proxy_counsel_user_id", 1), ("ma
+tch_tier_deadline_at", 1)],
+        name="match_tier_deadline",
+    )
+    await db.hearing_messages.create_index([("hearing_id",
+ 1), ("created_at", 1)], name="hearing_thread")
+    await db.professional_ratings.create_index([("rated_us
+er_id", 1)], name="rated_user")
+    # One doc per hearing's matching lifecycle (Counsel Ma
+tching Agent, counsel_matching.py — M7+).
+    await db.counsel_matching_log.create_index([("hearing_
+id", 1)], name="matching_log_hearing", unique=True)
+    await db.counsel_matching_log.create_index([("match_id
+", 1)], name="matching_log_match_id", unique=True)
+
+
+async def create_hearing_request(db, requesting_user_id: s
+tr, court_id: str, hearing_date: str,
+
+● Update(backend\practice.py)
+Added 1 line
+        "office_address": None,
+        "fee_structure": None,
+        "kyc_status": "pending",  # admin-verified, not sel
+f-settable — see PROFILE_EDITABLE_FIELDS
+        "bar_council_verified": False,  # admin-verified, n
+ot self-settable — see PROFILE_EDITABLE_FIELDS
+        "availability_mode": False,
+        "instant_booking": False,
+        "rating": 0,
+
+  Read 2 files
+
+Both edits applied cleanly. Now verifying nothing else in the codebase breaks — checking for any place that unpacks proxy_counsel_profiles by an exact key set (which would need updating) or double-runs ensure_indexes.
+
+  Searched for 1 pattern
+
+Confirmed — PROFILE_EDITABLE_FIELDS is untouched, and update_profile's whitelist filter means bar_council_verified can't be set through the self-service endpoint even though I didn't add any guard for it explicitly — it's excluded by omission, same as kyc_status.
+
+---
+M1 Summary
+
+Files modified
+
+- backend/hearings.py — ensure_indexes(): added one new compound index on hearing_requests, plus two new indexes on the new counsel_matching_log collection.
+- backend/practice.py — get_or_create_profile(): added bar_council_verified: False to the default profile document.
+
+Database / index changes
+
+Collection: hearing_requests
+Index: {status:1, proxy_counsel_user_id:1, match_tier_deadline_at:1} (name
+match_tier_deadline)
+Purpose: Forward-looking — supports the M13 scheduler's poll query;
+harmless no-op until fields are populated
+────────────────────────────────────────
+Collection: counsel_matching_log
+Index: {hearing_id:1} unique (name matching_log_hearing)
+Purpose: One doc per hearing's matching lifecycle
+────────────────────────────────────────
+Collection: counsel_matching_log
+Index: {match_id:1} unique (name matching_log_match_id)
+Purpose: Direct lookup by match id
+────────────────────────────────────────
+Collection: proxy_counsel_profiles
+Index: (no index change)
+Purpose: New field bar_council_verified: bool added to the document shape
+only, defaulted at profile creation
+
+No migration script — existing proxy_counsel_profiles documents will lack bar_council_verified until next created (schemaless, defensive-read convention, matches how sponsored/rating etc. are already handled elsewhere in this codebase).
+
+Manual testing steps
+
+1. Start the backend normally (uvicorn server:app or however it's usually run) and confirm it boots without errors — ensure_indexes runs at startup for every module already wired in, including hearings_svc.
+2. Connect to Mongo and run db.hearing_requests.getIndexes() — confirm match_tier_deadline is present.
+3. Run db.counsel_matching_log.getIndexes() — confirm both matching_log_hearing and matching_log_match_id exist (this also implicitly creates the counsel_matching_log collection, empty).
+4. Hit the existing practice endpoints as a fresh test account:
+  - GET /practice/profile (first call, no profile yet) → response should include "bar_council_verified": false.
+  - PUT /practice/profile with a body that tries to include bar_council_verified: true → confirm it's silently ignored (response still shows false), same as attempting to set kyc_status.
+5. Spot-check an existing, previously-created proxy counsel profile (if any test data exists) via GET /practice/profile — confirm it still returns successfully without the field (it simply won't appear in the response), and nothing errors.
+6. Run the existing test suite (backend/tests/test_courtbazaar_api.py) to confirm no regressions.
+
+Possible edge cases
+
+- Pre-existing profiles missing the field: any proxy_counsel_profiles document created before this change has no bar_council_verified key at all — not false, just absent. Any future consumer (M7's eligibility filter) must read it as .get("bar_council_verified", False), never assume the key exists. Flagging this now so it isn't forgotten later.
+- Index creation on a collection with zero documents (counsel_matching_log): safe — Mongo creates the collection implicitly on first create_index call; no documents, no data risk.
+- Re-running ensure_indexes on every startup: idempotent, as it already is for the existing indexes in this function — Mongo no-ops if an identically-named, identically-specified index already exists.
+- Index name collision: verified match_tier_deadline, matching_log_hearing, matching_log_match_id don't collide with any existing index name in this codebase.
+
+Git commit message
+
+Bootstrap schema/indexes for Counsel Matching & Assignment Agent (M1)
+
+Adds the forward-looking hearing_requests index and counsel_matching_log
+collection indexes the matching agent's later milestones (M9/M10/M13)
+will populate, plus a bar_council_verified default field on proxy
+counsel profiles — admin-verified only, not self-settable, mirroring
+kyc_status. Purely additive: no existing behavior changes, no
+migration needed (schemaless reads with defaults, as elsewhere in
+this codebase).
+====================================================================================================
+
+
+/*
