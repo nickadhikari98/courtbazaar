@@ -432,10 +432,12 @@ async def seed_initial_data():
     import reviews as reviews_svc
     import hearings as hearings_svc
     import escrow as escrow_svc
+    import counsel_matching as counsel_matching_svc
     await leads_svc.ensure_indexes(db)
     await reviews_svc.ensure_indexes(db)
     await hearings_svc.ensure_indexes(db)
     await escrow_svc.ensure_indexes(db)
+    await counsel_matching_svc.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG

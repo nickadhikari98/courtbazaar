@@ -104,9 +104,6 @@ async def ensure_indexes(db) -> None:
     )
     await db.hearing_messages.create_index([("hearing_id", 1), ("created_at", 1)], name="hearing_thread")
     await db.professional_ratings.create_index([("rated_user_id", 1)], name="rated_user")
-    # One doc per hearing's matching lifecycle (Counsel Matching Agent, counsel_matching.py — M7+).
-    await db.counsel_matching_log.create_index([("hearing_id", 1)], name="matching_log_hearing", unique=True)
-    await db.counsel_matching_log.create_index([("match_id", 1)], name="matching_log_match_id", unique=True)
 
 
 async def create_hearing_request(db, requesting_user_id: str, court_id: str, hearing_date: str,
