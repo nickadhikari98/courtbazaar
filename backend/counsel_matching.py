@@ -275,3 +275,70 @@ def prepare_notification_batch(hearing: dict, selected_candidates: List[dict],
         }
         for candidate in selected_candidates
     ]
+
+
+# ---------------------------------------------------------------------------
+# Notification Dispatch Engine (roadmap M9)
+#
+# notifications.notify() only recognizes a fixed set of event strings
+# ("order_placed", "order_status", "otp", "hearing_event") — there is no
+# "hearing_offer" branch. Rather than add one (a notifications.py change
+# beyond this milestone's minimum-files scope, and arguably a step toward
+# "new provider" territory), dispatch reuses the existing, fully-implemented
+# "hearing_event" type — the same one server.py's _notify_hearing_event
+# already uses for every other hearing lifecycle notification. M8's
+# event_type label is preserved in the dispatch result for traceability, but
+# the actual notify() call always goes through "hearing_event".
+# ---------------------------------------------------------------------------
+
+def _offer_message(entry: dict) -> Tuple[str, str]:
+    """Builds minimal notification copy from fields prepare_notification_batch()
+    already assembled — the same inline string-formatting convention every
+    _notify_hearing_event call site in server.py already uses, not a new
+    templating abstraction."""
+    title = "New hearing offer"
+    court_id = entry.get("court_id") or "a court"
+    hearing_date = entry.get("hearing_date") or "a date to be confirmed"
+    fee = entry.get("fee")
+    fee_clause = f" Fee: Rs.{fee}." if fee else ""
+    body = f"You've been offered a hearing at {court_id} on {hearing_date}.{fee_clause} Log in to accept."
+    return title, body
+
+
+async def dispatch_notifications(db, notification_batch: List[dict]) -> List[dict]:
+    """Attempts delivery for every entry in prepare_notification_batch()'s
+    output, in order, using only notify()/record_notification_event() — no
+    new provider, no new notify() branch. Recipient info (phone/email/
+    notif_prefs) is resolved from db.users by counsel_user_id since batch
+    entries only carry the user_id. Never assigns a counsel, never updates
+    hearing status, never implements acceptance or waterfall logic — purely
+    delivery + a per-notification result. One entry failing (missing
+    recipient, an unexpected exception) never aborts the rest of the batch."""
+    from notifications import notify, record_notification_event
+
+    results = []
+    for entry in notification_batch:
+        counsel_user_id = entry.get("counsel_user_id")
+        hearing_id = entry.get("hearing_id")
+        try:
+            recipient = await db.users.find_one({"user_id": counsel_user_id}, {"_id": 0})
+            if not recipient:
+                results.append({
+                    "counsel_user_id": counsel_user_id, "hearing_id": hearing_id,
+                    "status": "failed", "reason": "recipient user not found", "channel_results": [],
+                })
+                continue
+
+            title, body = _offer_message(entry)
+            channel_results = notify(recipient, "hearing_event", {"title": title, "body": body})
+            await record_notification_event(db, counsel_user_id, "hearing_event", title, body, "hearing", hearing_id)
+            results.append({
+                "counsel_user_id": counsel_user_id, "hearing_id": hearing_id,
+                "status": "dispatched", "channel_results": channel_results,
+            })
+        except Exception as e:
+            results.append({
+                "counsel_user_id": counsel_user_id, "hearing_id": hearing_id,
+                "status": "failed", "reason": str(e), "channel_results": [],
+            })
+    return results
