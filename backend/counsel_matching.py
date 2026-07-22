@@ -16,8 +16,9 @@ than an application-level check-then-insert.
 """
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
+from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
 
@@ -89,3 +90,34 @@ async def finalize_matching_session(db, match_id: str, status: str, final_decisi
         {"$set": {"status": status, "final_decision": final_decision, "updated_at": now}},
     )
     return await db.counsel_matching_log.find_one({"match_id": match_id}, {"_id": 0})
+
+
+async def discover_candidates(db, hearing_id: str) -> List[dict]:
+    """Candidate Discovery Engine (roadmap M5) — a coarse, wide-net first
+    pass, not a precise shortlist. Eligibility here is deliberately limited
+    to three hard gates on the counsel's own profile:
+        - kyc_status == "approved"      (see practice.approve_kyc)
+        - bar_council_verified == True  (see practice.verify_bar_council)
+        - availability_mode == True     (coarse "taking hearings" toggle)
+
+    Court and practice-area matching are NOT applied yet: hearing_requests
+    has no practice_areas field in the current schema (a later milestone
+    adds it), and court matching wasn't part of this milestone's scope even
+    though court_id already exists on hearing_requests today. Likewise,
+    per-date availability_slots conflict checking (recurring slots, holiday
+    blocks) is a precision-scoring concern for a later milestone, not this
+    coarse discovery pass.
+
+    Returns full proxy_counsel_profiles documents (or an empty list if no
+    one qualifies) — the exact input shape a later ranking/scoring milestone
+    plugs into, without this function knowing anything about ranking."""
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+    if not hearing:
+        raise HTTPException(404, "Hearing not found")
+
+    query = {
+        "kyc_status": "approved",
+        "bar_council_verified": True,
+        "availability_mode": True,
+    }
+    return await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500)
