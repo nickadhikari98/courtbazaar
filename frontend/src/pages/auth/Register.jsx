@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { ArrowRight, Loader2, ShieldCheck } from "lucide-react";
+import { ArrowRight, Loader2, ShieldCheck, Eye, EyeOff } from "lucide-react";
 import Logo from "@/components/shared/Logo";
 import RoleSelectModal from "@/components/landing/join/RoleSelectModal";
 import { vendorSections } from "@/components/landing/join/roleFormData";
@@ -31,6 +31,7 @@ export default function Register() {
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", phone: "", password: "", role: "advocate" });
   const [vendorJoinOpen, setVendorJoinOpen] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const isVendorRole = form.role === "vendor";
 
   const submit = async (e) => {
@@ -90,7 +91,27 @@ export default function Register() {
               {!isVendorRole && (
                 <div>
                   <Label>Password</Label>
-                  <Input type="password" value={form.password} onChange={(e) => setForm({...form, password: e.target.value})} required minLength={6} placeholder="Min 6 chars" data-testid="register-password-input" />
+                  <div className="relative">
+                    <Input
+                      type={showPassword ? "text" : "password"}
+                      value={form.password}
+                      onChange={(e) => setForm({...form, password: e.target.value})}
+                      required
+                      minLength={6}
+                      placeholder="Min 6 chars"
+                      className="pr-10"
+                      data-testid="register-password-input"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      className="absolute inset-y-0 right-0 flex items-center px-3 text-muted-foreground hover:text-foreground"
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                      data-testid="register-password-toggle"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </div>
               )}
               <div>
@@ -99,10 +120,10 @@ export default function Register() {
                   <SelectTrigger data-testid="register-role-select"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="advocate">Advocate</SelectItem>
-                    <SelectItem value="law_firm">Law Firm</SelectItem>
+                    {/* <SelectItem value="law_firm">Law Firm</SelectItem> */}
                     <SelectItem value="vendor">Vendor / Print Shop</SelectItem>
-                    <SelectItem value="legal_typist">Legal Typist</SelectItem>
-                    <SelectItem value="notary">Notary Partner</SelectItem>
+                    {/* <SelectItem value="legal_typist">Legal Typist</SelectItem> */}
+                    {/* <SelectItem value="notary">Notary Partner</SelectItem> */}
                     <SelectItem value="delivery_partner">Delivery Partner</SelectItem>
                   </SelectContent>
                 </Select>
