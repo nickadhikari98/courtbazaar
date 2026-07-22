@@ -16,7 +16,7 @@ than an application-level check-then-insert.
 """
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
@@ -121,3 +121,108 @@ async def discover_candidates(db, hearing_id: str) -> List[dict]:
         "availability_mode": True,
     }
     return await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500)
+
+
+# ---------------------------------------------------------------------------
+# Candidate Scoring Engine (roadmap M6)
+#
+# Only founder-named ranking factors backed by real, already-populated data
+# are included: Rating, Court Familiarity (as a court_id membership check),
+# and Past Performance (as cases_completed). Two additional real-but-not-
+# founder-named signals are folded in as their own tunable weights rather
+# than silently blended into another factor: experience_years and
+# instant_booking.
+#
+# Deliberately excluded, and why (see M6 design notes for the full version):
+#   - Practice Area Match / Distance: would require inventing a schema field
+#     (hearing_requests.practice_areas, counsel/court geocoordinates) that
+#     doesn't exist today — not allowed this milestone.
+#   - Response Time / Acceptance Rate: counsel_matching_log (M4) exists as a
+#     collection, but no milestone has written real notification/acceptance
+#     timestamps into it yet, so every candidate would show identical,
+#     meaningless data — not a real signal, so not included.
+#   - success_rate: present as a field on every profile document, but no
+#     code path anywhere ever writes a value to it (always None today) —
+#     same "field exists, no real data" reasoning as the two factors above.
+# ---------------------------------------------------------------------------
+
+CASES_COMPLETED_SATURATION = 20  # cases_completed at/above this scores the max for that factor
+EXPERIENCE_YEARS_SATURATION = 15  # experience_years at/above this scores the max for that factor
+
+
+def _score_rating(counsel: dict, hearing: dict) -> float:
+    rating = counsel.get("rating") or 0
+    return min(float(rating) / 5.0, 1.0)
+
+
+def _score_court_match(counsel: dict, hearing: dict) -> float:
+    return 1.0 if hearing.get("court_id") in (counsel.get("courts") or []) else 0.0
+
+
+def _score_cases_completed(counsel: dict, hearing: dict) -> float:
+    cases = counsel.get("cases_completed") or 0
+    return min(float(cases) / CASES_COMPLETED_SATURATION, 1.0)
+
+
+def _score_experience_years(counsel: dict, hearing: dict) -> float:
+    years = counsel.get("experience_years") or 0
+    return min(float(years) / EXPERIENCE_YEARS_SATURATION, 1.0)
+
+
+def _score_instant_booking(counsel: dict, hearing: dict) -> float:
+    return 1.0 if counsel.get("instant_booking") else 0.0
+
+
+# (name, weight, compute_fn) — weights sum to 1.0. This is the seam future
+# milestones use to add/remove/reweight factors: edit this list, never the
+# loop in score_candidates.
+SCORING_FACTORS: List[Tuple[str, float, Callable[[dict, dict], float]]] = [
+    ("rating", 0.35, _score_rating),
+    ("court_match", 0.25, _score_court_match),
+    ("cases_completed", 0.20, _score_cases_completed),
+    ("experience_years", 0.10, _score_experience_years),
+    ("instant_booking", 0.10, _score_instant_booking),
+]
+
+
+def score_candidates(hearing: dict, candidates: List[dict]) -> List[dict]:
+    """Attaches a confidence_score (0-1, in-memory only — never written back
+    to proxy_counsel_profiles) to each candidate and returns them sorted
+    highest-first. Pure and synchronous: no database access, no mutation of
+    the input list/dicts. Does not select a shortlist size, notify anyone,
+    or decide anything beyond "here is a score" — see module notes above for
+    what later milestones own instead."""
+    scored = [
+        {**counsel, "confidence_score": round(
+            sum(weight * fn(counsel, hearing) for _, weight, fn in SCORING_FACTORS), 4,
+        )}
+        for counsel in candidates
+    ]
+    scored.sort(key=lambda c: c["confidence_score"], reverse=True)
+    return scored
+
+
+# ---------------------------------------------------------------------------
+# Top Candidate Selection (roadmap M7)
+# ---------------------------------------------------------------------------
+
+# The single place to change how many top-ranked candidates get selected by
+# default. A later milestone can either edit this constant directly, or pass
+# batch_size explicitly to select_top_candidates — neither requires changing
+# that function's signature/callers.
+TOP_CANDIDATE_BATCH_SIZE = 5
+
+
+def select_top_candidates(hearing: dict, scored_candidates: List[dict], batch_size: Optional[int] = None) -> List[dict]:
+    """Takes the output of score_candidates() (already sorted highest-first)
+    and returns the top batch_size candidates, exactly as given — no
+    re-sorting, no score mutation, no persistence. This function trusts
+    score_candidates' ordering completely rather than re-deriving it.
+
+    `hearing` is accepted but unused by this milestone's plain top-N
+    strategy — kept in the signature so a future selection strategy (e.g. a
+    different batch size for urgent hearings) can read hearing context
+    without any caller needing to change how it invokes this function."""
+    size = batch_size if batch_size is not None else TOP_CANDIDATE_BATCH_SIZE
+    size = max(size, 0)  # avoid Python's negative-slice semantics (list[:-1] != "select none")
+    return scored_candidates[:size]
