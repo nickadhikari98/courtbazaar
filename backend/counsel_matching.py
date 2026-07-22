@@ -226,3 +226,52 @@ def select_top_candidates(hearing: dict, scored_candidates: List[dict], batch_si
     size = batch_size if batch_size is not None else TOP_CANDIDATE_BATCH_SIZE
     size = max(size, 0)  # avoid Python's negative-slice semantics (list[:-1] != "select none")
     return scored_candidates[:size]
+
+
+# ---------------------------------------------------------------------------
+# Notification Batch Preparation (roadmap M8)
+#
+# Candidates here are proxy_counsel_profiles documents — they have no
+# phone/email/notif_prefs (those live on the separate `users` collection,
+# keyed by the same user_id). Resolving contact details and composing actual
+# message copy are both delivery concerns for a future notification sender
+# (see notifications.py's tmpl_* convention for where copy gets rendered) —
+# this layer only identifies who and what, as plain structured context.
+#
+# Deliberately excluded, and why:
+#   - urgent: reserved on hearing_requests since M1 but never populated by
+#     create_hearing_request (same "field exists, no real data yet" case as
+#     success_rate in M6) — including it would default every entry to a
+#     misleading False rather than reflecting real data.
+#   - case_details/matter_id: real fields, but not needed to identify who to
+#     notify about what; a sender can fetch the full hearing by hearing_id.
+#   - phone/email/notif_prefs: belong to the `users` collection and the
+#     eventual sender, not this preparation layer.
+# ---------------------------------------------------------------------------
+
+# Default label for the future sender to key its template/channel selection
+# on. Like TOP_CANDIDATE_BATCH_SIZE, overridable per-call without changing
+# this function's signature.
+NOTIFICATION_EVENT_TYPE = "hearing_offer"
+
+
+def prepare_notification_batch(hearing: dict, selected_candidates: List[dict],
+                                event_type: Optional[str] = None) -> List[dict]:
+    """Turns select_top_candidates()'s output into an in-memory notification
+    batch — one entry per candidate, order preserved, candidate objects
+    untouched. Sends nothing, writes nothing, creates no session, assigns no
+    one, updates no hearing status. Just structured context a future
+    notification sender consumes."""
+    resolved_event_type = event_type if event_type is not None else NOTIFICATION_EVENT_TYPE
+    return [
+        {
+            "counsel_user_id": candidate.get("user_id"),
+            "hearing_id": hearing.get("hearing_id"),
+            "court_id": hearing.get("court_id"),
+            "hearing_date": hearing.get("hearing_date"),
+            "fee": hearing.get("fee"),
+            "confidence_score": candidate.get("confidence_score"),
+            "event_type": resolved_event_type,
+        }
+        for candidate in selected_candidates
+    ]
