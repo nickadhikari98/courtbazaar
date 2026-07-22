@@ -1918,3 +1918,79 @@ class TestIter6Regression:
     def test_admin_audit_log_ok(self, s, admin_token):
         r = s.get(f"{API}/admin/audit-log", headers=hdr(admin_token), timeout=15)
         assert r.status_code == 200
+
+
+# ---------- Counsel Matching Agent roadmap M3: admin KYC + Bar Council verification ----------
+class TestPracticeVerificationM3:
+    """"proxy_counsel" isn't in ROLES (server.py) — a real proxy_counsel
+    account only exists via the Lead->Professional approval pipeline, which
+    is out of scope for testing two admin flag-flip endpoints. Both
+    endpoints only ever look up proxy_counsel_profiles by user_id, so a
+    throwaway advocate's user_id is used as the target and a profile row is
+    inserted directly — same direct-DB escape hatch _otp_db() already uses
+    for OTP codes."""
+
+    def _make_target_user_and_profile(self, s):
+        email = f"TEST_practice_verify_{uuid.uuid4().hex[:8]}@cbtest.in"
+        reg = s.post(f"{API}/auth/register", json={
+            "email": email, "password": "TestPass@123", "name": "Practice Verify Target", "role": "advocate",
+        }, timeout=15)
+        assert reg.status_code == 200, f"register failed: {reg.status_code} {reg.text}"
+        user_id = reg.json()["user"]["user_id"]
+        _otp_db().proxy_counsel_profiles.insert_one({
+            "user_id": user_id, "kyc_status": "pending", "bar_council_verified": False,
+        })
+        return user_id
+
+    def _cleanup(self, user_id):
+        db = _otp_db()
+        db.proxy_counsel_profiles.delete_many({"user_id": user_id})
+        db.users.delete_many({"user_id": user_id})
+
+    def test_approve_kyc_requires_admin(self, s, advocate_token):
+        r = s.put(f"{API}/admin/practice/whoever/approve-kyc", headers=hdr(advocate_token), timeout=15)
+        assert r.status_code == 403
+
+    def test_verify_bar_council_requires_admin(self, s, advocate_token):
+        r = s.put(f"{API}/admin/practice/whoever/verify-bar-council", headers=hdr(advocate_token), timeout=15)
+        assert r.status_code == 403
+
+    def test_approve_kyc_flips_only_kyc_status(self, s, admin_token):
+        user_id = self._make_target_user_and_profile(s)
+        try:
+            r = s.put(f"{API}/admin/practice/{user_id}/approve-kyc", headers=hdr(admin_token), timeout=15)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["kyc_status"] == "approved"
+            assert body["bar_council_verified"] is False  # untouched
+        finally:
+            self._cleanup(user_id)
+
+    def test_verify_bar_council_flips_only_bar_council_verified(self, s, admin_token):
+        user_id = self._make_target_user_and_profile(s)
+        try:
+            r = s.put(f"{API}/admin/practice/{user_id}/verify-bar-council", headers=hdr(admin_token), timeout=15)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["bar_council_verified"] is True
+            assert body["kyc_status"] == "pending"  # untouched
+        finally:
+            self._cleanup(user_id)
+
+    def test_approve_kyc_idempotent(self, s, admin_token):
+        user_id = self._make_target_user_and_profile(s)
+        try:
+            r1 = s.put(f"{API}/admin/practice/{user_id}/approve-kyc", headers=hdr(admin_token), timeout=15)
+            r2 = s.put(f"{API}/admin/practice/{user_id}/approve-kyc", headers=hdr(admin_token), timeout=15)
+            assert r1.status_code == 200 and r2.status_code == 200
+            assert r2.json()["kyc_status"] == "approved"
+        finally:
+            self._cleanup(user_id)
+
+    def test_approve_kyc_nonexistent_user_404(self, s, admin_token):
+        r = s.put(f"{API}/admin/practice/user_does_not_exist_xyz/approve-kyc", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 404
+
+    def test_verify_bar_council_nonexistent_user_404(self, s, admin_token):
+        r = s.put(f"{API}/admin/practice/user_does_not_exist_xyz/verify-bar-council", headers=hdr(admin_token), timeout=15)
+        assert r.status_code == 404

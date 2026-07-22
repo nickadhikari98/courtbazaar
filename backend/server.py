@@ -2266,6 +2266,33 @@ async def get_practice_performance(user=Depends(get_current_user)):
     return await practice_svc.performance(db, user["user_id"])
 
 
+# ---------- ADMIN: proxy counsel verification (Counsel Matching Agent
+# eligibility prerequisite — see practice.approve_kyc/verify_bar_council) ----
+@api_router.put("/admin/practice/{user_id}/approve-kyc")
+async def admin_approve_practice_kyc(user_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    profile = await practice_svc.approve_kyc(db, user_id)
+    try:
+        from audit_log import log_audit
+        await log_audit(db, "practice.approve_kyc", user, {"target_user_id": user_id})
+    except Exception:
+        pass
+    return profile
+
+@api_router.put("/admin/practice/{user_id}/verify-bar-council")
+async def admin_verify_practice_bar_council(user_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    profile = await practice_svc.verify_bar_council(db, user_id)
+    try:
+        from audit_log import log_audit
+        await log_audit(db, "practice.verify_bar_council", user, {"target_user_id": user_id})
+    except Exception:
+        pass
+    return profile
+
+
 # ============================================================================
 # HEARING REQUESTS — the "Hire Proxy Counsel" marketplace. First-class
 # entity (see hearings.py's module docstring for why it doesn't reuse orders).

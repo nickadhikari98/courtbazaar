@@ -59,6 +59,32 @@ async def update_profile(db, user_id: str, patch: Dict[str, Any]) -> dict:
     return await get_or_create_profile(db, user_id)
 
 
+async def approve_kyc(db, user_id: str) -> dict:
+    """Admin action. Unlike update_profile, this never auto-creates a row —
+    approving KYC for a user_id with no proxy_counsel_profiles row at all is
+    an error (typo, or a user who never onboarded as proxy counsel), not a
+    silent no-op."""
+    result = await db.proxy_counsel_profiles.update_one(
+        {"user_id": user_id},
+        {"$set": {"kyc_status": "approved", "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(404, "Proxy counsel profile not found")
+    return await db.proxy_counsel_profiles.find_one({"user_id": user_id}, {"_id": 0})
+
+
+async def verify_bar_council(db, user_id: str) -> dict:
+    """Admin action — same not-auto-create, 404-on-missing-profile semantics
+    as approve_kyc."""
+    result = await db.proxy_counsel_profiles.update_one(
+        {"user_id": user_id},
+        {"$set": {"bar_council_verified": True, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(404, "Proxy counsel profile not found")
+    return await db.proxy_counsel_profiles.find_one({"user_id": user_id}, {"_id": 0})
+
+
 def _validate_slot(kind: str, day_of_week: Optional[int], date: Optional[str]) -> None:
     if kind not in AVAILABILITY_KINDS:
         raise HTTPException(400, f"Invalid availability kind. Allowed: {', '.join(AVAILABILITY_KINDS)}")
