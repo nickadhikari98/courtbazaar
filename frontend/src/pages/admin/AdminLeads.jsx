@@ -11,12 +11,12 @@ import {
   Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import {
-  Search, FileText, Download, CheckCircle2, XCircle, MessageSquareWarning, StickyNote, Trash2, Mail,
+  Search, FileText, Download, CheckCircle2, XCircle, MessageSquareWarning, StickyNote, Trash2, Mail, RotateCcw,
 } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import {
   adminListLeads, adminGetLead, adminChangeLeadStatus, adminAddLeadNote,
-  adminGetLeadDocumentUrl, adminGetLeadStats, adminDeleteLead, adminResendWelcomeEmail,
+  adminGetLeadDocumentUrl, adminGetLeadStats, adminDeleteLead, adminResendWelcomeEmail, adminReactivateUser,
 } from "@/lib/leadsApi";
 
 const STATUS_TABS = [
@@ -247,6 +247,21 @@ function LeadDetailDialog({ leadId, open, onOpenChange, onChanged, onDeleteReque
     }
   };
 
+  const reactivateAndResend = async () => {
+    setBusy(true);
+    try {
+      await adminReactivateUser(lead.converted_user_id);
+      const { email } = await adminResendWelcomeEmail(leadId);
+      toast.success(`Account reactivated and set-password email resent to ${email}`);
+      const fresh = await adminGetLead(leadId);
+      setLead(fresh);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not reactivate the account");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!lead) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -349,7 +364,7 @@ function LeadDetailDialog({ leadId, open, onOpenChange, onChanged, onDeleteReque
             <Button type="button" disabled={busy} onClick={() => changeStatus("rejected")} variant="outline" className="font-bold text-red-600 border-red-200 hover:bg-red-50">
               <XCircle className="w-4 h-4 mr-1.5" /> Reject
             </Button>
-            {lead.converted_user_id && (
+            {lead.converted_user_id && !lead.linked_account_deactivated && (
               <Button
                 type="button"
                 disabled={busy}
@@ -358,6 +373,17 @@ function LeadDetailDialog({ leadId, open, onOpenChange, onChanged, onDeleteReque
                 className="font-bold ml-auto"
               >
                 <Mail className="w-4 h-4 mr-1.5" /> Resend Set-Password Email
+              </Button>
+            )}
+            {lead.converted_user_id && lead.linked_account_deactivated && (
+              <Button
+                type="button"
+                disabled={busy}
+                onClick={reactivateAndResend}
+                variant="outline"
+                className="font-bold ml-auto"
+              >
+                <RotateCcw className="w-4 h-4 mr-1.5" /> Reactivate & Resend Email
               </Button>
             )}
             <Button

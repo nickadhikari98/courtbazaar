@@ -1697,6 +1697,31 @@ async def admin_deactivate_user(user_id: str, user=Depends(get_current_user), re
     }, request)
     return {"ok": True}
 
+@api_router.put("/admin/users/{user_id}/reactivate")
+async def admin_reactivate_user(user_id: str, user=Depends(get_current_user), request: Request = None):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if not target.get("deleted"):
+        return {"ok": True, "already_active": True}
+    from audit_log import reactivate_user, log_audit
+    try:
+        await reactivate_user(db, user_id, user["user_id"])
+    except Exception as e:
+        logger.error(f"admin.user_reactivated FAILED: admin={user['user_id']} target={user_id} error={e}")
+        await log_audit(db, "admin.user_reactivated", user, {
+            "target_user_id": user_id, "target_email": target.get("email"), "result": "failure", "error": str(e),
+        }, request)
+        raise HTTPException(500, "Could not reactivate this user")
+    logger.info(f"admin.user_reactivated: admin={user['user_id']} target={user_id} email={target.get('email')}")
+    await log_audit(db, "admin.user_reactivated", user, {
+        "target_user_id": user_id, "target_email": target.get("email"),
+        "target_role": target.get("role"), "result": "success",
+    }, request)
+    return {"ok": True}
+
 # ---------- SUBSCRIPTION ----------
 SUBSCRIPTION_PLANS = {
     "free": {"name": "Free", "price": 0, "features": ["Basic services", "Standard pricing"]},

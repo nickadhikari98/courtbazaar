@@ -19,7 +19,7 @@ CRITICAL_ACTIONS = {
     "dpdp.data_export", "dpdp.data_deletion_request", "dpdp.data_deletion_executed",
     "file.upload", "file.delete",
     "lead.created", "lead.duplicate_blocked", "lead.deleted",
-    "admin.user_deactivated",
+    "admin.user_deactivated", "admin.user_reactivated",
     "review.submitted", "review.approved", "review.rejected", "review.deleted",
 }
 
@@ -92,6 +92,23 @@ async def deactivate_user(db, user_id: str, admin_user_id: str) -> dict:
         {"$set": {"deleted": True, "deleted_at": now, "password_hash": "", "deactivated_by": admin_user_id}},
     )
     await db.user_sessions.delete_many({"user_id": user_id})
+    return {"matched": result.matched_count > 0}
+
+
+async def reactivate_user(db, user_id: str, admin_user_id: str) -> dict:
+    """Undo `deactivate_user`. Deliberately the mirror image, not a generic
+    "restore" — it only clears the lockout flags, exactly as that function's
+    docstring anticipated. It does NOT restore a password: `deactivate_user`
+    wiped `password_hash`, so the account is reactivated but stays
+    unusable until a fresh set-password link is issued (callers pair this
+    with `leads.resend_set_password_email` rather than this function trying
+    to send email itself)."""
+    now = datetime.now(timezone.utc).isoformat()
+    result = await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {"deleted": False, "reactivated_at": now, "reactivated_by": admin_user_id},
+         "$unset": {"deleted_at": "", "deactivated_by": ""}},
+    )
     return {"matched": result.matched_count > 0}
 
 
