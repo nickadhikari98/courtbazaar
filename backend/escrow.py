@@ -17,12 +17,20 @@ or equivalent) only changes this module's internals — razorpay_svc.py, the
 call sites in server.py, and the frontend payment UI would all stay exactly
 as they are, since none of them see payment *state* today, only "pay"/
 "released" as business events.
+
+`payee_user_id` on create_and_hold is optional (Counsel Matching Agent):
+funds can be held before a payee is known — payment is confirmed, then
+matching picks a counsel. assign_payee() attaches the payee once one accepts
+and performs the wallet_held_balance credit that create_and_hold would
+otherwise have done immediately. release() refuses to run until a payee has
+been assigned — see release()'s docstring for why.
 """
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
+from pymongo import ReturnDocument
 
 from workflow import StateMachine, IllegalTransition
 
@@ -58,13 +66,17 @@ def _make_timeline_hook(db, escrow_id: str):
 
 async def create_and_hold(
     db, *, context_type: str, context_id: str, service_id: Optional[str], matter_id: Optional[str],
-    payer_user_id: str, payee_user_id: str, amount: float, platform_commission_pct: float,
+    payer_user_id: str, payee_user_id: Optional[str] = None, amount: float, platform_commission_pct: float,
     razorpay_order_id: Optional[str], razorpay_payment_id: Optional[str],
 ) -> dict:
     """Records the customer's payment as platform-held, not payable to
     `payee_user_id` yet — `wallet_balance` is untouched here; only
     `wallet_held_balance` moves, so the amount is visible somewhere without
-    being withdrawable (see release() for when it actually becomes theirs)."""
+    being withdrawable (see release() for when it actually becomes theirs).
+
+    `payee_user_id` may be omitted when no payee has been chosen yet (see
+    module docstring) — the wallet_held_balance credit is deferred to
+    assign_payee() in that case instead of happening here."""
     now = datetime.now(timezone.utc)
     payee_amount = round(amount * (1 - platform_commission_pct), 2)
     doc = {
@@ -94,21 +106,55 @@ async def create_and_hold(
         {"escrow_id": doc["escrow_id"]},
         {"$set": {"status": "held", "updated_at": datetime.now(timezone.utc).isoformat()}},
     )
-    await db.users.update_one({"user_id": payee_user_id}, {"$inc": {"wallet_held_balance": payee_amount}})
+    if payee_user_id:
+        await db.users.update_one({"user_id": payee_user_id}, {"$inc": {"wallet_held_balance": payee_amount}})
 
     doc["status"] = "held"
     doc.pop("_id", None)
     return doc
 
 
+async def assign_payee(db, *, context_type: str, context_id: str, payee_user_id: str) -> dict:
+    """Deferred-payee path (see module docstring): attaches a payee to an
+    escrow hold created with payee_user_id=None, then performs the
+    wallet_held_balance credit create_and_hold would have done immediately
+    had the payee been known at hold time. Race-safe — same conditional
+    find_one_and_update idiom as hearings.accept_hearing_request — and
+    idempotent against a retried call for the same payee."""
+    now = datetime.now(timezone.utc).isoformat()
+    updated = await db.escrow_transactions.find_one_and_update(
+        {"context_type": context_type, "context_id": context_id, "status": "held", "payee_user_id": None},
+        {"$set": {"payee_user_id": payee_user_id, "updated_at": now}},
+        projection={"_id": 0}, return_document=ReturnDocument.AFTER,
+    )
+    if updated:
+        await db.users.update_one({"user_id": payee_user_id}, {"$inc": {"wallet_held_balance": updated["payee_amount"]}})
+        return updated
+
+    escrow = await db.escrow_transactions.find_one({"context_type": context_type, "context_id": context_id}, {"_id": 0})
+    if not escrow:
+        raise HTTPException(404, "No escrow record for this context")
+    if escrow.get("payee_user_id") == payee_user_id:
+        return escrow  # already assigned to this exact payee — idempotent no-op
+    if escrow.get("payee_user_id"):
+        raise HTTPException(409, "Escrow already has a different payee assigned")
+    raise HTTPException(400, f"Cannot assign payee from status '{escrow['status']}'")
+
+
 async def release(db, *, context_type: str, context_id: str, released_by_user_id: str) -> dict:
     """held -> released: credits the payee's withdrawable wallet_balance and
     lifetime_earnings, moves the amount off wallet_held_balance, and writes a
     wallet_transactions row the existing Withdrawal flow already understands
-    (settlements.py's /earnings/withdraw reads wallet_balance, unchanged)."""
+    (settlements.py's /earnings/withdraw reads wallet_balance, unchanged).
+
+    Refuses to run until a payee has been assigned (see assign_payee) —
+    without this guard, an escrow held with payee_user_id=None could be
+    "released" while crediting nobody, silently losing track of the money."""
     escrow = await db.escrow_transactions.find_one({"context_type": context_type, "context_id": context_id})
     if not escrow:
         raise HTTPException(404, "No escrow record for this context")
+    if not escrow.get("payee_user_id"):
+        raise HTTPException(400, "Cannot release escrow with no payee assigned — call assign_payee first")
     sm = StateMachine(ESCROW_TRANSITIONS, _make_timeline_hook(db, escrow["escrow_id"]))
     try:
         await sm.apply(escrow, escrow["status"], "release", {"user_id": released_by_user_id})
@@ -145,7 +191,9 @@ async def release(db, *, context_type: str, context_id: str, released_by_user_id
 async def refund(db, *, context_type: str, context_id: str, reason: str) -> dict:
     """held -> refunded: ledger-level only in this pass — an actual bank/
     gateway refund call is a documented future step (see module docstring),
-    not built now. Reverses the wallet_held_balance bump from create_and_hold."""
+    not built now. Reverses the wallet_held_balance bump from create_and_hold
+    — skipped entirely if no payee was ever assigned (nothing to reverse;
+    see assign_payee/module docstring for the deferred-payee case)."""
     escrow = await db.escrow_transactions.find_one({"context_type": context_type, "context_id": context_id})
     if not escrow:
         raise HTTPException(404, "No escrow record for this context")
@@ -160,10 +208,12 @@ async def refund(db, *, context_type: str, context_id: str, reason: str) -> dict
         {"escrow_id": escrow["escrow_id"]},
         {"$set": {"status": "refunded", "refund_reason": reason, "updated_at": now}},
     )
-    await db.users.update_one(
-        {"user_id": escrow["payee_user_id"]}, {"$inc": {"wallet_held_balance": -escrow["payee_amount"]}},
-    )
+    if escrow.get("payee_user_id"):
+        await db.users.update_one(
+            {"user_id": escrow["payee_user_id"]}, {"$inc": {"wallet_held_balance": -escrow["payee_amount"]}},
+        )
     escrow["status"] = "refunded"
+    escrow["refund_reason"] = reason
     escrow.pop("_id", None)
     return escrow
 

@@ -87,6 +87,11 @@ export async function adminResendWelcomeEmail(leadId) {
   return data;
 }
 
+export async function adminReactivateUser(userId) {
+  const { data } = await api.put(`/admin/users/${userId}/reactivate`);
+  return data;
+}
+
 export async function adminGetLeadDocumentUrl(leadId, docId) {
   const { data } = await api.get(`/admin/leads/${leadId}/documents/${docId}/download-url`);
   return data; // { url, filename }

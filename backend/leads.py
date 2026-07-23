@@ -498,7 +498,11 @@ async def get_lead_detail(db, lead_id: str) -> dict:
         raise HTTPException(404, "Lead not found")
     documents = await db.lead_documents.find({"lead_id": lead_id, "is_deleted": False}, {"_id": 0}).to_list(100)
     history = await db.lead_status_history.find({"lead_id": lead_id}, {"_id": 0}).sort("created_at", 1).to_list(200)
-    return {**lead, "documents": documents, "status_history": history}
+    linked_account_deactivated = False
+    if lead.get("converted_user_id"):
+        linked_user = await db.users.find_one({"user_id": lead["converted_user_id"]}, {"_id": 0, "deleted": 1})
+        linked_account_deactivated = bool(linked_user and linked_user.get("deleted"))
+    return {**lead, "documents": documents, "status_history": history, "linked_account_deactivated": linked_account_deactivated}
 
 
 async def _activate_professional(db, lead: dict) -> None:
@@ -629,9 +633,15 @@ async def resend_set_password_email(db, send_email_fn, lead_id: str) -> dict:
     user_id = lead.get("converted_user_id")
     if not user_id:
         raise HTTPException(400, "This application hasn't been converted to an account yet.")
-    user = await db.users.find_one({"user_id": user_id, "deleted": {"$ne": True}})
+    user = await db.users.find_one({"user_id": user_id})
     if not user:
         raise HTTPException(404, "Linked account not found.")
+    if user.get("deleted"):
+        # Deliberately not auto-reactivated here: reactivation is an admin
+        # decision distinct from "resend an email" (see audit_log.deactivate_user)
+        # and must go through its own explicit action/audit entry, not happen
+        # as a side effect of this call.
+        raise HTTPException(409, "This account has been deactivated. Reactivate it first, then resend the set-password email.")
 
     set_password_token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)

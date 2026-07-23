@@ -11,23 +11,33 @@ reacts to "payment confirmed" as a business event via mark_payment_confirmed,
 and calls into escrow.py for release/refund. See escrow.py's module
 docstring for why that split exists.
 
-Lifecycle (workflow.StateMachine):
-    broadcast -> accepted -> payment_pending -> documents_shared -> preparation
-    -> hearing_scheduled -> hearing_completed -> verification_pending
-    -> verified -> completed -> rated (rated is a terminal relabel, not a
-    flag alongside completed — same as before this refactor: whichever side
-    rates first flips status to "rated", second rater keeps it there)
+Lifecycle (workflow.StateMachine) — reordered by the Counsel Matching Agent
+roadmap's M6 (payment now precedes broadcast, not the other way around):
+    requested -> payment_pending -> broadcast -> accepted -> documents_shared
+    -> preparation -> hearing_scheduled -> hearing_completed
+    -> verification_pending -> verified -> completed -> rated (rated is a
+    terminal relabel, not a flag alongside completed — same as before this
+    refactor: whichever side rates first flips status to "rated", second
+    rater keeps it there)
 Off-ramps: rejected (targeted-request decline), cancelled, disputed, expired.
-Auto-chained transitions (same precedent as the original requested->broadcast
-chain below) fire on a real event, never a timer: documents_shared->
-preparation->hearing_scheduled on the first case-document upload,
-hearing_completed->verification_pending on the order-sheet upload.
+Auto-chained transitions fire on a real event, never a timer: documents_shared
+-> preparation -> hearing_scheduled on the first case-document upload,
+hearing_completed -> verification_pending on the order-sheet upload.
+`accepted` has no auto-chain of its own yet — advancing straight to
+documents_shared (assigning the escrow payee, clearing the match-tier
+deadline) is M12's job (Acceptance-Side Integration), not M6's, so a hearing
+sits at `accepted` until M12 lands; see HEARING_TRANSITIONS below.
 
 Matching is broadcast-based by default (unlike vendor order auto-matching in
 server.py): any available proxy counsel can see and accept an open request;
 whoever accepts first wins (race-safe — see accept_hearing_request()).
 Declining is personal (`declined_by`), not global — one proxy counsel
-declining doesn't cancel the request for everyone else.
+declining doesn't cancel the request for everyone else. mark_payment_confirmed
+kicks off the Counsel Matching Agent (counsel_matching.run_matching, M11)
+right after a hearing reaches "broadcast" — tier-1 eligible candidates are
+notified automatically; the broadcast pool itself is still "anyone eligible
+can accept", matching still doesn't gate who's allowed to accept (that's
+M12/M13's job).
 
 `target_advocate_id` (nullable) is the integration point for a separate,
 not-yet-built advocate search/select workstream: when set, the request is
@@ -51,15 +61,20 @@ HEARING_STATUSES = (
 )
 
 HEARING_TRANSITIONS = {
-    ("requested", "broadcast"): "broadcast",  # one-call chain in create_hearing_request — see there
+    # M6 reorder: payment now happens before broadcast — see module docstring.
+    ("requested", "initiate_payment"): "payment_pending",
+    ("requested", "cancel"): "cancelled",         # new — "requested" is now a real, potentially long-lived pre-payment state
+    ("payment_pending", "confirm_payment"): "broadcast",
+    ("payment_pending", "cancel"): "cancelled",
     ("broadcast", "accept"): "accepted",
     ("broadcast", "reject"): "rejected",          # targeted request only — see accept_hearing_request/reject_hearing_request
     ("broadcast", "cancel"): "cancelled",
     ("broadcast", "expire"): "expired",           # reserved — no scheduled job drives this yet
-    ("accepted", "initiate_payment"): "payment_pending",
     ("accepted", "cancel"): "cancelled",
-    ("payment_pending", "confirm_payment"): "documents_shared",
-    ("payment_pending", "cancel"): "cancelled",
+    # M12: auto-chain straight through to documents_shared — same "accept"
+    # action reused across two consecutive states, same precedent as
+    # ("completed","rate")/("rated","rate") below reusing one action string.
+    ("accepted", "accept"): "documents_shared",
     ("documents_shared", "share_documents"): "preparation",
     ("documents_shared", "cancel"): "cancelled",  # money already held — see cancel_hearing_request's refund call
     ("preparation", "schedule"): "hearing_scheduled",
@@ -79,7 +94,10 @@ HEARING_TRANSITIONS = {
 
 # Statuses from which cancelling means money is already held and must be
 # refunded (see cancel_hearing_request) rather than simply walked back.
-_CANCEL_REQUIRES_REFUND = {"documents_shared", "preparation", "hearing_scheduled", "hearing_completed"}
+# M6 reorder: "broadcast" and "accepted" now happen after payment (they used
+# to precede it), so cancelling from either of them now means escrow is
+# already held too.
+_CANCEL_REQUIRES_REFUND = {"broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"}
 
 # service_id is nullable on escrow_transactions in general, but hearings
 # aren't a db.services catalog row — this constant keeps every hearing
@@ -95,6 +113,13 @@ async def ensure_indexes(db) -> None:
     await db.hearing_requests.create_index([("status", 1), ("created_at", -1)], name="status_created")
     await db.hearing_requests.create_index([("requesting_user_id", 1)], name="requester")
     await db.hearing_requests.create_index([("proxy_counsel_user_id", 1)], name="assigned_proxy_counsel")
+    # Ahead of its data on purpose: no hearing is written with match_tier_deadline_at
+    # yet (Counsel Matching Agent roadmap M1) — this is the index the M13 scheduler
+    # poll will run against once M9/M10 start stamping that field.
+    await db.hearing_requests.create_index(
+        [("status", 1), ("proxy_counsel_user_id", 1), ("match_tier_deadline_at", 1)],
+        name="match_tier_deadline",
+    )
     await db.hearing_messages.create_index([("hearing_id", 1), ("created_at", 1)], name="hearing_thread")
     await db.professional_ratings.create_index([("rated_user_id", 1)], name="rated_user")
 
@@ -137,13 +162,11 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
         "created_at": now.isoformat(),
         "updated_at": now.isoformat(),
     }
+    # M6 reorder: no more auto-chain to "broadcast" here — the hearing now
+    # stays at "requested" until the requester pays; see mark_payment_confirmed
+    # for where broadcast (and the targeted-vs-broadcast timeline note that
+    # used to live here) now happens.
     await db.hearing_requests.insert_one(doc)
-
-    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
-    doc["status"] = "requested"
-    await _transition(db, sm, doc, "requested", "broadcast", None,
-                       note="Assigned directly to one advocate" if target_advocate_id else "Broadcast to available proxy counsel")
-    doc["status"] = "broadcast"
     doc.pop("_id", None)
     return doc
 
@@ -240,7 +263,32 @@ async def accept_hearing_request(db, hearing_id: str, user: dict) -> dict:
     if not updated:
         if hearing.get("target_advocate_id") not in (None, user["user_id"]):
             raise HTTPException(403, "This request wasn't sent to you")
+        # M6 reorder: "requested"/"payment_pending" are now real, potentially
+        # long-lived pre-broadcast states (not just a single-call blip), so an
+        # early accept attempt is a distinct, expected case from a genuine
+        # accept-race or an already-taken request — give it its own message.
+        if hearing["status"] in ("requested", "payment_pending"):
+            raise HTTPException(400, "This request isn't open for acceptance yet — payment must be confirmed first")
         raise HTTPException(409, "This request has already been taken by another proxy counsel")
+
+    # M12: only the winner of the race above ever reaches this point, so
+    # these side effects run exactly once per hearing. Unlike M11's matching
+    # call, none of this is best-effort, so exceptions here are allowed to
+    # propagate (same as cancel_hearing_request/release_hearing_payout
+    # letting escrow exceptions propagate), not caught and swallowed. The
+    # state transition runs LAST, deliberately: if assign_payee (or clearing
+    # the deadline) fails, the hearing must stay at "accepted" rather than
+    # falsely advancing to documents_shared with no payee attached.
+    import escrow as escrow_svc
+    await escrow_svc.assign_payee(db, context_type="hearing", context_id=hearing_id, payee_user_id=user["user_id"])
+    await db.hearing_requests.update_one(
+        {"hearing_id": hearing_id}, {"$set": {"match_tier_deadline_at": None}},
+    )
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    await _transition(db, sm, updated, "accepted", "accept", user,
+                       note="Payment already held — proceeding directly to document sharing")
+    updated["status"] = "documents_shared"
+    updated["match_tier_deadline_at"] = None
     return updated
 
 
@@ -264,12 +312,27 @@ async def reject_hearing_request(db, hearing_id: str, user: dict) -> dict:
 async def decline_hearing_request(db, hearing_id: str, user: dict) -> dict:
     """Personal, not global — hides this request from this proxy counsel's
     own open-requests view without affecting anyone else's (broadcast
-    requests only; a targeted request uses reject_hearing_request instead)."""
+    requests only; a targeted request uses reject_hearing_request instead).
+
+    M14: after recording the decline, checks whether every counsel notified
+    in the current tier has now declined — if so, advances/escalates
+    immediately instead of waiting for match_tier_deadline_at. Best-effort,
+    same pattern as mark_payment_confirmed's M11 run_matching call: a
+    failure here must never undo the decline that was just durably
+    recorded, so it's caught and logged, never re-raised."""
     result = await db.hearing_requests.update_one(
         {"hearing_id": hearing_id}, {"$addToSet": {"declined_by": user["user_id"]}},
     )
     if result.matched_count == 0:
         raise HTTPException(404, "Hearing request not found")
+
+    import counsel_matching
+    from audit_log import log_audit
+    try:
+        await counsel_matching.maybe_early_advance(db, hearing_id)
+    except Exception as e:
+        await log_audit(db, "matching.early_advance_failed", None, {"hearing_id": hearing_id, "error": str(e)})
+
     return {"ok": True}
 
 
@@ -398,9 +461,11 @@ async def initiate_payment(db, hearing_id: str, user: dict) -> dict:
 
 async def mark_payment_confirmed(db, hearing_id: str, user: dict) -> dict:
     """Called after escrow.create_and_hold succeeds — a separate, explicit
-    call into this module's own state machine (payment_pending ->
-    documents_shared) so payment state and operational state never share one
-    transition."""
+    call into this module's own state machine (payment_pending -> broadcast,
+    per the M6 reorder) so payment state and operational state never share
+    one transition. The targeted-vs-broadcast distinction note used to fire
+    at creation time (pre-M6); it now fires here, since this is the call that
+    actually reaches "broadcast"."""
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
@@ -409,10 +474,28 @@ async def mark_payment_confirmed(db, hearing_id: str, user: dict) -> dict:
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
         await _transition(db, sm, hearing, hearing["status"], "confirm_payment", user,
-                           note="Payment held by CourtBazaar — share case documents to proceed")
+                           note="Assigned directly to one advocate" if hearing.get("target_advocate_id")
+                           else "Payment held by CourtBazaar — broadcast to available proxy counsel")
     except IllegalTransition:
         raise HTTPException(400, "This request isn't awaiting payment")
-    return {"ok": True, "status": "documents_shared"}
+
+    # M11: kick off the Counsel Matching Agent now that the hearing is
+    # durably "broadcast" (the _transition above already committed it).
+    # `hearing` here is still the pre-transition snapshot (status
+    # "payment_pending" in memory) — that's safe because run_matching's
+    # entire pipeline (discover_candidates/score_candidates/notify_tier) never
+    # reads hearing["status"]; discover_candidates re-fetches the hearing by
+    # hearing_id itself anyway. Best-effort: a matching failure must never
+    # undo payment confirmation, which already happened above, so it's caught
+    # and logged here rather than allowed to propagate.
+    import counsel_matching
+    from audit_log import log_audit
+    try:
+        await counsel_matching.run_matching(db, hearing)
+    except Exception as e:
+        await log_audit(db, "matching.dispatch_failed", None, {"hearing_id": hearing_id, "error": str(e)})
+
+    return {"ok": True, "status": "broadcast"}
 
 
 async def mark_hearing_conducted(db, hearing_id: str, user: dict) -> dict:

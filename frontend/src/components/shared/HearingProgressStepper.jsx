@@ -7,11 +7,14 @@ import { Check, X, Ban, ShieldAlert, Clock } from "lucide-react";
    HEARING_STATUSES) onto the founder's reference stages; "Search advocate /
    View profile / Select advocate" aren't included here — those steps happen
    before a hearing_request exists and belong to the separate (deferred)
-   advocate-discovery workstream. */
+   advocate-discovery workstream.
+
+   Order reflects the M6 payment/broadcast reorder: payment now precedes
+   broadcast and acceptance instead of following them. */
 const STAGES = [
-  { statuses: ["requested", "broadcast"], label: "Requested" },
+  { statuses: ["requested", "payment_pending"], label: "Payment Pending" },
+  { statuses: ["broadcast"], label: "Broadcast to Advocates" },
   { statuses: ["accepted"], label: "Accepted" },
-  { statuses: ["payment_pending"], label: "Payment Secured" },
   { statuses: ["documents_shared"], label: "Documents Shared" },
   { statuses: ["preparation"], label: "Preparation" },
   { statuses: ["hearing_scheduled"], label: "Hearing Conducted" },

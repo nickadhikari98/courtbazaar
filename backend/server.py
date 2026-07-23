@@ -399,6 +399,9 @@ class HearingDisputeResolve(BaseModel):
 class HearingVerificationReject(BaseModel):
     remark: Optional[str] = None
 
+class AdminAssignCounsel(BaseModel):
+    counsel_user_id: str
+
 class HearingNoteCreate(BaseModel):
     note: str
 
@@ -432,10 +435,12 @@ async def seed_initial_data():
     import reviews as reviews_svc
     import hearings as hearings_svc
     import escrow as escrow_svc
+    import counsel_matching as counsel_matching_svc
     await leads_svc.ensure_indexes(db)
     await reviews_svc.ensure_indexes(db)
     await hearings_svc.ensure_indexes(db)
     await escrow_svc.ensure_indexes(db)
+    await counsel_matching_svc.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -1697,6 +1702,31 @@ async def admin_deactivate_user(user_id: str, user=Depends(get_current_user), re
     }, request)
     return {"ok": True}
 
+@api_router.put("/admin/users/{user_id}/reactivate")
+async def admin_reactivate_user(user_id: str, user=Depends(get_current_user), request: Request = None):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if not target.get("deleted"):
+        return {"ok": True, "already_active": True}
+    from audit_log import reactivate_user, log_audit
+    try:
+        await reactivate_user(db, user_id, user["user_id"])
+    except Exception as e:
+        logger.error(f"admin.user_reactivated FAILED: admin={user['user_id']} target={user_id} error={e}")
+        await log_audit(db, "admin.user_reactivated", user, {
+            "target_user_id": user_id, "target_email": target.get("email"), "result": "failure", "error": str(e),
+        }, request)
+        raise HTTPException(500, "Could not reactivate this user")
+    logger.info(f"admin.user_reactivated: admin={user['user_id']} target={user_id} email={target.get('email')}")
+    await log_audit(db, "admin.user_reactivated", user, {
+        "target_user_id": user_id, "target_email": target.get("email"),
+        "target_role": target.get("role"), "result": "success",
+    }, request)
+    return {"ok": True}
+
 # ---------- SUBSCRIPTION ----------
 SUBSCRIPTION_PLANS = {
     "free": {"name": "Free", "price": 0, "features": ["Basic services", "Standard pricing"]},
@@ -2241,6 +2271,33 @@ async def get_practice_performance(user=Depends(get_current_user)):
     return await practice_svc.performance(db, user["user_id"])
 
 
+# ---------- ADMIN: proxy counsel verification (Counsel Matching Agent
+# eligibility prerequisite — see practice.approve_kyc/verify_bar_council) ----
+@api_router.put("/admin/practice/{user_id}/approve-kyc")
+async def admin_approve_practice_kyc(user_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    profile = await practice_svc.approve_kyc(db, user_id)
+    try:
+        from audit_log import log_audit
+        await log_audit(db, "practice.approve_kyc", user, {"target_user_id": user_id})
+    except Exception:
+        pass
+    return profile
+
+@api_router.put("/admin/practice/{user_id}/verify-bar-council")
+async def admin_verify_practice_bar_council(user_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    profile = await practice_svc.verify_bar_council(db, user_id)
+    try:
+        from audit_log import log_audit
+        await log_audit(db, "practice.verify_bar_council", user, {"target_user_id": user_id})
+    except Exception:
+        pass
+    return profile
+
+
 # ============================================================================
 # HEARING REQUESTS — the "Hire Proxy Counsel" marketplace. First-class
 # entity (see hearings.py's module docstring for why it doesn't reuse orders).
@@ -2267,14 +2324,14 @@ async def _notify_hearing_event(user_id: str, title: str, body: str, hearing_id:
 @api_router.post("/hearing-requests")
 async def create_hearing_request(payload: HearingRequestCreate, user=Depends(get_current_user)):
     _require_capability(user, "can_hire_proxy_counsel")
+    # M6 reorder: no notify-the-target-advocate here anymore — the hearing
+    # stays at "requested" (invisible to the advocate, payment not yet made)
+    # until mark_payment_confirmed reaches "broadcast"; that's where this
+    # notification now fires (see verify_hearing_payment below).
     hearing = await hearings_svc.create_hearing_request(
         db, user["user_id"], payload.court_id, payload.hearing_date, payload.case_details, payload.fee,
         payload.matter_id, payload.target_advocate_id, payload.service_type, payload.request_details,
     )
-    if payload.target_advocate_id:
-        await _notify_hearing_event(payload.target_advocate_id, "New hearing request",
-                                     f"You've received a hearing request for {payload.court_id} on {payload.hearing_date}.",
-                                     hearing["hearing_id"])
     return hearing
 
 @api_router.get("/hearing-requests")
@@ -2289,8 +2346,10 @@ async def get_hearing_request(hearing_id: str, user=Depends(get_current_user)):
 async def accept_hearing_request(hearing_id: str, user=Depends(get_current_user)):
     _require_capability(user, "can_practice_proxy_counsel")
     hearing = await hearings_svc.accept_hearing_request(db, hearing_id, user)
+    # M6 reorder: payment already happened before acceptance now — no more
+    # "proceed to payment" prompt.
     await _notify_hearing_event(hearing["requesting_user_id"], "Request accepted",
-                                 f"Your hearing request for {hearing['court_id']} was accepted. Proceed to payment.",
+                                 f"Your hearing request for {hearing['court_id']} was accepted.",
                                  hearing_id)
     return hearing
 
@@ -2354,6 +2413,10 @@ async def verify_hearing_payment(hearing_id: str, payload: dict, user=Depends(ge
         {"razorpay_order_id": rzp_order_id},
         {"$set": {"payment_status": "paid", "status": "complete", "razorpay_payment_id": rzp_payment_id}},
     )
+    # M6 reorder: payment now happens before anyone accepts, so
+    # proxy_counsel_user_id is still None here — escrow.create_and_hold's
+    # deferred-payee path (M2) holds the funds unassigned; M12's
+    # accept_hearing_request extension is what calls assign_payee later.
     await escrow_svc.create_and_hold(
         db, context_type="hearing", context_id=hearing_id, service_id=hearings_svc.ESCROW_SERVICE_ID,
         matter_id=hearing.get("matter_id"), payer_user_id=user["user_id"], payee_user_id=hearing["proxy_counsel_user_id"],
@@ -2361,10 +2424,16 @@ async def verify_hearing_payment(hearing_id: str, payload: dict, user=Depends(ge
         razorpay_order_id=rzp_order_id, razorpay_payment_id=rzp_payment_id,
     )
     await hearings_svc.mark_payment_confirmed(db, hearing_id, user)
-    await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Payment held",
-                                 f"Payment for the {hearing['court_id']} hearing is held by CourtBazaar — share case documents to proceed.",
-                                 hearing_id)
-    return {"ok": True, "payment_id": rzp_payment_id, "status": "documents_shared"}
+    # Relocated from the create_hearing_request endpoint (M6 reorder) — the
+    # targeted advocate can only see/act on this request once it's actually
+    # broadcast, which is now right here, not at creation time. Broadcast-to-
+    # all requests have no single recipient to notify at this point (same as
+    # before) — that's the Counsel Matching Agent's job (M11, not built yet).
+    if hearing.get("target_advocate_id"):
+        await _notify_hearing_event(hearing["target_advocate_id"], "New hearing request",
+                                     f"You've received a hearing request for {hearing['court_id']} on {hearing['hearing_date']}.",
+                                     hearing_id)
+    return {"ok": True, "payment_id": rzp_payment_id, "status": "broadcast"}
 
 @api_router.get("/hearing-requests/{hearing_id}/escrow")
 async def get_hearing_escrow(hearing_id: str, user=Depends(get_current_user)):
@@ -2429,10 +2498,34 @@ async def get_hearing_document_url(hearing_id: str, doc_id: str, user=Depends(ge
 # per the founder's ask to reduce operational mistakes.
 # ----------------------------------------------------------------------
 @api_router.get("/admin/hearing-requests")
-async def admin_list_hearing_requests(user=Depends(get_current_user), status: Optional[str] = None):
+async def admin_list_hearing_requests(user=Depends(get_current_user), status: Optional[str] = None,
+                                       escalated: Optional[bool] = None):
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
+    if escalated:
+        # Escalation lives on counsel_matching_log.status, not hearing_requests.status
+        # (see counsel_matching.escalate_to_admin) — cross-reference the two collections
+        # rather than adding a query hearings_svc.list_hearings_for_admin doesn't support.
+        escalated_sessions = await db.counsel_matching_log.find({"status": "escalated"}, {"_id": 0}).to_list(500)
+        hearings_by_id = {
+            h["hearing_id"]: h for h in await db.hearing_requests.find(
+                {"hearing_id": {"$in": [s["hearing_id"] for s in escalated_sessions]}}, {"_id": 0},
+            ).to_list(500)
+        }
+        results = []
+        for session in escalated_sessions:
+            hearing = hearings_by_id.get(session["hearing_id"])
+            if hearing:
+                results.append({**hearing, "escalation_reason": session.get("final_decision")})
+        return results
     return await hearings_svc.list_hearings_for_admin(db, status)
+
+@api_router.post("/admin/hearing-requests/{hearing_id}/assign")
+async def admin_assign_hearing_counsel(hearing_id: str, payload: AdminAssignCounsel, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    import counsel_matching
+    return await counsel_matching.admin_assign_counsel(db, hearing_id, payload.counsel_user_id, user)
 
 @api_router.put("/hearing-requests/{hearing_id}/verify")
 async def verify_hearing_order_sheet(hearing_id: str, user=Depends(get_current_user)):
@@ -3274,6 +3367,30 @@ async def schedule_daily_settlements():
         logger.info("T+1 settlement scheduler started (daily 02:00 UTC)")
     except Exception as e:
         logger.warning(f"Scheduler not started: {e}")
+
+
+@app.on_event("startup")
+async def schedule_matching_waterfall():
+    """Poll for hearings past their current tier's deadline and advance/
+    escalate them (Counsel Matching Agent roadmap M13) — same registration
+    pattern as schedule_daily_settlements above; IntervalTrigger instead of
+    CronTrigger since this needs to run continuously rather than once a day,
+    and max_instances=1 so a slow poll never overlaps itself."""
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        import counsel_matching
+        async def _job():
+            try:
+                await counsel_matching.check_stalled_matches(db)
+            except Exception as e:
+                logger.error(f"Scheduled matching waterfall error: {e}")
+        sched = AsyncIOScheduler()
+        sched.add_job(_job, IntervalTrigger(seconds=10), max_instances=1)
+        sched.start()
+        logger.info("Matching waterfall scheduler started (poll every 10s)")
+    except Exception as e:
+        logger.warning(f"Matching waterfall scheduler not started: {e}")
 
 
 
