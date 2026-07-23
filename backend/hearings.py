@@ -32,10 +32,12 @@ Matching is broadcast-based by default (unlike vendor order auto-matching in
 server.py): any available proxy counsel can see and accept an open request;
 whoever accepts first wins (race-safe — see accept_hearing_request()).
 Declining is personal (`declined_by`), not global — one proxy counsel
-declining doesn't cancel the request for everyone else. Broadcast is where
-the Counsel Matching Agent (counsel_matching.py) will eventually plug in
-tier-1 AI-notified candidates (M11, not built yet) — today it's still the
-plain "anyone eligible can accept" pool.
+declining doesn't cancel the request for everyone else. mark_payment_confirmed
+kicks off the Counsel Matching Agent (counsel_matching.run_matching, M11)
+right after a hearing reaches "broadcast" — tier-1 eligible candidates are
+notified automatically; the broadcast pool itself is still "anyone eligible
+can accept", matching still doesn't gate who's allowed to accept (that's
+M12/M13's job).
 
 `target_advocate_id` (nullable) is the integration point for a separate,
 not-yet-built advocate search/select workstream: when set, the request is
@@ -440,6 +442,23 @@ async def mark_payment_confirmed(db, hearing_id: str, user: dict) -> dict:
                            else "Payment held by CourtBazaar — broadcast to available proxy counsel")
     except IllegalTransition:
         raise HTTPException(400, "This request isn't awaiting payment")
+
+    # M11: kick off the Counsel Matching Agent now that the hearing is
+    # durably "broadcast" (the _transition above already committed it).
+    # `hearing` here is still the pre-transition snapshot (status
+    # "payment_pending" in memory) — that's safe because run_matching's
+    # entire pipeline (discover_candidates/score_candidates/notify_tier) never
+    # reads hearing["status"]; discover_candidates re-fetches the hearing by
+    # hearing_id itself anyway. Best-effort: a matching failure must never
+    # undo payment confirmation, which already happened above, so it's caught
+    # and logged here rather than allowed to propagate.
+    import counsel_matching
+    from audit_log import log_audit
+    try:
+        await counsel_matching.run_matching(db, hearing)
+    except Exception as e:
+        await log_audit(db, "matching.dispatch_failed", None, {"hearing_id": hearing_id, "error": str(e)})
+
     return {"ok": True, "status": "broadcast"}
 
 
