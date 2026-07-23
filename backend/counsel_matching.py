@@ -15,7 +15,7 @@ on hearing_id (see ensure_indexes) as the actual concurrency guard, rather
 than an application-level check-then-insert.
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Callable, List, Optional, Tuple
 
 from fastapi import HTTPException
@@ -342,3 +342,139 @@ async def dispatch_notifications(db, notification_batch: List[dict]) -> List[dic
                 "status": "failed", "reason": str(e), "channel_results": [],
             })
     return results
+
+
+# ---------------------------------------------------------------------------
+# Matching Orchestration — Tier 1 (roadmap M10)
+#
+# run_matching/notify_tier compose the M4-M9 pipeline (session ledger,
+# discover_candidates, score_candidates, select_top_candidates,
+# prepare_notification_batch, dispatch_notifications) into one orchestrated
+# pass — no pipeline stage's own logic is reimplemented here, only glued
+# together and persisted. Tier-1 only, on purpose: notify_tier's tier/
+# tier_size parameters exist because the roadmap names them in this
+# function's signature, but this milestone only ever calls tier=1 — picking
+# per-tier candidate slices for tier 2/3, deadline-driven advancement, and
+# admin escalation are M13/M14/M15's scope, not this one's (see the guard in
+# notify_tier and the zero-candidate branch in run_matching below).
+#
+# ai_agent_logs (named in the original roadmap draft) doesn't exist anywhere
+# in this codebase and isn't created here either — audit_log already exists
+# for exactly this kind of traceability record (see audit_log.log_audit,
+# used the same way by practice.py's approve_kyc/verify_bar_council), so
+# this reuses that instead of standing up a parallel logging collection.
+# ---------------------------------------------------------------------------
+
+# How long tier-1 candidates have to respond before a tier advancement would
+# be due. Only a tier-1 value is defined here — per-tier durations and the
+# urgent/normal distinction the roadmap's M13 section describes are that
+# milestone's scheduler to define, not this one's.
+TIER_1_RESPONSE_WINDOW_MINUTES = 30
+
+
+async def notify_tier(db, hearing: dict, ranked: List[dict], tier: int, tier_size: int) -> dict:
+    """Notifies one tier's worth of already-ranked candidates and persists
+    the result. Tier 1 only this milestone (see module notes above) — reuses
+    select_top_candidates for the tier's slice, which is only correct for
+    tier 1 (offset 0); a future milestone adding tier 2/3 needs its own
+    offset logic, not an extension of this guard.
+
+    Stamps exactly the fields the roadmap named for M10: match_id/
+    match_tier/match_tier_deadline_at/notified_counsel_ids/match_confidence
+    on hearing_requests, a tiers[] entry + timeline event on
+    counsel_matching_log, and one audit_log entry. Never touches
+    hearing_requests.status or proxy_counsel_user_id."""
+    if tier != 1:
+        raise NotImplementedError("Tier 2+ waterfall advancement is M13's scope, not M10's")
+
+    from audit_log import log_audit
+
+    hearing_id = hearing["hearing_id"]
+    session = await get_matching_session(db, hearing_id)
+    if not session:
+        raise HTTPException(500, "No matching session open for this hearing — call run_matching first")
+
+    tier_candidates = select_top_candidates(hearing, ranked, tier_size)
+    batch = prepare_notification_batch(hearing, tier_candidates)
+    dispatch_results = await dispatch_notifications(db, batch)
+
+    notified_counsel_ids = [c.get("user_id") for c in tier_candidates]
+    match_confidence = tier_candidates[0].get("confidence_score") if tier_candidates else None
+    now = datetime.now(timezone.utc)
+    deadline_at = (now + timedelta(minutes=TIER_1_RESPONSE_WINDOW_MINUTES)).isoformat()
+
+    await db.hearing_requests.update_one(
+        {"hearing_id": hearing_id},
+        {"$set": {
+            "match_id": session["match_id"],
+            "match_tier": tier,
+            "match_tier_deadline_at": deadline_at,
+            "notified_counsel_ids": notified_counsel_ids,
+            "match_confidence": match_confidence,
+            "updated_at": now.isoformat(),
+        }},
+    )
+
+    tier_entry = {
+        "tier": tier, "tier_size": tier_size,
+        "notified_counsel_ids": notified_counsel_ids,
+        "match_confidence": match_confidence,
+        "notified_at": now.isoformat(),
+    }
+    await db.counsel_matching_log.update_one(
+        {"match_id": session["match_id"]}, {"$push": {"tiers": tier_entry}},
+    )
+    await append_session_event(db, session["match_id"], "tier_notified", {**tier_entry, "dispatch_results": dispatch_results})
+    await log_audit(db, "matching.tier_notified", None, {
+        "hearing_id": hearing_id, "match_id": session["match_id"], "tier": tier,
+        "notified_counsel_ids": notified_counsel_ids,
+    })
+
+    return {
+        "match_id": session["match_id"], "tier": tier,
+        "notified_counsel_ids": notified_counsel_ids,
+        "match_confidence": match_confidence,
+        "match_tier_deadline_at": deadline_at,
+        "dispatch_results": dispatch_results,
+    }
+
+
+async def run_matching(db, hearing: dict) -> dict:
+    """Write-path orchestrator (roadmap M10): opens/reuses the matching
+    session, discovers + scores eligible candidates, and notifies tier 1 —
+    composing get_or_create_matching_session, discover_candidates,
+    score_candidates and notify_tier without reimplementing any of them.
+
+    Zero eligible candidates: only records the terminal outcome —
+    finalize_matching_session(status="escalated") plus one audit_log entry —
+    and returns without touching hearing_requests at all (no tier/
+    notification/scheduling fields get written, since nothing was
+    notified). This deliberately does not implement admin escalation itself
+    (no escalate_to_admin function is created here); that workflow is M15's.
+
+    Never transitions hearing status, never assigns proxy_counsel_user_id,
+    never touches escrow, never advances past tier 1."""
+    from audit_log import log_audit
+
+    hearing_id = hearing["hearing_id"]
+    urgent = bool(hearing.get("urgent"))  # reserved field, still unpopulated upstream — see discover_candidates notes
+    session = await get_or_create_matching_session(db, hearing_id, urgent=urgent)
+
+    candidates = await discover_candidates(db, hearing_id)
+    if not candidates:
+        session = await finalize_matching_session(
+            db, session["match_id"], status="escalated", final_decision="no_eligible_candidates",
+        )
+        await log_audit(db, "matching.escalated", None, {
+            "hearing_id": hearing_id, "match_id": session["match_id"],
+            "reason": "no_eligible_candidates",
+        })
+        return {
+            "status": "escalated", "match_id": session["match_id"], "tier": None,
+            "notified_counsel_ids": [], "match_confidence": None,
+            "match_tier_deadline_at": None, "dispatch_results": [],
+        }
+
+    ranked = score_candidates(hearing, candidates)
+    tier_result = await notify_tier(db, hearing, ranked, tier=1, tier_size=TOP_CANDIDATE_BATCH_SIZE)
+    return {"status": "notified", **tier_result}
