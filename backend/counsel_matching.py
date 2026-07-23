@@ -476,35 +476,22 @@ async def run_matching(db, hearing: dict) -> dict:
     composing get_or_create_matching_session, discover_candidates,
     score_candidates and notify_tier without reimplementing any of them.
 
-    Zero eligible candidates: only records the terminal outcome —
-    finalize_matching_session(status="escalated") plus one audit_log entry —
-    and returns without touching hearing_requests at all (no tier/
-    notification/scheduling fields get written, since nothing was
-    notified). This deliberately does not implement admin escalation itself
-    (no escalate_to_admin function is created here); that workflow is M15's.
+    Zero eligible candidates: delegates to escalate_to_admin (roadmap M15)
+    rather than duplicating the finalize_matching_session + admin-grace-
+    deadline sequence inline — same escalation path advance_or_escalate
+    uses, so every escalation (M10's zero-candidate case, M13's tier-3-
+    expiry/zero-remaining cases) is consistently queryable by Ops with a
+    grace deadline, not just whichever path happened to implement it.
 
     Never transitions hearing status, never assigns proxy_counsel_user_id,
     never touches escrow, never advances past tier 1."""
-    from audit_log import log_audit
-
     hearing_id = hearing["hearing_id"]
     urgent = bool(hearing.get("urgent"))  # reserved field, still unpopulated upstream — see discover_candidates notes
-    session = await get_or_create_matching_session(db, hearing_id, urgent=urgent)
+    await get_or_create_matching_session(db, hearing_id, urgent=urgent)
 
     candidates = await discover_candidates(db, hearing_id)
     if not candidates:
-        session = await finalize_matching_session(
-            db, session["match_id"], status="escalated", final_decision="no_eligible_candidates",
-        )
-        await log_audit(db, "matching.escalated", None, {
-            "hearing_id": hearing_id, "match_id": session["match_id"],
-            "reason": "no_eligible_candidates",
-        })
-        return {
-            "status": "escalated", "match_id": session["match_id"], "tier": None,
-            "notified_counsel_ids": [], "match_confidence": None,
-            "match_tier_deadline_at": None, "dispatch_results": [],
-        }
+        return await escalate_to_admin(db, hearing, reason="no_eligible_candidates")
 
     ranked = score_candidates(hearing, candidates)
     tier_result = await notify_tier(db, hearing, ranked, tier=1, tier_size=TOP_CANDIDATE_BATCH_SIZE)
@@ -530,25 +517,6 @@ async def run_matching(db, hearing: dict) -> dict:
 # explicitly declined.
 # ---------------------------------------------------------------------------
 
-async def _escalate_match(db, hearing_id: str, session: dict, reason: str) -> dict:
-    """Shared terminal-outcome path for advance_or_escalate's two escalation
-    triggers (tier-3 expiry, zero remaining candidates at any tier) — same
-    shape as run_matching's own zero-candidate escalation (M10), not shared
-    code with it (run_matching stays untouched, per this milestone's scope),
-    just the same pattern: finalize_matching_session + one audit_log entry,
-    no hearing_requests write, no admin-facing workflow (that's M15's job)."""
-    from audit_log import log_audit
-    session = await finalize_matching_session(db, session["match_id"], status="escalated", final_decision=reason)
-    await log_audit(db, "matching.escalated", None, {
-        "hearing_id": hearing_id, "match_id": session["match_id"], "reason": reason,
-    })
-    return {
-        "status": "escalated", "match_id": session["match_id"], "tier": None,
-        "notified_counsel_ids": [], "match_confidence": None,
-        "match_tier_deadline_at": None, "dispatch_results": [],
-    }
-
-
 async def advance_or_escalate(db, hearing: dict) -> dict:
     """Given one hearing already past its current tier's deadline, either
     notifies the next tier or escalates.
@@ -571,7 +539,7 @@ async def advance_or_escalate(db, hearing: dict) -> dict:
 
     current_tier = current.get("match_tier") or 1
     if current_tier >= 3:
-        return await _escalate_match(db, hearing_id, session, reason="tier_3_expired")
+        return await escalate_to_admin(db, current, reason="tier_3_expired")
     next_tier = current_tier + 1
 
     candidates = await discover_candidates(db, hearing_id)
@@ -585,7 +553,7 @@ async def advance_or_escalate(db, hearing: dict) -> dict:
 
     remaining = [c for c in ranked if c.get("user_id") not in excluded]
     if not remaining:
-        return await _escalate_match(db, hearing_id, session, reason=f"no_eligible_candidates_tier_{next_tier}")
+        return await escalate_to_admin(db, current, reason=f"no_eligible_candidates_tier_{next_tier}")
 
     return await notify_tier(db, current, remaining, tier=next_tier, tier_size=TOP_CANDIDATE_BATCH_SIZE)
 
@@ -674,3 +642,94 @@ async def maybe_early_advance(db, hearing_id: str) -> dict:
         return {"status": "no_action", "reason": "not every notified candidate has declined yet"}
 
     return await advance_or_escalate(db, hearing)
+
+
+# ---------------------------------------------------------------------------
+# Admin Escalation Queue + Manual Assign (roadmap M15)
+#
+# escalate_to_admin is the single canonical escalation action — run_matching
+# (M10) and advance_or_escalate (M13) both call it instead of each closing
+# out the matching session inline, so every escalated hearing consistently
+# gets admin_grace_deadline_at set, not just whichever path happened to
+# implement it. Nothing about WHEN to escalate changes here — that decision
+# still belongs entirely to run_matching (zero candidates at tier 1) and
+# advance_or_escalate (tier-3 expiry, zero remaining candidates at any
+# tier); this function only owns the escalation ACTION itself.
+#
+# admin_assign_counsel deliberately does not reimplement any acceptance
+# logic — it calls hearings.accept_hearing_request, reusing that function's
+# entire race-safe path (atomic claim, escrow payee assignment, deadline
+# clearing, accepted->documents_shared auto-chain) unchanged. Per the
+# roadmap's own note, admin override works at any tier, not only after
+# escalation — accept_hearing_request's only gate is status=="broadcast",
+# with no dependency on match_tier or the matching session's status, so
+# this is true automatically without any extra code here.
+# ---------------------------------------------------------------------------
+
+# Roadmap doesn't specify a grace-period duration; this is my own default,
+# same as the M10/M13 tier-duration constants before it.
+ADMIN_GRACE_PERIOD_HOURS = 24
+
+
+async def escalate_to_admin(db, hearing: dict, reason: str) -> dict:
+    """Finalizes the matching session as escalated (reusing the existing
+    finalize_matching_session primitive unchanged) and sets
+    admin_grace_deadline_at on the hearing, conditional on status=="broadcast"
+    — same defensive pattern every other hearing_requests write in the
+    matching pipeline already uses, so a hearing accepted/cancelled between
+    the escalation decision and this write doesn't get a meaningless grace
+    deadline stamped onto it. No downstream consumer of that deadline exists
+    yet (M16's auto-refund isn't built) — this milestone only establishes
+    the field and the query surface (server.py's ?escalated=true) for it."""
+    hearing_id = hearing["hearing_id"]
+    session = await get_matching_session(db, hearing_id)
+    if not session:
+        raise HTTPException(500, "No matching session open for this hearing")
+
+    from audit_log import log_audit
+    session = await finalize_matching_session(db, session["match_id"], status="escalated", final_decision=reason)
+
+    grace_deadline = (datetime.now(timezone.utc) + timedelta(hours=ADMIN_GRACE_PERIOD_HOURS)).isoformat()
+    await db.hearing_requests.update_one(
+        {"hearing_id": hearing_id, "status": "broadcast"},
+        {"$set": {"admin_grace_deadline_at": grace_deadline}},
+    )
+
+    await log_audit(db, "matching.escalated", None, {
+        "hearing_id": hearing_id, "match_id": session["match_id"], "reason": reason,
+    })
+    return {
+        "status": "escalated", "match_id": session["match_id"], "tier": None,
+        "notified_counsel_ids": [], "match_confidence": None,
+        "match_tier_deadline_at": None, "admin_grace_deadline_at": grace_deadline,
+        "dispatch_results": [],
+    }
+
+
+async def admin_assign_counsel(db, hearing_id: str, counsel_user_id: str, admin_user: dict) -> dict:
+    """Admin override: force-assigns a specific counsel to any still-open
+    hearing, at any tier — not gated on having been AI-notified, not gated
+    on the matching session having been escalated first. Delegates entirely
+    to hearings.accept_hearing_request (lazy import, same cross-module
+    convention already used elsewhere in this file) for the actual
+    assignment mechanics; the only difference from a real counsel accepting
+    is who initiated it and the audit trail this adds on top.
+
+    Race-safety against a simultaneous real accept, or a simultaneous future
+    auto-refund (M16, not built), is entirely inherited from
+    accept_hearing_request's own atomic conditional claim (status=="broadcast")
+    — no new locking is added or needed here.
+
+    Known limitation from reusing accept_hearing_request as-is: a targeted
+    request (target_advocate_id set to someone other than counsel_user_id)
+    still rejects the assignment, since that check lives in
+    accept_hearing_request itself (hearings.py), which this milestone's file
+    scope (counsel_matching.py, server.py) doesn't touch."""
+    import hearings
+    result = await hearings.accept_hearing_request(db, hearing_id, {"user_id": counsel_user_id})
+
+    from audit_log import log_audit
+    await log_audit(db, "matching.admin_assigned", admin_user, {
+        "hearing_id": hearing_id, "counsel_user_id": counsel_user_id,
+    })
+    return result

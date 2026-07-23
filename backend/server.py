@@ -399,6 +399,9 @@ class HearingDisputeResolve(BaseModel):
 class HearingVerificationReject(BaseModel):
     remark: Optional[str] = None
 
+class AdminAssignCounsel(BaseModel):
+    counsel_user_id: str
+
 class HearingNoteCreate(BaseModel):
     note: str
 
@@ -2495,10 +2498,34 @@ async def get_hearing_document_url(hearing_id: str, doc_id: str, user=Depends(ge
 # per the founder's ask to reduce operational mistakes.
 # ----------------------------------------------------------------------
 @api_router.get("/admin/hearing-requests")
-async def admin_list_hearing_requests(user=Depends(get_current_user), status: Optional[str] = None):
+async def admin_list_hearing_requests(user=Depends(get_current_user), status: Optional[str] = None,
+                                       escalated: Optional[bool] = None):
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
+    if escalated:
+        # Escalation lives on counsel_matching_log.status, not hearing_requests.status
+        # (see counsel_matching.escalate_to_admin) — cross-reference the two collections
+        # rather than adding a query hearings_svc.list_hearings_for_admin doesn't support.
+        escalated_sessions = await db.counsel_matching_log.find({"status": "escalated"}, {"_id": 0}).to_list(500)
+        hearings_by_id = {
+            h["hearing_id"]: h for h in await db.hearing_requests.find(
+                {"hearing_id": {"$in": [s["hearing_id"] for s in escalated_sessions]}}, {"_id": 0},
+            ).to_list(500)
+        }
+        results = []
+        for session in escalated_sessions:
+            hearing = hearings_by_id.get(session["hearing_id"])
+            if hearing:
+                results.append({**hearing, "escalation_reason": session.get("final_decision")})
+        return results
     return await hearings_svc.list_hearings_for_admin(db, status)
+
+@api_router.post("/admin/hearing-requests/{hearing_id}/assign")
+async def admin_assign_hearing_counsel(hearing_id: str, payload: AdminAssignCounsel, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    import counsel_matching
+    return await counsel_matching.admin_assign_counsel(db, hearing_id, payload.counsel_user_id, user)
 
 @api_router.put("/hearing-requests/{hearing_id}/verify")
 async def verify_hearing_order_sheet(hearing_id: str, user=Depends(get_current_user)):
