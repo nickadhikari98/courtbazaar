@@ -312,12 +312,27 @@ async def reject_hearing_request(db, hearing_id: str, user: dict) -> dict:
 async def decline_hearing_request(db, hearing_id: str, user: dict) -> dict:
     """Personal, not global — hides this request from this proxy counsel's
     own open-requests view without affecting anyone else's (broadcast
-    requests only; a targeted request uses reject_hearing_request instead)."""
+    requests only; a targeted request uses reject_hearing_request instead).
+
+    M14: after recording the decline, checks whether every counsel notified
+    in the current tier has now declined — if so, advances/escalates
+    immediately instead of waiting for match_tier_deadline_at. Best-effort,
+    same pattern as mark_payment_confirmed's M11 run_matching call: a
+    failure here must never undo the decline that was just durably
+    recorded, so it's caught and logged, never re-raised."""
     result = await db.hearing_requests.update_one(
         {"hearing_id": hearing_id}, {"$addToSet": {"declined_by": user["user_id"]}},
     )
     if result.matched_count == 0:
         raise HTTPException(404, "Hearing request not found")
+
+    import counsel_matching
+    from audit_log import log_audit
+    try:
+        await counsel_matching.maybe_early_advance(db, hearing_id)
+    except Exception as e:
+        await log_audit(db, "matching.early_advance_failed", None, {"hearing_id": hearing_id, "error": str(e)})
+
     return {"ok": True}
 
 

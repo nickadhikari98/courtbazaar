@@ -616,3 +616,61 @@ async def check_stalled_matches(db) -> List[dict]:
             await log_audit(db, "matching.poll_error", None, {"hearing_id": hearing_id, "error": str(e)})
             results.append({"hearing_id": hearing_id, "status": "error", "error": str(e)})
     return results
+
+
+# ---------------------------------------------------------------------------
+# Early-Advance on Full-Tier Decline (roadmap M14)
+#
+# maybe_early_advance is a second trigger for the exact same tier-advancement
+# decision check_stalled_matches's deadline-poll already makes — it doesn't
+# duplicate that decision, it just short-circuits the wait when the outcome
+# is already known (every notified candidate said no) rather than leaving
+# the hearing to sit until match_tier_deadline_at passes. All of the actual
+# tier-advancement/escalation logic (re-discover, re-score, exclude
+# notified_counsel_ids + declined_by, notify next tier or escalate) is
+# advance_or_escalate's — unchanged from M13, called here exactly as
+# check_stalled_matches calls it.
+#
+# Not wired into decline_hearing_request yet: the roadmap's own M14 file
+# list names hearings.py (the decline_hearing_request call site) alongside
+# this file, but this milestone's instructions restrict changes to
+# counsel_matching.py only. This function is fully correct and independently
+# callable/testable, but nothing in the live decline flow invokes it yet —
+# that wiring is a separate, later change.
+# ---------------------------------------------------------------------------
+
+async def maybe_early_advance(db, hearing_id: str) -> dict:
+    """Speed optimization: if every counsel notified in the CURRENT tier has
+    explicitly declined, advance/escalate immediately instead of waiting for
+    match_tier_deadline_at. Takes hearing_id rather than a hearing dict,
+    matching the roadmap's stated signature — a decline call site only has
+    the hearing_id in scope.
+
+    Only checks "has everyone in this tier declined" — partial declines
+    (some declined, some silent, none accepted) correctly do nothing here,
+    leaving the hearing to advance on its normal deadline instead.
+
+    Duplicate-advancement safety: this function's own check is a plain read,
+    not locked or atomic. If two declines for the last two remaining
+    notified candidates in a tier land at nearly the same moment, both calls
+    could independently see "everyone has now declined" and both call
+    advance_or_escalate concurrently — that's fine and requires no new
+    locking here, because the actual guarantee is entirely inherited from
+    M13: notify_tier's conditional write (filtered on the tier just read)
+    only lets one of two concurrent advancement attempts succeed; the loser
+    finds match_tier already changed and returns "skipped", touching
+    nothing. This function contributes no new safety mechanism of its own —
+    only a decision about *when* to call the already-safe M13 path early."""
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+    if not hearing or hearing.get("status") != "broadcast":
+        return {"status": "no_action", "reason": "hearing not currently in an active broadcast tier"}
+
+    notified_counsel_ids = hearing.get("notified_counsel_ids") or []
+    if not notified_counsel_ids:
+        return {"status": "no_action", "reason": "no notified candidates for the current tier"}
+
+    declined_by = set(hearing.get("declined_by") or [])
+    if not set(notified_counsel_ids) <= declined_by:
+        return {"status": "no_action", "reason": "not every notified candidate has declined yet"}
+
+    return await advance_or_escalate(db, hearing)
