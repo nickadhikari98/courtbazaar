@@ -33,7 +33,8 @@ export function hearingIsAcceptableByMe(h, user) {
 }
 
 export function hearingNeedsMyAction(h, user) {
-  return (h.requesting_user_id === user?.user_id && h.status === "accepted") // payment due
+  // M6 reorder: payment is now due at "requested", before broadcast/acceptance.
+  return (h.requesting_user_id === user?.user_id && h.status === "requested") // payment due
     || (h.proxy_counsel_user_id === user?.user_id && h.status === "hearing_scheduled") // mark conducted due
     || hearingIsAcceptableByMe(h, user);
 }

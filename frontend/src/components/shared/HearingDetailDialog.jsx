@@ -20,6 +20,7 @@ import HearingTimeline from "@/components/shared/HearingTimeline";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
 
 const STATUS_BADGE = {
+  requested: "bg-amber-100 text-amber-700",
   broadcast: "bg-amber-100 text-amber-700",
   accepted: "bg-blue-100 text-blue-700",
   payment_pending: "bg-amber-100 text-amber-700",
@@ -38,9 +39,10 @@ const STATUS_BADGE = {
 };
 
 // Statuses from which the escrow status line ("Payment secured...") makes
-// sense to show — payment is held from documents_shared onward.
+// sense to show — payment is now held from "broadcast" onward (M6 reorder:
+// payment precedes broadcast/acceptance instead of following it).
 const ESCROW_HELD_STATUSES = new Set([
-  "documents_shared", "preparation", "hearing_scheduled", "hearing_completed",
+  "broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed",
   "verification_pending", "verified", "completed", "rated",
 ]);
 
@@ -87,8 +89,9 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   const canAccept = isEligibleAdvocate;
   const canDecline = isEligibleAdvocate && !hearing.target_advocate_id;
   const canReject = isEligibleAdvocate && isTargetedAtMe;
-  const canPay = isRequester && hearing.status === "accepted";
-  const canCancel = isRequester && ["broadcast", "accepted", "payment_pending", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"].includes(hearing.status);
+  // M6 reorder: payment now happens right after creation, before broadcast.
+  const canPay = isRequester && hearing.status === "requested";
+  const canCancel = isRequester && ["requested", "broadcast", "accepted", "payment_pending", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"].includes(hearing.status);
   const canMarkConducted = isAssignedProxyCounsel && hearing.status === "hearing_scheduled";
   const canRate = ["completed", "rated"].includes(hearing.status) && !hearing.rated_by?.includes(user?.user_id)
     && (isRequester || isAssignedProxyCounsel);

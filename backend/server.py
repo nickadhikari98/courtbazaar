@@ -2321,14 +2321,14 @@ async def _notify_hearing_event(user_id: str, title: str, body: str, hearing_id:
 @api_router.post("/hearing-requests")
 async def create_hearing_request(payload: HearingRequestCreate, user=Depends(get_current_user)):
     _require_capability(user, "can_hire_proxy_counsel")
+    # M6 reorder: no notify-the-target-advocate here anymore — the hearing
+    # stays at "requested" (invisible to the advocate, payment not yet made)
+    # until mark_payment_confirmed reaches "broadcast"; that's where this
+    # notification now fires (see verify_hearing_payment below).
     hearing = await hearings_svc.create_hearing_request(
         db, user["user_id"], payload.court_id, payload.hearing_date, payload.case_details, payload.fee,
         payload.matter_id, payload.target_advocate_id, payload.service_type, payload.request_details,
     )
-    if payload.target_advocate_id:
-        await _notify_hearing_event(payload.target_advocate_id, "New hearing request",
-                                     f"You've received a hearing request for {payload.court_id} on {payload.hearing_date}.",
-                                     hearing["hearing_id"])
     return hearing
 
 @api_router.get("/hearing-requests")
@@ -2343,8 +2343,10 @@ async def get_hearing_request(hearing_id: str, user=Depends(get_current_user)):
 async def accept_hearing_request(hearing_id: str, user=Depends(get_current_user)):
     _require_capability(user, "can_practice_proxy_counsel")
     hearing = await hearings_svc.accept_hearing_request(db, hearing_id, user)
+    # M6 reorder: payment already happened before acceptance now — no more
+    # "proceed to payment" prompt.
     await _notify_hearing_event(hearing["requesting_user_id"], "Request accepted",
-                                 f"Your hearing request for {hearing['court_id']} was accepted. Proceed to payment.",
+                                 f"Your hearing request for {hearing['court_id']} was accepted.",
                                  hearing_id)
     return hearing
 
@@ -2408,6 +2410,10 @@ async def verify_hearing_payment(hearing_id: str, payload: dict, user=Depends(ge
         {"razorpay_order_id": rzp_order_id},
         {"$set": {"payment_status": "paid", "status": "complete", "razorpay_payment_id": rzp_payment_id}},
     )
+    # M6 reorder: payment now happens before anyone accepts, so
+    # proxy_counsel_user_id is still None here — escrow.create_and_hold's
+    # deferred-payee path (M2) holds the funds unassigned; M12's
+    # accept_hearing_request extension is what calls assign_payee later.
     await escrow_svc.create_and_hold(
         db, context_type="hearing", context_id=hearing_id, service_id=hearings_svc.ESCROW_SERVICE_ID,
         matter_id=hearing.get("matter_id"), payer_user_id=user["user_id"], payee_user_id=hearing["proxy_counsel_user_id"],
@@ -2415,10 +2421,16 @@ async def verify_hearing_payment(hearing_id: str, payload: dict, user=Depends(ge
         razorpay_order_id=rzp_order_id, razorpay_payment_id=rzp_payment_id,
     )
     await hearings_svc.mark_payment_confirmed(db, hearing_id, user)
-    await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Payment held",
-                                 f"Payment for the {hearing['court_id']} hearing is held by CourtBazaar — share case documents to proceed.",
-                                 hearing_id)
-    return {"ok": True, "payment_id": rzp_payment_id, "status": "documents_shared"}
+    # Relocated from the create_hearing_request endpoint (M6 reorder) — the
+    # targeted advocate can only see/act on this request once it's actually
+    # broadcast, which is now right here, not at creation time. Broadcast-to-
+    # all requests have no single recipient to notify at this point (same as
+    # before) — that's the Counsel Matching Agent's job (M11, not built yet).
+    if hearing.get("target_advocate_id"):
+        await _notify_hearing_event(hearing["target_advocate_id"], "New hearing request",
+                                     f"You've received a hearing request for {hearing['court_id']} on {hearing['hearing_date']}.",
+                                     hearing_id)
+    return {"ok": True, "payment_id": rzp_payment_id, "status": "broadcast"}
 
 @api_router.get("/hearing-requests/{hearing_id}/escrow")
 async def get_hearing_escrow(hearing_id: str, user=Depends(get_current_user)):

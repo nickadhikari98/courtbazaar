@@ -14,6 +14,7 @@ import { SERVICE_CONFIGS } from "@/config/serviceRequestFields";
 const serviceConfig = SERVICE_CONFIGS.proxy_counsel;
 
 const STATUS_BADGE = {
+  requested: "bg-amber-100 text-amber-700",
   broadcast: "bg-amber-100 text-amber-700",
   accepted: "bg-blue-100 text-blue-700",
   payment_pending: "bg-amber-100 text-amber-700",
@@ -50,8 +51,13 @@ export default function HireProxyCounsel() {
         // eslint-disable-next-line no-await-in-loop -- sequential uploads to the same hearing, order doesn't matter but simplicity does
         await uploadHearingDocument(hearing.hearing_id, "case_document", file);
       }
-      toast.success("Request sent to available proxy counsel");
+      // M6 reorder: payment now happens before broadcast, so nothing has
+      // been sent to any proxy counsel yet — open the request immediately so
+      // the payment prompt (HearingDetailDialog's canPay, gated on
+      // status === "requested") is right there instead of buried in the list.
+      toast.success("Request created — complete payment to notify available proxy counsel");
       setSelectedAdvocate(null);
+      setActiveId(hearing.hearing_id);
       load();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Could not create request");

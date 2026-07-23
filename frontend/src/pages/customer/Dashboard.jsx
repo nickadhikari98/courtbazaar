@@ -181,7 +181,8 @@ export default function Dashboard() {
     });
     myActionHearings.forEach((h) => {
       if (documentHearingIds.has(h.hearing_id)) return;
-      const isPaymentDue = h.requesting_user_id === user?.user_id && h.status === "accepted";
+      // M6 reorder: payment is now due at "requested", before broadcast/acceptance.
+      const isPaymentDue = h.requesting_user_id === user?.user_id && h.status === "requested";
       const isMarkConduct = h.proxy_counsel_user_id === user?.user_id && h.status === "hearing_scheduled";
       items.push({
         tier: "critical", key: `act-${h.hearing_id}`,
