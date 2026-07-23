@@ -3342,6 +3342,30 @@ async def schedule_daily_settlements():
         logger.warning(f"Scheduler not started: {e}")
 
 
+@app.on_event("startup")
+async def schedule_matching_waterfall():
+    """Poll for hearings past their current tier's deadline and advance/
+    escalate them (Counsel Matching Agent roadmap M13) — same registration
+    pattern as schedule_daily_settlements above; IntervalTrigger instead of
+    CronTrigger since this needs to run continuously rather than once a day,
+    and max_instances=1 so a slow poll never overlaps itself."""
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        import counsel_matching
+        async def _job():
+            try:
+                await counsel_matching.check_stalled_matches(db)
+            except Exception as e:
+                logger.error(f"Scheduled matching waterfall error: {e}")
+        sched = AsyncIOScheduler()
+        sched.add_job(_job, IntervalTrigger(seconds=10), max_instances=1)
+        sched.start()
+        logger.info("Matching waterfall scheduler started (poll every 10s)")
+    except Exception as e:
+        logger.warning(f"Matching waterfall scheduler not started: {e}")
+
+
 
 app.include_router(api_router)
 

@@ -365,27 +365,45 @@ async def dispatch_notifications(db, notification_batch: List[dict]) -> List[dic
 # this reuses that instead of standing up a parallel logging collection.
 # ---------------------------------------------------------------------------
 
-# How long tier-1 candidates have to respond before a tier advancement would
-# be due. Only a tier-1 value is defined here — per-tier durations and the
-# urgent/normal distinction the roadmap's M13 section describes are that
-# milestone's scheduler to define, not this one's.
-TIER_1_RESPONSE_WINDOW_MINUTES = 30
+# How long each tier's candidates have to respond before a tier advancement
+# is due. M10 only ever needed a flat tier-1 value; M13 (waterfall) is what
+# actually reads the tier-2/3 rows and the urgent table. Keyed by tier, not
+# computed from it, since the roadmap never specifies these should scale
+# linearly. `urgent` is read from the matching session (frozen at
+# run_matching/get_or_create_matching_session time), not re-read from
+# hearing_requests.urgent, which stays reserved-but-unpopulated upstream —
+# the session is the authoritative record of what was true when matching
+# started for this hearing.
+TIER_RESPONSE_WINDOW_MINUTES = {1: 30, 2: 20, 3: 15}
+URGENT_TIER_RESPONSE_WINDOW_MINUTES = {1: 10, 2: 7, 3: 5}
 
 
 async def notify_tier(db, hearing: dict, ranked: List[dict], tier: int, tier_size: int) -> dict:
     """Notifies one tier's worth of already-ranked candidates and persists
-    the result. Tier 1 only this milestone (see module notes above) — reuses
-    select_top_candidates for the tier's slice, which is only correct for
-    tier 1 (offset 0); a future milestone adding tier 2/3 needs its own
-    offset logic, not an extension of this guard.
+    the result. Tiers 1-3 (M10 built tier 1; M13 extends this to 2/3 for
+    waterfall advancement) — reuses select_top_candidates for the tier's
+    slice. The caller (run_matching for tier 1, advance_or_escalate for tier
+    2/3) is responsible for handing this an already-filtered `ranked` list
+    with any previously-notified/declined candidates already excluded; this
+    function itself has no notion of "previous tiers."
 
     Stamps exactly the fields the roadmap named for M10: match_id/
     match_tier/match_tier_deadline_at/notified_counsel_ids/match_confidence
     on hearing_requests, a tiers[] entry + timeline event on
     counsel_matching_log, and one audit_log entry. Never touches
-    hearing_requests.status or proxy_counsel_user_id."""
-    if tier != 1:
-        raise NotImplementedError("Tier 2+ waterfall advancement is M13's scope, not M10's")
+    hearing_requests.status or proxy_counsel_user_id.
+
+    M13 hardening: the hearing_requests write is an atomic conditional
+    update (status=="broadcast", and for tier>1 match_tier==tier-1),
+    performed BEFORE dispatching any notifications, not after. If the
+    hearing has already moved on — accepted, cancelled, or already advanced
+    past this tier by a concurrent poll tick — the write simply matches
+    nothing and this returns a "skipped" result without notifying anyone or
+    writing any log entry, instead of resurrecting stale scheduling fields
+    on a hearing this tier no longer applies to, or wasting a notification
+    send on an already-resolved hearing."""
+    if tier not in (1, 2, 3):
+        raise ValueError("notify_tier only supports tiers 1-3 (roadmap M10-M13)")
 
     from audit_log import log_audit
 
@@ -395,16 +413,19 @@ async def notify_tier(db, hearing: dict, ranked: List[dict], tier: int, tier_siz
         raise HTTPException(500, "No matching session open for this hearing — call run_matching first")
 
     tier_candidates = select_top_candidates(hearing, ranked, tier_size)
-    batch = prepare_notification_batch(hearing, tier_candidates)
-    dispatch_results = await dispatch_notifications(db, batch)
-
     notified_counsel_ids = [c.get("user_id") for c in tier_candidates]
     match_confidence = tier_candidates[0].get("confidence_score") if tier_candidates else None
-    now = datetime.now(timezone.utc)
-    deadline_at = (now + timedelta(minutes=TIER_1_RESPONSE_WINDOW_MINUTES)).isoformat()
 
-    await db.hearing_requests.update_one(
-        {"hearing_id": hearing_id},
+    urgent = bool(session.get("urgent"))
+    window_minutes = (URGENT_TIER_RESPONSE_WINDOW_MINUTES if urgent else TIER_RESPONSE_WINDOW_MINUTES)[tier]
+    now = datetime.now(timezone.utc)
+    deadline_at = (now + timedelta(minutes=window_minutes)).isoformat()
+
+    claim_filter = {"hearing_id": hearing_id, "status": "broadcast"}
+    if tier > 1:
+        claim_filter["match_tier"] = tier - 1
+    claim_result = await db.hearing_requests.update_one(
+        claim_filter,
         {"$set": {
             "match_id": session["match_id"],
             "match_tier": tier,
@@ -414,6 +435,15 @@ async def notify_tier(db, hearing: dict, ranked: List[dict], tier: int, tier_siz
             "updated_at": now.isoformat(),
         }},
     )
+    if claim_result.matched_count == 0:
+        return {
+            "status": "skipped", "match_id": session["match_id"], "tier": tier,
+            "notified_counsel_ids": [], "match_confidence": None,
+            "match_tier_deadline_at": None, "dispatch_results": [],
+        }
+
+    batch = prepare_notification_batch(hearing, tier_candidates)
+    dispatch_results = await dispatch_notifications(db, batch)
 
     tier_entry = {
         "tier": tier, "tier_size": tier_size,
@@ -431,6 +461,7 @@ async def notify_tier(db, hearing: dict, ranked: List[dict], tier: int, tier_siz
     })
 
     return {
+        "status": "notified",
         "match_id": session["match_id"], "tier": tier,
         "notified_counsel_ids": notified_counsel_ids,
         "match_confidence": match_confidence,
@@ -478,3 +509,110 @@ async def run_matching(db, hearing: dict) -> dict:
     ranked = score_candidates(hearing, candidates)
     tier_result = await notify_tier(db, hearing, ranked, tier=1, tier_size=TOP_CANDIDATE_BATCH_SIZE)
     return {"status": "notified", **tier_result}
+
+
+# ---------------------------------------------------------------------------
+# Waterfall Tier Advancement (roadmap M13)
+#
+# advance_or_escalate handles one hearing already known to be past its
+# current tier's deadline; check_stalled_matches (below) is the recurring
+# poll that finds those hearings and calls it once per hearing.
+#
+# Candidate selection re-derives eligibility/ranking fresh at each tier
+# rather than reusing tier-1's original in-memory ranked list — nothing
+# persists that list anywhere (counsel_matching_log's tiers[] only ever
+# stored the per-tier summary, never the full scored pool), and re-discovery
+# also naturally reflects any eligibility changes since the previous tier
+# ran. Exclusion is by user_id (already-notified, unioned across every prior
+# tier, plus anyone in hearing_requests.declined_by), not by re-deriving
+# position from score order, so re-ranking drift between tiers can't
+# accidentally re-notify someone already contacted or someone who
+# explicitly declined.
+# ---------------------------------------------------------------------------
+
+async def _escalate_match(db, hearing_id: str, session: dict, reason: str) -> dict:
+    """Shared terminal-outcome path for advance_or_escalate's two escalation
+    triggers (tier-3 expiry, zero remaining candidates at any tier) — same
+    shape as run_matching's own zero-candidate escalation (M10), not shared
+    code with it (run_matching stays untouched, per this milestone's scope),
+    just the same pattern: finalize_matching_session + one audit_log entry,
+    no hearing_requests write, no admin-facing workflow (that's M15's job)."""
+    from audit_log import log_audit
+    session = await finalize_matching_session(db, session["match_id"], status="escalated", final_decision=reason)
+    await log_audit(db, "matching.escalated", None, {
+        "hearing_id": hearing_id, "match_id": session["match_id"], "reason": reason,
+    })
+    return {
+        "status": "escalated", "match_id": session["match_id"], "tier": None,
+        "notified_counsel_ids": [], "match_confidence": None,
+        "match_tier_deadline_at": None, "dispatch_results": [],
+    }
+
+
+async def advance_or_escalate(db, hearing: dict) -> dict:
+    """Given one hearing already past its current tier's deadline, either
+    notifies the next tier or escalates.
+
+    Re-fetches the hearing fresh first — a cheap fail-fast check so a
+    hearing already accepted/cancelled between check_stalled_matches's query
+    and this call is skipped without wasted discovery/scoring work. This
+    check alone isn't the race-safety guarantee, though: the actual
+    correctness guard is notify_tier's own atomic conditional write: there's
+    still a gap between this read and that write, and notify_tier's
+    conditional update is what closes it."""
+    hearing_id = hearing["hearing_id"]
+    current = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+    if not current or current.get("status") != "broadcast":
+        return {"status": "skipped", "reason": "hearing no longer in broadcast"}
+
+    session = await get_matching_session(db, hearing_id)
+    if not session:
+        raise HTTPException(500, "No matching session open for this hearing — call run_matching first")
+
+    current_tier = current.get("match_tier") or 1
+    if current_tier >= 3:
+        return await _escalate_match(db, hearing_id, session, reason="tier_3_expired")
+    next_tier = current_tier + 1
+
+    candidates = await discover_candidates(db, hearing_id)
+    ranked = score_candidates(current, candidates)
+
+    already_notified = set()
+    for tier_entry in session.get("tiers") or []:
+        already_notified.update(tier_entry.get("notified_counsel_ids") or [])
+    already_declined = set(current.get("declined_by") or [])
+    excluded = already_notified | already_declined
+
+    remaining = [c for c in ranked if c.get("user_id") not in excluded]
+    if not remaining:
+        return await _escalate_match(db, hearing_id, session, reason=f"no_eligible_candidates_tier_{next_tier}")
+
+    return await notify_tier(db, current, remaining, tier=next_tier, tier_size=TOP_CANDIDATE_BATCH_SIZE)
+
+
+async def check_stalled_matches(db) -> List[dict]:
+    """Poll entry point (roadmap M13) — registered from server.py on a
+    recurring interval (see schedule_matching_waterfall). Finds every
+    hearing past its current tier's deadline and still open, and advances/
+    escalates each independently; one hearing's failure is logged and never
+    stops the rest of the batch — same convention as dispatch_notifications'
+    per-entry isolation."""
+    from audit_log import log_audit
+
+    now = datetime.now(timezone.utc).isoformat()
+    stalled = await db.hearing_requests.find(
+        {"status": "broadcast", "proxy_counsel_user_id": None,
+         "match_tier_deadline_at": {"$ne": None, "$lt": now}},
+        {"_id": 0},
+    ).to_list(500)
+
+    results = []
+    for hearing in stalled:
+        hearing_id = hearing.get("hearing_id")
+        try:
+            result = await advance_or_escalate(db, hearing)
+            results.append({"hearing_id": hearing_id, **result})
+        except Exception as e:
+            await log_audit(db, "matching.poll_error", None, {"hearing_id": hearing_id, "error": str(e)})
+            results.append({"hearing_id": hearing_id, "status": "error", "error": str(e)})
+    return results
