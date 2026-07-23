@@ -71,8 +71,10 @@ HEARING_TRANSITIONS = {
     ("broadcast", "cancel"): "cancelled",
     ("broadcast", "expire"): "expired",           # reserved — no scheduled job drives this yet
     ("accepted", "cancel"): "cancelled",
-    # No ("accepted", ...) transition beyond cancel yet — the accepted ->
-    # documents_shared auto-chain is M12's job, not M6's (see module docstring).
+    # M12: auto-chain straight through to documents_shared — same "accept"
+    # action reused across two consecutive states, same precedent as
+    # ("completed","rate")/("rated","rate") below reusing one action string.
+    ("accepted", "accept"): "documents_shared",
     ("documents_shared", "share_documents"): "preparation",
     ("documents_shared", "cancel"): "cancelled",  # money already held — see cancel_hearing_request's refund call
     ("preparation", "schedule"): "hearing_scheduled",
@@ -268,6 +270,25 @@ async def accept_hearing_request(db, hearing_id: str, user: dict) -> dict:
         if hearing["status"] in ("requested", "payment_pending"):
             raise HTTPException(400, "This request isn't open for acceptance yet — payment must be confirmed first")
         raise HTTPException(409, "This request has already been taken by another proxy counsel")
+
+    # M12: only the winner of the race above ever reaches this point, so
+    # these side effects run exactly once per hearing. Unlike M11's matching
+    # call, none of this is best-effort, so exceptions here are allowed to
+    # propagate (same as cancel_hearing_request/release_hearing_payout
+    # letting escrow exceptions propagate), not caught and swallowed. The
+    # state transition runs LAST, deliberately: if assign_payee (or clearing
+    # the deadline) fails, the hearing must stay at "accepted" rather than
+    # falsely advancing to documents_shared with no payee attached.
+    import escrow as escrow_svc
+    await escrow_svc.assign_payee(db, context_type="hearing", context_id=hearing_id, payee_user_id=user["user_id"])
+    await db.hearing_requests.update_one(
+        {"hearing_id": hearing_id}, {"$set": {"match_tier_deadline_at": None}},
+    )
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    await _transition(db, sm, updated, "accepted", "accept", user,
+                       note="Payment already held — proceeding directly to document sharing")
+    updated["status"] = "documents_shared"
+    updated["match_tier_deadline_at"] = None
     return updated
 
 

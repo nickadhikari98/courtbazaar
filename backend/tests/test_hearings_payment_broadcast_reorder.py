@@ -77,7 +77,7 @@ def test_full_happy_path_new_order():
             assert fetched["proxy_counsel_user_id"] is None
 
             accepted = await hearings.accept_hearing_request(db, hearing_id, counsel)
-            assert accepted["status"] == "accepted"
+            assert accepted["status"] == "documents_shared"  # M12: auto-chains straight through, "accepted" is no longer the resting status
             assert accepted["proxy_counsel_user_id"] == counsel["user_id"]
         finally:
             await _cleanup(db, [hearing_id] if hearing_id else [])
@@ -277,7 +277,7 @@ def test_targeted_request_under_new_order():
                 assert e.status_code == 403
 
             accepted = await hearings.accept_hearing_request(db, hearing_id, target_counsel)
-            assert accepted["status"] == "accepted"
+            assert accepted["status"] == "documents_shared"  # M12: auto-chains straight through, "accepted" is no longer the resting status
             assert accepted["proxy_counsel_user_id"] == target_counsel["user_id"]
         finally:
             await _cleanup(db, [hearing_id] if hearing_id else [])
