@@ -80,7 +80,7 @@ export const proxyCounselSections = [
       },
       { label: "Upload Order Sheets (Minimum 5)", type: "file", multiple: true, hint: "PDF/JPG/PNG, Max 10MB each", span: 2 },
       { label: "Language", required: true, type: "radio", options: languageOptions, otherTriggerValues: languageOtherTriggerValues, span: 2 },
-      { label: "Approximate Number of Matters Handled", type: "number" },
+      { label: "Approximate Number of Matters Handled", type: "number", min: 0 },
       { label: "Current Professional Status", required: true, type: "radio", options: ["Independent Practitioner", "Chamber Associate", "Law Firm Associate", "Senior Advocate Chamber"], other: true, span: 2 },
       { label: "Primary Court of Practice", required: true, type: "courtOfPractice" },
       { label: "Maximum Distance You Are Willing to Travel for Appearance", required: true, type: "radio", options: ["Up to 10 KM", "Up to 25 KM", "Up to 50 KM", "Up to 100 KM", "Any Distance"], span: 2 },
