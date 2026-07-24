@@ -8,7 +8,6 @@ import { createHearingRequest, listHearingRequests, uploadHearingDocument } from
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import LegalServiceRequestForm from "@/components/shared/LegalServiceRequestForm";
 import AvailableAdvocatesPanel from "@/components/shared/AvailableAdvocatesPanel";
-import { useAdvocateRecommendations } from "@/lib/advocateRecommendationsApi";
 import { SERVICE_CONFIGS } from "@/config/serviceRequestFields";
 
 const serviceConfig = SERVICE_CONFIGS.proxy_counsel;
@@ -36,9 +35,7 @@ export default function HireProxyCounsel() {
   const [hearings, setHearings] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [activeId, setActiveId] = useState(null);
-  const [context, setContext] = useState({});
   const [selectedAdvocate, setSelectedAdvocate] = useState(null);
-  const recommendations = useAdvocateRecommendations(context);
 
   const load = () => listHearingRequests().then(setHearings);
   useEffect(() => { load(); }, []);
@@ -74,15 +71,12 @@ export default function HireProxyCounsel() {
       <div className="mt-6 grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-6 items-start">
         <LegalServiceRequestForm
           serviceConfig={serviceConfig} onSubmit={handleCreate} submitting={submitting}
-          selectedAdvocate={selectedAdvocate} onContextChange={setContext}
+          selectedAdvocate={selectedAdvocate}
         />
         <AvailableAdvocatesPanel
-          {...recommendations}
-          context={context}
           selectedAdvocateId={selectedAdvocate?.advocate_id}
           onSelect={setSelectedAdvocate}
           onClear={() => setSelectedAdvocate(null)}
-          onRetry={recommendations.refetch}
         />
       </div>
 

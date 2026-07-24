@@ -1,91 +1,67 @@
 import { useEffect, useRef, useState } from "react";
+import { api } from "./api";
 
-/* Everything below `getAvailableAdvocates` is the ONLY function
-   AvailableAdvocatesPanel's data (via useAdvocateRecommendations) ever
-   comes from. It has no idea whether the result came from mock data, a
-   plain backend listing endpoint, or the eventual AI recommendation
-   engine. Swapping the mock body below for a real
-   `api.get("/recommendations/advocates", { params: context })` call is the
-   entire future integration — the return shape ({ source, metadata,
-   advocates }) must stay stable, and no component changes.
+/* Data layer for the Proxy Counsel Recommendations module
+   (AvailableAdvocatesPanel.jsx) — calls the real recommendation endpoint
+   (GET /recommendations/advocates — see server.py, backed by
+   counsel_matching.list_and_recommend, which reuses score_candidates
+   unchanged rather than a separate recommendation engine).
 
-   `source` is also the mechanism that prevents mock data from ever
-   producing an invalid hearing request: "mock" today, "live" (or any
-   non-"mock" value) once a real implementation is backed by real
-   accounts — AvailableAdvocatesPanel derives `selectable = source !==
-   "mock"` and disables Select while it's false. */
-
-const MOCK_ADVOCATES = [
-  {
-    advocate_id: "mock_adv_1", name: "Adv. Priya Nair", avatar_url: null,
-    primary_courts: ["Tis Hazari Court Complex", "Patiala House Court"],
-    practice_areas: ["Criminal", "Bail Matters"], languages: ["Hindi", "English", "Punjabi"],
-    rating: 4.7, hearings_completed: 138,
-    availability: { available_now: true, note: "Available Today" },
-    proposed_fee: 1500,
-    bio: "12 years at the Delhi District Courts, focused on criminal bail and remand matters.",
-    experience_years: 12, education: "LL.B., Faculty of Law, Delhi University",
-  },
-  {
-    advocate_id: "mock_adv_2", name: "Adv. Rohan Deshpande", avatar_url: null,
-    primary_courts: ["Mumbai City Civil Court"],
-    practice_areas: ["Civil", "Property Disputes"], languages: ["Marathi", "Hindi", "English"],
-    rating: 4.5, hearings_completed: 94,
-    availability: { available_now: false, note: "Busy Until 3 PM" },
-    proposed_fee: 2000,
-    bio: "Civil litigation practice with a focus on property and tenancy disputes across Mumbai.",
-    experience_years: 9, education: "LL.B., Government Law College, Mumbai",
-  },
-  {
-    advocate_id: "mock_adv_3", name: "Adv. Ayesha Khan", avatar_url: null,
-    primary_courts: ["Bengaluru City Civil Court"],
-    practice_areas: ["Family", "Consumer"], languages: ["Kannada", "English", "Urdu"],
-    rating: 4.9, hearings_completed: 210,
-    availability: { available_now: true, note: "Available Today" },
-    proposed_fee: 1800,
-    bio: "Family court practitioner with a decade of experience in matrimonial and consumer matters.",
-    experience_years: 10, education: "LL.B., National Law School of India University",
-  },
-  {
-    advocate_id: "mock_adv_4", name: "Adv. Karthik Subramaniam", avatar_url: null,
-    primary_courts: ["Madras City Civil Court"],
-    practice_areas: ["Civil", "Writ Petitions"], languages: ["Tamil", "English"],
-    rating: 4.3, hearings_completed: 61,
-    availability: { available_now: false, note: "Available Tomorrow" },
-    proposed_fee: null,
-    bio: "Writ and civil practice before the Madras courts, open to short-notice mentioning work.",
-    experience_years: 6, education: "B.A. LL.B., School of Excellence in Law, Chennai",
-  },
-  {
-    advocate_id: "mock_adv_5", name: "Adv. Simran Kaur", avatar_url: null,
-    primary_courts: ["Saket District Court", "Rohini District Court"],
-    practice_areas: ["Criminal", "Cheque Bounce"], languages: ["Punjabi", "Hindi", "English"],
-    rating: 4.1, hearings_completed: 42,
-    availability: { available_now: false, note: "Unavailable" },
-    proposed_fee: 1200,
-    bio: "Focused practice in cheque-bounce and NI Act matters across South and North Delhi.",
-    experience_years: 5, education: "LL.B., Campus Law Centre, Delhi University",
-    // Reserved fields intentionally absent everywhere in this mock set:
-    // ai_match_score, ai_match_reasons, estimated_response_time — never
-    // fabricated, only ever rendered once a real recommendation source
-    // actually provides them.
-  },
-];
+   This module is intentionally the only thing AvailableAdvocatesPanel
+   fetches through; the panel calls useAdvocateRecommendations itself and
+   owns its own location/filter state — it does not take a hearing-request
+   form's context as input, so this data layer works identically regardless
+   of what page or form embeds the panel. */
 
 export async function getAvailableAdvocates(context) {
-  // `context` is accepted for forward compatibility and intentionally
-  // unused by the mock — a real implementation reads it to filter/rank.
-  await new Promise((resolve) => setTimeout(resolve, 350)); // simulated latency, so the loading state is visibly exercised
-  return { source: "mock", metadata: undefined, advocates: MOCK_ADVOCATES };
+  const params = {
+    court_id: context?.court_id || undefined,
+    state_id: context?.state_id || undefined,
+    district: context?.district || undefined,
+    specialization: context?.specialization || undefined,
+    min_experience_years: context?.min_experience_years || undefined,
+    min_rating: context?.min_rating || undefined,
+    fee_min: context?.fee_min || undefined,
+    fee_max: context?.fee_max || undefined,
+    available_only: context?.available_only || undefined,
+  };
+  // TEMP DEBUG (remove before commit) -----------------------------------
+  // eslint-disable-next-line no-console
+  console.log("[CB-DEBUG][3] request URL:", api.getUri({ url: "/recommendations/advocates", params }));
+  // eslint-disable-next-line no-console
+  console.log("[CB-DEBUG][3] request query params:", params);
+  // -----------------------------------------------------------------------
+  const response = await api.get("/recommendations/advocates", { params });
+  const { data, status } = response;
+  // TEMP DEBUG (remove before commit) -----------------------------------
+  // eslint-disable-next-line no-console
+  console.log("[CB-DEBUG][4] response status:", status);
+  // eslint-disable-next-line no-console
+  console.log("[CB-DEBUG][5] full response JSON:", JSON.parse(JSON.stringify(data)));
+  // eslint-disable-next-line no-console
+  console.log("[CB-DEBUG][6] metadata.total_candidates:", data?.metadata?.total_candidates);
+  // eslint-disable-next-line no-console
+  console.log("[CB-DEBUG][7] advocates.length (from response):", data?.advocates?.length);
+  // eslint-disable-next-line no-console
+  console.log("[CB-DEBUG][8] advocates array (from response):", data?.advocates);
+  // -----------------------------------------------------------------------
+  return { source: data.source, metadata: data.metadata, advocates: data.advocates || [] };
 }
 
-const hasMinimumContext = (context) =>
-  !!context?.court_id || !!(context?.state_id && context?.district);
+// State + City (district) is the mandatory Step 1/2 gate the founder asked
+// for — no recommendation is fetched until both are chosen, court_id alone
+// (an optional Step 3 filter) is never sufficient on its own.
+const hasMinimumContext = (context) => !!(context?.state_id && context?.district);
 
 /* Owns everything data-related — the minimum-context gate, the debounce,
    calling getAvailableAdvocates, and turning the result into one status
-   AvailableAdvocatesPanel can render directly. The panel itself never
-   imports this module or calls a fetch — see AvailableAdvocatesPanel.jsx. */
+   AvailableAdvocatesPanel can render directly.
+
+   `context` carries both the location (state_id/district) and the page's
+   optional filter inputs (court_id, specialization, min_experience_years,
+   min_rating, fee_min, fee_max, available_only) — the caller merges those
+   into one object, and a change to any of them re-triggers this same
+   debounced fetch since they all live in the one serialized `contextKey`. */
 export function useAdvocateRecommendations(context) {
   const [state, setState] = useState({ status: "idle", advocates: [], source: null, metadata: undefined });
   const requestIdRef = useRef(0);
@@ -101,7 +77,13 @@ export function useAdvocateRecommendations(context) {
     setState((s) => ({ ...s, status: "loading" }));
     getAvailableAdvocates(context)
       .then(({ source, metadata, advocates }) => {
-        if (requestId !== requestIdRef.current) return; // a newer request superseded this one
+        if (requestId !== requestIdRef.current) {
+          // TEMP DEBUG (remove before commit) — a newer request superseded
+          // this one, so its result is intentionally discarded, not applied.
+          // eslint-disable-next-line no-console
+          console.log("[CB-DEBUG] stale response discarded — requestId", requestId, "!= current", requestIdRef.current, "(advocates.length was", advocates?.length, ")");
+          return;
+        }
         setState({ status: advocates?.length ? "ready" : "empty", advocates: advocates || [], source, metadata });
       })
       .catch(() => {
