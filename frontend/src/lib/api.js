@@ -17,7 +17,15 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (r) => r,
   (err) => {
-    if (err?.response?.status === 401) {
+    // /auth/login's 401s (bad password, deactivated account, ...) describe
+    // the credentials just typed into the login form, not the validity of
+    // whatever token is currently sitting in localStorage — that token
+    // wasn't even what auth'd this request (login doesn't check it) and may
+    // belong to a completely unrelated, still-valid session in another tab
+    // (localStorage is shared across same-origin tabs). Clearing it here
+    // would silently log that other tab out.
+    const isLoginRequest = err.config?.url?.includes("/auth/login");
+    if (err?.response?.status === 401 && !isLoginRequest) {
       const hadToken = !!localStorage.getItem("cb_token");
       const detail = err.response?.data?.detail;
       if (hadToken) {

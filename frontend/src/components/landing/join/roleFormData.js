@@ -237,7 +237,7 @@ export const vendorSections = [
         options: ["Black & White Printing", "Color Printing", "Photocopy", "Scanning", "Large Format Printing", "Spiral Binding", "Lamination"],
         other: true,
       },
-      { label: "Maximum Printing Capacity (Pages per day)", required: true, type: "number" },
+      { label: "Maximum Printing Capacity (Pages per day)", required: true, type: "number", min: 0 },
       { label: "Working Hours", required: true, type: "select", options: ["9 AM - 6 PM", "9 AM - 9 PM", "24 Hours", "Custom"] },
     ],
   },
