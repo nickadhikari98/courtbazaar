@@ -29,17 +29,13 @@ const ATTACHMENT_HELPER = "Case papers, Vakalatnama, prior order sheets, or othe
    only collects, validates, and structures input — it never calls the API
    itself.
 
-   Two optional props integrate the Available Advocates panel without this
-   component needing to know anything about recommendations:
-   - `selectedAdvocate` ({advocate_id, name} | null) — when it changes, the
-     form's own Advocate Preference fields update to match. The manual
-     Any/Specific radio in the Work Required section still works completely
-     standalone; this just gives an external panel a second way to reach
-     the same state.
-   - `onContextChange(context)` — fired whenever a field relevant to
-     advocate matching changes, so a parent page can feed a recommendations
-     hook without this form knowing that hook exists. */
-export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submitting, selectedAdvocate, onContextChange }) {
+   `selectedAdvocate` ({advocate_id, name} | null) integrates the Available
+   Advocates panel without this component needing to know anything about
+   recommendations: when it changes, the form's own Advocate Preference
+   fields update to match. The manual Any/Specific radio in the Work
+   Required section still works completely standalone; this just gives an
+   external panel a second way to reach the same state. */
+export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submitting, selectedAdvocate }) {
   const [fields, setFields] = useState({
     state_id: "", state_name: "", district: "", court_id: "", court_name: "",
     case_title: "", case_number: "", case_type: "", hearing_date: "", hearing_time: "", case_stage: "",
@@ -60,14 +56,6 @@ export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submi
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-sync when the selected advocate itself changes
   }, [selectedAdvocate?.advocate_id]);
 
-  useEffect(() => {
-    onContextChange?.({
-      court_id: fields.court_id, court_name: fields.court_name, state_id: fields.state_id, district: fields.district,
-      work_type: fields.work_required, priority: fields.priority,
-      hearing_date: fields.hearing_date, budget: fields.budget,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- report only the fields relevant to advocate matching
-  }, [fields.court_id, fields.court_name, fields.state_id, fields.district, fields.work_required, fields.priority, fields.hearing_date, fields.budget]);
   const toggleWorkType = (option) => {
     const has = fields.work_required.includes(option);
     set({ work_required: has ? fields.work_required.filter((w) => w !== option) : [...fields.work_required, option] });

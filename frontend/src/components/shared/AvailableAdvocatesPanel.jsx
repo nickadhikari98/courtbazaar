@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,12 +37,7 @@ function LocationStep({ location, states, districts, onChange }) {
             <Select
               value={location.state_id || undefined}
               onValueChange={(v) => {
-                // TEMP DEBUG (remove before commit)
-                // eslint-disable-next-line no-console
-                console.log("[CB-DEBUG][A] State onValueChange FIRED — raw value from Radix:", v, "typeof:", typeof v);
                 const matchedState = states.find((s) => s.state_id === v);
-                // eslint-disable-next-line no-console
-                console.log("[CB-DEBUG][A] matched state object:", matchedState);
                 onChange({ state_id: v, state_name: matchedState?.name, district: "" });
               }}
             >
@@ -57,9 +52,6 @@ function LocationStep({ location, states, districts, onChange }) {
             <Select
               value={location.district || undefined}
               onValueChange={(v) => {
-                // TEMP DEBUG (remove before commit)
-                // eslint-disable-next-line no-console
-                console.log("[CB-DEBUG][B] City onValueChange FIRED — raw value from Radix:", v, "typeof:", typeof v, "| current location prop at fire-time:", location);
                 onChange({ ...location, district: v });
               }}
               disabled={!location.state_id}
@@ -186,37 +178,17 @@ export default function AvailableAdvocatesPanel({ selectedAdvocateId, onSelect, 
   // the full panel via the `lg:block` override below, this state never
   // applies there.
   const [expanded, setExpanded] = useState(false);
-  // TEMP DEBUG (remove before commit) — lets logs below say which render they came from.
-  const renderCountRef = useRef(0);
 
   useEffect(() => {
     getStates()
-      .then((s) => {
-        // TEMP DEBUG (remove before commit)
-        // eslint-disable-next-line no-console
-        console.log("[CB-DEBUG][D] getStates() resolved — count:", s?.length, "sample:", s?.slice(0, 3));
-        setStates(s);
-      })
-      .catch((err) => {
-        // eslint-disable-next-line no-console
-        console.log("[CB-DEBUG][D] getStates() FAILED:", err);
-        setStates([]);
-      });
+      .then((s) => setStates(s))
+      .catch(() => setStates([]));
   }, []);
   useEffect(() => {
     if (!location.state_id) { setCourts([]); return; }
     getCourtsByState(location.state_id)
-      .then((c) => {
-        // TEMP DEBUG (remove before commit)
-        // eslint-disable-next-line no-console
-        console.log("[CB-DEBUG][E] getCourtsByState(", location.state_id, ") resolved — count:", c?.length, "sample:", c?.slice(0, 3));
-        setCourts(c);
-      })
-      .catch((err) => {
-        // eslint-disable-next-line no-console
-        console.log("[CB-DEBUG][E] getCourtsByState FAILED:", err);
-        setCourts([]);
-      });
+      .then((c) => setCourts(c))
+      .catch(() => setCourts([]));
   }, [location.state_id]);
 
   const districts = useMemo(
@@ -229,9 +201,6 @@ export default function AvailableAdvocatesPanel({ selectedAdvocateId, onSelect, 
   );
 
   const changeLocation = (next) => {
-    // TEMP DEBUG (remove before commit)
-    // eslint-disable-next-line no-console
-    console.log("[CB-DEBUG][C] changeLocation called with:", next, "| previous location state:", location);
     setLocation(next);
     setFilters((f) => ({ ...f, court_id: undefined })); // a court from the previous city no longer applies
   };
@@ -241,21 +210,6 @@ export default function AvailableAdvocatesPanel({ selectedAdvocateId, onSelect, 
     hasLocation ? { state_id: location.state_id, district: location.district, ...filters } : {},
   );
   const { status, advocates = [], metadata, refetch } = recommendations;
-
-  // TEMP DEBUG (remove before commit) -------------------------------------
-  renderCountRef.current += 1;
-  useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log(`[CB-DEBUG][1][render #${renderCountRef.current}] selected state_id:`, JSON.stringify(location.state_id));
-    // eslint-disable-next-line no-console
-    console.log(`[CB-DEBUG][2][render #${renderCountRef.current}] selected district:`, JSON.stringify(location.district));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.state_id, location.district]);
-  // eslint-disable-next-line no-console
-  console.log(`[CB-DEBUG][9][render #${renderCountRef.current}] rendering condition -> status:`, status,
-    "| loading:", status === "loading", "| error:", status === "error", "| hasLocation:", hasLocation,
-    "| states.length:", states.length, "| districts:", districts);
-  // -------------------------------------------------------------------------
 
   const title = "Proxy Counsel Recommendations";
   const mobileHeaderLabel = status === "ready" ? `${title} (${advocates.length})` : title;
@@ -328,8 +282,6 @@ export default function AvailableAdvocatesPanel({ selectedAdvocateId, onSelect, 
 
       {hasLocation && status === "ready" && (
         <div className="space-y-3">
-          {/* TEMP DEBUG (remove before commit) */}
-          {console.log("[CB-DEBUG][10] final advocates.length immediately before .map():", advocates.length)}
           {advocates.map((a) => {
             const isSelected = selectedAdvocateId === a.advocate_id;
             const hasAiInfo = a.ai_match_score != null || a.ai_match_reasons || a.estimated_response_time;

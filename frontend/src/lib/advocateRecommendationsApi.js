@@ -25,26 +25,8 @@ export async function getAvailableAdvocates(context) {
     fee_max: context?.fee_max || undefined,
     available_only: context?.available_only || undefined,
   };
-  // TEMP DEBUG (remove before commit) -----------------------------------
-  // eslint-disable-next-line no-console
-  console.log("[CB-DEBUG][3] request URL:", api.getUri({ url: "/recommendations/advocates", params }));
-  // eslint-disable-next-line no-console
-  console.log("[CB-DEBUG][3] request query params:", params);
-  // -----------------------------------------------------------------------
   const response = await api.get("/recommendations/advocates", { params });
-  const { data, status } = response;
-  // TEMP DEBUG (remove before commit) -----------------------------------
-  // eslint-disable-next-line no-console
-  console.log("[CB-DEBUG][4] response status:", status);
-  // eslint-disable-next-line no-console
-  console.log("[CB-DEBUG][5] full response JSON:", JSON.parse(JSON.stringify(data)));
-  // eslint-disable-next-line no-console
-  console.log("[CB-DEBUG][6] metadata.total_candidates:", data?.metadata?.total_candidates);
-  // eslint-disable-next-line no-console
-  console.log("[CB-DEBUG][7] advocates.length (from response):", data?.advocates?.length);
-  // eslint-disable-next-line no-console
-  console.log("[CB-DEBUG][8] advocates array (from response):", data?.advocates);
-  // -----------------------------------------------------------------------
+  const { data } = response;
   return { source: data.source, metadata: data.metadata, advocates: data.advocates || [] };
 }
 
@@ -77,13 +59,7 @@ export function useAdvocateRecommendations(context) {
     setState((s) => ({ ...s, status: "loading" }));
     getAvailableAdvocates(context)
       .then(({ source, metadata, advocates }) => {
-        if (requestId !== requestIdRef.current) {
-          // TEMP DEBUG (remove before commit) — a newer request superseded
-          // this one, so its result is intentionally discarded, not applied.
-          // eslint-disable-next-line no-console
-          console.log("[CB-DEBUG] stale response discarded — requestId", requestId, "!= current", requestIdRef.current, "(advocates.length was", advocates?.length, ")");
-          return;
-        }
+        if (requestId !== requestIdRef.current) return; // a newer request superseded this one
         setState({ status: advocates?.length ? "ready" : "empty", advocates: advocates || [], source, metadata });
       })
       .catch(() => {
