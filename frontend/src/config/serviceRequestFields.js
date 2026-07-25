@@ -26,8 +26,9 @@ export const SERVICE_CONFIGS = {
     workTypeOptions: SERVICE_WORK_TYPES.proxy_counsel,
     requiresWorkType: true,
     supportsAttachments: true,
-    supportsBudget: true,
+    requiresOfferAmount: true,
     supportsTargeting: true,
+    submitButtonLabel: "Continue to Payment",
     validate: (fields) => {
       const errors = {};
       if (!fields.state_id) errors.state_id = "State is required";
@@ -45,6 +46,9 @@ export const SERVICE_CONFIGS = {
       }
       if (fields.target_type === "specific" && !fields.target_advocate_id?.trim()) {
         errors.target_advocate_id = "Enter the advocate's CourtBazaar ID, or switch back to Any Available Advocate";
+      }
+      if (!fields.offered_amount || Number(fields.offered_amount) <= 0) {
+        errors.offered_amount = "Enter an offer amount greater than ₹0";
       }
       return errors;
     },

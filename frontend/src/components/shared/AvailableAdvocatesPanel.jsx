@@ -4,86 +4,75 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Star, MapPin, Languages as LanguagesIcon, Gavel, RefreshCw, Users, Sparkles, ChevronDown, SlidersHorizontal, X } from "lucide-react";
+import { Star, MapPin, Languages as LanguagesIcon, Gavel, RefreshCw, Users, Sparkles, ChevronDown, Search, X } from "lucide-react";
 import { formatINR } from "@/lib/api";
 import { getStates, getCourtsByState } from "@/lib/referenceDataApi";
 import { useAdvocateRecommendations } from "@/lib/advocateRecommendationsApi";
 
 const initialsOf = (name) => (name || "?").split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase();
 
-/* Step 1/2 of the recommendation flow: State -> City (District), both
-   mandatory. Deliberately its own State/City-only cascade rather than
-   reusing CourtLocationSelector wholesale — that component bundles Court
-   into the same mandatory step, but here Court is an optional Step 3
-   filter (see FiltersBar) that only appears once a location is chosen.
-   Reuses the same reference-data API calls CourtLocationSelector uses
-   (getStates/getCourtsByState), and "City" is the existing `district`
-   field on a court — every seeded court already carries one (see
-   backend/court_seed.py) — not a new schema field. */
-function LocationStep({ location, states, districts, onChange }) {
+/* The single mode switch — always visible "at the top" regardless of which
+   mode is active. AI Mode takes no input at all: flipping it on is the
+   entire interaction, the panel below immediately asks the recommendation
+   endpoint for its top-ranked verified counsel with zero filters applied
+   (see advocateRecommendationsApi.js). Manual Mode (default, off) hands
+   control to SearchAdvocatesBar below instead. */
+function AiModeToggle({ aiMode, onToggle }) {
   return (
-    <Card className="dashboard-card border-none mb-4" data-testid="advocate-location-step">
-      <CardContent className="p-4">
-        <div className="cb-overline mb-2">Location</div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label className="text-2xs">State *</Label>
-            <Select
-              value={location.state_id || undefined}
-              onValueChange={(v) => {
-                const matchedState = states.find((s) => s.state_id === v);
-                onChange({ state_id: v, state_name: matchedState?.name, district: "" });
-              }}
-            >
-              <SelectTrigger className="mt-1" data-testid="advocate-location-state"><SelectValue placeholder="Select state" /></SelectTrigger>
-              <SelectContent>
-                {states.map((s) => <SelectItem key={s.state_id} value={s.state_id}>{s.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label className="text-2xs">City *</Label>
-            <Select
-              value={location.district || undefined}
-              onValueChange={(v) => {
-                onChange({ ...location, district: v });
-              }}
-              disabled={!location.state_id}
-            >
-              <SelectTrigger className="mt-1" data-testid="advocate-location-district"><SelectValue placeholder={location.state_id ? "Select city" : "Select a state first"} /></SelectTrigger>
-              <SelectContent>
-                {districts.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
+    <Card className="dashboard-card border-none mb-4" data-testid="ai-mode-card">
+      <CardContent className="p-4 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2.5">
+          <Sparkles className="w-4 h-4 text-accent flex-shrink-0" />
+          <span className="text-sm font-semibold">Use AI Recommendation</span>
         </div>
+        <Switch checked={aiMode} onCheckedChange={onToggle} data-testid="ai-mode-toggle" />
       </CardContent>
     </Card>
   );
 }
 
-/* Step 3 — optional, only shown once Step 1/2's location is set. Every
-   field here is an existing proxy_counsel_profiles field the
-   recommendation endpoint already queries on (see
-   counsel_matching.list_and_recommend) — no field is new. Court is scoped
-   to `courtsInDistrict` (the already-selected city's own courts), reusing
-   the same court list LocationStep fetched rather than a second API call.
-   Purely controlled: this component holds no filter state of its own. */
-function FiltersBar({ filters, onFiltersChange, courtsInDistrict }) {
+/* Shown only in AI Mode, in place of the manual search bar — no inputs of
+   its own, just tells the customer what's happening while the shared results
+   list below renders whatever the zero-filter recommendation call ranks. */
+function AiRecommendationPanel() {
+  return (
+    <Card className="dashboard-card border-none mb-4 border border-accent/20 bg-accent/5" data-testid="ai-recommendation-panel">
+      <CardContent className="p-4 flex items-start gap-2.5">
+        <Sparkles className="w-4 h-4 text-accent flex-shrink-0 mt-0.5" />
+        <p className="text-sm font-semibold leading-snug">
+          AI will recommend the best verified proxy counsel for your request.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* Shown only in Manual Mode, in place of the AI panel above — AI Mode hides
+   this completely rather than disabling it (see AvailableAdvocatesPanel),
+   so there's nothing stale left visible or interactive once the customer
+   switches over. State/District/Court cascade the same way
+   CourtLocationSelector does (reusing getStates/getCourtsByState — "City" is
+   the existing `district` field every seeded court already carries, not a
+   new schema field), but none of the three are mandatory here: the
+   recommendation endpoint ranks on whatever subset of
+   court_id/state_id/district/specialization/min_experience_years is
+   actually set. */
+function SearchAdvocatesBar({ filters, onFiltersChange, states, districts, courtOptions, hasActiveFilters }) {
   const set = (patch) => onFiltersChange({ ...filters, ...patch });
-  const hasActiveFilters = Object.values(filters || {}).some((v) => v !== undefined && v !== "" && v !== false);
 
   return (
-    <Card className="dashboard-card border-none mb-4" data-testid="advocate-filters">
+    <Card className="dashboard-card border-none mb-4" data-testid="advocate-search-bar">
       <CardContent className="p-4">
         <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-1.5 cb-overline"><SlidersHorizontal className="w-3.5 h-3.5" /> Filters (optional)</div>
+          <div className="flex items-center gap-1.5 cb-overline">
+            Search Advocates <Search className="w-3.5 h-3.5" />
+          </div>
           {hasActiveFilters && (
             <button type="button" onClick={() => onFiltersChange({})} className="text-2xs font-semibold text-muted-foreground hover:text-foreground flex items-center gap-1">
               <X className="w-3 h-3" /> Clear
@@ -92,84 +81,68 @@ function FiltersBar({ filters, onFiltersChange, courtsInDistrict }) {
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <Label className="text-2xs">Court</Label>
-            <Select value={filters.court_id || undefined} onValueChange={(v) => set({ court_id: v })}>
-              <SelectTrigger className="h-8 text-sm mt-1" data-testid="filter-court"><SelectValue placeholder="Any court" /></SelectTrigger>
+            <Label className="text-2xs">State</Label>
+            <Select value={filters.state_id || undefined} onValueChange={(v) => set({ state_id: v, district: "", court_id: "" })}>
+              <SelectTrigger className="h-8 text-sm mt-1" data-testid="filter-state"><SelectValue placeholder="Any state" /></SelectTrigger>
               <SelectContent>
-                {courtsInDistrict.map((c) => <SelectItem key={c.court_id} value={c.court_id}>{c.name}</SelectItem>)}
+                {states.map((s) => <SelectItem key={s.state_id} value={s.state_id}>{s.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
           <div>
-            <Label className="text-2xs">Specialization</Label>
-            <Input
-              value={filters.specialization || ""} placeholder="e.g. Criminal" className="h-8 text-sm mt-1"
-              onChange={(e) => set({ specialization: e.target.value || undefined })}
-              data-testid="filter-specialization"
-            />
+            <Label className="text-2xs">District</Label>
+            <Select value={filters.district || undefined} onValueChange={(v) => set({ district: v, court_id: "" })} disabled={!filters.state_id}>
+              <SelectTrigger className="h-8 text-sm mt-1" data-testid="filter-district"><SelectValue placeholder={filters.state_id ? "Any district" : "Select a state first"} /></SelectTrigger>
+              <SelectContent>
+                {districts.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
           <div>
-            <Label className="text-2xs">Min. Experience (yrs)</Label>
+            <Label className="text-2xs">Court</Label>
+            <Select value={filters.court_id || undefined} onValueChange={(v) => set({ court_id: v })} disabled={!filters.state_id}>
+              <SelectTrigger className="h-8 text-sm mt-1" data-testid="filter-court"><SelectValue placeholder="Any court" /></SelectTrigger>
+              <SelectContent>
+                {courtOptions.map((c) => <SelectItem key={c.court_id} value={c.court_id}>{c.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-2xs">Experience (yrs)</Label>
             <Input
               type="number" min="0" value={filters.min_experience_years ?? ""} className="h-8 text-sm mt-1"
               onChange={(e) => set({ min_experience_years: e.target.value ? Number(e.target.value) : undefined })}
-              data-testid="filter-min-experience"
+              data-testid="filter-experience"
             />
           </div>
-          <div>
-            <Label className="text-2xs">Min. Rating</Label>
+          <div className="col-span-2">
+            <Label className="text-2xs">Expertise</Label>
             <Input
-              type="number" min="0" max="5" step="0.1" value={filters.min_rating ?? ""} className="h-8 text-sm mt-1"
-              onChange={(e) => set({ min_rating: e.target.value ? Number(e.target.value) : undefined })}
-              data-testid="filter-min-rating"
+              value={filters.specialization || ""} placeholder="e.g. Criminal, Corporate" className="h-8 text-sm mt-1"
+              onChange={(e) => set({ specialization: e.target.value || undefined })}
+              data-testid="filter-expertise"
             />
-          </div>
-          <div className="flex gap-2 col-span-2">
-            <div className="flex-1">
-              <Label className="text-2xs">Fee Min (₹)</Label>
-              <Input
-                type="number" min="0" value={filters.fee_min ?? ""} className="h-8 text-sm mt-1"
-                onChange={(e) => set({ fee_min: e.target.value ? Number(e.target.value) : undefined })}
-                data-testid="filter-fee-min"
-              />
-            </div>
-            <div className="flex-1">
-              <Label className="text-2xs">Fee Max (₹)</Label>
-              <Input
-                type="number" min="0" value={filters.fee_max ?? ""} className="h-8 text-sm mt-1"
-                onChange={(e) => set({ fee_max: e.target.value ? Number(e.target.value) : undefined })}
-                data-testid="filter-fee-max"
-              />
-            </div>
           </div>
         </div>
-        <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer select-none mt-3">
-          <Checkbox
-            checked={!!filters.available_only}
-            onCheckedChange={(v) => set({ available_only: v || undefined })}
-            data-testid="filter-available-only"
-          />
-          Available now only
-        </label>
       </CardContent>
     </Card>
   );
 }
 
-/* Proxy Counsel Page — AI Recommendations + Filters, as its own
-   independent module (founder follow-up request): State -> City ->
-   fetch eligible counsels -> optional filters -> AI ranking (reusing
-   counsel_matching.score_candidates via GET /recommendations/advocates,
-   see lib/advocateRecommendationsApi.js) -> ranked results. Deliberately
-   does NOT take a hearing-request `context`/location prop from its parent
-   page — it owns its own location + filter state and calls
-   useAdvocateRecommendations itself, so it works the same way regardless
-   of what (if anything) a Hire Proxy Counsel request form on the same page
-   is doing. `selectedAdvocateId`/`onSelect`/`onClear` are the only link
-   back to the parent — purely "the user picked someone", not a data
-   dependency in the other direction. */
+/* Proxy Counsel Page — AI Mode toggle + Manual Search, as its own
+   independent module (founder follow-up request): AI Mode ON -> zero-input
+   AI ranking (reusing counsel_matching.score_candidates via
+   GET /recommendations/advocates, see lib/advocateRecommendationsApi.js);
+   AI Mode OFF (default) -> the same ranked endpoint, scoped down by whatever
+   the manual search bar has set. Deliberately does NOT take a hearing-request
+   `context`/location prop from its parent page — it owns its own AI-mode +
+   filter state and calls useAdvocateRecommendations itself, so it works the
+   same way regardless of what (if anything) a Hire Proxy Counsel request
+   form on the same page is doing. `selectedAdvocateId`/`onSelect`/`onClear`
+   are the only link back to the parent — purely "the user picked someone",
+   not a data dependency in the other direction. */
 export default function AvailableAdvocatesPanel({ selectedAdvocateId, onSelect, onClear }) {
-  const [location, setLocation] = useState({ state_id: "", state_name: "", district: "" });
+  const [aiMode, setAiMode] = useState(false); // OFF by default — manual search is the default experience
   const [filters, setFilters] = useState({});
   const [states, setStates] = useState([]);
   const [courts, setCourts] = useState([]);
@@ -185,33 +158,55 @@ export default function AvailableAdvocatesPanel({ selectedAdvocateId, onSelect, 
       .catch(() => setStates([]));
   }, []);
   useEffect(() => {
-    if (!location.state_id) { setCourts([]); return; }
-    getCourtsByState(location.state_id)
+    if (!filters.state_id) { setCourts([]); return; }
+    getCourtsByState(filters.state_id)
       .then((c) => setCourts(c))
       .catch(() => setCourts([]));
-  }, [location.state_id]);
+  }, [filters.state_id]);
 
   const districts = useMemo(
     () => Array.from(new Set(courts.map((c) => c.district).filter(Boolean))).sort(),
     [courts],
   );
-  const courtsInDistrict = useMemo(
-    () => (location.district ? courts.filter((c) => c.district === location.district) : []),
-    [courts, location.district],
+  const courtOptions = useMemo(
+    () => (filters.district ? courts.filter((c) => c.district === filters.district) : courts),
+    [courts, filters.district],
   );
 
-  const changeLocation = (next) => {
-    setLocation(next);
-    setFilters((f) => ({ ...f, court_id: undefined })); // a court from the previous city no longer applies
+  // Switching modes must never leak state across: the other mode's search
+  // filters are wiped (so flipping back doesn't resurrect a stale search),
+  // any open profile dialog is closed, and — critically — whatever advocate
+  // was selected under the previous mode is cleared via onClear, since a
+  // manual pick has no bearing on the AI panel and vice versa.
+  const switchMode = (nextAiMode) => {
+    setAiMode(nextAiMode);
+    setFilters({});
+    setProfileAdvocate(null);
+    onClear?.();
   };
 
-  const hasLocation = !!(location.state_id && location.district);
-  const recommendations = useAdvocateRecommendations(
-    hasLocation ? { state_id: location.state_id, district: location.district, ...filters } : {},
-  );
+  // In Manual Mode, nothing is fetched until the user has actually applied a
+  // filter — `context: null` tells useAdvocateRecommendations not to fetch
+  // at all, so no advocate is preloaded/recommended before a real search
+  // happens. AI Mode always fetches immediately with zero filters (`{}`).
+  const hasActiveFilters = Object.values(filters).some((v) => v !== undefined && v !== "");
+  const context = aiMode
+    ? {}
+    : hasActiveFilters
+      ? {
+          state_id: filters.state_id || undefined,
+          district: filters.district || undefined,
+          court_id: filters.court_id || undefined,
+          specialization: filters.specialization || undefined,
+          min_experience_years: filters.min_experience_years || undefined,
+        }
+      : null;
+  const recommendations = useAdvocateRecommendations(context);
   const { status, advocates = [], metadata, refetch } = recommendations;
 
-  const title = "Proxy Counsel Recommendations";
+  // The heading itself is part of communicating which mode is active — never
+  // call Manual Search results "Recommendations" (that word implies AI ranking).
+  const title = aiMode ? "AI Recommendations" : "Search Results";
   const mobileHeaderLabel = status === "ready" ? `${title} (${advocates.length})` : title;
 
   return (
@@ -236,31 +231,39 @@ export default function AvailableAdvocatesPanel({ selectedAdvocateId, onSelect, 
 
       <div className={`${expanded ? "block" : "hidden"} lg:block`}>
 
-      <LocationStep location={location} states={states} districts={districts} onChange={changeLocation} />
+      <AiModeToggle aiMode={aiMode} onToggle={switchMode} />
 
-      {!hasLocation && (
-        <Card className="border-dashed border-2" data-testid="advocates-idle">
-          <CardContent className="p-6">
-            <MapPin className="w-8 h-8 mx-auto text-muted-foreground mb-2" strokeWidth={1.5} />
-            <p className="text-sm font-semibold text-center">Select a state and city to see recommended proxy counsels.</p>
-          </CardContent>
-        </Card>
+      {aiMode ? (
+        <AiRecommendationPanel />
+      ) : (
+        <SearchAdvocatesBar
+          filters={filters} onFiltersChange={setFilters}
+          states={states} districts={districts} courtOptions={courtOptions}
+          hasActiveFilters={hasActiveFilters}
+        />
       )}
 
-      {hasLocation && <FiltersBar filters={filters} onFiltersChange={setFilters} courtsInDistrict={courtsInDistrict} />}
-
-      {hasLocation && metadata?.total_candidates != null && (
+      {metadata?.total_candidates != null && (
         <p className="text-2xs text-muted-foreground mb-3">
           Showing {metadata.returned ?? advocates.length} of {metadata.total_candidates} candidates
           {metadata.generated_at ? ` · updated ${new Date(metadata.generated_at).toLocaleTimeString("en-IN")}` : ""}
         </p>
       )}
 
-      {hasLocation && status === "loading" && (
+      {status === "idle" && (
+        <Card className="border-dashed border-2" data-testid="advocates-idle">
+          <CardContent className="p-8 text-center">
+            <Search className="w-8 h-8 mx-auto text-muted-foreground mb-2" strokeWidth={1.5} />
+            <p className="text-sm text-muted-foreground">Use the filters above to search for verified proxy counsels.</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {status === "loading" && (
         <div className="space-y-3">{[1, 2, 3].map((i) => <div key={i} className="h-40 shimmer rounded-xl"></div>)}</div>
       )}
 
-      {hasLocation && status === "error" && (
+      {status === "error" && (
         <Card className="border-dashed border-2" data-testid="advocates-error">
           <CardContent className="p-8 text-center">
             <p className="text-sm text-muted-foreground mb-3">Couldn't load advocates right now.</p>
@@ -271,20 +274,25 @@ export default function AvailableAdvocatesPanel({ selectedAdvocateId, onSelect, 
         </Card>
       )}
 
-      {hasLocation && status === "empty" && (
+      {status === "empty" && (
         <Card className="border-dashed border-2" data-testid="advocates-empty">
           <CardContent className="p-8 text-center">
             <Users className="w-8 h-8 mx-auto text-muted-foreground mb-2" strokeWidth={1.5} />
-            <p className="text-sm text-muted-foreground">No proxy counsels match this location and filters yet.</p>
+            <p className="text-sm text-muted-foreground">
+              {aiMode ? "No verified proxy counsels are available right now." : "No proxy counsels match your search yet."}
+            </p>
           </CardContent>
         </Card>
       )}
 
-      {hasLocation && status === "ready" && (
+      {status === "ready" && (
         <div className="space-y-3">
           {advocates.map((a) => {
             const isSelected = selectedAdvocateId === a.advocate_id;
-            const hasAiInfo = a.ai_match_score != null || a.ai_match_reasons || a.estimated_response_time;
+            // AI Match/reasons/response-time are AI-ranking artifacts — the
+            // backend may still return them for a Manual Search result (same
+            // scoring pipeline), but Manual Mode must never display them.
+            const hasAiInfo = aiMode && (a.ai_match_score != null || a.ai_match_reasons || a.estimated_response_time);
             return (
               <Card key={a.advocate_id} className={`bento-card ${isSelected ? "border-accent ring-1 ring-accent" : "border-none"}`} data-testid={`advocate-card-${a.advocate_id}`}>
                 <CardContent className="p-4">
@@ -371,7 +379,7 @@ export default function AvailableAdvocatesPanel({ selectedAdvocateId, onSelect, 
                 <div><div className="cb-overline mb-1">Primary Courts</div><div className="flex flex-wrap gap-1">{profileAdvocate.primary_courts?.map((c) => <Badge key={c} variant="outline">{c}</Badge>)}</div></div>
                 <div><div className="cb-overline mb-1">Practice Areas</div><div className="flex flex-wrap gap-1">{profileAdvocate.practice_areas?.map((p) => <Badge key={p} variant="outline">{p}</Badge>)}</div></div>
                 <div><div className="cb-overline mb-1">Languages</div><p>{profileAdvocate.languages?.join(", ")}</p></div>
-                {(profileAdvocate.ai_match_score != null || profileAdvocate.ai_match_reasons) && (
+                {aiMode && (profileAdvocate.ai_match_score != null || profileAdvocate.ai_match_reasons) && (
                   <div className="pt-2 border-t border-dashed">
                     <div className="cb-overline mb-1">AI Suitability</div>
                     {profileAdvocate.ai_match_score != null && <p>{profileAdvocate.ai_match_score}% match</p>}
