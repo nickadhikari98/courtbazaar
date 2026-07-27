@@ -488,12 +488,18 @@ async def mark_payment_confirmed(db, hearing_id: str, user: dict) -> dict:
     # hearing_id itself anyway. Best-effort: a matching failure must never
     # undo payment confirmation, which already happened above, so it's caught
     # and logged here rather than allowed to propagate.
-    import counsel_matching
-    from audit_log import log_audit
-    try:
-        await counsel_matching.run_matching(db, hearing)
-    except Exception as e:
-        await log_audit(db, "matching.dispatch_failed", None, {"hearing_id": hearing_id, "error": str(e)})
+    #
+    # Targeted requests (target_advocate_id set) skip this entirely — the
+    # customer already chose their advocate, so there is no AI pool to
+    # discover/score/notify. The server.py caller notifies that one advocate
+    # directly right after this function returns.
+    if not hearing.get("target_advocate_id"):
+        import counsel_matching
+        from audit_log import log_audit
+        try:
+            await counsel_matching.run_matching(db, hearing)
+        except Exception as e:
+            await log_audit(db, "matching.dispatch_failed", None, {"hearing_id": hearing_id, "error": str(e)})
 
     return {"ok": True, "status": "broadcast"}
 

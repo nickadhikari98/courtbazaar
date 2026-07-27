@@ -50,6 +50,7 @@ async def _cleanup(db, hearing_ids=()):
     if hearing_ids:
         await db.hearing_requests.delete_many({"hearing_id": {"$in": list(hearing_ids)}})
         await db.escrow_transactions.delete_many({"context_id": {"$in": list(hearing_ids)}})
+        await db.counsel_matching_log.delete_many({"hearing_id": {"$in": list(hearing_ids)}})
 
 
 def test_full_happy_path_new_order():
@@ -269,6 +270,11 @@ def test_targeted_request_under_new_order():
             await hearings.mark_payment_confirmed(db, hearing_id, requester)
             fetched = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
             assert fetched["status"] == "broadcast"
+
+            # Manual advocate selection: AI matching must never run for a
+            # targeted request — no matching session should be opened at all.
+            session = await db.counsel_matching_log.find_one({"hearing_id": hearing_id})
+            assert session is None
 
             try:
                 await hearings.accept_hearing_request(db, hearing_id, other_counsel)
