@@ -24,7 +24,7 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: root
           key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
+          port: ${{ secrets.VPS_PORT }}
           # deploy/deploy.sh is the single source of truth for what a deploy
           # does (git pull, backend restart, frontend build, nginx reload,
           # and a post-deploy verification that the live commit matches).
