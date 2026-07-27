@@ -140,6 +140,46 @@ def test_discover_candidates_empty_when_none_eligible():
     asyncio.run(body())
 
 
+def test_discover_candidates_targeted_hearing_returns_only_target_advocate():
+    async def body():
+        db = _db()
+        hearing_id = f"test_hearing_{uuid.uuid4().hex[:10]}"
+        target_id = f"test_counsel_{uuid.uuid4().hex[:8]}"
+        other_id = f"test_counsel_{uuid.uuid4().hex[:8]}"
+        try:
+            await db.hearing_requests.insert_one({
+                "hearing_id": hearing_id, "court_id": "court_tishazari", "status": "requested",
+                "target_advocate_id": target_id,
+            })
+            # target advocate need not even pass the broadcast-pool eligibility
+            # gates — manual selection bypasses discovery filtering entirely.
+            await db.proxy_counsel_profiles.insert_one(_profile(target_id, kyc_status="pending"))
+            await db.proxy_counsel_profiles.insert_one(_profile(other_id))
+            results = await counsel_matching.discover_candidates(db, hearing_id)
+            found = {c["user_id"] for c in results}
+            assert found == {target_id}
+        finally:
+            await _cleanup(db, [hearing_id], [target_id, other_id])
+    asyncio.run(body())
+
+
+def test_discover_candidates_targeted_hearing_missing_profile_returns_empty():
+    async def body():
+        db = _db()
+        hearing_id = f"test_hearing_{uuid.uuid4().hex[:10]}"
+        target_id = f"test_counsel_{uuid.uuid4().hex[:8]}"
+        try:
+            await db.hearing_requests.insert_one({
+                "hearing_id": hearing_id, "court_id": "court_tishazari", "status": "requested",
+                "target_advocate_id": target_id,
+            })
+            results = await counsel_matching.discover_candidates(db, hearing_id)
+            assert results == []
+        finally:
+            await _cleanup(db, [hearing_id], [target_id])
+    asyncio.run(body())
+
+
 def test_discover_candidates_raises_404_for_missing_hearing():
     async def body():
         db = _db()

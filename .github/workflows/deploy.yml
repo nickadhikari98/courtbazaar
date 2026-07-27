@@ -1,0 +1,35 @@
+name: Deploy to production
+
+# Only `main` is production. `develop` is a QA/integration branch and does
+# not trigger any deployment — see DEPLOYMENT.md §9 and the branching model
+# in README/CONTRIBUTING.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: SSH deploy via deploy/deploy.sh
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          # deploy/deploy.sh is the single source of truth for what a deploy
+          # does (git pull, backend restart, frontend build, nginx reload,
+          # and a post-deploy verification that the live commit matches).
+          # This workflow intentionally does not duplicate those steps.
+          script: |
+            set -e
+            cd /var/www/courtbazaar
+            ./deploy/deploy.sh

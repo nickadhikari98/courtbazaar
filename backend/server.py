@@ -377,7 +377,7 @@ class HearingRequestCreate(BaseModel):
     court_id: str
     hearing_date: str
     case_details: str
-    fee: Optional[float] = None
+    fee: Optional[float] = Field(default=None, gt=0)
     matter_id: Optional[str] = None
     # Integration point for a separate advocate search/select workstream —
     # set -> request is addressed to one advocate; omitted -> today's
