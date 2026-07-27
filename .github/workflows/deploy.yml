@@ -31,5 +31,5 @@ jobs:
           # This workflow intentionally does not duplicate those steps.
           script: |
             set -e
-            cd /var/www/courtbazaar
-            ./deploy/deploy.sh
+            cd /root/courtbazaar
+            bash deploy/deploy.sh
