@@ -18,6 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - name: Diagnose VPS reachability from this runner
+        run: |
+          echo "Runner public IP: $(curl -s https://ifconfig.me || echo unknown)"
+          nc -zv -w8 "${{ secrets.VPS_HOST }}" "${{ secrets.VPS_PORT }}" && echo "TCP_OK" || echo "TCP_FAILED"
+
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1
         with:
