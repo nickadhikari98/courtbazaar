@@ -32,6 +32,7 @@ const Register = lazy(() => import("@/pages/auth/Register"));
 const SetPassword = lazy(() => import("@/pages/auth/SetPassword"));
 const Dashboard = lazy(() => import("@/pages/customer/Dashboard"));
 const HireProxyCounsel = lazy(() => import("@/pages/customer/HireProxyCounsel"));
+const NegotiationModule = lazy(() => import("@/pages/customer/NegotiationModule"));
 const HireCounsel = lazy(() => import("@/pages/customer/HireCounsel"));
 const OrderWizard = lazy(() => import("@/pages/customer/OrderWizard"));
 const OrderDetail = lazy(() => import("@/pages/customer/OrderDetail"));
@@ -183,6 +184,7 @@ function AppRouter() {
             server.py) — a plain advocate/customer account never sees these. */}
         <Route path="/practice" element={<ProtectedRoute capabilities={["can_practice_proxy_counsel", "can_manage_shop"]}><Practice /></ProtectedRoute>} />
         <Route path="/hire-proxy-counsel" element={<ProtectedRoute capabilities={["can_hire_proxy_counsel"]}><HireProxyCounsel /></ProtectedRoute>} />
+        <Route path="/hearing-requests/:hearingId/negotiate" element={<ProtectedRoute capabilities={["can_hire_proxy_counsel", "can_practice_proxy_counsel"]}><NegotiationModule /></ProtectedRoute>} />
         <Route path="/hire-counsel" element={<ProtectedRoute capabilities={["can_hire_proxy_counsel"]}><HireCounsel /></ProtectedRoute>} />
         <Route path="/earnings" element={<ProtectedRoute capabilities={["can_earn"]}><Earnings /></ProtectedRoute>} />
         <Route path="/delivery" element={<ProtectedRoute roles={["delivery_partner", "admin"]}><DeliveryHub /></ProtectedRoute>} />

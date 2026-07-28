@@ -12,7 +12,12 @@ import { Check, X, Ban, ShieldAlert, Clock } from "lucide-react";
    Order reflects the M6 payment/broadcast reorder: payment now precedes
    broadcast and acceptance instead of following them. */
 const STAGES = [
-  { statuses: ["requested", "payment_pending"], label: "Payment Pending" },
+  // "requested" is overloaded on the backend — it covers "not negotiated
+  // yet", "negotiation in progress", AND "agreed, awaiting payment" all as
+  // the same status value. `negotiationAgreed` (derived by the caller from
+  // hearing.commercially_locked, the actual source of truth) disambiguates
+  // the label without adding an extra step to the sequence.
+  { statuses: ["requested", "payment_pending"], label: "Payment Pending", labelWhenNegotiating: "Negotiating Fee" },
   { statuses: ["broadcast"], label: "Broadcast to Advocates" },
   { statuses: ["accepted"], label: "Accepted" },
   { statuses: ["documents_shared"], label: "Documents Shared" },
@@ -39,7 +44,14 @@ function stageIndexFor(status) {
   return idx === -1 ? 0 : idx;
 }
 
-export default function HearingProgressStepper({ status, compact = false }) {
+function stageLabel(stage, status, negotiationAgreed) {
+  if (stage.labelWhenNegotiating && status === "requested" && !negotiationAgreed) {
+    return stage.labelWhenNegotiating;
+  }
+  return stage.label;
+}
+
+export default function HearingProgressStepper({ status, compact = false, negotiationAgreed = true }) {
   const terminated = TERMINATED[status];
 
   if (terminated) {
@@ -56,7 +68,7 @@ export default function HearingProgressStepper({ status, compact = false }) {
   if (compact) {
     return (
       <div className="text-xs font-semibold text-muted-foreground" data-testid="hearing-stepper-compact">
-        Step {currentIndex + 1} of {STAGES.length}: <span className="text-foreground font-bold">{STAGES[currentIndex].label}</span>
+        Step {currentIndex + 1} of {STAGES.length}: <span className="text-foreground font-bold">{stageLabel(STAGES[currentIndex], status, negotiationAgreed)}</span>
       </div>
     );
   }
@@ -82,7 +94,7 @@ export default function HearingProgressStepper({ status, compact = false }) {
                   {done ? <Check className="w-3 h-3" /> : i + 1}
                 </div>
                 <div className={`text-2xs text-center leading-tight font-semibold ${active ? "text-foreground" : "text-muted-foreground"}`}>
-                  {stage.label}
+                  {stageLabel(stage, status, negotiationAgreed)}
                 </div>
               </div>
               {i < STAGES.length - 1 && (

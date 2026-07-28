@@ -17,7 +17,8 @@ export const SERVICE_CONFIGS = {
     title: "Hire Proxy Counsel",
     description: "Request an available proxy counsel to appear on your behalf.",
     heroIcon: Gavel,
-    helperText: "Search, view profile, and select an advocate directly — coming soon via advocate discovery. For now, submit a request below and any available Proxy Counsel can accept it, or target one directly if you know their CourtBazaar ID.",
+    helperText: "Fill in your request below — AI recommendations for the best-matched proxy counsels appear automatically once you continue.",
+    submitLabel: "Find Proxy Counsel",
     reviewTitle: "Review your request",
     emptyStateCopy: {
       title: "No requests yet",
@@ -27,7 +28,11 @@ export const SERVICE_CONFIGS = {
     requiresWorkType: true,
     supportsAttachments: true,
     supportsBudget: true,
-    supportsTargeting: true,
+    // Manual free-text "Specific Advocate ID" targeting is superseded by the
+    // AI recommendations + Search More Counsels flow (components/proxyCounsel/*)
+    // — selection now happens on a dedicated screen after this form, never by
+    // typing an ID here. See HireProxyCounsel.jsx's module docstring.
+    supportsTargeting: false,
     validate: (fields) => {
       const errors = {};
       if (!fields.state_id) errors.state_id = "State is required";
@@ -42,9 +47,6 @@ export const SERVICE_CONFIGS = {
       if (!fields.work_required?.length) errors.work_required = "Select at least one type of work required";
       if (fields.work_required?.includes("Other") && !fields.work_required_notes?.trim()) {
         errors.work_required_notes = "Add a note describing the other work required";
-      }
-      if (fields.target_type === "specific" && !fields.target_advocate_id?.trim()) {
-        errors.target_advocate_id = "Enter the advocate's CourtBazaar ID, or switch back to Any Available Advocate";
       }
       return errors;
     },

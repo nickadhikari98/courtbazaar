@@ -408,6 +408,10 @@ class HearingNoteCreate(BaseModel):
 class HearingMessageCreate(BaseModel):
     text: str
 
+class NegotiationOfferCreate(BaseModel):
+    amount: float = Field(gt=0)
+    note: Optional[str] = None
+
 class HearingRatingCreate(BaseModel):
     rating: int
     review: Optional[str] = None
@@ -436,11 +440,13 @@ async def seed_initial_data():
     import hearings as hearings_svc
     import escrow as escrow_svc
     import counsel_matching as counsel_matching_svc
+    import negotiation as negotiation_svc
     await leads_svc.ensure_indexes(db)
     await reviews_svc.ensure_indexes(db)
     await hearings_svc.ensure_indexes(db)
     await escrow_svc.ensure_indexes(db)
     await counsel_matching_svc.ensure_indexes(db)
+    await negotiation_svc.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -2463,6 +2469,26 @@ async def list_hearing_messages(hearing_id: str, user=Depends(get_current_user))
 @api_router.post("/hearing-requests/{hearing_id}/messages")
 async def post_hearing_message(hearing_id: str, payload: HearingMessageCreate, user=Depends(get_current_user)):
     return await hearings_svc.add_message(db, hearing_id, user, payload.text)
+
+# ----------------------------------------------------------------------
+# Negotiation Module — offer/counter-offer/agreement state (negotiation.py).
+# Chat itself is the messages endpoints above, unchanged; the frontend
+# merges the two into one feed. See negotiation.py's module docstring.
+# ----------------------------------------------------------------------
+@api_router.get("/hearing-requests/{hearing_id}/negotiation")
+async def get_negotiation(hearing_id: str, user=Depends(get_current_user)):
+    import negotiation as negotiation_svc
+    return await negotiation_svc.get_negotiation_for_user(db, hearing_id, user)
+
+@api_router.post("/hearing-requests/{hearing_id}/negotiation/offers")
+async def propose_negotiation_offer(hearing_id: str, payload: NegotiationOfferCreate, user=Depends(get_current_user)):
+    import negotiation as negotiation_svc
+    return await negotiation_svc.propose_offer(db, hearing_id, user, payload.amount, payload.note)
+
+@api_router.post("/hearing-requests/{hearing_id}/negotiation/offers/{offer_id}/accept")
+async def accept_negotiation_offer(hearing_id: str, offer_id: str, user=Depends(get_current_user)):
+    import negotiation as negotiation_svc
+    return await negotiation_svc.accept_offer(db, hearing_id, offer_id, user)
 
 @api_router.get("/hearing-requests/{hearing_id}/documents")
 async def get_hearing_documents(hearing_id: str, user=Depends(get_current_user)):

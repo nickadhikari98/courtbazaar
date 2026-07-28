@@ -22,6 +22,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import hearings  # noqa: E402
 import escrow  # noqa: E402
+import negotiation  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 
@@ -51,6 +52,7 @@ async def _cleanup(db, hearing_ids=()):
         await db.hearing_requests.delete_many({"hearing_id": {"$in": list(hearing_ids)}})
         await db.escrow_transactions.delete_many({"context_id": {"$in": list(hearing_ids)}})
         await db.counsel_matching_log.delete_many({"hearing_id": {"$in": list(hearing_ids)}})
+        await db.negotiations.delete_many({"hearing_id": {"$in": list(hearing_ids)}})
 
 
 def test_full_happy_path_new_order():
@@ -265,6 +267,14 @@ def test_targeted_request_under_new_order():
             assert hearing["status"] == "requested"
             assert hearing["target_advocate_id"] == target_counsel["user_id"]
 
+            # Negotiation Module: a targeted request must reach "agreed"
+            # before payment can be initiated — see hearings.initiate_payment's
+            # guard. Propose+accept here mirrors what the Negotiation Module UI
+            # does before the customer ever reaches the pay button.
+            await negotiation.propose_offer(db, hearing_id, requester, 1500.0, None)
+            offer_id = (await negotiation.get_negotiation(db, hearing_id))["current_offer_id"]
+            await negotiation.accept_offer(db, hearing_id, offer_id, target_counsel)
+
             await hearings.initiate_payment(db, hearing_id, requester)
             await _hold_escrow(db, hearing_id, requester, 1500.0, payee_user_id=None)
             await hearings.mark_payment_confirmed(db, hearing_id, requester)
@@ -285,6 +295,32 @@ def test_targeted_request_under_new_order():
             accepted = await hearings.accept_hearing_request(db, hearing_id, target_counsel)
             assert accepted["status"] == "documents_shared"  # M12: auto-chains straight through, "accepted" is no longer the resting status
             assert accepted["proxy_counsel_user_id"] == target_counsel["user_id"]
+        finally:
+            await _cleanup(db, [hearing_id] if hearing_id else [])
+    asyncio.run(body())
+
+
+def test_targeted_advocate_can_reject_during_negotiation_before_payment():
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        target_counsel = _user("target")
+        hearing_id = None
+        try:
+            hearing = await hearings.create_hearing_request(
+                db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
+                target_advocate_id=target_counsel["user_id"],
+            )
+            hearing_id = hearing["hearing_id"]
+            assert hearing["status"] == "requested"
+
+            # Negotiation Module: reject must work pre-payment (status
+            # "requested") — the advocate can walk away from a negotiation
+            # before the customer has ever paid, not just from "broadcast".
+            result = await hearings.reject_hearing_request(db, hearing_id, target_counsel)
+            assert result["status"] == "rejected"
+            fetched = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert fetched["status"] == "rejected"
         finally:
             await _cleanup(db, [hearing_id] if hearing_id else [])
     asyncio.run(body())
