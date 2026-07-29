@@ -4,13 +4,12 @@ import { Search, Loader2 } from "lucide-react";
 import { getAvailableAdvocates } from "@/lib/advocateRecommendationsApi";
 import CounselCard from "./CounselCard";
 
-/* Fallback path — only ever mounted once the customer clicks "Search More
-   Counsels" on CounselDiscoveryPanel (never shown up front, per the
-   founder's "AI recommendations are always the default" direction).
+/* The "Search Manually" tab of CounselDiscoveryPanel, for a customer who
+   already knows who they want rather than one relying on the AI ranking.
    Reuses the exact same getAvailableAdvocates source as the AI
-   recommendation step; the only difference is presentation (a
+   recommendation tab; the only difference is presentation — a
    name/court/expertise text filter over the same pool instead of a
-   ranked top list) and that it's opt-in. */
+   ranked top list. */
 export default function ManualCounselSearch({ onSelect, onViewProfile, selectingId }) {
   const [status, setStatus] = useState("loading");
   const [advocates, setAdvocates] = useState([]);
@@ -29,10 +28,7 @@ export default function ManualCounselSearch({ onSelect, onViewProfile, selecting
     || a.primary_courts?.some((c) => c.toLowerCase().includes(q)));
 
   return (
-    <div className="border-t border-dashed pt-6" data-testid="manual-counsel-search">
-      <div className="cb-overline text-accent">Manual Search</div>
-      <h3 className="font-display font-bold text-lg tracking-tight mt-1 mb-3">Search More Counsels</h3>
-
+    <div data-testid="manual-counsel-search">
       <div className="relative mb-4 max-w-sm">
         <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
         <Input

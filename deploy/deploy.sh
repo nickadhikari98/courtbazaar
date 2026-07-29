@@ -12,7 +12,7 @@ set -euo pipefail
 REPO_DIR="/root/courtbazaar"
 WEB_ROOT="/var/www/html"
 BACKEND_SERVICE="courtbazaar"
-DOMAIN="https://courtbazaar.in"
+DOMAIN="https://courtbazaar.com"
 
 cd "$REPO_DIR"
 

@@ -3,7 +3,7 @@
    Writes the current git commit into public/version.json so it gets copied
    into build/ verbatim by CRA's static public-folder copy — giving every
    deployment a one-line way to verify what's actually live:
-     curl https://courtbazaar.in/version.json
+     curl https://courtbazaar.com/version.json
    versus:
      git rev-parse HEAD
    This exists because there was previously no way to confirm a deployed

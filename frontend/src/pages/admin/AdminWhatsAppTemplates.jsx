@@ -128,7 +128,7 @@ export default function AdminWhatsAppTemplates() {
                 </div>
               </div>
               <div><Label>Body (use {"{{1}}, {{2}}"} for variables)</Label>
-                <Textarea value={form.body} onChange={(e) => setForm({...form, body: e.target.value})} rows={5} placeholder="Hi {{1}}, your order {{2}} has been delivered. Rate at courtbazaar.in" data-testid="tmpl-body-input" />
+                <Textarea value={form.body} onChange={(e) => setForm({...form, body: e.target.value})} rows={5} placeholder="Hi {{1}}, your order {{2}} has been delivered. Rate at courtbazaar.com" data-testid="tmpl-body-input" />
               </div>
               <div><Label>Variables (comma-separated)</Label><Input value={form.variables} onChange={(e) => setForm({...form, variables: e.target.value})} placeholder="name, order_id" data-testid="tmpl-vars-input" /></div>
               <div><Label>Description</Label><Input value={form.description} onChange={(e) => setForm({...form, description: e.target.value})} /></div>

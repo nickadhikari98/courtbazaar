@@ -228,7 +228,7 @@ def send_email(to_email: str, subject: str, html_body: str, text_body: Optional[
 
 # Templates --------------------------------------------------------------------
 def tmpl_order_placed(user, order):
-    base = f"CourtBazaar: Order {order['order_id']} placed for {order.get('court_name', 'court')}. Total ₹{order['pricing']['total']}. Track at courtbazaar.in"
+    base = f"CourtBazaar: Order {order['order_id']} placed for {order.get('court_name', 'court')}. Total ₹{order['pricing']['total']}. Track at courtbazaar.com"
     return {"sms": base, "whatsapp": base, "email_subject": f"Order {order['order_id']} placed",
             "email_html": f"<p>Hi {user.get('name', 'Advocate')},</p><p>Your order <b>{order['order_id']}</b> at <b>{order.get('court_name')}</b> has been placed. Total: <b>₹{order['pricing']['total']}</b>.</p><p>Track your order in real time on CourtBazaar.</p>"}
 

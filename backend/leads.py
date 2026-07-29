@@ -511,7 +511,29 @@ async def _activate_professional(db, lead: dict) -> None:
     then ensure a proxy_counsel_profiles row exists for proxy counsel
     specifically. This is the Lead->Professional bridge — an approved
     application now produces a usable, logged-in professional account
-    instead of just a lead-status change (see module docstring)."""
+    instead of just a lead-status change (see module docstring).
+
+    Approving this lead is the applicant's KYC approval — their submitted
+    documents (lead.document_ids) live under this same lead record and are
+    reviewed by the admin before this status change is made, there's no
+    separate per-document approval step. So this also flips the profile's
+    kyc_status to "approved" via practice.approve_kyc, reusing that
+    function unchanged rather than setting the field here directly, so
+    every kyc_status write in the app (this path, and the standalone
+    admin/practice/{user_id}/approve-kyc toggle) goes through the one
+    place — kyc_status then reads consistently everywhere that already
+    trusts it (counsel_matching.discover_candidates's eligibility gate,
+    the counsel's own /practice/profile view, etc.) without those call
+    sites needing to know which path set it.
+
+    counsel_matching.verified_counsel_query() gates on kyc_status AND
+    bar_council_verified together — a single approved lead is this
+    applicant's one review step for the whole application (including
+    whatever bar council credential they submitted with it), so this also
+    calls practice.verify_bar_council here for the same reason as above:
+    without it, a newly-approved proxy counsel would still fail the
+    eligibility gate and stay invisible to both hearing-time matching and
+    the recommendations page despite having just been approved."""
     account_role = LEAD_ROLE_TO_ACCOUNT_ROLE.get(lead["role_applied_for"])
     if not account_role:
         return
@@ -541,7 +563,7 @@ async def _activate_professional(db, lead: dict) -> None:
             "created_at": now.isoformat(),
         })
         from notifications import tmpl_set_password, send_email
-        frontend_base = (os.environ.get("CORS_ORIGINS", "").split(",")[0] or "").strip() or "https://courtbazaar.in"
+        frontend_base = (os.environ.get("CORS_ORIGINS", "").split(",")[0] or "").strip() or "https://courtbazaar.com"
         set_password_url = f"{frontend_base}/auth/set-password?token={set_password_token}"
         tmpl = tmpl_set_password(lead, set_password_url)
         send_email(lead["email"], tmpl["email_subject"], tmpl["email_html"])
@@ -549,6 +571,8 @@ async def _activate_professional(db, lead: dict) -> None:
     if account_role == "proxy_counsel":
         import practice as practice_svc
         await practice_svc.get_or_create_profile(db, user_id)
+        await practice_svc.approve_kyc(db, user_id)
+        await practice_svc.verify_bar_council(db, user_id)
 
     await db.leads.update_one({"lead_id": lead["lead_id"]}, {"$set": {"converted_user_id": user_id}})
 
@@ -652,7 +676,7 @@ async def resend_set_password_email(db, send_email_fn, lead_id: str) -> dict:
             "set_password_token_expires_at": (now + timedelta(days=EMAIL_VERIFY_TOKEN_TTL_DAYS)).isoformat(),
         }},
     )
-    frontend_base = (os.environ.get("CORS_ORIGINS", "").split(",")[0] or "").strip() or "https://courtbazaar.in"
+    frontend_base = (os.environ.get("CORS_ORIGINS", "").split(",")[0] or "").strip() or "https://courtbazaar.com"
     set_password_url = f"{frontend_base}/auth/set-password?token={set_password_token}"
     from notifications import tmpl_set_password
     tmpl = tmpl_set_password(lead, set_password_url)
