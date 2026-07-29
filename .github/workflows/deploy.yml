@@ -23,18 +23,50 @@ jobs:
           echo "Runner public IP: $(curl -s https://ifconfig.me || echo unknown)"
           nc -zv -w8 "${{ secrets.VPS_HOST }}" "${{ secrets.VPS_PORT }}" && echo "TCP_OK" || echo "TCP_FAILED"
 
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: root
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT }}
-          # deploy/deploy.sh is the single source of truth for what a deploy
-          # does (git pull, backend restart, frontend build, nginx reload,
-          # and a post-deploy verification that the live commit matches).
-          # This workflow intentionally does not duplicate those steps.
-          script: |
-            set -e
-            cd /root/courtbazaar
-            bash deploy/deploy.sh
+      # deploy/deploy.sh is the single source of truth for what a deploy does
+      # (git pull, backend restart, frontend build, nginx reload, and a
+      # post-deploy verification that the live commit matches). This step
+      # intentionally does not duplicate those steps.
+      #
+      # Retries only on SSH's own connection-error exit code (255) — the
+      # intermittent Azure(GitHub Actions) -> Hostinger(Mumbai) network path
+      # issue this is working around (see "Diagnose VPS reachability" above
+      # and the deploy troubleshooting history in git log). A real failure
+      # inside deploy.sh itself (bad commit, backend won't start, build
+      # fails, ...) exits non-255 and must fail the job immediately, not get
+      # silently retried into looking like it passed.
+      - name: Deploy over SSH (retry on connection failure only)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$VPS_PORT" -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          max_attempts=5
+          n=1
+          while :; do
+            echo "==> SSH deploy attempt $n/$max_attempts"
+            ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new \
+              root@"$VPS_HOST" 'cd /root/courtbazaar && bash deploy/deploy.sh'
+            status=$?
+
+            if [ "$status" -eq 0 ]; then
+              echo "==> Deploy succeeded on attempt $n"
+              exit 0
+            fi
+            if [ "$status" -ne 255 ]; then
+              echo "!! deploy.sh failed with exit $status (not a connection error) — not retrying"
+              exit "$status"
+            fi
+            if [ "$n" -ge "$max_attempts" ]; then
+              echo "!! SSH connection failed (exit 255) on all $max_attempts attempts"
+              exit 255
+            fi
+            echo "!! SSH connection failed (exit 255) — retrying in 10s"
+            n=$((n + 1))
+            sleep 10
+          done
