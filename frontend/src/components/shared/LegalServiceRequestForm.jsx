@@ -303,7 +303,7 @@ export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submi
             )}
           </dl>
           <Button type="submit" disabled={submitting} className="bg-accent hover:bg-accent/90 font-bold" data-testid="submit-service-request">
-            {submitting && <Loader2 className="w-4 h-4 animate-spin mr-1.5" />} Send Request
+            {submitting && <Loader2 className="w-4 h-4 animate-spin mr-1.5" />} {serviceConfig.submitLabel || "Send Request"}
           </Button>
         </CardContent>
       </Card>
