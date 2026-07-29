@@ -1875,7 +1875,7 @@ async def invite_member(payload: FirmInvite, user=Depends(get_current_user)):
         send_email(
             payload.email,
             f"You're invited to join {firm['name']} on CourtBazaar",
-            f"<p>Hi {payload.name},</p><p>{user['name']} invited you to join <b>{firm['name']}</b> on CourtBazaar as <b>{payload.role}</b>.</p><p>Token: <code>{invite_token}</code></p><p>Visit courtbazaar.in to accept.</p>",
+            f"<p>Hi {payload.name},</p><p>{user['name']} invited you to join <b>{firm['name']}</b> on CourtBazaar as <b>{payload.role}</b>.</p><p>Token: <code>{invite_token}</code></p><p>Visit courtbazaar.com to accept.</p>",
         )
     except Exception as e:
         logger.error(f"invite email error: {e}")
@@ -2793,8 +2793,8 @@ async def list_wa_templates(user=Depends(get_current_user), status_filter: Optio
         raise HTTPException(403, "Admin only")
     if await db.whatsapp_templates.count_documents({}) == 0:
         defaults = [
-            {"template_id": f"wat_{uuid.uuid4().hex[:10]}", "name": "order_placed_v1", "category": "transactional", "language": "en", "body": "Hi {{1}}, your CourtBazaar order {{2}} for {{3}} has been placed. Total Rs.{{4}}. Track at courtbazaar.in", "variables": ["name", "order_id", "court", "amount"], "status": "approved", "twilio_sid": None, "description": "Order placement confirmation", "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user["user_id"], "history": []},
-            {"template_id": f"wat_{uuid.uuid4().hex[:10]}", "name": "order_status_v1", "category": "transactional", "language": "en", "body": "Hi {{1}}, order {{2}} is now {{3}}. Vendor: {{4}}. Track live at courtbazaar.in", "variables": ["name", "order_id", "status", "vendor"], "status": "approved", "twilio_sid": None, "description": "Order status change", "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user["user_id"], "history": []},
+            {"template_id": f"wat_{uuid.uuid4().hex[:10]}", "name": "order_placed_v1", "category": "transactional", "language": "en", "body": "Hi {{1}}, your CourtBazaar order {{2}} for {{3}} has been placed. Total Rs.{{4}}. Track at courtbazaar.com", "variables": ["name", "order_id", "court", "amount"], "status": "approved", "twilio_sid": None, "description": "Order placement confirmation", "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user["user_id"], "history": []},
+            {"template_id": f"wat_{uuid.uuid4().hex[:10]}", "name": "order_status_v1", "category": "transactional", "language": "en", "body": "Hi {{1}}, order {{2}} is now {{3}}. Vendor: {{4}}. Track live at courtbazaar.com", "variables": ["name", "order_id", "status", "vendor"], "status": "approved", "twilio_sid": None, "description": "Order status change", "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user["user_id"], "history": []},
             {"template_id": f"wat_{uuid.uuid4().hex[:10]}", "name": "otp_login_v1", "category": "otp", "language": "en", "body": "Your CourtBazaar OTP is {{1}}. Valid for 5 minutes. Do not share.", "variables": ["otp"], "status": "pending", "twilio_sid": None, "description": "Login OTP", "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user["user_id"], "history": []},
             {"template_id": f"wat_{uuid.uuid4().hex[:10]}", "name": "delivery_otp_v1", "category": "transactional", "language": "en", "body": "Delivery OTP for order {{1}} is {{2}}. Share only with the delivery partner.", "variables": ["order_id", "otp"], "status": "draft", "twilio_sid": None, "description": "Delivery confirmation OTP", "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user["user_id"], "history": []},
         ]

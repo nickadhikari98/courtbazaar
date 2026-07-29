@@ -563,7 +563,7 @@ async def _activate_professional(db, lead: dict) -> None:
             "created_at": now.isoformat(),
         })
         from notifications import tmpl_set_password, send_email
-        frontend_base = (os.environ.get("CORS_ORIGINS", "").split(",")[0] or "").strip() or "https://courtbazaar.in"
+        frontend_base = (os.environ.get("CORS_ORIGINS", "").split(",")[0] or "").strip() or "https://courtbazaar.com"
         set_password_url = f"{frontend_base}/auth/set-password?token={set_password_token}"
         tmpl = tmpl_set_password(lead, set_password_url)
         send_email(lead["email"], tmpl["email_subject"], tmpl["email_html"])
@@ -676,7 +676,7 @@ async def resend_set_password_email(db, send_email_fn, lead_id: str) -> dict:
             "set_password_token_expires_at": (now + timedelta(days=EMAIL_VERIFY_TOKEN_TTL_DAYS)).isoformat(),
         }},
     )
-    frontend_base = (os.environ.get("CORS_ORIGINS", "").split(",")[0] or "").strip() or "https://courtbazaar.in"
+    frontend_base = (os.environ.get("CORS_ORIGINS", "").split(",")[0] or "").strip() or "https://courtbazaar.com"
     set_password_url = f"{frontend_base}/auth/set-password?token={set_password_token}"
     from notifications import tmpl_set_password
     tmpl = tmpl_set_password(lead, set_password_url)

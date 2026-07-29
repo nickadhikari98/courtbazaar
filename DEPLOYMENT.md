@@ -136,7 +136,7 @@ Then add TLS (do this before announcing the domain publicly):
 
 ```bash
 sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d courtbazaar.in -d www.courtbazaar.in
+sudo certbot --nginx -d courtbazaar.com -d www.courtbazaar.com
 ```
 
 ## 6. Environment variable checklist
@@ -183,7 +183,7 @@ rsync -a --delete --exclude='.well-known' build/ /var/www/html/
 sudo nginx -t && sudo systemctl reload nginx
 
 # Verify: does the live site match what you just pushed?
-curl -s https://courtbazaar.in/version.json
+curl -s https://courtbazaar.com/version.json
 git rev-parse HEAD
 # The "commit" field above must equal this HEAD hash.
 ```
