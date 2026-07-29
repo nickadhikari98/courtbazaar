@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -38,9 +38,21 @@ const ATTACHMENT_HELPER = "Case papers, Vakalatnama, prior order sheets, or othe
      the same state.
    - `onContextChange(context)` — fired whenever a field relevant to
      advocate matching changes, so a parent page can feed a recommendations
-     hook without this form knowing that hook exists. */
-export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submitting, selectedAdvocate, onContextChange }) {
-  const [fields, setFields] = useState({
+     hook without this form knowing that hook exists.
+
+   `initialValues`/`initialFiles` — pre-fill the form (e.g. "Edit Request"
+   going back from the counsel-selection step): without these the form
+   always mounts blank, so anything the customer already filled in would be
+   silently lost on going back to edit a single field. `initialValues` only
+   needs to carry the fields being restored (merged over the normal blank
+   defaults); `initialFiles` restores the native file input's displayed
+   selection via a DataTransfer (file inputs can't take a value/defaultValue
+   prop directly). Both are read once, on mount, by design — this form
+   doesn't re-sync to a changing initialValues after that. */
+export default function LegalServiceRequestForm({
+  serviceConfig, onSubmit, submitting, selectedAdvocate, onContextChange, initialValues, initialFiles,
+}) {
+  const [fields, setFields] = useState(() => ({
     state_id: "", state_name: "", district: "", court_id: "", court_name: "",
     case_title: "", case_number: "", case_type: "", hearing_date: "", hearing_time: "", case_stage: "",
     work_required: [], work_required_notes: "",
@@ -48,9 +60,19 @@ export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submi
     case_details: "",
     budget: "",
     target_type: "any", target_advocate_id: "",
-  });
-  const [files, setFiles] = useState([]);
+    ...initialValues,
+  }));
+  const [files, setFiles] = useState(() => initialFiles || []);
   const [errors, setErrors] = useState({});
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    if (!initialFiles?.length || !fileInputRef.current) return;
+    const dt = new DataTransfer();
+    initialFiles.forEach((f) => dt.items.add(f));
+    fileInputRef.current.files = dt.files;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restore once, on mount, matching the initialFiles useState above
+  }, []);
 
   const set = (patch) => setFields((f) => ({ ...f, ...patch }));
 
@@ -237,6 +259,7 @@ export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submi
                 <Label>Attachments (optional)</Label>
                 <p className="text-xs text-muted-foreground mb-1.5">{ATTACHMENT_HELPER}</p>
                 <input
+                  ref={fileInputRef}
                   type="file" multiple
                   onChange={(e) => setFiles(Array.from(e.target.files || []))}
                   className="text-sm w-full file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-secondary file:text-sm file:font-semibold"
