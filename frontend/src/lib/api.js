@@ -55,3 +55,20 @@ export const getToken = () => localStorage.getItem("cb_token");
 
 export const formatINR = (n) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(n || 0);
+
+/* Normalizes an axios error's response body into one human-readable string.
+   FastAPI's hand-raised HTTPExceptions return `detail` as a plain string,
+   but its automatic Pydantic validation errors (422) return `detail` as an
+   array of {msg, loc, ...} objects instead — rendering that array directly
+   (e.g. via toast.error(err.response.data.detail)) shows "[object Object]"
+   rather than the actual message. Reusable at any api.js call site, not
+   just the one that first needed it. */
+export const getErrorMessage = (err, fallback = "Something went wrong") => {
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail) && detail.length) {
+    const messages = detail.map((d) => (typeof d === "string" ? d : d?.msg)).filter(Boolean);
+    if (messages.length) return messages.join(" ");
+  }
+  return fallback;
+};

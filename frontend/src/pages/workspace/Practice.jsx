@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
@@ -305,17 +306,24 @@ function PerformanceTab() {
 
 function HearingsTab() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [hearings, setHearings] = useState(null);
   const [activeId, setActiveId] = useState(null);
 
   const load = () => listHearingRequests().then(setHearings);
   useEffect(() => { load(); }, []);
 
+  // Negotiation Module: a hearing targeted at this advocate is invisible
+  // everywhere else until it reaches "broadcast" (post-payment) — this is
+  // the one place the pending-negotiation window (see hearings.py's
+  // list_hearing_requests) actually surfaces to them.
+  const negotiating = hearings?.filter((h) => h.target_advocate_id === user?.user_id
+    && ["requested", "payment_pending"].includes(h.status)) || [];
   const open = hearings?.filter((h) => h.status === "broadcast" && h.requesting_user_id !== user?.user_id) || [];
   const mine = hearings?.filter((h) => h.proxy_counsel_user_id === user?.user_id) || [];
 
-  const renderCard = (h) => (
-    <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveId(h.hearing_id)}>
+  const renderCard = (h, onClick) => (
+    <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow" onClick={onClick}>
       <CardContent className="p-4 flex items-center justify-between gap-4">
         <div className="min-w-0">
           <div className="font-display font-bold text-sm">{h.court_id}</div>
@@ -328,16 +336,25 @@ function HearingsTab() {
 
   return (
     <div className="space-y-6">
+      {!!negotiating.length && (
+        <div>
+          <div className="font-display font-bold mb-2">Negotiation Requests</div>
+          <p className="text-xs text-muted-foreground mb-2">A client has requested you directly — negotiate the fee before payment.</p>
+          <div className="space-y-2">
+            {negotiating.map((h) => renderCard(h, () => navigate(`/hearing-requests/${h.hearing_id}/negotiate`)))}
+          </div>
+        </div>
+      )}
       <div>
         <div className="font-display font-bold mb-2">Open Requests</div>
         {hearings === null && <div className="text-center text-muted-foreground py-6 text-sm">Loading…</div>}
         {hearings && open.length === 0 && <p className="text-sm text-muted-foreground">No open requests right now.</p>}
-        <div className="space-y-2">{open.map(renderCard)}</div>
+        <div className="space-y-2">{open.map((h) => renderCard(h, () => setActiveId(h.hearing_id)))}</div>
       </div>
       <div>
         <div className="font-display font-bold mb-2">My Hearings</div>
         {hearings && mine.length === 0 && <p className="text-sm text-muted-foreground">Nothing accepted yet.</p>}
-        <div className="space-y-2">{mine.map(renderCard)}</div>
+        <div className="space-y-2">{mine.map((h) => renderCard(h, () => setActiveId(h.hearing_id)))}</div>
       </div>
       <HearingDetailDialog hearingId={activeId} open={!!activeId} onOpenChange={(v) => !v && setActiveId(null)} onChanged={load} />
     </div>

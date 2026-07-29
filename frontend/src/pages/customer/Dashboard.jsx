@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import PageContainer from "@/components/layout/PageContainer";
 import WidgetGrid from "@/components/dashboard/WidgetGrid";
-import { homeWidgets, hearingNeedsMyAction, hearingNeedsMyDocument } from "@/config/homeWidgets";
+import { homeWidgets, hearingNeedsMyAction, hearingNeedsMyDocument, hearingCommerciallyReadyForPayment } from "@/config/homeWidgets";
 import {
   Plus, Printer, FileText, Gavel, Stamp, Package, BookOpen, Sparkles, Truck, ArrowRight,
   Scale, Type, FileSignature, Briefcase, Wallet, CheckCircle2, Circle, Store, Banknote,
@@ -182,7 +182,8 @@ export default function Dashboard() {
     myActionHearings.forEach((h) => {
       if (documentHearingIds.has(h.hearing_id)) return;
       // M6 reorder: payment is now due at "requested", before broadcast/acceptance.
-      const isPaymentDue = h.requesting_user_id === user?.user_id && h.status === "requested";
+      const isPaymentDue = h.requesting_user_id === user?.user_id && h.status === "requested"
+        && hearingCommerciallyReadyForPayment(h);
       const isMarkConduct = h.proxy_counsel_user_id === user?.user_id && h.status === "hearing_scheduled";
       items.push({
         tier: "critical", key: `act-${h.hearing_id}`,
@@ -377,7 +378,7 @@ export default function Dashboard() {
                           {actionLabel}
                         </Button>
                       </div>
-                      <HearingProgressStepper status={h.status} compact />
+                      <HearingProgressStepper status={h.status} compact negotiationAgreed={!h.target_advocate_id || h.commercially_locked} />
                     </CardContent>
                   </Card>
                 );
