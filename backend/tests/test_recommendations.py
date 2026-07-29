@@ -250,6 +250,12 @@ def test_activate_professional_sets_kyc_approved_for_new_account():
             profile = await db.proxy_counsel_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
             assert profile is not None
             assert profile["kyc_status"] == "approved", f"expected kyc_status approved, got {profile['kyc_status']}"
+            assert profile["bar_council_verified"] is True, "bar_council_verified must also be set, or the counsel still fails verified_counsel_query()"
+
+            # Closes the loop: an approved lead must actually be matchable,
+            # not just carry the right flags in isolation.
+            ranked, _ = await counsel_matching.list_and_recommend(db)
+            assert any(c["user_id"] == user["user_id"] for c in ranked), "newly-approved counsel did not appear in recommendations"
         finally:
             user = await db.users.find_one({"email": email}, {"_id": 0})
             if user:
@@ -280,6 +286,7 @@ def test_activate_professional_sets_kyc_approved_for_existing_account():
             profile = await db.proxy_counsel_profiles.find_one({"user_id": user_id}, {"_id": 0})
             assert profile is not None
             assert profile["kyc_status"] == "approved"
+            assert profile["bar_council_verified"] is True
         finally:
             await db.proxy_counsel_profiles.delete_many({"user_id": user_id})
             await db.users.delete_many({"user_id": user_id})

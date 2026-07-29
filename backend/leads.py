@@ -524,7 +524,16 @@ async def _activate_professional(db, lead: dict) -> None:
     place — kyc_status then reads consistently everywhere that already
     trusts it (counsel_matching.discover_candidates's eligibility gate,
     the counsel's own /practice/profile view, etc.) without those call
-    sites needing to know which path set it."""
+    sites needing to know which path set it.
+
+    counsel_matching.verified_counsel_query() gates on kyc_status AND
+    bar_council_verified together — a single approved lead is this
+    applicant's one review step for the whole application (including
+    whatever bar council credential they submitted with it), so this also
+    calls practice.verify_bar_council here for the same reason as above:
+    without it, a newly-approved proxy counsel would still fail the
+    eligibility gate and stay invisible to both hearing-time matching and
+    the recommendations page despite having just been approved."""
     account_role = LEAD_ROLE_TO_ACCOUNT_ROLE.get(lead["role_applied_for"])
     if not account_role:
         return
@@ -563,6 +572,7 @@ async def _activate_professional(db, lead: dict) -> None:
         import practice as practice_svc
         await practice_svc.get_or_create_profile(db, user_id)
         await practice_svc.approve_kyc(db, user_id)
+        await practice_svc.verify_bar_council(db, user_id)
 
     await db.leads.update_one({"lead_id": lead["lead_id"]}, {"$set": {"converted_user_id": user_id}})
 
