@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { formatINR } from "@/lib/api";
@@ -9,15 +10,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Star, FileText, Send, Upload, CheckCircle2, X, Ban, ShieldCheck, Loader2 } from "lucide-react";
+import { Star, FileText, Send, Upload, CheckCircle2, X, Ban, ShieldCheck, Loader2, Gavel } from "lucide-react";
 import {
   getHearingRequest, acceptHearingRequest, declineHearingRequest, rejectHearingRequest, cancelHearingRequest,
   markHearingConducted, rateHearingRequest, addHearingNote, listHearingMessages,
   postHearingMessage, listHearingDocuments, uploadHearingDocument, getHearingDocumentUrl,
-  createHearingPaymentOrder, verifyHearingPayment, getHearingEscrow,
+  getHearingEscrow,
 } from "@/lib/hearingRequestsApi";
+import { payForHearing as payForHearingShared } from "@/lib/hearingPayment";
 import HearingTimeline from "@/components/shared/HearingTimeline";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
+import { hearingCommerciallyReadyForPayment } from "@/config/homeWidgets";
 
 const STATUS_BADGE = {
   requested: "bg-amber-100 text-amber-700",
@@ -52,6 +55,7 @@ const ESCROW_HELD_STATUSES = new Set([
    (requester vs assigned proxy counsel) and its current status. */
 export default function HearingDetailDialog({ hearingId, open, onOpenChange, onChanged }) {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [hearing, setHearing] = useState(null);
   const [messages, setMessages] = useState([]);
   const [documents, setDocuments] = useState([]);
@@ -88,10 +92,24 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
     && (!hearing.target_advocate_id || isTargetedAtMe);
   const canAccept = isEligibleAdvocate;
   const canDecline = isEligibleAdvocate && !hearing.target_advocate_id;
-  const canReject = isEligibleAdvocate && isTargetedAtMe;
+  // Commercially locked (fee agreed) hearings can no longer be walked away
+  // from through this pre-negotiation path — mirrors the backend refusal in
+  // hearings.reject_hearing_request/cancel_hearing_request.
+  const canReject = isEligibleAdvocate && isTargetedAtMe && !hearing.commercially_locked;
+
+  // Targeted requests must go through negotiation first; payment must always
+  // use the locked, agreed amount, never the original reference fee.
+  // hearingCommerciallyReadyForPayment is the shared gate (homeWidgets.js)
+  // every payment-eligibility surface uses — mirrors hearings.initiate_payment's
+  // server-side check exactly, so this can never disagree with what the
+  // backend will actually accept.
+  const negotiationRequired = !!hearing.target_advocate_id;
+  const negotiationAgreed = !!hearing.commercially_locked;
+  const negotiationPending = isRequester && hearing.status === "requested" && negotiationRequired && !negotiationAgreed;
   // M6 reorder: payment now happens right after creation, before broadcast.
-  const canPay = isRequester && hearing.status === "requested";
-  const canCancel = isRequester && ["requested", "broadcast", "accepted", "payment_pending", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"].includes(hearing.status);
+  const canPay = isRequester && hearing.status === "requested" && hearingCommerciallyReadyForPayment(hearing);
+  const canCancel = isRequester && !hearing.commercially_locked
+    && ["requested", "broadcast", "accepted", "payment_pending", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"].includes(hearing.status);
   const canMarkConducted = isAssignedProxyCounsel && hearing.status === "hearing_scheduled";
   const canRate = ["completed", "rated"].includes(hearing.status) && !hearing.rated_by?.includes(user?.user_id)
     && (isRequester || isAssignedProxyCounsel);
@@ -112,32 +130,13 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   const payForHearing = async () => {
     setPaying(true);
     try {
-      const order = await createHearingPaymentOrder(hearingId);
-      if (order.simulated) {
-        await verifyHearingPayment(hearingId, { razorpay_order_id: order.razorpay_order_id });
-        toast.success("Payment successful (simulated Razorpay) — held by CourtBazaar");
-        onChanged?.();
-        load();
-      } else {
-        const rzp = new window.Razorpay({
-          key: order.key_id,
-          amount: order.amount,
-          currency: "INR",
-          name: "CourtBazaar™",
-          description: `Hearing ${hearing.court_id}`,
-          order_id: order.razorpay_order_id,
-          handler: async (resp) => {
-            await verifyHearingPayment(hearingId, resp);
-            toast.success("Payment successful — held by CourtBazaar");
-            onChanged?.();
-            load();
-          },
-          prefill: { name: user?.name, email: user?.email, contact: user?.phone },
-          // eslint-disable-next-line no-restricted-syntax -- Razorpay SDK config object, not a Tailwind-styled element (same exception as OrderDetail.jsx's payRazorpay)
-          theme: { color: "#D97706" },
-        });
-        rzp.open();
-      }
+      await payForHearingShared(hearingId, hearing, user, {
+        onSuccess: ({ simulated }) => {
+          toast.success(simulated ? "Payment successful (simulated Razorpay) — held by CourtBazaar" : "Payment successful — held by CourtBazaar");
+          onChanged?.();
+          load();
+        },
+      });
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Payment could not be started");
     } finally {
@@ -195,7 +194,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           </DialogDescription>
         </DialogHeader>
 
-        <HearingProgressStepper status={hearing.status} />
+        <HearingProgressStepper status={hearing.status} negotiationAgreed={!negotiationRequired || negotiationAgreed} />
 
         <div className="text-sm border rounded-lg p-3 bg-secondary/30">{hearing.case_details}</div>
 
@@ -208,6 +207,23 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
             </p>
             <Button type="button" onClick={payForHearing} disabled={paying} className="bg-accent hover:bg-accent/90 font-bold">
               {paying ? <Loader2 className="w-4 h-4 animate-spin mr-1.5" /> : null} Pay {formatINR(hearing.fee)}
+            </Button>
+          </div>
+        )}
+
+        {negotiationPending && (
+          <div className="border rounded-lg p-4 bg-amber-50 border-amber-200 space-y-2">
+            <div className="font-display font-bold text-sm">Fee negotiation isn't agreed yet</div>
+            <p className="text-xs text-muted-foreground">
+              Payment unlocks once you and the advocate agree on a final amount. Head to the Negotiation module to
+              propose or accept an offer.
+            </p>
+            <Button
+              type="button"
+              onClick={() => { onOpenChange(false); navigate(`/hearing-requests/${hearingId}/negotiate`); }}
+              className="bg-accent hover:bg-accent/90 font-bold"
+            >
+              <Gavel className="w-4 h-4 mr-1.5" /> Go to Negotiation
             </Button>
           </div>
         )}

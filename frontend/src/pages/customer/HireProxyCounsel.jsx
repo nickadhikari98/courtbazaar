@@ -1,13 +1,17 @@
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Pencil } from "lucide-react";
 import { createHearingRequest, listHearingRequests, uploadHearingDocument } from "@/lib/hearingRequestsApi";
+import { getErrorMessage } from "@/lib/api";
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import LegalServiceRequestForm from "@/components/shared/LegalServiceRequestForm";
-import AvailableAdvocatesPanel from "@/components/shared/AvailableAdvocatesPanel";
+import CounselDiscoveryPanel from "@/components/proxyCounsel/CounselDiscoveryPanel";
 import { SERVICE_CONFIGS } from "@/config/serviceRequestFields";
 
 const serviceConfig = SERVICE_CONFIGS.proxy_counsel;
@@ -31,56 +35,126 @@ const STATUS_BADGE = {
   expired: "bg-slate-100 text-slate-600",
 };
 
+// AvailableAdvocatesPanel's live-context recommendations (shown while
+// typing, before any request existed) is gone — per the founder's product
+// direction, recommendations are AI-driven and appear automatically only
+// once the request form itself is complete, not before. The fields used
+// for matching are exactly the ones already collected by the form, so no
+// new inputs are introduced here — just read back out of its payload.
+function deriveMatchContext(payload) {
+  const common = payload.request_details?.common || {};
+  const serviceSpecific = payload.request_details?.service_specific || {};
+  return {
+    court_id: payload.court_id, court_name: common.court_name,
+    state_id: common.state_id, district: common.district,
+    work_type: serviceSpecific.work_required, priority: common.priority,
+    hearing_date: payload.hearing_date, budget: payload.fee,
+  };
+}
+
+/* Proxy Counsel request flow (founder direction, see PR description):
+     Fill Request -> AI Recommendations (automatic) -> customer selects a
+     counsel (from recommendations, or Search More Counsels as the one
+     fallback) -> create the hearing request targeted at that counsel ->
+     Negotiation Module.
+
+   The actual POST /hearing-requests call is deliberately deferred until a
+   counsel is selected (not fired on form submit) — the backend only
+   accepts target_advocate_id at creation time, and the founder's explicit
+   call was "don't create a hearing request if no counsel is selected,"
+   rather than adding a new backend endpoint to attach one after the fact.
+   "Continue" on the form below only moves to the recommendations step
+   in-memory; nothing is persisted until Select Counsel. */
 export default function HireProxyCounsel() {
+  const navigate = useNavigate();
   const [hearings, setHearings] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
   const [activeId, setActiveId] = useState(null);
-  const [selectedAdvocate, setSelectedAdvocate] = useState(null);
+  const [pendingRequest, setPendingRequest] = useState(null); // { payload, files, context } | null
+  const [selectingId, setSelectingId] = useState(null);
 
   const load = () => listHearingRequests().then(setHearings);
   useEffect(() => { load(); }, []);
 
-  const handleCreate = async (payload, files) => {
-    setSubmitting(true);
+  const handleContinue = (payload, files) => {
+    setPendingRequest({ payload, files, context: deriveMatchContext(payload) });
+  };
+
+  const handleEditRequest = () => setPendingRequest(null);
+
+  const handleSelectCounsel = async (counsel) => {
+    if (!pendingRequest || selectingId) return;
+    setSelectingId(counsel.advocate_id);
+
+    let hearing;
     try {
-      const hearing = await createHearingRequest(payload);
-      for (const file of files) {
+      hearing = await createHearingRequest({ ...pendingRequest.payload, target_advocate_id: counsel.advocate_id });
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Could not send the request"));
+      setSelectingId(null);
+      return;
+    }
+
+    // The hearing now exists in the backend — nothing past this point may
+    // block navigation or make it look like the request failed. Document
+    // upload is best-effort: a failed upload is recoverable (documents can
+    // be added later from the hearing itself) and must never be conflated
+    // with hearing-creation failure.
+    let uploadFailures = 0;
+    for (const file of pendingRequest.files) {
+      try {
         // eslint-disable-next-line no-await-in-loop -- sequential uploads to the same hearing, order doesn't matter but simplicity does
         await uploadHearingDocument(hearing.hearing_id, "case_document", file);
+      } catch {
+        uploadFailures += 1;
       }
-      // M6 reorder: payment now happens before broadcast, so nothing has
-      // been sent to any proxy counsel yet — open the request immediately so
-      // the payment prompt (HearingDetailDialog's canPay, gated on
-      // status === "requested") is right there instead of buried in the list.
-      toast.success("Request created — complete payment to notify available proxy counsel");
-      setSelectedAdvocate(null);
-      setActiveId(hearing.hearing_id);
-      load();
-    } catch (err) {
-      toast.error(err?.response?.data?.detail || "Could not create request");
-    } finally {
-      setSubmitting(false);
     }
+
+    if (uploadFailures > 0) {
+      const plural = uploadFailures > 1 ? "s" : "";
+      toast.warning(`Request sent to ${counsel.name} — ${uploadFailures} document${plural} could not be uploaded and can be added later.`);
+    } else {
+      toast.success(`Request sent to ${counsel.name} — continue in the Negotiation Module`);
+    }
+
+    setPendingRequest(null);
+    setSelectingId(null);
+    load();
+    navigate(`/hearing-requests/${hearing.hearing_id}/negotiate`, { state: { counsel, hearing } });
   };
 
   return (
-    <PageContainer className="max-w-6xl">
+    <PageContainer className="max-w-5xl">
       <PageHeader eyebrow="Services" eyebrowIcon={serviceConfig.heroIcon} title={serviceConfig.title}
                   description={serviceConfig.description} />
 
-      <div className="mt-6 grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-6 items-start">
-        <LegalServiceRequestForm
-          serviceConfig={serviceConfig} onSubmit={handleCreate} submitting={submitting}
-          selectedAdvocate={selectedAdvocate}
-        />
-        <AvailableAdvocatesPanel
-          selectedAdvocateId={selectedAdvocate?.advocate_id}
-          onSelect={setSelectedAdvocate}
-          onClear={() => setSelectedAdvocate(null)}
-        />
+      <div className="mt-6">
+        {!pendingRequest && (
+          <div className="max-w-3xl">
+            <LegalServiceRequestForm serviceConfig={serviceConfig} onSubmit={handleContinue} submitting={false} />
+          </div>
+        )}
+
+        {pendingRequest && (
+          <div>
+            <Card className="dashboard-card border-none mb-6">
+              <CardContent className="p-4 flex items-center justify-between gap-4 flex-wrap">
+                <div className="text-sm">
+                  <span className="text-muted-foreground">Request ready for</span>{" "}
+                  <span className="font-semibold">{pendingRequest.context.court_name || pendingRequest.payload.court_id}</span>
+                  {pendingRequest.payload.hearing_date ? <span className="text-muted-foreground"> · {pendingRequest.payload.hearing_date}</span> : null}
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={handleEditRequest} disabled={!!selectingId}>
+                  <Pencil className="w-3.5 h-3.5 mr-1.5" /> Edit Request
+                </Button>
+              </CardContent>
+            </Card>
+
+            <CounselDiscoveryPanel context={pendingRequest.context} onSelect={handleSelectCounsel} selectingId={selectingId} />
+          </div>
+        )}
       </div>
 
-      <div className="mt-8">
+      <div className="mt-10">
         <h2 className="font-display font-bold text-xl tracking-tight mb-4">My Requests</h2>
         {hearings === null && <div className="text-center text-muted-foreground py-10">Loading…</div>}
         {hearings?.length === 0 && (

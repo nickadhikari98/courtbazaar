@@ -45,6 +45,7 @@ addressed to exactly that advocate (only they can see/accept/reject it, and
 a reject is a global, terminal `rejected` — not a personal decline). When
 absent, the request behaves exactly as the broadcast case above always has.
 """
+import inspect
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
@@ -64,8 +65,14 @@ HEARING_TRANSITIONS = {
     # M6 reorder: payment now happens before broadcast — see module docstring.
     ("requested", "initiate_payment"): "payment_pending",
     ("requested", "cancel"): "cancelled",         # new — "requested" is now a real, potentially long-lived pre-payment state
+    # Negotiation Module: negotiation happens at "requested" (pre-payment), so
+    # the targeted advocate must be able to reject from there too, not just
+    # from "broadcast" — same pre-payment/post-payment pairing cancel already
+    # has above/below.
+    ("requested", "reject"): "rejected",
     ("payment_pending", "confirm_payment"): "broadcast",
     ("payment_pending", "cancel"): "cancelled",
+    ("payment_pending", "reject"): "rejected",
     ("broadcast", "accept"): "accepted",
     ("broadcast", "reject"): "rejected",          # targeted request only — see accept_hearing_request/reject_hearing_request
     ("broadcast", "cancel"): "cancelled",
@@ -153,6 +160,12 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
         "service_type": service_type,
         "request_details": request_details,
         "status": "requested",
+        # Flipped once by negotiation.accept_offer (via set_negotiated_fee)
+        # when both sides agree a fee — from then on this hearing is
+        # commercially committed: cancel_hearing_request/reject_hearing_request
+        # refuse outright, Payment is the only forward action. See those two
+        # functions and negotiation.py's accept_offer for the full rule.
+        "commercially_locked": False,
         "declined_by": [],
         "document_ids": [],
         "order_sheet_doc_id": None,
@@ -197,13 +210,37 @@ async def _push_activity(db, hearing_id: str, note: str, actor_user_id: Optional
 
 
 async def _transition(db, sm: StateMachine, entity: dict, from_status: str, action: str,
-                       actor: Optional[dict], note: Optional[str] = None) -> str:
-    """`workflow.StateMachine.apply` validates + fires the hook (timeline
-    push); this wrapper also does the actual status persistence, since every
-    call site needs both and used to repeat the same two lines."""
-    to_status = await sm.apply(entity, from_status, action, actor)
-    update: Dict[str, Any] = {"status": to_status, "updated_at": datetime.now(timezone.utc).isoformat()}
-    await db.hearing_requests.update_one({"hearing_id": entity["hearing_id"]}, {"$set": update})
+                       actor: Optional[dict], note: Optional[str] = None,
+                       extra_guard: Optional[Dict[str, Any]] = None) -> str:
+    """Validates the transition, then persists it as a compare-and-swap on
+    `status == from_status` (same race-safe find_one_and_update idiom as
+    accept_hearing_request's own broadcast-accept race guard) rather than a
+    blind update_one — two requests racing against the same hearing can't
+    both apply their transition; the loser's write matches nothing and gets
+    a 409 telling the client to refresh. `extra_guard` folds an additional
+    field condition into that same atomic write (see
+    cancel_hearing_request/reject_hearing_request's commercially_locked
+    check) instead of checking it separately, which would reopen the race.
+
+    The on_transition hook (timeline push) and `note` activity only fire
+    AFTER the CAS write succeeds — firing them first (as a naive
+    `sm.apply()` call would, since the hook runs synchronously inside it)
+    would record a "from -> to" timeline entry even on the branch where the
+    write is then rejected."""
+    to_status = sm.next_state(from_status, action)  # raises IllegalTransition if invalid; no DB write yet
+    query: Dict[str, Any] = {"hearing_id": entity["hearing_id"], "status": from_status}
+    if extra_guard:
+        query.update(extra_guard)
+    now = datetime.now(timezone.utc).isoformat()
+    updated = await db.hearing_requests.find_one_and_update(
+        query, {"$set": {"status": to_status, "updated_at": now}}, projection={"_id": 0},
+    )
+    if not updated:
+        raise HTTPException(409, "This request's status changed — please refresh and try again.")
+    if sm.on_transition:
+        result = sm.on_transition(entity, from_status, to_status, actor)
+        if inspect.isawaitable(result):
+            await result
     if note:
         await _push_activity(db, entity["hearing_id"], note, actor["user_id"] if actor else None)
     return to_status
@@ -218,6 +255,11 @@ async def list_hearing_requests(db, user: dict) -> List[dict]:
             "$or": [{"target_advocate_id": None}, {"target_advocate_id": user["user_id"]}],
         })
         clauses.append({"proxy_counsel_user_id": user["user_id"]})
+        # Negotiation Module: a hearing targeted at this advocate is invisible
+        # everywhere else above until it reaches "broadcast" (post-payment) —
+        # but negotiation happens BEFORE payment, so without this clause the
+        # advocate would have no way to even discover a pending negotiation.
+        clauses.append({"target_advocate_id": user["user_id"], "status": {"$in": ["requested", "payment_pending"]}})
     return await db.hearing_requests.find({"$or": clauses}, {"_id": 0}).sort("created_at", -1).to_list(200)
 
 
@@ -235,7 +277,16 @@ def _check_visible(hearing: dict, user: dict) -> None:
     is_targeted_at_me = hearing.get("target_advocate_id") in (None, user["user_id"])
     is_open_to_me = hearing["status"] == "broadcast" and "can_practice_proxy_counsel" in (user.get("capabilities") or []) \
         and is_targeted_at_me
-    if not (is_requester or is_assigned or is_open_to_me or user.get("role") == "admin"):
+    # Negotiation Module: unlike the broadcast pool above, a hearing
+    # specifically targeted at this advocate (not the None/broadcast-to-all
+    # case) must be visible to them BEFORE payment too, while status is still
+    # "requested"/"payment_pending" — that's the whole pre-payment negotiation
+    # window. Deliberately narrower than is_open_to_me: only the exact
+    # targeted advocate, never every can_practice_proxy_counsel account.
+    is_targeted_pending = hearing.get("target_advocate_id") == user["user_id"] \
+        and "can_practice_proxy_counsel" in (user.get("capabilities") or []) \
+        and hearing["status"] in ("requested", "payment_pending")
+    if not (is_requester or is_assigned or is_open_to_me or is_targeted_pending or user.get("role") == "admin"):
         raise HTTPException(403, "Forbidden")
 
 
@@ -301,9 +352,13 @@ async def reject_hearing_request(db, hearing_id: str, user: dict) -> dict:
         raise HTTPException(404, "Hearing request not found")
     if hearing.get("target_advocate_id") != user["user_id"]:
         raise HTTPException(403, "Only the advocate this request was sent to can reject it")
+    if hearing.get("commercially_locked"):
+        raise HTTPException(400, "A fee has been agreed through negotiation — this request is "
+                                  "commercially locked and can no longer be rejected. Proceed to payment.")
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
-        await _transition(db, sm, hearing, hearing["status"], "reject", user)
+        await _transition(db, sm, hearing, hearing["status"], "reject", user,
+                           extra_guard={"commercially_locked": {"$ne": True}})
     except IllegalTransition:
         raise HTTPException(400, "This request can no longer be rejected")
     return {"ok": True, "status": "rejected"}
@@ -343,9 +398,13 @@ async def cancel_hearing_request(db, hearing_id: str, user: dict) -> dict:
         raise HTTPException(404, "Hearing request not found")
     if hearing["requesting_user_id"] != user["user_id"] and user.get("role") != "admin":
         raise HTTPException(403, "Forbidden")
+    if hearing.get("commercially_locked"):
+        raise HTTPException(400, "A fee has been agreed through negotiation — this request is "
+                                  "commercially locked and can no longer be cancelled. Proceed to payment.")
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
-        await _transition(db, sm, hearing, hearing["status"], "cancel", user)
+        await _transition(db, sm, hearing, hearing["status"], "cancel", user,
+                           extra_guard={"commercially_locked": {"$ne": True}})
     except IllegalTransition:
         raise HTTPException(400, "This request can no longer be cancelled")
     if hearing["status"] in _CANCEL_REQUIRES_REFUND:
@@ -365,8 +424,13 @@ async def add_note(db, hearing_id: str, user: dict, note: str) -> dict:
 
 
 def _check_participant(hearing: dict, user: dict) -> None:
-    if hearing["requesting_user_id"] != user["user_id"] and hearing.get("proxy_counsel_user_id") != user["user_id"] \
-            and user.get("role") != "admin":
+    # target_advocate_id counts as a participant even before formal accept
+    # (proxy_counsel_user_id is still None then) — chat/notes/documents must
+    # work during negotiation, not just after acceptance.
+    is_participant = user["user_id"] in (
+        hearing["requesting_user_id"], hearing.get("proxy_counsel_user_id"), hearing.get("target_advocate_id"),
+    )
+    if not is_participant and user.get("role") != "admin":
         raise HTTPException(403, "Forbidden")
 
 
@@ -438,6 +502,51 @@ async def list_messages(db, hearing_id: str) -> List[dict]:
     return await db.hearing_messages.find({"hearing_id": hearing_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
 
 
+async def set_negotiated_fee(db, hearing_id: str, amount: float) -> bool:
+    """The one write negotiation.py makes into hearing_requests — kept here,
+    not in negotiation.py, so this module stays the only writer of its own
+    collection (same cross-module convention as counsel_matching.py calling
+    back into hearings.accept_hearing_request rather than writing
+    hearing_requests itself). Called by negotiation.accept_offer BEFORE it
+    flips its own negotiation document to "agreed" — this is the single
+    cross-collection serialization point against
+    cancel_hearing_request/reject_hearing_request, which refuse once
+    commercially_locked is set. The compare-and-swap (status not already
+    terminal, not already locked) means whichever of "accept this offer" or
+    "cancel/reject this hearing" reaches this document first wins; the loser
+    gets nothing to match. Returns False on that loss (or if the hearing was
+    already cancelled/rejected/expired moments earlier) so the caller can
+    abort before ever touching the negotiations collection — an "agreed"
+    negotiation must never exist on a dead hearing. From lock onward,
+    initiate_payment/create-order read this fee, same as they always have,
+    with no idea a negotiation happened."""
+    now = datetime.now(timezone.utc).isoformat()
+    result = await db.hearing_requests.update_one(
+        {
+            "hearing_id": hearing_id,
+            "status": {"$nin": ["cancelled", "rejected", "expired"]},
+            "commercially_locked": {"$ne": True},
+        },
+        {"$set": {"fee": amount, "commercially_locked": True, "updated_at": now}},
+    )
+    if result.modified_count != 1:
+        return False
+    await _push_activity(db, hearing_id, f"Fee agreed through negotiation: Rs.{amount} — request is now commercially locked")
+    return True
+
+
+async def unlock_commercially(db, hearing_id: str) -> None:
+    """Compensating rollback for the narrow window where set_negotiated_fee
+    above already locked the hearing but negotiation.accept_offer's own
+    optimistic-concurrency write then lost (a counter-offer raced in first,
+    so no agreement actually landed) — without this the hearing would be
+    stuck uncancellable with no agreed fee to show for it."""
+    await db.hearing_requests.update_one(
+        {"hearing_id": hearing_id},
+        {"$set": {"commercially_locked": False, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Payment — hands off to escrow.py immediately; this module never computes
 # commission/payout math itself. See server.py for the Razorpay create-order/
@@ -451,6 +560,17 @@ async def initiate_payment(db, hearing_id: str, user: dict) -> dict:
         raise HTTPException(403, "Only the requester can pay for this hearing")
     if not hearing.get("fee"):
         raise HTTPException(400, "A fee must be set before payment can be collected")
+    # Negotiation Module: a targeted hearing must go through negotiation
+    # first — payment must always use the locked, agreed amount, never the
+    # original reference fee. Backend-enforced (not just a disabled frontend
+    # button) for the same reason target_advocate_id/fee validation are —
+    # never trust the client alone to gate a money action. Broadcast
+    # requests (target_advocate_id None) never negotiate, so they're exempt.
+    if hearing.get("target_advocate_id"):
+        import negotiation as negotiation_svc
+        negotiation = await negotiation_svc.get_negotiation(db, hearing_id)
+        if not negotiation or negotiation["status"] != "agreed":
+            raise HTTPException(400, "Negotiation must be agreed before payment can be collected")
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
         await _transition(db, sm, hearing, hearing["status"], "initiate_payment", user)
@@ -488,12 +608,18 @@ async def mark_payment_confirmed(db, hearing_id: str, user: dict) -> dict:
     # hearing_id itself anyway. Best-effort: a matching failure must never
     # undo payment confirmation, which already happened above, so it's caught
     # and logged here rather than allowed to propagate.
-    import counsel_matching
-    from audit_log import log_audit
-    try:
-        await counsel_matching.run_matching(db, hearing)
-    except Exception as e:
-        await log_audit(db, "matching.dispatch_failed", None, {"hearing_id": hearing_id, "error": str(e)})
+    #
+    # Targeted requests (target_advocate_id set) skip this entirely — the
+    # customer already chose their advocate, so there is no AI pool to
+    # discover/score/notify. The server.py caller notifies that one advocate
+    # directly right after this function returns.
+    if not hearing.get("target_advocate_id"):
+        import counsel_matching
+        from audit_log import log_audit
+        try:
+            await counsel_matching.run_matching(db, hearing)
+        except Exception as e:
+            await log_audit(db, "matching.dispatch_failed", None, {"hearing_id": hearing_id, "error": str(e)})
 
     return {"ok": True, "status": "broadcast"}
 

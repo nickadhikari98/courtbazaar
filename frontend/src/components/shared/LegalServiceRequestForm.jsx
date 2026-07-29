@@ -6,7 +6,6 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Switch } from "@/components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Info, Paperclip, Loader2 } from "lucide-react";
 import { formatINR } from "@/lib/api";
@@ -30,21 +29,25 @@ const ATTACHMENT_HELPER = "Case papers, Vakalatnama, prior order sheets, or othe
    only collects, validates, and structures input — it never calls the API
    itself.
 
-   `selectedAdvocate` ({advocate_id, name} | null) integrates the Available
-   Advocates panel without this component needing to know anything about
-   recommendations: when it changes, the form's own Advocate Preference
-   fields update to match. The manual Any/Specific radio in the Work
-   Required section still works completely standalone; this just gives an
-   external panel a second way to reach the same state. */
-export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submitting, selectedAdvocate }) {
+   Two optional props integrate the Available Advocates panel without this
+   component needing to know anything about recommendations:
+   - `selectedAdvocate` ({advocate_id, name} | null) — when it changes, the
+     form's own Advocate Preference fields update to match. The manual
+     Any/Specific radio in the Work Required section still works completely
+     standalone; this just gives an external panel a second way to reach
+     the same state.
+   - `onContextChange(context)` — fired whenever a field relevant to
+     advocate matching changes, so a parent page can feed a recommendations
+     hook without this form knowing that hook exists. */
+export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submitting, selectedAdvocate, onContextChange }) {
   const [fields, setFields] = useState({
     state_id: "", state_name: "", district: "", court_id: "", court_name: "",
     case_title: "", case_number: "", case_type: "", hearing_date: "", hearing_time: "", case_stage: "",
     work_required: [], work_required_notes: "",
     priority: "Normal",
     case_details: "",
-    offered_amount: "", is_negotiable: false,
-    target_type: "any", target_advocate_id: "", target_advocate_name: "",
+    budget: "",
+    target_type: "any", target_advocate_id: "",
   });
   const [files, setFiles] = useState([]);
   const [errors, setErrors] = useState({});
@@ -52,25 +55,23 @@ export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submi
   const set = (patch) => setFields((f) => ({ ...f, ...patch }));
 
   useEffect(() => {
-    if (selectedAdvocate) {
-      set({ target_type: "specific", target_advocate_id: selectedAdvocate.advocate_id, target_advocate_name: selectedAdvocate.name });
-    } else {
-      // Panel selection was cleared (or never made) — don't leave the form
-      // pointed at a stale advocate the user can no longer see as selected.
-      set({ target_type: "any", target_advocate_id: "", target_advocate_name: "" });
-    }
+    if (!selectedAdvocate) return;
+    set({ target_type: "specific", target_advocate_id: selectedAdvocate.advocate_id });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-sync when the selected advocate itself changes
   }, [selectedAdvocate?.advocate_id]);
 
+  useEffect(() => {
+    onContextChange?.({
+      court_id: fields.court_id, court_name: fields.court_name, state_id: fields.state_id, district: fields.district,
+      work_type: fields.work_required, priority: fields.priority,
+      hearing_date: fields.hearing_date, budget: fields.budget,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- report only the fields relevant to advocate matching
+  }, [fields.court_id, fields.court_name, fields.state_id, fields.district, fields.work_required, fields.priority, fields.hearing_date, fields.budget]);
   const toggleWorkType = (option) => {
     const has = fields.work_required.includes(option);
     set({ work_required: has ? fields.work_required.filter((w) => w !== option) : [...fields.work_required, option] });
   };
-
-  // The customer's manually-entered offer — no AI/recommended pricing, no
-  // service-based calculation. This is also what drives the payment amount
-  // (see `fee` below), so the same number gates both submission and payment.
-  const hasValidOfferAmount = Number(fields.offered_amount) > 0;
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -82,7 +83,7 @@ export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submi
       court_id: fields.court_id,
       hearing_date: fields.hearing_date,
       case_details: fields.case_details,
-      fee: Number(fields.offered_amount),
+      fee: fields.budget ? Number(fields.budget) : undefined,
       target_advocate_id: fields.target_type === "specific" ? fields.target_advocate_id.trim() : undefined,
       service_type: serviceConfig.serviceType,
       request_details: {
@@ -92,7 +93,6 @@ export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submi
           case_title: fields.case_title, case_number: fields.case_number || undefined,
           case_type: fields.case_type, case_stage: fields.case_stage, hearing_time: fields.hearing_time,
           priority: fields.priority,
-          offered_amount: Number(fields.offered_amount), is_negotiable: fields.is_negotiable,
         },
         service_specific: {
           work_required: fields.work_required,
@@ -213,11 +213,7 @@ export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submi
               </RadioGroup>
               {fields.target_type === "specific" && (
                 <div>
-                  <Input
-                    value={fields.target_advocate_id}
-                    onChange={(e) => set({ target_advocate_id: e.target.value, target_advocate_name: "" })}
-                    placeholder="Advocate's CourtBazaar ID"
-                  />
+                  <Input value={fields.target_advocate_id} onChange={(e) => set({ target_advocate_id: e.target.value })} placeholder="Advocate's CourtBazaar ID" />
                   {errors.target_advocate_id && <p className="text-xs text-destructive mt-1">{errors.target_advocate_id}</p>}
                 </div>
               )}
@@ -232,57 +228,33 @@ export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submi
         </CardContent>
       </Card>
 
-      {/* 4. Price — customer-entered offer only; no AI or recommended pricing. */}
-      {serviceConfig.requiresOfferAmount && (
-        <Card className="dashboard-card border-none">
-          <CardContent className="p-5 space-y-4">
-            <div className="font-display font-bold mb-1">Price</div>
-            <div>
-              <Label>Your Offer Amount (₹) *</Label>
-              <Input
-                type="number" min="1" step="1" value={fields.offered_amount}
-                onChange={(e) => set({ offered_amount: e.target.value })}
-                placeholder="e.g. 5000"
-                data-testid="offered-amount"
-              />
-              {errors.offered_amount && <p className="text-xs text-destructive mt-1">{errors.offered_amount}</p>}
-            </div>
-            <label className="flex items-center justify-between gap-4 cursor-pointer select-none">
-              <span>
-                <span className="text-sm font-semibold">Open to Negotiation</span>
-                <span className="block text-xs text-muted-foreground mt-0.5">
-                  Let advocates propose a different amount before accepting your request.
-                </span>
-              </span>
-              <Switch
-                checked={fields.is_negotiable}
-                onCheckedChange={(v) => set({ is_negotiable: v })}
-                data-testid="negotiable-switch"
-              />
-            </label>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* 5. Documents */}
-      {serviceConfig.supportsAttachments && (
+      {/* 4. Documents */}
+      {(serviceConfig.supportsAttachments || serviceConfig.supportsBudget) && (
         <Card className="dashboard-card border-none">
           <CardContent className="p-5 space-y-3">
-            <div>
-              <Label>Attachments (optional)</Label>
-              <p className="text-xs text-muted-foreground mb-1.5">{ATTACHMENT_HELPER}</p>
-              <input
-                type="file" multiple
-                onChange={(e) => setFiles(Array.from(e.target.files || []))}
-                className="text-sm w-full file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-secondary file:text-sm file:font-semibold"
-                data-testid="request-attachments"
-              />
-            </div>
+            {serviceConfig.supportsAttachments && (
+              <div>
+                <Label>Attachments (optional)</Label>
+                <p className="text-xs text-muted-foreground mb-1.5">{ATTACHMENT_HELPER}</p>
+                <input
+                  type="file" multiple
+                  onChange={(e) => setFiles(Array.from(e.target.files || []))}
+                  className="text-sm w-full file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-secondary file:text-sm file:font-semibold"
+                  data-testid="request-attachments"
+                />
+              </div>
+            )}
+            {serviceConfig.supportsBudget && (
+              <div>
+                <Label>Proposed Budget (optional)</Label>
+                <Input type="number" value={fields.budget} onChange={(e) => set({ budget: e.target.value })} placeholder="₹" />
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
 
-      {/* 6. Review & Submit */}
+      {/* 5. Review & Submit */}
       <Card className="dashboard-card border-none">
         <CardContent className="p-5 space-y-3">
           <div className="font-display font-bold">{serviceConfig.reviewTitle || "Review your request"}</div>
@@ -312,18 +284,13 @@ export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submi
             {serviceConfig.supportsTargeting && (
               <div>
                 <dt className="cb-overline">Advocate</dt>
-                <dd className="font-semibold mt-0.5">
-                  {fields.target_type === "specific" ? (fields.target_advocate_name || fields.target_advocate_id || "—") : "Any available"}
-                </dd>
+                <dd className="font-semibold mt-0.5">{fields.target_type === "specific" ? (fields.target_advocate_id || "—") : "Any available"}</dd>
               </div>
             )}
-            {serviceConfig.requiresOfferAmount && (
+            {serviceConfig.supportsBudget && (
               <div>
-                <dt className="cb-overline">Your Offer</dt>
-                <dd className="font-semibold mt-0.5">
-                  {hasValidOfferAmount ? formatINR(Number(fields.offered_amount)) : "Not specified"}
-                  {fields.is_negotiable && <Badge className="ml-2 bg-accent/10 text-accent border-0 font-bold text-2xs align-middle">Negotiable</Badge>}
-                </dd>
+                <dt className="cb-overline">Proposed Budget</dt>
+                <dd className="font-semibold mt-0.5">{fields.budget ? formatINR(Number(fields.budget)) : "Not specified"}</dd>
               </div>
             )}
             {serviceConfig.supportsAttachments && (
@@ -335,13 +302,8 @@ export default function LegalServiceRequestForm({ serviceConfig, onSubmit, submi
               </div>
             )}
           </dl>
-          <Button
-            type="submit"
-            disabled={submitting || (serviceConfig.requiresOfferAmount && !hasValidOfferAmount)}
-            className="bg-accent hover:bg-accent/90 font-bold"
-            data-testid="submit-service-request"
-          >
-            {submitting && <Loader2 className="w-4 h-4 animate-spin mr-1.5" />} {serviceConfig.submitButtonLabel || "Send Request"}
+          <Button type="submit" disabled={submitting} className="bg-accent hover:bg-accent/90 font-bold" data-testid="submit-service-request">
+            {submitting && <Loader2 className="w-4 h-4 animate-spin mr-1.5" />} {serviceConfig.submitLabel || "Send Request"}
           </Button>
         </CardContent>
       </Card>

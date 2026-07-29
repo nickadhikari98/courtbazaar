@@ -111,10 +111,21 @@ async def discover_candidates(db, hearing_id: str) -> List[dict]:
 
     Returns full proxy_counsel_profiles documents (or an empty list if no
     one qualifies) — the exact input shape a later ranking/scoring milestone
-    plugs into, without this function knowing anything about ranking."""
+    plugs into, without this function knowing anything about ranking.
+
+    Manual advocate selection (target_advocate_id set on the hearing) is not
+    part of this discovery pool at all: the customer already picked their
+    advocate directly, so there is no AI candidate pool to discover here —
+    only that one advocate is ever eligible, never the broadcast pool."""
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
     if not hearing:
         raise HTTPException(404, "Hearing not found")
+
+    if hearing.get("target_advocate_id"):
+        profile = await db.proxy_counsel_profiles.find_one(
+            {"user_id": hearing["target_advocate_id"]}, {"_id": 0},
+        )
+        return [profile] if profile else []
 
     query = {**verified_counsel_query(), "availability_mode": True}
     return await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500)

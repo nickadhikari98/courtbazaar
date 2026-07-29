@@ -203,8 +203,37 @@ investigate after.
 
 ## 9. Docker / CI-CD / versioning
 
-Not currently used. Docker only appears in local development, for running
+Docker is not used. Docker only appears in local development, for running
 MongoDB (see the Playbook §5) — production runs the backend and frontend
 directly on the VPS via systemd/Nginx as described above, with no container
-runtime and no CI/CD pipeline. If either is introduced later, this is the
-document to update.
+runtime.
+
+CI/CD: `.github/workflows/deploy.yml` deploys automatically on every push to
+`main`. It SSHes into the VPS as `root` and runs `deploy/deploy.sh` — the
+same script described in §7, unchanged. The workflow does not reimplement
+any deploy steps itself; it only triggers the existing script, so §7 remains
+the source of truth for what a deploy actually does. It can also be run
+manually from the Actions tab (`workflow_dispatch`) without a new push.
+
+Required GitHub Actions secrets (Settings → Secrets and variables → Actions):
+
+- `VPS_HOST` — the VPS IP or hostname
+- `VPS_SSH_KEY` — private key for a `root`-capable SSH keypair; the matching
+  public key must be in `root`'s `~/.ssh/authorized_keys` on the VPS
+- `VPS_PORT` — optional, defaults to `22` if unset
+
+### Branch model
+
+```
+feature/* → PR → develop → (QA/testing) → PR → main → auto-deploy
+```
+
+- `develop` is an integration/QA branch. Merging into it does **not**
+  deploy anything — it exists purely so multiple in-flight features can be
+  tested together before going to production.
+- `main` is production. Every push to `main` (i.e. every merged PR) deploys
+  automatically via the workflow above — treat a merge to `main` as
+  equivalent to running `deploy/deploy.sh` yourself.
+- Branch protection on `main` (and ideally `develop`) should require PR
+  review and passing checks before merge — configure this under Settings →
+  Branches, since it isn't something a workflow file can enforce on its own.

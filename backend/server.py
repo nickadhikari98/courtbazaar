@@ -377,7 +377,7 @@ class HearingRequestCreate(BaseModel):
     court_id: str
     hearing_date: str
     case_details: str
-    fee: Optional[float] = None
+    fee: Optional[float] = Field(default=None, gt=0)
     matter_id: Optional[str] = None
     # Integration point for a separate advocate search/select workstream —
     # set -> request is addressed to one advocate; omitted -> today's
@@ -408,6 +408,10 @@ class HearingNoteCreate(BaseModel):
 class HearingMessageCreate(BaseModel):
     text: str
 
+class NegotiationOfferCreate(BaseModel):
+    amount: float = Field(gt=0)
+    note: Optional[str] = None
+
 class HearingRatingCreate(BaseModel):
     rating: int
     review: Optional[str] = None
@@ -436,11 +440,13 @@ async def seed_initial_data():
     import hearings as hearings_svc
     import escrow as escrow_svc
     import counsel_matching as counsel_matching_svc
+    import negotiation as negotiation_svc
     await leads_svc.ensure_indexes(db)
     await reviews_svc.ensure_indexes(db)
     await hearings_svc.ensure_indexes(db)
     await escrow_svc.ensure_indexes(db)
     await counsel_matching_svc.ensure_indexes(db)
+    await negotiation_svc.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -2299,8 +2305,9 @@ async def admin_verify_practice_bar_council(user_id: str, user=Depends(get_curre
 
 
 # ---------- Proxy Counsel Page: AI Recommendations + Filters (founder
-# follow-up request, post-roadmap). Backs HireProxyCounsel.jsx's Available
-# Advocates panel (see frontend/src/lib/advocateRecommendationsApi.js) —
+# follow-up request, post-roadmap). Backs the Proxy Counsel request flow's
+# CounselDiscoveryPanel and ManualCounselSearch (both call this through
+# frontend/src/lib/advocateRecommendationsApi.js's getAvailableAdvocates) —
 # reuses counsel_matching.list_and_recommend, which itself reuses the same
 # verified_counsel_query/score_candidates the hearing-time matching pipeline
 # (M5/M6) already uses, rather than a separate recommendation engine. ----
@@ -2339,6 +2346,11 @@ async def recommendations_advocates(
             "advocate_id": c["user_id"],
             "name": names_by_id.get(c["user_id"]) or "Proxy Counsel",
             "avatar_url": None,
+            # list_and_recommend only ever returns verified_counsel_query()
+            # matches, so every result here has already passed KYC + bar
+            # council verification — this is what CounselCard/
+            # CounselProfileDialog's "Verified" badge reads.
+            "verified": True,
             "primary_courts": [court_names_by_id.get(cid, cid) for cid in (c.get("courts") or [])],
             "practice_areas": c.get("practice_areas") or [],
             "languages": c.get("languages") or [],
@@ -2530,6 +2542,26 @@ async def list_hearing_messages(hearing_id: str, user=Depends(get_current_user))
 @api_router.post("/hearing-requests/{hearing_id}/messages")
 async def post_hearing_message(hearing_id: str, payload: HearingMessageCreate, user=Depends(get_current_user)):
     return await hearings_svc.add_message(db, hearing_id, user, payload.text)
+
+# ----------------------------------------------------------------------
+# Negotiation Module — offer/counter-offer/agreement state (negotiation.py).
+# Chat itself is the messages endpoints above, unchanged; the frontend
+# merges the two into one feed. See negotiation.py's module docstring.
+# ----------------------------------------------------------------------
+@api_router.get("/hearing-requests/{hearing_id}/negotiation")
+async def get_negotiation(hearing_id: str, user=Depends(get_current_user)):
+    import negotiation as negotiation_svc
+    return await negotiation_svc.get_negotiation_for_user(db, hearing_id, user)
+
+@api_router.post("/hearing-requests/{hearing_id}/negotiation/offers")
+async def propose_negotiation_offer(hearing_id: str, payload: NegotiationOfferCreate, user=Depends(get_current_user)):
+    import negotiation as negotiation_svc
+    return await negotiation_svc.propose_offer(db, hearing_id, user, payload.amount, payload.note)
+
+@api_router.post("/hearing-requests/{hearing_id}/negotiation/offers/{offer_id}/accept")
+async def accept_negotiation_offer(hearing_id: str, offer_id: str, user=Depends(get_current_user)):
+    import negotiation as negotiation_svc
+    return await negotiation_svc.accept_offer(db, hearing_id, offer_id, user)
 
 @api_router.get("/hearing-requests/{hearing_id}/documents")
 async def get_hearing_documents(hearing_id: str, user=Depends(get_current_user)):

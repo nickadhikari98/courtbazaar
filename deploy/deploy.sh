@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-REPO_DIR="/var/www/courtbazaar"
+REPO_DIR="/root/courtbazaar"
 WEB_ROOT="/var/www/html"
 BACKEND_SERVICE="courtbazaar"
 DOMAIN="https://courtbazaar.in"
@@ -32,10 +32,19 @@ sudo systemctl is-active --quiet "$BACKEND_SERVICE" || {
   echo "!! $BACKEND_SERVICE failed to start — check: sudo journalctl -u $BACKEND_SERVICE -n 50"
   exit 1
 }
-curl -sf http://127.0.0.1:8000/api/ > /dev/null || {
-  echo "!! backend is not responding on 127.0.0.1:8000/api/"
+echo "==> Waiting for backend to come up"
+BACKEND_UP=0
+for i in $(seq 1 15); do
+  if curl -sf http://127.0.0.1:8000/api/ > /dev/null; then
+    BACKEND_UP=1
+    break
+  fi
+  sleep 1
+done
+if [ "$BACKEND_UP" -ne 1 ]; then
+  echo "!! backend did not respond on 127.0.0.1:8000/api/ after 15s"
   exit 1
-}
+fi
 
 echo "==> Frontend: installing deps (Yarn only — see package.json packageManager)"
 cd "$REPO_DIR/frontend"

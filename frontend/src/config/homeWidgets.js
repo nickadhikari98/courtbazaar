@@ -32,9 +32,27 @@ export function hearingIsAcceptableByMe(h, user) {
   return h.status === "broadcast" && (!h.target_advocate_id || h.target_advocate_id === user.user_id);
 }
 
+/* The commercial gate for payment — the single place this codebase decides
+   "is this hearing actually ready to be paid for", so every surface
+   (dashboard widgets, Pending Actions, HearingDetailDialog's Pay button)
+   asks the same question the same way instead of each re-deriving it from
+   hearing.status. Mirrors hearings.initiate_payment's server-side check
+   exactly: a fee must be set, and a *targeted* hearing must be commercially
+   locked (negotiation.status "agreed", set atomically with
+   commercially_locked — see hearings.set_negotiated_fee); a broadcast
+   hearing (no target_advocate_id) never negotiates and is exempt. Note
+   hearing.status alone can't answer this — "requested" covers "not
+   negotiated yet", "negotiating", AND "agreed, awaiting payment" all as the
+   same status value; commercially_locked is what actually disambiguates. */
+export function hearingCommerciallyReadyForPayment(h) {
+  return !!h.fee && (!h.target_advocate_id || !!h.commercially_locked);
+}
+
 export function hearingNeedsMyAction(h, user) {
   // M6 reorder: payment is now due at "requested", before broadcast/acceptance.
-  return (h.requesting_user_id === user?.user_id && h.status === "requested") // payment due
+  const paymentDue = h.requesting_user_id === user?.user_id && h.status === "requested"
+    && hearingCommerciallyReadyForPayment(h);
+  return paymentDue
     || (h.proxy_counsel_user_id === user?.user_id && h.status === "hearing_scheduled") // mark conducted due
     || hearingIsAcceptableByMe(h, user);
 }
