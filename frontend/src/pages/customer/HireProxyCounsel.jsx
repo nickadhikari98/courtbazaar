@@ -52,11 +52,31 @@ function deriveMatchContext(payload) {
   };
 }
 
+// Inverse of LegalServiceRequestForm's handleSubmit payload-building — used
+// only to re-populate the form's fields when the customer clicks "Edit
+// Request" after already continuing past it, so editing one field doesn't
+// throw away everything else they filled in.
+function payloadToFields(payload) {
+  const common = payload.request_details?.common || {};
+  const serviceSpecific = payload.request_details?.service_specific || {};
+  return {
+    state_id: common.state_id || "", state_name: common.state_name || "", district: common.district || "",
+    court_id: payload.court_id || "", court_name: common.court_name || "",
+    case_title: common.case_title || "", case_number: common.case_number || "", case_type: common.case_type || "",
+    hearing_date: payload.hearing_date || "", hearing_time: common.hearing_time || "", case_stage: common.case_stage || "",
+    work_required: serviceSpecific.work_required || [], work_required_notes: serviceSpecific.work_required_notes || "",
+    priority: common.priority || "Normal",
+    case_details: payload.case_details || "",
+    budget: payload.fee != null ? String(payload.fee) : "",
+    target_type: payload.target_advocate_id ? "specific" : "any", target_advocate_id: payload.target_advocate_id || "",
+  };
+}
+
 /* Proxy Counsel request flow (founder direction, see PR description):
-     Fill Request -> AI Recommendations (automatic) -> customer selects a
-     counsel (from recommendations, or Search More Counsels as the one
-     fallback) -> create the hearing request targeted at that counsel ->
-     Negotiation Module.
+     Fill Request -> Find a Proxy Counsel (AI Recommendation / Search
+     Manually toggle, see CounselDiscoveryPanel) -> customer selects a
+     counsel from whichever tab they used -> create the hearing request
+     targeted at that counsel -> Negotiation Module.
 
    The actual POST /hearing-requests call is deliberately deferred until a
    counsel is selected (not fired on form submit) — the backend only
@@ -70,6 +90,7 @@ export default function HireProxyCounsel() {
   const [hearings, setHearings] = useState(null);
   const [activeId, setActiveId] = useState(null);
   const [pendingRequest, setPendingRequest] = useState(null); // { payload, files, context } | null
+  const [editing, setEditing] = useState(false); // true while re-showing the form to edit an already-continued request
   const [selectingId, setSelectingId] = useState(null);
 
   const load = () => listHearingRequests().then(setHearings);
@@ -77,9 +98,14 @@ export default function HireProxyCounsel() {
 
   const handleContinue = (payload, files) => {
     setPendingRequest({ payload, files, context: deriveMatchContext(payload) });
+    setEditing(false);
   };
 
-  const handleEditRequest = () => setPendingRequest(null);
+  // Re-shows the form instead of discarding pendingRequest — submitting it
+  // again (handleContinue) is what actually replaces the pending request,
+  // so everything the customer already filled in stays there to edit
+  // rather than being lost.
+  const handleEditRequest = () => setEditing(true);
 
   const handleSelectCounsel = async (counsel) => {
     if (!pendingRequest || selectingId) return;
@@ -128,13 +154,17 @@ export default function HireProxyCounsel() {
                   description={serviceConfig.description} />
 
       <div className="mt-6">
-        {!pendingRequest && (
+        {(!pendingRequest || editing) && (
           <div className="max-w-3xl">
-            <LegalServiceRequestForm serviceConfig={serviceConfig} onSubmit={handleContinue} submitting={false} />
+            <LegalServiceRequestForm
+              serviceConfig={serviceConfig} onSubmit={handleContinue} submitting={false}
+              initialValues={pendingRequest ? payloadToFields(pendingRequest.payload) : undefined}
+              initialFiles={pendingRequest?.files}
+            />
           </div>
         )}
 
-        {pendingRequest && (
+        {pendingRequest && !editing && (
           <div>
             <Card className="dashboard-card border-none mb-6">
               <CardContent className="p-4 flex items-center justify-between gap-4 flex-wrap">

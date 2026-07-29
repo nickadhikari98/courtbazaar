@@ -2304,6 +2304,79 @@ async def admin_verify_practice_bar_council(user_id: str, user=Depends(get_curre
     return profile
 
 
+# ---------- Proxy Counsel Page: AI Recommendations + Filters (founder
+# follow-up request, post-roadmap). Backs the Proxy Counsel request flow's
+# CounselDiscoveryPanel and ManualCounselSearch (both call this through
+# frontend/src/lib/advocateRecommendationsApi.js's getAvailableAdvocates) —
+# reuses counsel_matching.list_and_recommend, which itself reuses the same
+# verified_counsel_query/score_candidates the hearing-time matching pipeline
+# (M5/M6) already uses, rather than a separate recommendation engine. ----
+@api_router.get("/recommendations/advocates")
+async def recommendations_advocates(
+    court_id: Optional[str] = None, state_id: Optional[str] = None, district: Optional[str] = None,
+    specialization: Optional[str] = None, min_experience_years: Optional[float] = None,
+    min_rating: Optional[float] = None, fee_min: Optional[float] = None, fee_max: Optional[float] = None,
+    available_only: bool = False, limit: int = 20,
+    user=Depends(get_current_user),
+):
+    _require_capability(user, "can_hire_proxy_counsel")
+    import counsel_matching
+    ranked, total = await counsel_matching.list_and_recommend(
+        db, court_id=court_id, state_id=state_id, district=district, specialization=specialization,
+        min_experience_years=min_experience_years, min_rating=min_rating, fee_min=fee_min, fee_max=fee_max,
+        available_only=available_only, limit=limit,
+    )
+    generated_at = datetime.now(timezone.utc).isoformat()
+    if not ranked:
+        return {"source": "live", "metadata": {"total_candidates": total, "returned": 0, "generated_at": generated_at}, "advocates": []}
+
+    user_ids = [c["user_id"] for c in ranked]
+    names_by_id = {
+        u["user_id"]: u.get("name")
+        for u in await db.users.find({"user_id": {"$in": user_ids}}, {"_id": 0, "user_id": 1, "name": 1}).to_list(len(user_ids))
+    }
+    court_ids = sorted({cid for c in ranked for cid in (c.get("courts") or [])})
+    court_names_by_id = {
+        c["court_id"]: c["name"]
+        for c in (await db.courts.find({"court_id": {"$in": court_ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(court_ids)) if court_ids else [])
+    }
+
+    advocates = [
+        {
+            "advocate_id": c["user_id"],
+            "name": names_by_id.get(c["user_id"]) or "Proxy Counsel",
+            "avatar_url": None,
+            # list_and_recommend only ever returns verified_counsel_query()
+            # matches, so every result here has already passed KYC + bar
+            # council verification — this is what CounselCard/
+            # CounselProfileDialog's "Verified" badge reads.
+            "verified": True,
+            "primary_courts": [court_names_by_id.get(cid, cid) for cid in (c.get("courts") or [])],
+            "practice_areas": c.get("practice_areas") or [],
+            "languages": c.get("languages") or [],
+            "rating": c.get("rating") or 0,
+            "hearings_completed": c.get("cases_completed") or 0,
+            "availability": {
+                "available_now": bool(c.get("availability_mode")),
+                "note": "Available Today" if c.get("availability_mode") else "Not Available Now",
+            },
+            "proposed_fee": counsel_matching.extract_fee_amount(c.get("fee_structure")),
+            "bio": c.get("bio"),
+            "experience_years": c.get("experience_years"),
+            "education": c.get("education"),
+            "ai_match_score": round((c.get("confidence_score") or 0) * 100),
+            "ai_match_reasons": None,
+            "estimated_response_time": None,
+        }
+        for c in ranked
+    ]
+    return {
+        "source": "live",
+        "metadata": {"total_candidates": total, "returned": len(advocates), "generated_at": generated_at},
+        "advocates": advocates,
+    }
+
+
 # ============================================================================
 # HEARING REQUESTS — the "Hire Proxy Counsel" marketplace. First-class
 # entity (see hearings.py's module docstring for why it doesn't reuse orders).

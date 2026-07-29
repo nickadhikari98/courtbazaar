@@ -14,9 +14,10 @@ get_or_create_matching_session is idempotent by relying on the unique index
 on hearing_id (see ensure_indexes) as the actual concurrency guard, rather
 than an application-level check-then-insert.
 """
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
@@ -126,12 +127,19 @@ async def discover_candidates(db, hearing_id: str) -> List[dict]:
         )
         return [profile] if profile else []
 
-    query = {
-        "kyc_status": "approved",
-        "bar_council_verified": True,
-        "availability_mode": True,
-    }
+    query = {**verified_counsel_query(), "availability_mode": True}
     return await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500)
+
+
+def verified_counsel_query() -> Dict[str, Any]:
+    """The trust-gate portion (kyc_status/bar_council_verified) of
+    discover_candidates' eligibility query, factored out so the pre-hearing
+    recommendation surface (list_and_recommend, below) shares the exact same
+    definition instead of a second copy that could drift out of sync.
+    discover_candidates layers its own extra `availability_mode: True` gate
+    on top of this — see its docstring for why that one stays hearing-time
+    only."""
+    return {"kyc_status": "approved", "bar_council_verified": True}
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +219,124 @@ def score_candidates(hearing: dict, candidates: List[dict]) -> List[dict]:
     ]
     scored.sort(key=lambda c: c["confidence_score"], reverse=True)
     return scored
+
+
+# ---------------------------------------------------------------------------
+# Proxy Counsel Page — Recommendations + Filters (founder follow-up request,
+# post-roadmap)
+#
+# Backs HireProxyCounsel.jsx's Available Advocates panel — a browse surface
+# shown before any hearing exists, unlike discover_candidates/score_candidates
+# above (which only ever run for one already-created hearing). Reuses both
+# of those unchanged rather than standing up a separate recommendation
+# engine: same verified_counsel_query() trust gate discover_candidates uses,
+# same score_candidates ranking discover_candidates's output is fed through
+# at hearing time. The only new logic here is turning the page's filter
+# inputs into a Mongo query over proxy_counsel_profiles' existing fields —
+# no new schema.
+#
+# availability_mode is deliberately NOT a hard gate here the way it is in
+# discover_candidates: that function is about to actually notify someone for
+# a real hearing, so "not currently taking hearings" must exclude them. This
+# is a browse page — a highly-rated counsel who's temporarily marked
+# unavailable should still be visible, just filterable out via
+# `available_only` if the customer wants to.
+# ---------------------------------------------------------------------------
+
+_FEE_AMOUNT_RE = re.compile(r"[\d,]+(?:\.\d+)?")
+
+
+def extract_fee_amount(fee_structure: Optional[str]) -> Optional[float]:
+    """fee_structure (see practice.PROFILE_EDITABLE_FIELDS) is a free-text
+    field like "Rs.2,000 per appearance" — there's no separate numeric fee
+    field to query on, and this milestone's scope rules out inventing one,
+    so a fee-range filter has to read the first number embedded in the
+    string. Returns None (never excluded on fee) when the field is empty or
+    has no parseable number, rather than treating an unstructured value as
+    zero."""
+    if not fee_structure:
+        return None
+    match = _FEE_AMOUNT_RE.search(fee_structure)
+    if not match:
+        return None
+    try:
+        return float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+
+
+async def list_and_recommend(
+    db,
+    court_id: Optional[str] = None,
+    state_id: Optional[str] = None,
+    district: Optional[str] = None,
+    specialization: Optional[str] = None,
+    min_experience_years: Optional[float] = None,
+    min_rating: Optional[float] = None,
+    fee_min: Optional[float] = None,
+    fee_max: Optional[float] = None,
+    available_only: bool = False,
+    limit: int = 20,
+) -> Tuple[List[dict], int]:
+    """Filters proxy_counsel_profiles down to the verified counsels matching
+    the page's filter inputs, then ranks the result with score_candidates —
+    the same AI scoring discover_candidates' output gets at hearing time —
+    so the top of the returned list is the AI recommendation, lowest-scored
+    last. Returns (ranked_candidates, total_matched) so the caller can report
+    how many matched before truncating to `limit`.
+
+    state_id/district (the page's mandatory Step 1/2 location gate) and
+    court_id (an optional Step 3 narrowing filter *within* that location)
+    combine rather than one overriding the other: court_id, when given
+    alongside a location, must also fall inside it — a court from a
+    different state/district than the one selected correctly matches
+    nothing rather than silently ignoring the location. court_id given
+    alone (no location) still works as a plain equality filter, unchanged
+    from before, for callers that only ever had a specific court in mind."""
+    query: Dict[str, Any] = verified_counsel_query()
+    if specialization:
+        query["practice_areas"] = {"$elemMatch": {"$regex": re.escape(specialization), "$options": "i"}}
+    if min_experience_years is not None:
+        query["experience_years"] = {"$gte": min_experience_years}
+    if min_rating is not None:
+        query["rating"] = {"$gte": min_rating}
+    if available_only:
+        query["availability_mode"] = True
+
+    if state_id or district:
+        court_filter: Dict[str, Any] = {}
+        if state_id:
+            court_filter["state_id"] = state_id
+        if district:
+            court_filter["district"] = district
+        matching_courts = await db.courts.find(court_filter, {"_id": 0, "court_id": 1}).to_list(2000)
+        location_court_ids = {c["court_id"] for c in matching_courts}
+        if court_id:
+            location_court_ids &= {court_id}
+        query["courts"] = {"$in": sorted(location_court_ids)}
+    elif court_id:
+        query["courts"] = court_id
+
+    candidates = await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500)
+
+    if fee_min is not None or fee_max is not None:
+        def _fee_in_range(counsel: dict) -> bool:
+            amount = extract_fee_amount(counsel.get("fee_structure"))
+            if amount is None:
+                return False  # unparseable/absent fee can't be verified in-range — exclude rather than silently include
+            if fee_min is not None and amount < fee_min:
+                return False
+            if fee_max is not None and amount > fee_max:
+                return False
+            return True
+        candidates = [c for c in candidates if _fee_in_range(c)]
+
+    total = len(candidates)
+    if not candidates:
+        return [], total
+
+    ranked = score_candidates({"court_id": court_id}, candidates)
+    return ranked[:max(limit, 0)], total
 
 
 # ---------------------------------------------------------------------------
