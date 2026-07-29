@@ -4,17 +4,22 @@ import { Check, X, Ban, ShieldAlert, Clock } from "lucide-react";
 /* Prospective, at-a-glance progress for the Hire Proxy Counsel journey —
    complements HearingTimeline (the retrospective activity log) rather than
    replacing it. Maps the real hearing.status values (backend/hearings.py's
-   HEARING_STATUSES) onto the founder's reference stages; "Search advocate /
-   View profile / Select advocate" aren't included here — those steps happen
-   before a hearing_request exists and belong to the separate (deferred)
-   advocate-discovery workstream.
+   HEARING_STATUSES) onto the founder's reference stages.
 
-   Order reflects the M6 payment/broadcast reorder: payment now precedes
-   broadcast and acceptance instead of following them. */
-const STAGES = [
+   Two tracks, not one — a targeted/negotiated hearing (target_advocate_id
+   set) never actually goes through an open marketplace broadcast; showing
+   it "Broadcast to Advocates → Accepted → Documents Shared → Preparation"
+   was leftover legacy-workflow language that stopped matching the business
+   process once the Negotiation Module + Escrow Module shipped, and
+   contradicted the role-aware status badge (lib/hearingLifecycle.js) sitting
+   right next to it. `targeted` (== !!hearing.target_advocate_id, same field
+   the rest of the lifecycle resolver keys off) picks which one renders; the
+   underlying hearing.status values are identical either way — only the
+   user-facing grouping/labels differ, never the backend state machine. */
+const BROADCAST_STAGES = [
   // "requested" is overloaded on the backend — it covers "not negotiated
-  // yet", "negotiation in progress", AND "agreed, awaiting payment" all as
-  // the same status value. `negotiationAgreed` (derived by the caller from
+  // yet", "negotiating", AND "agreed, awaiting payment" all as the same
+  // status value. `negotiationAgreed` (derived by the caller from
   // hearing.commercially_locked, the actual source of truth) disambiguates
   // the label without adding an extra step to the sequence.
   { statuses: ["requested", "payment_pending"], label: "Payment Pending", labelWhenNegotiating: "Negotiating Fee" },
@@ -29,6 +34,21 @@ const STAGES = [
   { statuses: ["rated"], label: "Reviewed" },
 ];
 
+// Same backend statuses as BROADCAST_STAGES, grouped into the 5-stage
+// escrow-centric view a targeted/negotiated hearing actually reads as:
+// there's no advocate pool to broadcast to or accept from (the counsel was
+// already chosen in Negotiation), so broadcast/accepted/documents_shared/
+// preparation/hearing_scheduled collapse into one "funds are secured,
+// nothing for you to see yet" stage instead of four marketplace-specific
+// steps that never applied to this hearing.
+const TARGETED_STAGES = [
+  { statuses: ["requested", "payment_pending"], label: "Payment", labelWhenNegotiating: "Negotiating Fee" },
+  { statuses: ["broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled"], label: "Escrow Funded" },
+  { statuses: ["hearing_completed"], label: "Order Sheet Uploaded" },
+  { statuses: ["verification_pending", "verified"], label: "Verification" },
+  { statuses: ["completed", "rated"], label: "Escrow Released" },
+];
+
 const TERMINATED = {
   rejected: { label: "Rejected", icon: X },
   cancelled: { label: "Cancelled", icon: Ban },
@@ -36,11 +56,8 @@ const TERMINATED = {
   expired: { label: "Expired", icon: Clock },
 };
 
-function stageIndexFor(status) {
-  // "Payment Secured"/"Verified" cover two backend statuses each (the
-  // in-flight one and the one it settles into) so the stepper doesn't
-  // regress a step the instant a payment or verification actually lands.
-  const idx = STAGES.findIndex((s) => s.statuses.includes(status));
+function stageIndexFor(stages, status) {
+  const idx = stages.findIndex((s) => s.statuses.includes(status));
   return idx === -1 ? 0 : idx;
 }
 
@@ -51,7 +68,7 @@ function stageLabel(stage, status, negotiationAgreed) {
   return stage.label;
 }
 
-export default function HearingProgressStepper({ status, compact = false, negotiationAgreed = true }) {
+export default function HearingProgressStepper({ status, compact = false, negotiationAgreed = true, targeted = false }) {
   const terminated = TERMINATED[status];
 
   if (terminated) {
@@ -63,12 +80,13 @@ export default function HearingProgressStepper({ status, compact = false, negoti
     );
   }
 
-  const currentIndex = stageIndexFor(status);
+  const stages = targeted ? TARGETED_STAGES : BROADCAST_STAGES;
+  const currentIndex = stageIndexFor(stages, status);
 
   if (compact) {
     return (
       <div className="text-xs font-semibold text-muted-foreground" data-testid="hearing-stepper-compact">
-        Step {currentIndex + 1} of {STAGES.length}: <span className="text-foreground font-bold">{stageLabel(STAGES[currentIndex], status, negotiationAgreed)}</span>
+        Step {currentIndex + 1} of {stages.length}: <span className="text-foreground font-bold">{stageLabel(stages[currentIndex], status, negotiationAgreed)}</span>
       </div>
     );
   }
@@ -76,7 +94,7 @@ export default function HearingProgressStepper({ status, compact = false, negoti
   return (
     <div className="w-full overflow-x-auto" data-testid="hearing-stepper">
       <div className="flex items-center min-w-max">
-        {STAGES.map((stage, i) => {
+        {stages.map((stage, i) => {
           const done = i < currentIndex;
           const active = i === currentIndex;
           return (
@@ -97,7 +115,7 @@ export default function HearingProgressStepper({ status, compact = false, negoti
                   {stageLabel(stage, status, negotiationAgreed)}
                 </div>
               </div>
-              {i < STAGES.length - 1 && (
+              {i < stages.length - 1 && (
                 <div className={`h-0.5 w-6 -mt-4 ${done ? "bg-accent" : "bg-border"}`} />
               )}
             </div>

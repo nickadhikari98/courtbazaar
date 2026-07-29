@@ -8,7 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import PageContainer from "@/components/layout/PageContainer";
 import WidgetGrid from "@/components/dashboard/WidgetGrid";
-import { homeWidgets, hearingNeedsMyAction, hearingNeedsMyDocument, hearingCommerciallyReadyForPayment } from "@/config/homeWidgets";
+import { homeWidgets, hearingNeedsMyAction, hearingNeedsMyDocument } from "@/config/homeWidgets";
+import { CLOSED_HEARING_STATUSES, getHearingPermissions } from "@/lib/hearingLifecycle";
 import {
   Plus, Printer, FileText, Gavel, Stamp, Package, BookOpen, Sparkles, Truck, ArrowRight,
   Scale, Type, FileSignature, Briefcase, Wallet, CheckCircle2, Circle, Store, Banknote,
@@ -53,7 +54,14 @@ const PENDING_TIER_BADGE = {
 };
 const PENDING_TIER_LABEL = { critical: "Action needed", info: "Waiting on CourtBazaar", success: "Done" };
 
-const TERMINAL_HEARING_STATUSES = ["rejected", "cancelled", "disputed", "expired"];
+// This widget's own "not worth showing as upcoming" set, not a generic
+// lifecycle concept — genuinely broader than lib/hearingLifecycle.js's
+// CLOSED_HEARING_STATUSES: a "disputed" hearing's court date has already
+// passed (it's stuck in post-hearing order-sheet review, not a future
+// commitment) and "rated" is the terminal relabel of "completed", so both
+// are excluded here for reasons specific to an *upcoming*-hearings list,
+// not because either is "closed" in the NegotiationModule.jsx sense.
+const UPCOMING_HEARINGS_EXCLUDED_STATUSES = [...CLOSED_HEARING_STATUSES, "disputed", "rated"];
 
 function timeAgo(iso) {
   if (!iso) return "";
@@ -129,7 +137,7 @@ export default function Dashboard() {
   const hearingsToday = useMemo(() => hearings.filter((h) => h.hearing_date === today), [hearings, today]);
 
   const upcomingHearings = useMemo(() => hearings
-    .filter((h) => h.hearing_date >= today && !TERMINAL_HEARING_STATUSES.includes(h.status) && h.status !== "rated")
+    .filter((h) => h.hearing_date >= today && !UPCOMING_HEARINGS_EXCLUDED_STATUSES.includes(h.status))
     .sort((a, b) => a.hearing_date.localeCompare(b.hearing_date))
     .slice(0, 5), [hearings, today]);
 
@@ -152,9 +160,9 @@ export default function Dashboard() {
     }
     if (myDocumentHearings.length > 0) {
       const h = myDocumentHearings[0];
-      const isMine = h.requesting_user_id === user?.user_id;
+      const { isRequester } = getHearingPermissions(h, user);
       return {
-        label: isMine ? "Upload Case Documents" : "Upload Order Sheet",
+        label: isRequester ? "Upload Case Documents" : "Upload Order Sheet",
         detail: `${h.court_id} is waiting on a document from you.`,
         onClick: () => setActiveHearingId(h.hearing_id), icon: FileText,
       };
@@ -172,27 +180,24 @@ export default function Dashboard() {
     const documentHearingIds = new Set(myDocumentHearings.map((h) => h.hearing_id));
 
     myDocumentHearings.forEach((h) => {
-      const isMine = h.requesting_user_id === user?.user_id;
+      const { isRequester } = getHearingPermissions(h, user);
       items.push({
         tier: "critical", key: `doc-${h.hearing_id}`,
-        label: `${isMine ? "Upload case documents" : "Upload order sheet"} — ${h.court_id}`,
+        label: `${isRequester ? "Upload case documents" : "Upload order sheet"} — ${h.court_id}`,
         onClick: () => setActiveHearingId(h.hearing_id),
       });
     });
     myActionHearings.forEach((h) => {
       if (documentHearingIds.has(h.hearing_id)) return;
-      // M6 reorder: payment is now due at "requested", before broadcast/acceptance.
-      const isPaymentDue = h.requesting_user_id === user?.user_id && h.status === "requested"
-        && hearingCommerciallyReadyForPayment(h);
-      const isMarkConduct = h.proxy_counsel_user_id === user?.user_id && h.status === "hearing_scheduled";
+      const { canPay, canMarkConducted } = getHearingPermissions(h, user);
       items.push({
         tier: "critical", key: `act-${h.hearing_id}`,
-        label: `${isPaymentDue ? "Payment due" : isMarkConduct ? "Mark hearing conducted" : "New request to review"} — ${h.court_id}`,
+        label: `${canPay ? "Payment due" : canMarkConducted ? "Mark hearing conducted" : "New request to review"} — ${h.court_id}`,
         onClick: () => setActiveHearingId(h.hearing_id),
       });
     });
     hearings
-      .filter((h) => h.status === "verification_pending" && (h.requesting_user_id === user?.user_id || h.proxy_counsel_user_id === user?.user_id))
+      .filter((h) => h.status === "verification_pending" && getHearingPermissions(h, user).isEscrowParticipant)
       .forEach((h) => items.push({
         tier: "info", key: `verify-${h.hearing_id}`,
         label: `${h.court_id} — order sheet awaiting CourtBazaar verification`,
@@ -215,7 +220,7 @@ export default function Dashboard() {
       done: ["hearing_completed", "verification_pending", "verified", "completed", "rated"].includes(h.status),
     }));
     myDocumentHearings.forEach((h) => items.push({
-      label: `${h.requesting_user_id === user?.user_id ? "Upload case documents" : "Upload order sheet"} — ${h.court_id}`,
+      label: `${getHearingPermissions(h, user).isRequester ? "Upload case documents" : "Upload order sheet"} — ${h.court_id}`,
       done: false,
     }));
     myActionHearings.forEach((h) => {
@@ -244,7 +249,7 @@ export default function Dashboard() {
     return items.filter((i) => i.at).sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 12);
   }, [orders, hearings, notifications]);
 
-  const advocateOwnedHearings = hearings.filter((h) => h.proxy_counsel_user_id === user?.user_id).length;
+  const advocateOwnedHearings = hearings.filter((h) => getHearingPermissions(h, user).isAssignedProxyCounsel).length;
 
   return (
     <PageContainer>
@@ -358,7 +363,7 @@ export default function Dashboard() {
             <div className="space-y-3">
               {upcomingHearings.map((h) => {
                 const isToday = h.hearing_date === today;
-                const isMine = h.requesting_user_id === user?.user_id;
+                const { isRequester: isMine, negotiationRequired, negotiationAgreed } = getHearingPermissions(h, user);
                 const isMyDoc = myDocumentHearings.some((d) => d.hearing_id === h.hearing_id);
                 const isMyAction = myActionHearings.some((d) => d.hearing_id === h.hearing_id);
                 const actionLabel = isMyDoc ? (isMine ? "Upload Documents" : "Upload Order Sheet")
@@ -378,7 +383,7 @@ export default function Dashboard() {
                           {actionLabel}
                         </Button>
                       </div>
-                      <HearingProgressStepper status={h.status} compact negotiationAgreed={!h.target_advocate_id || h.commercially_locked} />
+                      <HearingProgressStepper status={h.status} compact negotiationAgreed={!negotiationRequired || negotiationAgreed} targeted={negotiationRequired} />
                     </CardContent>
                   </Card>
                 );

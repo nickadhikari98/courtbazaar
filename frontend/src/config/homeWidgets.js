@@ -16,46 +16,15 @@
 import { Clock, FileText, Gavel, Banknote } from "lucide-react";
 import { formatINR } from "@/lib/api";
 
-/* Shared predicate — also used by Dashboard.jsx's Pending Actions list and
-   its contextual "next step" suggestion, so all three surfaces agree on what
-   "a document is pending from me" means for a given hearing. */
-export function hearingNeedsMyDocument(h, userId) {
-  return (h.requesting_user_id === userId && h.status === "documents_shared")
-    || (h.proxy_counsel_user_id === userId && h.status === "hearing_completed");
-}
-
-/* Broadcast (or targeted-at-me) requests I'm eligible to accept — mirrors
-   HearingDetailDialog.jsx's `isEligibleAdvocate` gating. */
-export function hearingIsAcceptableByMe(h, user) {
-  if (!user?.capabilities?.includes("can_practice_proxy_counsel")) return false;
-  if (h.requesting_user_id === user.user_id || h.proxy_counsel_user_id === user.user_id) return false;
-  return h.status === "broadcast" && (!h.target_advocate_id || h.target_advocate_id === user.user_id);
-}
-
-/* The commercial gate for payment — the single place this codebase decides
-   "is this hearing actually ready to be paid for", so every surface
-   (dashboard widgets, Pending Actions, HearingDetailDialog's Pay button)
-   asks the same question the same way instead of each re-deriving it from
-   hearing.status. Mirrors hearings.initiate_payment's server-side check
-   exactly: a fee must be set, and a *targeted* hearing must be commercially
-   locked (negotiation.status "agreed", set atomically with
-   commercially_locked — see hearings.set_negotiated_fee); a broadcast
-   hearing (no target_advocate_id) never negotiates and is exempt. Note
-   hearing.status alone can't answer this — "requested" covers "not
-   negotiated yet", "negotiating", AND "agreed, awaiting payment" all as the
-   same status value; commercially_locked is what actually disambiguates. */
-export function hearingCommerciallyReadyForPayment(h) {
-  return !!h.fee && (!h.target_advocate_id || !!h.commercially_locked);
-}
-
-export function hearingNeedsMyAction(h, user) {
-  // M6 reorder: payment is now due at "requested", before broadcast/acceptance.
-  const paymentDue = h.requesting_user_id === user?.user_id && h.status === "requested"
-    && hearingCommerciallyReadyForPayment(h);
-  return paymentDue
-    || (h.proxy_counsel_user_id === user?.user_id && h.status === "hearing_scheduled") // mark conducted due
-    || hearingIsAcceptableByMe(h, user);
-}
+// Production-hardening pass: these four predicates moved to
+// lib/hearingLifecycle.js, the one shared resolver every hearing-showing
+// screen now uses (NegotiationModule/HearingDetailDialog/Dashboard/Practice/
+// HireProxyCounsel) — re-exported here so this file's existing callers
+// (Dashboard.jsx) don't need an import-path change.
+export {
+  hearingNeedsMyDocument, hearingIsAcceptableByMe, hearingCommerciallyReadyForPayment, hearingNeedsMyAction,
+} from "@/lib/hearingLifecycle";
+import { hearingNeedsMyAction, hearingNeedsMyDocument } from "@/lib/hearingLifecycle";
 
 export const homeWidgets = [
   {

@@ -1,0 +1,165 @@
+/* Canonical hearing lifecycle/permission resolver — the ONE place every
+   screen that shows a hearing (NegotiationModule.jsx, HearingDetailDialog.jsx,
+   Dashboard.jsx, Practice.jsx, HireProxyCounsel.jsx) derives status text,
+   viewer role, and action-eligibility from. Before this file existed, each
+   of those screens computed its own copy of these booleans independently —
+   see the production-hardening audit notes below for what that had already
+   let drift out of sync. Pure functions only, no React state, no fetching:
+   every input is data the caller already has (hearing, user).
+
+   Audit findings this file fixes by existing as the single source:
+   - HearingDetailDialog.jsx's inline `isEligibleAdvocate` never checked
+     `can_practice_proxy_counsel`, unlike homeWidgets.js's (now this file's)
+     `hearingIsAcceptableByMe` — the backend already enforced the capability
+     (hearings._check_visible), so this was a UI-only gap (a button could
+     render that the backend would then 403), not a security hole, but it's
+     exactly the kind of two-screens-disagree bug this file exists to kill.
+   - NegotiationModule.jsx derived "is the deal agreed" from the separately-
+     polled `negotiation.status`, while HearingDetailDialog.jsx/Dashboard.jsx
+     derived it from `hearing.commercially_locked` — two different data
+     sources, fetched on two different cadences, that are *supposed* to
+     always agree (hearings.set_negotiated_fee sets them atomically) but
+     could disagree for the moment between an action and the next poll tick.
+     `hearing.commercially_locked` is what the backend itself checks
+     (hearings.initiate_payment/cancel_hearing_request), so it's the
+     canonical source everywhere now.
+   - HearingDetailDialog.jsx showed the raw `hearing.status` string as its
+     badge; NegotiationModule.jsx showed a role-aware label for the same
+     status. Same hearing, different text depending on which screen you
+     opened it from — roleAwareStatusLabel below is now shared by both. */
+
+// Truly closed — no further action possible, matches the UI's own "start a
+// new request to try again" copy. Deliberately excludes "disputed": that's
+// still open, under active admin review (resubmit or refund), not a dead
+// end — treating it as closed would be wrong everywhere it's checked.
+export const CLOSED_HEARING_STATUSES = ["rejected", "cancelled", "expired"];
+
+export function isHearingClosed(hearing) {
+  return !!hearing && CLOSED_HEARING_STATUSES.includes(hearing.status);
+}
+
+// Same palette every screen showing a hearing.status badge uses.
+export const HEARING_STATUS_BADGE_COLOR = {
+  requested: "bg-amber-100 text-amber-700",
+  broadcast: "bg-amber-100 text-amber-700",
+  accepted: "bg-blue-100 text-blue-700",
+  payment_pending: "bg-amber-100 text-amber-700",
+  documents_shared: "bg-blue-100 text-blue-700",
+  preparation: "bg-blue-100 text-blue-700",
+  hearing_scheduled: "bg-blue-100 text-blue-700",
+  hearing_completed: "bg-indigo-100 text-indigo-700",
+  verification_pending: "bg-amber-100 text-amber-700",
+  verified: "bg-emerald-100 text-emerald-700",
+  completed: "bg-emerald-100 text-emerald-700",
+  rated: "bg-emerald-100 text-emerald-700",
+  rejected: "bg-red-100 text-red-700",
+  cancelled: "bg-red-100 text-red-700",
+  disputed: "bg-red-100 text-red-700",
+  expired: "bg-slate-100 text-slate-600",
+};
+
+export function getViewerRole(hearing, userId) {
+  if (!hearing || !userId) return null;
+  return hearing.requesting_user_id === userId ? "customer" : "counsel";
+}
+
+// Same underlying hearing.status, different words per role — "only the
+// Hiring Advocate pays" is a business rule, so the badge shouldn't describe
+// the payment/escrow stage identically to someone who never pays. Falls
+// back to the raw status for stages this hand-off doesn't cover.
+export function roleAwareStatusLabel(hearing, viewerRole) {
+  if (hearing.status === "requested" && hearing.commercially_locked) {
+    return viewerRole === "customer" ? "Payment Required" : "Waiting for Hiring Advocate Payment";
+  }
+  if (hearing.status === "payment_pending") {
+    return viewerRole === "customer" ? "Payment Processing" : "Waiting for Hiring Advocate Payment";
+  }
+  if (hearing.status === "broadcast" && hearing.target_advocate_id) {
+    return viewerRole === "customer" ? "Payment Completed — Escrow Funded" : "Escrow Funded";
+  }
+  return hearing.status.replace(/_/g, " ");
+}
+
+/* Broadcast (or targeted-at-me) requests I'm eligible to accept — the
+   backend's own gate (hearings._check_visible/accept_hearing_request) also
+   requires can_practice_proxy_counsel; this mirrors it exactly so the
+   frontend never shows an Accept/Decline/Reject button the backend would
+   then refuse. */
+export function hearingIsAcceptableByMe(h, user) {
+  if (!user?.capabilities?.includes("can_practice_proxy_counsel")) return false;
+  if (h.requesting_user_id === user.user_id || h.proxy_counsel_user_id === user.user_id) return false;
+  return h.status === "broadcast" && (!h.target_advocate_id || h.target_advocate_id === user.user_id);
+}
+
+/* The commercial gate for payment — mirrors hearings.initiate_payment's
+   server-side check exactly: a fee must be set, and a *targeted* hearing
+   must be commercially locked; a broadcast hearing (no target_advocate_id)
+   never negotiates and is exempt. hearing.status alone can't answer this —
+   "requested" covers "not negotiated yet", "negotiating", AND "agreed,
+   awaiting payment" all as the same status value. */
+export function hearingCommerciallyReadyForPayment(h) {
+  return !!h.fee && (!h.target_advocate_id || !!h.commercially_locked);
+}
+
+export function hearingNeedsMyDocument(h, userId) {
+  return (h.requesting_user_id === userId && h.status === "documents_shared")
+    || (h.proxy_counsel_user_id === userId && h.status === "hearing_completed");
+}
+
+// "requested" is the normal pre-payment state; "payment_pending" is included
+// too because a hearing lands there and can get stuck the moment a payment
+// attempt is *initiated* (create-order) even if the Razorpay checkout right
+// after it is abandoned or fails — initiate_payment now self-loops on
+// "payment_pending" precisely so a retry from here is possible (see
+// hearings.HEARING_TRANSITIONS), and the requester must never be left
+// staring at a hearing with no way back to Pay.
+export const PAYABLE_HEARING_STATUSES = ["requested", "payment_pending"];
+
+export function hearingNeedsMyAction(h, user) {
+  const paymentDue = h.requesting_user_id === user?.user_id && PAYABLE_HEARING_STATUSES.includes(h.status)
+    && hearingCommerciallyReadyForPayment(h);
+  return paymentDue
+    || (h.proxy_counsel_user_id === user?.user_id && h.status === "hearing_scheduled") // mark conducted due
+    || hearingIsAcceptableByMe(h, user);
+}
+
+/* Full permission/state bundle — the one call NegotiationModule.jsx and
+   HearingDetailDialog.jsx both make instead of each re-deriving these
+   booleans locally. Returns {} for a not-yet-loaded hearing so callers can
+   destructure before their own loading guard without a null-check dance. */
+export function getHearingPermissions(hearing, user) {
+  if (!hearing) return {};
+  const userId = user?.user_id;
+  const isRequester = hearing.requesting_user_id === userId;
+  const isAssignedProxyCounsel = hearing.proxy_counsel_user_id === userId;
+  const isTargetedAtMe = hearing.target_advocate_id === userId;
+  const isEligibleAdvocate = hearingIsAcceptableByMe(hearing, user);
+  const canAccept = isEligibleAdvocate;
+  const canDecline = isEligibleAdvocate && !hearing.target_advocate_id;
+  // Commercially locked (fee agreed) hearings can no longer be walked away
+  // from through this pre-negotiation path — mirrors the backend refusal in
+  // hearings.reject_hearing_request/cancel_hearing_request.
+  const canReject = isEligibleAdvocate && isTargetedAtMe && !hearing.commercially_locked;
+  const negotiationRequired = !!hearing.target_advocate_id;
+  const negotiationAgreed = !!hearing.commercially_locked;
+  const negotiationPending = (isRequester || isTargetedAtMe) && hearing.status === "requested"
+    && negotiationRequired && !negotiationAgreed;
+  const canPay = isRequester && PAYABLE_HEARING_STATUSES.includes(hearing.status) && hearingCommerciallyReadyForPayment(hearing);
+  const canCancel = isRequester && !hearing.commercially_locked
+    && ["requested", "broadcast", "accepted", "payment_pending", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"].includes(hearing.status);
+  const canMarkConducted = isAssignedProxyCounsel && hearing.status === "hearing_scheduled";
+  const canRate = ["completed", "rated"].includes(hearing.status) && !hearing.rated_by?.includes(userId)
+    && (isRequester || isAssignedProxyCounsel);
+  // Escrow Module: only an actual participant ever sees EscrowStagePanel —
+  // never an admin or a browsing not-yet-assigned eligible advocate,
+  // regardless of which screen renders it.
+  const isEscrowParticipant = isRequester || isAssignedProxyCounsel;
+
+  return {
+    isRequester, isAssignedProxyCounsel, isTargetedAtMe, isEligibleAdvocate,
+    canAccept, canDecline, canReject, canCancel, canMarkConducted, canRate, canPay,
+    negotiationRequired, negotiationAgreed, negotiationPending, isEscrowParticipant,
+    viewerRole: getViewerRole(hearing, userId),
+    isClosed: isHearingClosed(hearing),
+  };
+}

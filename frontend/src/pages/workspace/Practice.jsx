@@ -25,24 +25,7 @@ import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import CapabilitiesCard from "@/components/shared/CapabilitiesCard";
 import StatGrid from "@/components/shared/StatGrid";
 import { useAuth } from "@/context/AuthContext";
-
-const HEARING_STATUS_BADGE = {
-  broadcast: "bg-amber-100 text-amber-700",
-  accepted: "bg-blue-100 text-blue-700",
-  payment_pending: "bg-amber-100 text-amber-700",
-  documents_shared: "bg-blue-100 text-blue-700",
-  preparation: "bg-blue-100 text-blue-700",
-  hearing_scheduled: "bg-blue-100 text-blue-700",
-  hearing_completed: "bg-indigo-100 text-indigo-700",
-  verification_pending: "bg-amber-100 text-amber-700",
-  verified: "bg-emerald-100 text-emerald-700",
-  completed: "bg-emerald-100 text-emerald-700",
-  rated: "bg-emerald-100 text-emerald-700",
-  rejected: "bg-red-100 text-red-700",
-  cancelled: "bg-red-100 text-red-700",
-  disputed: "bg-red-100 text-red-700",
-  expired: "bg-slate-100 text-slate-600",
-};
+import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole } from "@/lib/hearingLifecycle";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const KINDS = [
@@ -329,7 +312,9 @@ function HearingsTab() {
           <div className="font-display font-bold text-sm">{h.court_id}</div>
           <div className="text-xs text-muted-foreground">{h.hearing_date} {h.fee ? `· ₹${h.fee}` : ""}</div>
         </div>
-        <Badge className={`${HEARING_STATUS_BADGE[h.status] || ""} border-0 font-bold uppercase text-2xs`}>{h.status.replace(/_/g, " ")}</Badge>
+        <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} border-0 font-bold uppercase text-2xs`}>
+          {roleAwareStatusLabel(h, getViewerRole(h, user?.user_id))}
+        </Badge>
       </CardContent>
     </Card>
   );
