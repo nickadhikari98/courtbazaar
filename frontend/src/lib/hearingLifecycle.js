@@ -192,6 +192,7 @@ export function getHearingPermissions(hearing, user) {
    appears here because no transition ever produces it (it's only the
    hearing's initial status). */
 const HEARING_TRANSITION_EVENT_META = {
+  payment_pending: { icon: Wallet, title: "Payment Initiated", description: (h) => `Payment for ${h.court_id || "this hearing"} was initiated — redirecting to checkout.` },
   broadcast: { icon: Wallet, title: "Payment Successful", description: (h) => `Payment confirmed — ${h.fee ? `₹${h.fee} is` : "funds are"} now held in escrow.` },
   accepted: { icon: Handshake, title: "Proxy Counsel Accepted Hearing", description: (h) => `A Proxy Counsel accepted the request for ${h.court_id || "this hearing"}.` },
   documents_shared: { icon: UploadCloud, title: "Case Documents Needed", description: (h) => `Case documents are being exchanged for ${h.court_id || "this hearing"}.` },
@@ -206,6 +207,22 @@ const HEARING_TRANSITION_EVENT_META = {
   rejected: { icon: XCircle, title: "Request Declined", description: (h) => `The hearing request for ${h.court_id || "this hearing"} was declined.` },
   cancelled: { icon: Ban, title: "Request Cancelled", description: (h) => `The hearing request for ${h.court_id || "this hearing"} was cancelled.` },
   expired: { icon: Clock, title: "Request Expired", description: (h) => `The hearing request for ${h.court_id || "this hearing"} expired.` },
+};
+
+// Overrides HEARING_TRANSITION_EVENT_META's by-to_status lookup for specific
+// (from_status, to_status) pairs where the same to_status is reached two
+// meaningfully different ways — today just the one case: a fresh order-sheet
+// upload (hearing_completed -> verification_pending) reads nothing like
+// admin approving a resubmission after a dispute (disputed ->
+// verification_pending), so the latter needs its own label instead of
+// silently reading as a first-time upload.
+const HEARING_TRANSITION_EVENT_OVERRIDES = {
+  disputed: {
+    verification_pending: {
+      icon: UploadCloud, title: "Order Sheet Resubmitted",
+      description: (h) => `A corrected Court Order Sheet for ${h.court_id || "the hearing"} was resubmitted and is awaiting verification.`,
+    },
+  },
 };
 
 // Non-transition entries (hearings.py's _push_activity — document uploads,
@@ -230,9 +247,20 @@ function describeFreeTextActivity(note) {
 export function humanizeHearingActivity(entry, hearing) {
   const h = hearing || {};
   if (entry.note?.includes(" -> ")) {
-    const meta = HEARING_TRANSITION_EVENT_META[entry.status];
+    const [fromStatus] = entry.note.split(" -> ");
+    const meta = HEARING_TRANSITION_EVENT_OVERRIDES[fromStatus]?.[entry.status] || HEARING_TRANSITION_EVENT_META[entry.status];
     if (meta) return { icon: meta.icon, title: meta.title, description: meta.description(h) };
     return { icon: Info, title: "Status Updated", description: `${h.court_id || "This hearing"} was updated.` };
+  }
+  // accept_hearing_request pushes the first broadcast -> accepted entry
+  // directly ({status, at, by}), without going through _transition/
+  // _make_timeline_hook — so it has a `status` but no "from -> to" `note` to
+  // match the branch above. Same business event, just missing that note;
+  // still look it up by status before falling through to free-text handling
+  // (which would otherwise read this as a contentless "Update").
+  if (!entry.note && entry.status && HEARING_TRANSITION_EVENT_META[entry.status]) {
+    const meta = HEARING_TRANSITION_EVENT_META[entry.status];
+    return { icon: meta.icon, title: meta.title, description: meta.description(h) };
   }
   const { icon, title } = describeFreeTextActivity(entry.note);
   return { icon, title, description: entry.note || "" };
