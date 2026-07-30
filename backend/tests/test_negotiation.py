@@ -293,6 +293,88 @@ def test_initiate_payment_blocked_until_agreed_then_succeeds():
     asyncio.run(body())
 
 
+def test_end_negotiation_cancels_without_lock_and_keeps_negotiation_history():
+    async def body():
+        db = _db()
+        requester, counsel = _user("requester"), _user("counsel")
+        hearing_id = await _make_hearing(db, requester, counsel)
+        try:
+            await negotiation.propose_offer(db, hearing_id, requester, 3000.0, None)
+
+            result = await hearings.end_negotiation(db, hearing_id, requester)
+            assert result["status"] == "cancelled"
+
+            hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert hearing["status"] == "cancelled"
+            assert hearing["commercially_locked"] is False
+
+            # The old negotiation doc (offer history) is untouched — end_negotiation
+            # never mutates negotiations, only retires the hearing itself.
+            neg = await negotiation.get_negotiation(db, hearing_id)
+            assert neg["status"] == "open"
+            assert len(neg["offers"]) == 1
+        finally:
+            await _cleanup(db, [hearing_id])
+    asyncio.run(body())
+
+
+def test_end_negotiation_forbidden_for_non_requester():
+    async def body():
+        db = _db()
+        requester, counsel = _user("requester"), _user("counsel")
+        hearing_id = await _make_hearing(db, requester, counsel)
+        try:
+            with pytest.raises(HTTPException) as exc_info:
+                await hearings.end_negotiation(db, hearing_id, counsel)
+            assert exc_info.value.status_code == 403
+        finally:
+            await _cleanup(db, [hearing_id])
+    asyncio.run(body())
+
+
+def test_end_negotiation_rejected_once_commercially_locked():
+    async def body():
+        db = _db()
+        requester, counsel = _user("requester"), _user("counsel")
+        hearing_id = await _make_hearing(db, requester, counsel)
+        try:
+            await negotiation.propose_offer(db, hearing_id, requester, 3000.0, None)
+            offer_id = (await negotiation.get_negotiation(db, hearing_id))["current_offer_id"]
+            await negotiation.accept_offer(db, hearing_id, offer_id, counsel)
+
+            with pytest.raises(HTTPException) as exc_info:
+                await hearings.end_negotiation(db, hearing_id, requester)
+            assert exc_info.value.status_code == 400
+
+            hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert hearing["status"] == "requested"  # untouched — still commercially locked, awaiting payment
+        finally:
+            await _cleanup(db, [hearing_id])
+    asyncio.run(body())
+
+
+def test_end_negotiation_rejected_for_broadcast_hearing():
+    """Broadcast requests (no target_advocate_id) have no single counsel to
+    "end negotiation" with — end_negotiation is a targeted-request-only
+    action, distinct from cancel_hearing_request which still works for both."""
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        hearing_id = None
+        try:
+            hearing = await hearings.create_hearing_request(
+                db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
+                target_advocate_id=None,
+            )
+            hearing_id = hearing["hearing_id"]
+            with pytest.raises(HTTPException) as exc_info:
+                await hearings.end_negotiation(db, hearing_id, requester)
+            assert exc_info.value.status_code == 400
+        finally:
+            await _cleanup(db, [hearing_id] if hearing_id else [])
+    asyncio.run(body())
+
+
 def test_broadcast_hearing_pays_without_negotiation():
     """Broadcast requests (no target_advocate_id) never negotiate — the
     frontend's payment-card gate (HearingDetailDialog.jsx) relies on this

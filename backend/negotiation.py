@@ -63,6 +63,30 @@ def _role_of(hearing: dict, user_id: str) -> str:
     return "customer" if hearing.get("requesting_user_id") == user_id else "counsel"
 
 
+def _other_participant(hearing: dict, user_id: str) -> Optional[str]:
+    if hearing.get("requesting_user_id") == user_id:
+        return hearing.get("target_advocate_id")
+    return hearing.get("requesting_user_id")
+
+
+async def _notify_negotiation_event(db, user_id: Optional[str], title: str, body: str, hearing_id: str) -> None:
+    """Fire-and-forget, non-fatal — same try/except-log pattern as
+    server.py's _notify_hearing_event and counsel_matching.dispatch_notifications'
+    per-entry try/except. A notification failure must never block the
+    offer/accept action itself."""
+    if not user_id:
+        return
+    try:
+        from notifications import notify, record_notification_event
+        recipient = await db.users.find_one({"user_id": user_id})
+        if not recipient:
+            return
+        notify(recipient, "hearing_event", {"title": title, "body": body})
+        await record_notification_event(db, user_id, "hearing_event", title, body, "hearing", hearing_id)
+    except Exception:
+        pass
+
+
 async def get_or_create_negotiation(db, hearing_id: str) -> dict:
     """Idempotent, same pattern as counsel_matching.get_or_create_matching_session
     — the unique index on hearing_id is the actual concurrency guard, not an
@@ -158,6 +182,12 @@ async def propose_offer(db, hearing_id: str, user: dict, amount: float, note: Op
         "proposed_by_user_id": user["user_id"], "proposed_by_role": offer["proposed_by_role"],
         "is_counter": is_counter,
     })
+    title = "Counter offer" if is_counter else "New offer"
+    await _notify_negotiation_event(
+        db, _other_participant(hearing, user["user_id"]), title,
+        f"{title} of Rs.{amount} for your hearing at {hearing['court_id']}. Open Negotiation to respond.",
+        hearing_id,
+    )
     return await get_negotiation(db, hearing_id)
 
 
@@ -212,5 +242,14 @@ async def accept_offer(db, hearing_id: str, offer_id: str, user: dict) -> dict:
     await _append_event(db, negotiation["negotiation_id"], "negotiation_agreed", {
         "offer_id": offer_id, "amount": offer["amount"], "accepted_by_user_id": user["user_id"],
     })
+
+    other_user_id = _other_participant(hearing, user["user_id"])
+    other_role = _role_of(hearing, other_user_id) if other_user_id else None
+    next_step = "You can now proceed to payment." if other_role == "customer" else "Waiting for payment from the requester."
+    await _notify_negotiation_event(
+        db, other_user_id, "Offer accepted",
+        f"Offer accepted - Rs.{offer['amount']} agreed for your hearing at {hearing['court_id']}. {next_step}",
+        hearing_id,
+    )
 
     return await get_negotiation(db, hearing_id)

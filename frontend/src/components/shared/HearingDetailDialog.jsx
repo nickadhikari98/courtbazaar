@@ -10,44 +10,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Star, FileText, Send, Upload, CheckCircle2, X, Ban, ShieldCheck, Loader2, Gavel } from "lucide-react";
+import { Star, FileText, Send, Upload, CheckCircle2, X, Ban, Loader2, Gavel } from "lucide-react";
 import {
   getHearingRequest, acceptHearingRequest, declineHearingRequest, rejectHearingRequest, cancelHearingRequest,
   markHearingConducted, rateHearingRequest, addHearingNote, listHearingMessages,
   postHearingMessage, listHearingDocuments, uploadHearingDocument, getHearingDocumentUrl,
-  getHearingEscrow,
 } from "@/lib/hearingRequestsApi";
 import { payForHearing as payForHearingShared } from "@/lib/hearingPayment";
 import HearingTimeline from "@/components/shared/HearingTimeline";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
-import { hearingCommerciallyReadyForPayment } from "@/config/homeWidgets";
-
-const STATUS_BADGE = {
-  requested: "bg-amber-100 text-amber-700",
-  broadcast: "bg-amber-100 text-amber-700",
-  accepted: "bg-blue-100 text-blue-700",
-  payment_pending: "bg-amber-100 text-amber-700",
-  documents_shared: "bg-blue-100 text-blue-700",
-  preparation: "bg-blue-100 text-blue-700",
-  hearing_scheduled: "bg-blue-100 text-blue-700",
-  hearing_completed: "bg-indigo-100 text-indigo-700",
-  verification_pending: "bg-amber-100 text-amber-700",
-  verified: "bg-emerald-100 text-emerald-700",
-  completed: "bg-emerald-100 text-emerald-700",
-  rated: "bg-emerald-100 text-emerald-700",
-  rejected: "bg-red-100 text-red-700",
-  cancelled: "bg-red-100 text-red-700",
-  disputed: "bg-red-100 text-red-700",
-  expired: "bg-slate-100 text-slate-600",
-};
-
-// Statuses from which the escrow status line ("Payment secured...") makes
-// sense to show — payment is now held from "broadcast" onward (M6 reorder:
-// payment precedes broadcast/acceptance instead of following it).
-const ESCROW_HELD_STATUSES = new Set([
-  "broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed",
-  "verification_pending", "verified", "completed", "rated",
-]);
+import EscrowStagePanel from "@/components/negotiation/EscrowStagePanel";
+import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions } from "@/lib/hearingLifecycle";
 
 /* Shared between the advocate side (HireProxyCounsel.jsx) and the proxy
    counsel side (Practice.jsx's Hearings tab) — the same dialog, with
@@ -59,7 +32,6 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   const [hearing, setHearing] = useState(null);
   const [messages, setMessages] = useState([]);
   const [documents, setDocuments] = useState([]);
-  const [escrow, setEscrow] = useState(null);
   const [note, setNote] = useState("");
   const [messageText, setMessageText] = useState("");
   const [rating, setRating] = useState(5);
@@ -73,46 +45,31 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
     getHearingRequest(hearingId).then(setHearing).catch(() => toast.error("Could not load this hearing"));
     listHearingMessages(hearingId).then(setMessages).catch(() => {});
     listHearingDocuments(hearingId).then(setDocuments).catch(() => {});
-    getHearingEscrow(hearingId).then(setEscrow).catch(() => setEscrow(null));
   };
   useEffect(() => { if (open) load(); }, [open, hearingId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!hearing) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="sm:max-w-xl"><DialogHeader><DialogTitle>Loading…</DialogTitle></DialogHeader></DialogContent>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Loading…</DialogTitle>
+            <DialogDescription>Fetching this hearing request's details.</DialogDescription>
+          </DialogHeader>
+        </DialogContent>
       </Dialog>
     );
   }
 
-  const isRequester = hearing.requesting_user_id === user?.user_id;
-  const isAssignedProxyCounsel = hearing.proxy_counsel_user_id === user?.user_id;
-  const isTargetedAtMe = hearing.target_advocate_id === user?.user_id;
-  const isEligibleAdvocate = !isRequester && !isAssignedProxyCounsel && hearing.status === "broadcast"
-    && (!hearing.target_advocate_id || isTargetedAtMe);
-  const canAccept = isEligibleAdvocate;
-  const canDecline = isEligibleAdvocate && !hearing.target_advocate_id;
-  // Commercially locked (fee agreed) hearings can no longer be walked away
-  // from through this pre-negotiation path — mirrors the backend refusal in
-  // hearings.reject_hearing_request/cancel_hearing_request.
-  const canReject = isEligibleAdvocate && isTargetedAtMe && !hearing.commercially_locked;
-
-  // Targeted requests must go through negotiation first; payment must always
-  // use the locked, agreed amount, never the original reference fee.
-  // hearingCommerciallyReadyForPayment is the shared gate (homeWidgets.js)
-  // every payment-eligibility surface uses — mirrors hearings.initiate_payment's
-  // server-side check exactly, so this can never disagree with what the
-  // backend will actually accept.
-  const negotiationRequired = !!hearing.target_advocate_id;
-  const negotiationAgreed = !!hearing.commercially_locked;
-  const negotiationPending = isRequester && hearing.status === "requested" && negotiationRequired && !negotiationAgreed;
-  // M6 reorder: payment now happens right after creation, before broadcast.
-  const canPay = isRequester && hearing.status === "requested" && hearingCommerciallyReadyForPayment(hearing);
-  const canCancel = isRequester && !hearing.commercially_locked
-    && ["requested", "broadcast", "accepted", "payment_pending", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"].includes(hearing.status);
-  const canMarkConducted = isAssignedProxyCounsel && hearing.status === "hearing_scheduled";
-  const canRate = ["completed", "rated"].includes(hearing.status) && !hearing.rated_by?.includes(user?.user_id)
-    && (isRequester || isAssignedProxyCounsel);
+  // Production-hardening pass: every permission/state boolean this dialog
+  // needs now comes from the one shared resolver (lib/hearingLifecycle.js)
+  // that NegotiationModule.jsx also calls — this dialog no longer maintains
+  // its own copy that could drift out of sync with the Negotiation page.
+  const {
+    isRequester, isAssignedProxyCounsel, isTargetedAtMe, canAccept, canDecline, canReject,
+    negotiationRequired, negotiationAgreed, negotiationPending, canPay, canCancel, canMarkConducted, canRate,
+    isEscrowParticipant, viewerRole,
+  } = getHearingPermissions(hearing, user);
 
   const run = async (fn) => {
     setBusy(true);
@@ -185,8 +142,8 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
         <DialogHeader>
           <DialogTitle className="font-display text-xl flex items-center gap-2">
             {hearing.court_id}
-            <Badge className={`${STATUS_BADGE[hearing.status] || ""} border-0 font-bold uppercase text-2xs`}>
-              {hearing.status.replace(/_/g, " ")}
+            <Badge className={`${HEARING_STATUS_BADGE_COLOR[hearing.status] || ""} border-0 font-bold uppercase text-2xs`}>
+              {roleAwareStatusLabel(hearing, viewerRole)}
             </Badge>
           </DialogTitle>
           <DialogDescription>
@@ -194,7 +151,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           </DialogDescription>
         </DialogHeader>
 
-        <HearingProgressStepper status={hearing.status} negotiationAgreed={!negotiationRequired || negotiationAgreed} />
+        <HearingProgressStepper status={hearing.status} negotiationAgreed={!negotiationRequired || negotiationAgreed} targeted={negotiationRequired} />
 
         <div className="text-sm border rounded-lg p-3 bg-secondary/30">{hearing.case_details}</div>
 
@@ -215,8 +172,9 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           <div className="border rounded-lg p-4 bg-amber-50 border-amber-200 space-y-2">
             <div className="font-display font-bold text-sm">Fee negotiation isn't agreed yet</div>
             <p className="text-xs text-muted-foreground">
-              Payment unlocks once you and the advocate agree on a final amount. Head to the Negotiation module to
-              propose or accept an offer.
+              {isRequester
+                ? "Payment unlocks once you and the counsel agree on a final amount. Head to the Negotiation page to propose or respond to an offer."
+                : "This request has an active commercial offer waiting on you. Head to the Negotiation page to accept it, send a counter offer, or decline."}
             </p>
             <Button
               type="button"
@@ -228,13 +186,12 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           </div>
         )}
 
-        {ESCROW_HELD_STATUSES.has(hearing.status) && escrow && (
-          <div className="flex items-center gap-2 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-            <ShieldCheck className="w-4 h-4 flex-shrink-0" />
-            {escrow.status === "released"
-              ? `${formatINR(escrow.payee_amount)} released to the advocate's wallet.`
-              : `${formatINR(escrow.amount)} held by CourtBazaar — released after verification.`}
-          </div>
+        {/* Escrow Module: single source of truth for escrow status/actions —
+            same component, same role-aware copy as the Negotiation page, so
+            there's never a second, different workflow for the same hearing
+            just because it was opened from here instead. */}
+        {isEscrowParticipant && (
+          <EscrowStagePanel hearingId={hearingId} hearing={hearing} viewerRole={viewerRole} onChanged={() => { onChanged?.(); load(); }} />
         )}
 
         <div>
@@ -252,12 +209,14 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
             ))}
             {!documents.length && <p className="text-sm text-muted-foreground">No documents yet.</p>}
           </div>
+          {/* Case documents only — the Court Order Sheet upload now lives
+              exclusively in EscrowStagePanel above (rule 5's primary CTA),
+              so there's exactly one place to upload it, not two. */}
           {(isRequester || isAssignedProxyCounsel) && (
             <div className="flex items-center gap-2">
               <input ref={fileInputRef} type="file" className="text-xs flex-1" />
-              <Button type="button" size="sm" variant="outline" disabled={busy}
-                      onClick={() => uploadFile(isAssignedProxyCounsel ? "order_sheet" : "case_document")}>
-                <Upload className="w-3.5 h-3.5 mr-1.5" /> Upload
+              <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => uploadFile("case_document")}>
+                <Upload className="w-3.5 h-3.5 mr-1.5" /> Upload Case Document
               </Button>
             </div>
           )}

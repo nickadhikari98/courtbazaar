@@ -230,7 +230,14 @@ def test_accept_during_payment_pending_returns_400():
     asyncio.run(body())
 
 
-def test_initiate_payment_only_valid_from_requested():
+def test_initiate_payment_retries_from_payment_pending():
+    """Escrow Module production audit: a payment attempt's create-order step
+    can land the hearing on "payment_pending" while the Razorpay checkout
+    right after it is abandoned or fails — until the self-loop transition
+    existed, this permanently stuck the hearing with no way back to
+    "requested" and no Pay button anywhere in the UI. initiate_payment must
+    now succeed again from "payment_pending" (same status, fresh attempt),
+    not raise."""
     async def body():
         db = _db()
         requester = _user("requester")
@@ -240,9 +247,34 @@ def test_initiate_payment_only_valid_from_requested():
                 db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
             )
             hearing_id = hearing["hearing_id"]
-            await hearings.initiate_payment(db, hearing_id, requester)  # requested -> payment_pending, OK
+            first = await hearings.initiate_payment(db, hearing_id, requester)  # requested -> payment_pending
+            assert first["status"] == "payment_pending"
+            retry = await hearings.initiate_payment(db, hearing_id, requester)  # abandoned checkout — retry
+            assert retry["status"] == "payment_pending"
+            fetched = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert fetched["status"] == "payment_pending"
+        finally:
+            await _cleanup(db, [hearing_id] if hearing_id else [])
+    asyncio.run(body())
+
+
+def test_initiate_payment_still_rejected_from_broadcast():
+    """The self-loop only covers "payment_pending" retrying itself — it must
+    not accidentally widen initiate_payment to any other status."""
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        hearing_id = None
+        try:
+            hearing = await hearings.create_hearing_request(
+                db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
+            )
+            hearing_id = hearing["hearing_id"]
+            await hearings.initiate_payment(db, hearing_id, requester)
+            await _hold_escrow(db, hearing_id, requester, 1500.0, payee_user_id=None)
+            await hearings.mark_payment_confirmed(db, hearing_id, requester)  # -> broadcast
             try:
-                await hearings.initiate_payment(db, hearing_id, requester)  # already payment_pending, should fail now
+                await hearings.initiate_payment(db, hearing_id, requester)
                 assert False, "expected HTTPException"
             except HTTPException as e:
                 assert e.status_code == 400

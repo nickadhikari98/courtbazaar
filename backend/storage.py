@@ -15,7 +15,7 @@ from typing import Optional
 
 import boto3
 from botocore.client import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, BotoCoreError
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,17 @@ def _get_client():
 def put_object(path: str, data: bytes, content_type: str) -> dict:
     try:
         _get_client().put_object(Bucket=S3_BUCKET, Key=path, Body=data, ContentType=content_type)
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
+        # ClientError = a real error response from S3/R2 (bad creds, no such
+        # bucket, ...); BotoCoreError = never even reached them (SSL/TLS
+        # handshake failure, DNS, connection refused, ...) — botocore raises
+        # these as two entirely separate hierarchies (confirmed: SSLError is
+        # a BotoCoreError, not a ClientError), so catching only ClientError
+        # let a broken-TLS-trust-store environment's SSLError propagate as a
+        # genuinely unhandled exception. FastAPI's default handling for that
+        # returns a 500 that skips CORSMiddleware's header attachment — which
+        # is what actually showed up in the browser as a misleading "CORS
+        # policy" error, same root-cause shape as the Razorpay incident.
         logger.error(f"Storage upload failed: {e}")
         raise HTTPException(500, "Upload failed")
     return {"path": path, "size": len(data)}
@@ -60,6 +70,12 @@ def get_object(path: str):
     except ClientError as e:
         logger.error(f"Storage read failed: {e}")
         raise HTTPException(404, "File not found in storage")
+    except BotoCoreError as e:
+        # Distinct from the ClientError branch above: this means storage was
+        # never reachable at all, not that the specific key is missing —
+        # "not found" would be a misleading message for a connectivity failure.
+        logger.error(f"Storage read failed (connection): {e}")
+        raise HTTPException(500, "Could not reach file storage")
     return resp["Body"].read(), resp.get("ContentType", "application/octet-stream")
 
 
@@ -67,7 +83,7 @@ def delete_object(path: str) -> bool:
     try:
         _get_client().delete_object(Bucket=S3_BUCKET, Key=path)
         return True
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         logger.error(f"Storage delete failed: {e}")
         return False
 
@@ -81,6 +97,6 @@ def presigned_download_url(path: str, filename: Optional[str] = None, expires_in
         params["ResponseContentDisposition"] = f'attachment; filename="{safe_name}"'
     try:
         return _get_client().generate_presigned_url("get_object", Params=params, ExpiresIn=expires_in)
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         logger.error(f"Presign failed: {e}")
         raise HTTPException(500, "Could not generate a download link")

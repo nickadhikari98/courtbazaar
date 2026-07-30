@@ -24,7 +24,7 @@ const MATCH_FACTORS = ["Court", "Expertise", "Experience", "Availability", "Rati
    the advocate_id currently being submitted (parent-owned), so the right
    card shows a spinner without this component needing its own submission
    state. */
-export default function CounselDiscoveryPanel({ context, onSelect, selectingId }) {
+export default function CounselDiscoveryPanel({ context, onSelect, selectingId, excludeAdvocateId }) {
   const [mode, setMode] = useState("ai"); // "ai" | "manual"
   const [status, setStatus] = useState("loading");
   const [advocates, setAdvocates] = useState([]);
@@ -34,8 +34,12 @@ export default function CounselDiscoveryPanel({ context, onSelect, selectingId }
     setStatus("loading");
     getAvailableAdvocates(context)
       .then(({ advocates: list }) => {
-        setAdvocates(list || []);
-        setStatus(list?.length ? "ready" : "empty");
+        // Set only when arriving via "End Negotiation" — leaves the counsel
+        // who didn't work out off the AI list without hard-blocking a
+        // deliberate re-pick through Search Manually.
+        const filtered = excludeAdvocateId ? (list || []).filter((a) => a.advocate_id !== excludeAdvocateId) : (list || []);
+        setAdvocates(filtered);
+        setStatus(filtered.length ? "ready" : "empty");
       })
       .catch(() => setStatus("error"));
   };

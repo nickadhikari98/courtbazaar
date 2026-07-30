@@ -46,14 +46,17 @@ a reject is a global, terminal `rejected` — not a personal decline). When
 absent, the request behaves exactly as the broadcast case above always has.
 """
 import inspect
+import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 
 from fastapi import HTTPException
 from pymongo import ReturnDocument
 
 from workflow import StateMachine, IllegalTransition
+
+logger = logging.getLogger(__name__)
 
 HEARING_STATUSES = (
     "requested", "broadcast", "accepted", "payment_pending", "documents_shared", "preparation",
@@ -73,6 +76,13 @@ HEARING_TRANSITIONS = {
     ("payment_pending", "confirm_payment"): "broadcast",
     ("payment_pending", "cancel"): "cancelled",
     ("payment_pending", "reject"): "rejected",
+    # Self-loop, same precedent as ("rated","rate"):"rated" below — retry
+    # path for an abandoned/failed checkout: create-order's initiate_payment
+    # call can land here (status already moved) while the actual Razorpay
+    # verify never completes, and until this existed there was no way back
+    # to "requested" or a fresh order — the hearing was permanently stuck
+    # with no Pay button anywhere (see Escrow Module production audit).
+    ("payment_pending", "initiate_payment"): "payment_pending",
     ("broadcast", "accept"): "accepted",
     ("broadcast", "reject"): "rejected",          # targeted request only — see accept_hearing_request/reject_hearing_request
     ("broadcast", "cancel"): "cancelled",
@@ -103,8 +113,10 @@ HEARING_TRANSITIONS = {
 # refunded (see cancel_hearing_request) rather than simply walked back.
 # M6 reorder: "broadcast" and "accepted" now happen after payment (they used
 # to precede it), so cancelling from either of them now means escrow is
-# already held too.
-_CANCEL_REQUIRES_REFUND = {"broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"}
+# already held too. Public (no leading underscore) — server.py's cancel
+# endpoint reuses this exact set to decide notification copy, rather than
+# guessing separately whether a refund happened.
+CANCEL_REQUIRES_REFUND = {"broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"}
 
 # service_id is nullable on escrow_transactions in general, but hearings
 # aren't a db.services catalog row — this constant keeps every hearing
@@ -171,6 +183,13 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
         "order_sheet_doc_id": None,
         "hearing_notes": [],
         "rated_by": [],
+        # Escrow Module: set once by mark_payment_confirmed, read by
+        # check_pending_order_sheets' 3-day reminder scan below — never
+        # backfilled onto pre-existing rows, so a hearing created before this
+        # field existed simply never matches that scan (safe default, no
+        # retroactive reminder storm).
+        "payment_confirmed_at": None,
+        "order_sheet_reminder_sent_at": None,
         "timeline": [{"status": "requested", "at": now.isoformat(), "note": "Request created"}],
         "created_at": now.isoformat(),
         "updated_at": now.isoformat(),
@@ -407,10 +426,48 @@ async def cancel_hearing_request(db, hearing_id: str, user: dict) -> dict:
                            extra_guard={"commercially_locked": {"$ne": True}})
     except IllegalTransition:
         raise HTTPException(400, "This request can no longer be cancelled")
-    if hearing["status"] in _CANCEL_REQUIRES_REFUND:
+    if hearing["status"] in CANCEL_REQUIRES_REFUND:
         await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason="Hearing cancelled after payment was held")
         await _push_activity(db, hearing_id, "Escrow refunded — hearing cancelled after payment was held", user["user_id"])
     return {"ok": True}
+
+
+async def end_negotiation(db, hearing_id: str, user: dict) -> dict:
+    """Customer-only close-out for a targeted negotiation that isn't working
+    out. Mechanically identical to cancel_hearing_request (same 'cancel'
+    transition/commercially_locked guard — never reaches an escrow-refund
+    branch because a hearing can only leave "requested" once
+    commercially_locked, see set_negotiated_fee, and that's exactly what's
+    guarded against here) — the only difference is the audit-note/
+    notification wording (see server.py's endpoint) and who may call it.
+
+    Deliberately does NOT retarget this hearing_id at a new advocate: this
+    module treats target_advocate_id as write-once (see HireProxyCounsel.jsx's
+    docstring — counsel selection is what creates the hearing row), and the
+    `negotiations` collection has a unique index on hearing_id, so reusing
+    this row for a second counsel would either destroy the first negotiation's
+    history or need a multi-attempt schema. Picking a different counsel means
+    the frontend creates a new hearing_id via the normal create_hearing_request
+    path — this function's only job is to retire the old one distinctly from
+    an outright cancellation."""
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    if hearing["requesting_user_id"] != user["user_id"]:
+        raise HTTPException(403, "Only the requester can end this negotiation")
+    if not hearing.get("target_advocate_id"):
+        raise HTTPException(400, "This request was never sent to a specific advocate")
+    if hearing.get("commercially_locked"):
+        raise HTTPException(400, "A fee has been agreed through negotiation — this request is "
+                                  "commercially locked. Proceed to payment instead.")
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    try:
+        await _transition(db, sm, hearing, hearing["status"], "cancel", user,
+                           note="Negotiation ended — requester is selecting a different counsel",
+                           extra_guard={"commercially_locked": {"$ne": True}})
+    except IllegalTransition:
+        raise HTTPException(400, "This negotiation can no longer be ended")
+    return {"ok": True, "status": "cancelled"}
 
 
 async def add_note(db, hearing_id: str, user: dict, note: str) -> dict:
@@ -598,6 +655,13 @@ async def mark_payment_confirmed(db, hearing_id: str, user: dict) -> dict:
                            else "Payment held by CourtBazaar — broadcast to available proxy counsel")
     except IllegalTransition:
         raise HTTPException(400, "This request isn't awaiting payment")
+    # Escrow Module: the one timestamp check_pending_order_sheets' 3-day
+    # reminder scan is measured against — set here, not in escrow.py, since
+    # this module owns the "order sheet not yet uploaded" business clock,
+    # not the payment/escrow mechanics themselves.
+    await db.hearing_requests.update_one(
+        {"hearing_id": hearing_id}, {"$set": {"payment_confirmed_at": datetime.now(timezone.utc).isoformat()}},
+    )
 
     # M11: kick off the Counsel Matching Agent now that the hearing is
     # durably "broadcast" (the _transition above already committed it).
@@ -707,6 +771,98 @@ async def release_hearing_payout(db, hearing_id: str, user: dict) -> dict:
         {"user_id": hearing["proxy_counsel_user_id"]}, {"$inc": {"cases_completed": 1}},
     )
     return {"ok": True, "status": "completed", "escrow": escrow}
+
+
+# ---------------------------------------------------------------------------
+# Escrow Module: requester-side verification. Deliberately a SEPARATE
+# function from the admin pair above, not a shared helper with a role
+# branch — verify_order_sheet/release_hearing_payout stay untouched, still
+# two explicit admin actions, exactly as before (admin's own tooling is a
+# distinct, still-valid path — e.g. manual recovery if this one fails
+# partway). This is the Hiring Advocate's one-click "Verify Hearing":
+# founder's explicit call, since they already personally reviewed the
+# submission — unlike admin verifying on someone else's behalf, there's no
+# separate-step safety value in splitting it here.
+# ---------------------------------------------------------------------------
+async def verify_and_release_payout(db, hearing_id: str, user: dict) -> dict:
+    import escrow as escrow_svc
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    if hearing["requesting_user_id"] != user["user_id"]:
+        raise HTTPException(403, "Only the requester can verify and release this hearing's payout")
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    try:
+        await _transition(db, sm, hearing, hearing["status"], "verify", user)
+    except IllegalTransition:
+        raise HTTPException(400, "This hearing isn't awaiting verification")
+    try:
+        await _transition(db, sm, {**hearing, "status": "verified"}, "verified", "release_payout", user)
+    except IllegalTransition:
+        # Verify already landed and is durable — the hearing is left at
+        # "verified" rather than rolled back, so admin's existing
+        # release-payout tool remains a valid manual recovery path if this
+        # second step ever fails (should not happen in practice: "verified"
+        # -> "release_payout" always succeeds immediately after a successful
+        # verify, same actor, same request).
+        raise HTTPException(500, "Verified, but payout release failed — contact support to complete it")
+    escrow = await escrow_svc.release(db, context_type="hearing", context_id=hearing_id, released_by_user_id=user["user_id"])
+    await _push_activity(db, hearing_id, f"Payout of ₹{escrow['payee_amount']} released to advocate wallet", user["user_id"])
+    await db.proxy_counsel_profiles.update_one(
+        {"user_id": hearing["proxy_counsel_user_id"]}, {"$inc": {"cases_completed": 1}},
+    )
+    return {"ok": True, "status": "completed", "escrow": escrow}
+
+
+# ---------------------------------------------------------------------------
+# Escrow Module: 3-day "upload your order sheet" reminder (founder's rule 6).
+# Same registration pattern as counsel_matching.check_stalled_matches — a
+# plain scan function, the actual scheduling lives in server.py's
+# @app.on_event("startup") alongside the two existing APScheduler jobs.
+# ---------------------------------------------------------------------------
+_ORDER_SHEET_PENDING_STATUSES = ("broadcast", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed")
+ORDER_SHEET_REMINDER_DELAY_DAYS = 3
+
+
+async def check_pending_order_sheets(db) -> int:
+    """Finds hearings where escrow has been held for 3+ days with no order
+    sheet uploaded yet and no reminder already sent, and notifies the
+    assigned proxy counsel once (in-app + email via notifications.notify).
+    Returns the count notified, for the scheduler's log line."""
+    from notifications import notify, record_notification_event
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=ORDER_SHEET_REMINDER_DELAY_DAYS)).isoformat()
+    scan_cap = 500
+    candidates = await db.hearing_requests.find({
+        "status": {"$in": _ORDER_SHEET_PENDING_STATUSES},
+        "payment_confirmed_at": {"$ne": None, "$lte": cutoff},
+        "order_sheet_reminder_sent_at": None,
+        "proxy_counsel_user_id": {"$ne": None},
+    }, {"_id": 0}).to_list(scan_cap)
+    if len(candidates) == scan_cap:
+        # Not lost — just delayed to next hour's poll (each notified hearing
+        # sets order_sheet_reminder_sent_at, so it drops out of the query on
+        # the next pass) — but silent backlog growth at this volume is worth
+        # someone noticing rather than only inferring from delayed reminders.
+        logger.warning(f"check_pending_order_sheets hit its {scan_cap}-row scan cap — some reminders deferred to next poll")
+
+    notified = 0
+    for hearing in candidates:
+        try:
+            recipient = await db.users.find_one({"user_id": hearing["proxy_counsel_user_id"]})
+            if not recipient:
+                continue
+            title = "Order sheet reminder"
+            body = "Your payment is waiting in Escrow. Please complete the hearing and upload the Court Order Sheet to receive payment."
+            notify(recipient, "hearing_event", {"title": title, "body": body})
+            await record_notification_event(db, hearing["proxy_counsel_user_id"], "hearing_event", title, body, "hearing", hearing["hearing_id"])
+            await db.hearing_requests.update_one(
+                {"hearing_id": hearing["hearing_id"]},
+                {"$set": {"order_sheet_reminder_sent_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            notified += 1
+        except Exception:
+            continue  # best-effort, same as every other notify call site — one failure never blocks the rest of the scan
+    return notified
 
 
 async def list_hearings_for_admin(db, status: Optional[str] = None) -> List[dict]:

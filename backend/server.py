@@ -2341,33 +2341,11 @@ async def recommendations_advocates(
         for c in (await db.courts.find({"court_id": {"$in": court_ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(court_ids)) if court_ids else [])
     }
 
+    # list_and_recommend only ever returns verified_counsel_query() matches,
+    # so every result here has already passed KYC + bar council verification
+    # — this is what CounselCard/CounselProfileDialog's "Verified" badge reads.
     advocates = [
-        {
-            "advocate_id": c["user_id"],
-            "name": names_by_id.get(c["user_id"]) or "Proxy Counsel",
-            "avatar_url": None,
-            # list_and_recommend only ever returns verified_counsel_query()
-            # matches, so every result here has already passed KYC + bar
-            # council verification — this is what CounselCard/
-            # CounselProfileDialog's "Verified" badge reads.
-            "verified": True,
-            "primary_courts": [court_names_by_id.get(cid, cid) for cid in (c.get("courts") or [])],
-            "practice_areas": c.get("practice_areas") or [],
-            "languages": c.get("languages") or [],
-            "rating": c.get("rating") or 0,
-            "hearings_completed": c.get("cases_completed") or 0,
-            "availability": {
-                "available_now": bool(c.get("availability_mode")),
-                "note": "Available Today" if c.get("availability_mode") else "Not Available Now",
-            },
-            "proposed_fee": counsel_matching.extract_fee_amount(c.get("fee_structure")),
-            "bio": c.get("bio"),
-            "experience_years": c.get("experience_years"),
-            "education": c.get("education"),
-            "ai_match_score": round((c.get("confidence_score") or 0) * 100),
-            "ai_match_reasons": None,
-            "estimated_response_time": None,
-        }
+        counsel_matching.build_advocate_card(c, names_by_id.get(c["user_id"]), court_names_by_id)
         for c in ranked
     ]
     return {
@@ -2403,14 +2381,14 @@ async def _notify_hearing_event(user_id: str, title: str, body: str, hearing_id:
 @api_router.post("/hearing-requests")
 async def create_hearing_request(payload: HearingRequestCreate, user=Depends(get_current_user)):
     _require_capability(user, "can_hire_proxy_counsel")
-    # M6 reorder: no notify-the-target-advocate here anymore — the hearing
-    # stays at "requested" (invisible to the advocate, payment not yet made)
-    # until mark_payment_confirmed reaches "broadcast"; that's where this
-    # notification now fires (see verify_hearing_payment below).
     hearing = await hearings_svc.create_hearing_request(
         db, user["user_id"], payload.court_id, payload.hearing_date, payload.case_details, payload.fee,
         payload.matter_id, payload.target_advocate_id, payload.service_type, payload.request_details,
     )
+    if hearing.get("target_advocate_id"):
+        await _notify_hearing_event(hearing["target_advocate_id"], "New hearing request",
+                                     f"You've been requested for a hearing at {hearing['court_id']}. Open Negotiation to respond.",
+                                     hearing["hearing_id"])
     return hearing
 
 @api_router.get("/hearing-requests")
@@ -2451,7 +2429,25 @@ async def reject_hearing_request(hearing_id: str, user=Depends(get_current_user)
 
 @api_router.put("/hearing-requests/{hearing_id}/cancel")
 async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)):
-    return await hearings_svc.cancel_hearing_request(db, hearing_id, user)
+    # Notification audit (production readiness pass): the counter-party
+    # (whoever isn't the one cancelling) previously learned about a
+    # cancelled hearing only by noticing it themselves — no notify call
+    # existed here at all. `hearing` here is the pre-cancel snapshot, so its
+    # `status` is exactly what hearings.cancel_hearing_request's own
+    # _CANCEL_REQUIRES_REFUND check uses to decide whether escrow gets
+    # refunded — reusing that same set rather than guessing separately.
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    result = await hearings_svc.cancel_hearing_request(db, hearing_id, user)
+    recipient_id = hearing.get("proxy_counsel_user_id") or hearing.get("target_advocate_id")
+    if recipient_id:
+        refunded = hearing["status"] in hearings_svc.CANCEL_REQUIRES_REFUND
+        await _notify_hearing_event(
+            recipient_id, "Hearing cancelled",
+            f"The hearing at {hearing['court_id']} was cancelled by the requester."
+            + (" Any escrow held has been refunded." if refunded else ""),
+            hearing_id,
+        )
+    return result
 
 @api_router.post("/hearing-requests/{hearing_id}/payment/create-order")
 async def create_hearing_payment_order(hearing_id: str, user=Depends(get_current_user)):
@@ -2503,15 +2499,22 @@ async def verify_hearing_payment(hearing_id: str, payload: dict, user=Depends(ge
         razorpay_order_id=rzp_order_id, razorpay_payment_id=rzp_payment_id,
     )
     await hearings_svc.mark_payment_confirmed(db, hearing_id, user)
-    # Relocated from the create_hearing_request endpoint (M6 reorder) — the
-    # targeted advocate can only see/act on this request once it's actually
-    # broadcast, which is now right here, not at creation time. Broadcast-to-
+    # Targeted advocate is now notified at request-creation time (see
+    # create_hearing_request above) — by the time payment is verified here,
+    # negotiation has already been agreed, so this is a payment-confirmation
+    # notice, not the first the advocate hears of the request. Broadcast-to-
     # all requests have no single recipient to notify at this point (same as
     # before) — that's the Counsel Matching Agent's job (M11, not built yet).
     if hearing.get("target_advocate_id"):
-        await _notify_hearing_event(hearing["target_advocate_id"], "New hearing request",
-                                     f"You've received a hearing request for {hearing['court_id']} on {hearing['hearing_date']}.",
+        await _notify_hearing_event(hearing["target_advocate_id"], "Payment received",
+                                     f"Payment for your hearing at {hearing['court_id']} is confirmed and held in escrow.",
                                      hearing_id)
+    # Notification audit (production readiness pass): the requester who just
+    # paid previously got nothing durable — only an ephemeral client-side
+    # toast, lost on refresh/different device. They get their own receipt too.
+    await _notify_hearing_event(user["user_id"], "Payment successful",
+                                 f"Your payment for the hearing at {hearing['court_id']} is confirmed and held securely in escrow.",
+                                 hearing_id)
     return {"ok": True, "payment_id": rzp_payment_id, "status": "broadcast"}
 
 @api_router.get("/hearing-requests/{hearing_id}/escrow")
@@ -2528,7 +2531,18 @@ async def mark_hearing_conducted(hearing_id: str, user=Depends(get_current_user)
 
 @api_router.post("/hearing-requests/{hearing_id}/rate")
 async def rate_hearing_request(hearing_id: str, payload: HearingRatingCreate, user=Depends(get_current_user)):
-    return await hearings_svc.rate_hearing_request(db, hearing_id, user, payload.rating, payload.review)
+    # Notification audit (production readiness pass): the rated party
+    # previously had no way to learn a rating landed except by opening the
+    # hearing themselves.
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    result = await hearings_svc.rate_hearing_request(db, hearing_id, user, payload.rating, payload.review)
+    is_requester = user["user_id"] == hearing["requesting_user_id"]
+    rated_user_id = hearing.get("proxy_counsel_user_id") if is_requester else hearing["requesting_user_id"]
+    if rated_user_id:
+        await _notify_hearing_event(rated_user_id, "Rating received",
+                                     f"You received a {payload.rating}-star rating for the hearing at {hearing['court_id']}.",
+                                     hearing_id)
+    return result
 
 @api_router.post("/hearing-requests/{hearing_id}/notes")
 async def add_hearing_note(hearing_id: str, payload: HearingNoteCreate, user=Depends(get_current_user)):
@@ -2563,6 +2577,45 @@ async def accept_negotiation_offer(hearing_id: str, offer_id: str, user=Depends(
     import negotiation as negotiation_svc
     return await negotiation_svc.accept_offer(db, hearing_id, offer_id, user)
 
+@api_router.put("/hearing-requests/{hearing_id}/end-negotiation")
+async def end_hearing_negotiation(hearing_id: str, user=Depends(get_current_user)):
+    """Distinct from /cancel — closes the negotiation with the current
+    targeted advocate without the requester meaning to abandon the request
+    itself (see hearings.end_negotiation's docstring for why this can't just
+    retarget the same hearing_id)."""
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    result = await hearings_svc.end_negotiation(db, hearing_id, user)
+    await _notify_hearing_event(hearing["target_advocate_id"], "Negotiation ended",
+                                 f"The requester ended negotiation for the hearing at {hearing['court_id']} and is selecting a different counsel.",
+                                 hearing_id)
+    return result
+
+@api_router.get("/hearing-requests/{hearing_id}/counsel-profile")
+async def get_hearing_counsel_profile(hearing_id: str, user=Depends(get_current_user)):
+    """Fallback for NegotiationModule.jsx when location.state?.counsel is
+    absent (page refresh, direct/shared link) — same card shape
+    recommendations_advocates returns, built for the one advocate targeted
+    on this hearing rather than a ranked list."""
+    import negotiation as negotiation_svc
+    import counsel_matching
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    negotiation_svc._check_negotiation_participant(hearing, user)
+    advocate_id = hearing.get("target_advocate_id")
+    if not advocate_id:
+        raise HTTPException(404, "This hearing has no targeted advocate")
+    profile = await db.proxy_counsel_profiles.find_one({"user_id": advocate_id}, {"_id": 0})
+    if not profile:
+        raise HTTPException(404, "Counsel profile not found")
+    name_doc = await db.users.find_one({"user_id": advocate_id}, {"_id": 0, "name": 1})
+    court_ids = profile.get("courts") or []
+    court_names_by_id = {
+        c["court_id"]: c["name"]
+        for c in (await db.courts.find({"court_id": {"$in": court_ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(court_ids)) if court_ids else [])
+    }
+    return counsel_matching.build_advocate_card(profile, name_doc.get("name") if name_doc else None, court_names_by_id)
+
 @api_router.get("/hearing-requests/{hearing_id}/documents")
 async def get_hearing_documents(hearing_id: str, user=Depends(get_current_user)):
     await hearings_svc.get_hearing_request(db, hearing_id, user)  # visibility check
@@ -2577,9 +2630,22 @@ async def upload_hearing_document(
 ):
     data = await file.read()
     content_type = file.content_type or "application/octet-stream"
-    return await hearings_svc.add_document(
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    result = await hearings_svc.add_document(
         db, put_object, validate_upload, hearing_id, user, kind, file.filename, content_type, data,
     )
+    # Notification audit (production readiness pass): an uploaded order
+    # sheet used to notify nobody — the requester only found out a
+    # submission was waiting by opening the hearing themselves (or, after
+    # 3 days of *not* uploading, the reminder scheduler — the opposite
+    # event). Case-document shares aren't in scope here; only the order
+    # sheet transition (hearing_completed -> verification_pending) needs
+    # the requester's attention.
+    if kind == "order_sheet":
+        await _notify_hearing_event(hearing["requesting_user_id"], "Order sheet uploaded",
+                                     f"The Court Order Sheet for your hearing at {hearing['court_id']} was uploaded and is awaiting your verification.",
+                                     hearing_id)
+    return result
 
 @api_router.get("/hearing-requests/{hearing_id}/documents/{doc_id}/download-url")
 async def get_hearing_document_url(hearing_id: str, doc_id: str, user=Depends(get_current_user)):
@@ -2637,17 +2703,67 @@ async def verify_hearing_order_sheet(hearing_id: str, user=Depends(get_current_u
                                  hearing_id)
     return result
 
+@api_router.put("/hearing-requests/{hearing_id}/verify-and-release")
+async def verify_and_release_hearing_payout(hearing_id: str, user=Depends(get_current_user)):
+    """Escrow Module: the Hiring Advocate's one-click "Verify Hearing" —
+    founder's explicit call (rule 8) that verify+release happen as a single
+    action for this actor, unlike admin's own /verify and /release-payout
+    above, which stay deliberately separate and untouched. Requester-only;
+    see hearings.verify_and_release_payout's own guard for the 403."""
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    result = await hearings_svc.verify_and_release_payout(db, hearing_id, user)
+    await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Payout released",
+                                 f"Your hearing at {hearing['court_id']} was verified and your payout has been released to your wallet.",
+                                 hearing_id)
+    # Notification audit (production readiness pass): a durable receipt for
+    # the requester's own action, same reasoning as "Payment successful"
+    # above — they know they just clicked Verify, but nothing durable
+    # confirmed the escrow actually released until now.
+    await _notify_hearing_event(hearing["requesting_user_id"], "Escrow released",
+                                 f"You verified the hearing at {hearing['court_id']} and escrow has been released to the Proxy Counsel.",
+                                 hearing_id)
+    return result
+
 @api_router.put("/hearing-requests/{hearing_id}/reject-verification")
 async def reject_hearing_order_sheet(hearing_id: str, payload: HearingVerificationReject, user=Depends(get_current_user)):
-    if user["role"] != "admin":
-        raise HTTPException(403, "Admin only")
-    return await hearings_svc.reject_order_sheet(db, hearing_id, user, payload.remark)
+    # Escrow Module: disputes are now initiated by the Hiring Advocate
+    # ("Raise Dispute" on the Negotiation page), not just admin — the only
+    # change from before. Once disputed, routing is unchanged: it lands in
+    # the same admin dispute queue (resolve_dispute below), same
+    # resubmit/refund outcomes, no new admin surface.
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    if user["role"] != "admin" and hearing["requesting_user_id"] != user["user_id"]:
+        raise HTTPException(403, "Only the requester or an admin can dispute this hearing's order sheet")
+    result = await hearings_svc.reject_order_sheet(db, hearing_id, user, payload.remark)
+    await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Order sheet disputed",
+                                 f"Your order sheet for the {hearing['court_id']} hearing was disputed and is now under admin review.",
+                                 hearing_id)
+    return result
 
 @api_router.put("/hearing-requests/{hearing_id}/resolve-dispute")
 async def resolve_hearing_dispute(hearing_id: str, payload: HearingDisputeResolve, user=Depends(get_current_user)):
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
-    return await hearings_svc.resolve_dispute(db, hearing_id, user, payload.action, payload.remark)
+    # Notification audit (production readiness pass): neither outcome
+    # notified anyone — a resubmission request left the counsel unaware they
+    # needed to re-upload, and a refund left the requester unaware their
+    # money was back and the counsel unaware why no payout is coming.
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    result = await hearings_svc.resolve_dispute(db, hearing_id, user, payload.action, payload.remark)
+    if payload.action == "resubmit":
+        await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Resubmission requested",
+                                     f"Admin has asked for a corrected Court Order Sheet for the hearing at {hearing['court_id']}. Please re-upload."
+                                     + (f" Note: {payload.remark}" if payload.remark else ""),
+                                     hearing_id)
+    else:
+        await _notify_hearing_event(hearing["requesting_user_id"], "Refund issued",
+                                     f"Your dispute for the hearing at {hearing['court_id']} was resolved with a refund."
+                                     + (f" Note: {payload.remark}" if payload.remark else ""),
+                                     hearing_id)
+        await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Dispute resolved — no payout",
+                                     f"The dispute for the hearing at {hearing['court_id']} was resolved in the requester's favor; the escrowed amount was refunded to them.",
+                                     hearing_id)
+    return result
 
 @api_router.put("/hearing-requests/{hearing_id}/release-payout")
 async def release_hearing_payout(hearing_id: str, user=Depends(get_current_user)):
@@ -2657,6 +2773,12 @@ async def release_hearing_payout(hearing_id: str, user=Depends(get_current_user)
     result = await hearings_svc.release_hearing_payout(db, hearing_id, user)
     await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Payout released",
                                  f"Your payout for the {hearing['court_id']} hearing has been released to your wallet.",
+                                 hearing_id)
+    # Notification audit (production readiness pass): the requester's hearing
+    # is now fully complete — they get their own closing confirmation too,
+    # same as the requester-triggered verify-and-release path already does.
+    await _notify_hearing_event(hearing["requesting_user_id"], "Escrow released",
+                                 f"Escrow for your hearing at {hearing['court_id']} has been released to the Proxy Counsel. This request is now complete.",
                                  hearing_id)
     return result
 
@@ -3490,6 +3612,31 @@ async def schedule_matching_waterfall():
         logger.info("Matching waterfall scheduler started (poll every 10s)")
     except Exception as e:
         logger.warning(f"Matching waterfall scheduler not started: {e}")
+
+
+@app.on_event("startup")
+async def schedule_order_sheet_reminders():
+    """Escrow Module (founder's rule 6): remind the assigned proxy counsel to
+    upload the Court Order Sheet if escrow has been held 3+ days with none
+    uploaded yet. Same registration pattern as the two schedulers above;
+    hourly poll is plenty for a multi-day deadline (unlike the 10s waterfall
+    poll above, which is gating a live matching race)."""
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        async def _job():
+            try:
+                count = await hearings_svc.check_pending_order_sheets(db)
+                if count:
+                    logger.info(f"Order sheet reminders sent: {count}")
+            except Exception as e:
+                logger.error(f"Scheduled order sheet reminder error: {e}")
+        sched = AsyncIOScheduler()
+        sched.add_job(_job, IntervalTrigger(hours=1), max_instances=1)
+        sched.start()
+        logger.info("Order sheet reminder scheduler started (poll every 1h)")
+    except Exception as e:
+        logger.warning(f"Order sheet reminder scheduler not started: {e}")
 
 
 
