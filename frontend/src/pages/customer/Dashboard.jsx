@@ -9,11 +9,11 @@ import { Progress } from "@/components/ui/progress";
 import PageContainer from "@/components/layout/PageContainer";
 import WidgetGrid from "@/components/dashboard/WidgetGrid";
 import { homeWidgets, hearingNeedsMyAction, hearingNeedsMyDocument } from "@/config/homeWidgets";
-import { CLOSED_HEARING_STATUSES, getHearingPermissions } from "@/lib/hearingLifecycle";
+import { CLOSED_HEARING_STATUSES, getHearingPermissions, humanizeHearingActivity } from "@/lib/hearingLifecycle";
 import {
   Plus, Printer, FileText, Gavel, Stamp, Package, BookOpen, Sparkles, Truck, ArrowRight,
   Scale, Type, FileSignature, Briefcase, Wallet, CheckCircle2, Circle, Store, Banknote,
-  BadgeCheck, Clock, Mic, Star,
+  BadgeCheck, Clock, Mic, Star, UploadCloud, ShieldCheck, AlertTriangle, XCircle, Info, Bell,
 } from "lucide-react";
 import { isFeatureEnabled } from "@/config/featureFlags";
 import { listPublicServices } from "@/lib/servicesApi";
@@ -47,12 +47,63 @@ const QUICK_TILE_PRESENTATION = {
   svc_ocr: { icon: Sparkles, label: "OCR + AI", price: "₹5/pg", color: "bg-violet-50", iconColor: "text-violet-700" },
 };
 
-const PENDING_TIER_BADGE = {
-  critical: "bg-amber-100 text-amber-700",
-  info: "bg-blue-100 text-blue-700",
-  success: "bg-emerald-100 text-emerald-700",
+// Notification Center — three priority groups. Only the icon tint carries
+// the group in the compact dashboard card (no section headers/text badge —
+// there's no vertical budget for one at 60-70px/card), but the same groups
+// still drive sort order (Action Required surfaces first) and are reused
+// as-is by the full /notifications page.
+const NOTIFICATION_GROUP_META = {
+  action: { label: "Action Required", order: 0, iconWrap: "bg-red-100 text-red-700" },
+  activity: { label: "Recent Activity", order: 1, iconWrap: "bg-blue-100 text-blue-700" },
+  info: { label: "Information", order: 2, iconWrap: "bg-slate-100 text-slate-600" },
 };
-const PENDING_TIER_LABEL = { critical: "Action needed", info: "Waiting on CourtBazaar", success: "Done" };
+
+// Every real backend-emitted hearing-lifecycle title (see server.py's
+// _notify_hearing_event call sites) mapped to how it should render here —
+// event_type on notification_events is generically "hearing_event" for all
+// of these, so the title text itself (stable, one call site each) is the
+// only reliable classifier.
+const HEARING_EVENT_META = {
+  "New hearing request": { group: "action", icon: Gavel },
+  "New offer": { group: "action", icon: Gavel },
+  "Counter offer": { group: "action", icon: Gavel },
+  "Order sheet uploaded": { group: "action", icon: UploadCloud },
+  "Order sheet reminder": { group: "action", icon: UploadCloud },
+  "Resubmission requested": { group: "action", icon: UploadCloud },
+  "Order sheet disputed": { group: "activity", icon: AlertTriangle },
+  "Payment received": { group: "activity", icon: ShieldCheck },
+  "Order sheet verified": { group: "activity", icon: ShieldCheck },
+  "Payment successful": { group: "activity", icon: CheckCircle2 },
+  "Offer accepted": { group: "activity", icon: CheckCircle2 },
+  "Payout released": { group: "activity", icon: Banknote },
+  "Escrow released": { group: "activity", icon: ShieldCheck },
+  "Refund issued": { group: "activity", icon: Banknote },
+  "Rating received": { group: "activity", icon: Star },
+  "Hearing cancelled": { group: "activity", icon: XCircle },
+  "Request accepted": { group: "info", icon: CheckCircle2 },
+  "Request declined": { group: "info", icon: XCircle },
+  "Negotiation ended": { group: "info", icon: Info },
+  "Dispute resolved — no payout": { group: "info", icon: Info },
+};
+
+// Classifies a raw /notifications feed row (order/settlement/hearing events
+// all share this one collection) into {group, icon}. Falls back to a
+// generic "Information" card for anything not explicitly mapped, so a
+// future event type never disappears — it just renders unstyled until
+// someone adds it above.
+function classifyNotification(n) {
+  if (n.event_type === "hearing_event" && HEARING_EVENT_META[n.title]) return HEARING_EVENT_META[n.title];
+  if (n.event_type === "settlement_paid") return { group: "activity", icon: Banknote };
+  if (n.event_type === "settlement_queued") return { group: "activity", icon: Clock };
+  if (n.event_type === "settlement_failed") return { group: "action", icon: AlertTriangle };
+  if (n.event_type === "order_placed") return { group: "info", icon: Package };
+  if (n.event_type === "order_status") {
+    const label = (n.title || "").toLowerCase();
+    if (label.includes("complet") || label.includes("deliver")) return { group: "activity", icon: CheckCircle2 };
+    return { group: "info", icon: Package };
+  }
+  return { group: "info", icon: Bell };
+}
 
 // This widget's own "not worth showing as upcoming" set, not a generic
 // lifecycle concept — genuinely broader than lib/hearingLifecycle.js's
@@ -173,44 +224,74 @@ export default function Dashboard() {
     return { label: "Explore Marketplace", detail: "Browse services you can order in under 30 seconds.", to: "/marketplace", icon: Store };
   }, [canPracticeProxyCounsel, practiceProfile, availabilitySlots, myDocumentHearings, walletHeld, user]);
 
-  // Pending Actions — urgency-tiered (critical/info/success), reusing the
-  // same Tailwind classes the codebase's own STATUS_BADGE dicts already use.
-  const pendingActions = useMemo(() => {
+  // Notification Center — merges two sources into one {group, icon, title,
+  // description, at, cta} shape: (1) live hearing *state* that needs action
+  // right now (upload/pay/accept/mark-conducted — there's no one-time event
+  // for "still pending", it just is), and (2) the real notification_events
+  // feed (server.py's _notify_hearing_event / record_notification_event call
+  // sites), which already carries production-accurate titles/bodies/
+  // timestamps per event — see classifyNotification/HEARING_EVENT_META
+  // above. No client-side guessing of "what happened" once the feed has it.
+  const notificationItems = useMemo(() => {
     const items = [];
     const documentHearingIds = new Set(myDocumentHearings.map((h) => h.hearing_id));
 
     myDocumentHearings.forEach((h) => {
       const { isRequester } = getHearingPermissions(h, user);
       items.push({
-        tier: "critical", key: `doc-${h.hearing_id}`,
-        label: `${isRequester ? "Upload case documents" : "Upload order sheet"} — ${h.court_id}`,
-        onClick: () => setActiveHearingId(h.hearing_id),
+        key: `doc-${h.hearing_id}`, group: "action", icon: UploadCloud,
+        title: isRequester ? "Case Documents Needed" : "Order Sheet Needed",
+        description: `${h.court_id} is waiting on ${isRequester ? "a case document" : "the Court Order Sheet"} from you.`,
+        at: h.updated_at || h.created_at,
+        cta: { label: isRequester ? "Upload Documents" : "Upload Order Sheet", onClick: () => setActiveHearingId(h.hearing_id) },
       });
     });
     myActionHearings.forEach((h) => {
       if (documentHearingIds.has(h.hearing_id)) return;
       const { canPay, canMarkConducted } = getHearingPermissions(h, user);
       items.push({
-        tier: "critical", key: `act-${h.hearing_id}`,
-        label: `${canPay ? "Payment due" : canMarkConducted ? "Mark hearing conducted" : "New request to review"} — ${h.court_id}`,
-        onClick: () => setActiveHearingId(h.hearing_id),
+        key: `act-${h.hearing_id}`, group: "action", icon: canPay ? Wallet : canMarkConducted ? Gavel : Sparkles,
+        title: canPay ? "Payment Required" : canMarkConducted ? "Mark Hearing Conducted" : "New Hearing Offer",
+        description: `${h.court_id}${h.fee ? ` · ${formatINR(h.fee)}` : ""}`,
+        at: h.updated_at || h.created_at,
+        cta: { label: canPay ? "Pay Now" : canMarkConducted ? "Mark Conducted" : "Review Offer", onClick: () => setActiveHearingId(h.hearing_id) },
       });
     });
-    hearings
-      .filter((h) => h.status === "verification_pending" && getHearingPermissions(h, user).isEscrowParticipant)
-      .forEach((h) => items.push({
-        tier: "info", key: `verify-${h.hearing_id}`,
-        label: `${h.court_id} — order sheet awaiting CourtBazaar verification`,
-        onClick: () => setActiveHearingId(h.hearing_id),
-      }));
     if (canPracticeProxyCounsel && walletHeld > 0) {
-      items.push({ tier: "info", key: "payout-waiting", label: `${formatINR(walletHeld)} held — awaiting payout release`, to: "/earnings" });
+      items.push({
+        key: "payout-waiting", group: "activity", icon: Clock,
+        title: "Payout Pending", description: `${formatINR(walletHeld)} held — awaiting release.`,
+        at: null, cta: { label: "View Earnings", to: "/earnings" },
+      });
     }
-    unreadNotifications.slice(0, 3).forEach((n) => items.push({ tier: "info", key: `notif-${n.notification_id}`, label: n.title, to: "/notifications" }));
-    hearings.filter((h) => h.status === "completed").slice(0, 2)
-      .forEach((h) => items.push({ tier: "success", key: `done-${h.hearing_id}`, label: `Payout released — ${h.court_id}`, onClick: () => setActiveHearingId(h.hearing_id) }));
-    return items;
-  }, [myDocumentHearings, myActionHearings, hearings, unreadNotifications, canPracticeProxyCounsel, walletHeld, user]);
+    notifications.forEach((n) => {
+      const meta = classifyNotification(n);
+      const target = n.related_entity_type === "hearing" && n.related_entity_id
+        ? (n.title === "New hearing request"
+          ? { onClick: () => navigate(`/hearing-requests/${n.related_entity_id}/negotiate`) }
+          : { onClick: () => setActiveHearingId(n.related_entity_id) })
+        : n.related_entity_type === "order" && n.related_entity_id
+          ? { to: `/orders/${n.related_entity_id}` }
+          : n.event_type?.startsWith("settlement") ? { to: "/earnings" } : { to: "/notifications" };
+      items.push({
+        key: `notif-${n.notification_id}`, group: meta.group, icon: meta.icon,
+        title: n.title, description: n.body, at: n.created_at, unread: !n.read_at,
+        cta: { label: "View", ...target },
+      });
+    });
+
+    return items.sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+  }, [myDocumentHearings, myActionHearings, notifications, canPracticeProxyCounsel, walletHeld, user, navigate]);
+
+  // Dashboard widget only ever shows the top 4 — Action Required bubbles
+  // above Recent Activity/Information (stable sort keeps each tier's own
+  // newest-first order from notificationItems above), full history lives on
+  // /notifications behind "View All Notifications".
+  const dashboardNotifications = useMemo(() => (
+    [...notificationItems]
+      .sort((a, b) => (NOTIFICATION_GROUP_META[a.group].order === 0 ? 0 : 1) - (NOTIFICATION_GROUP_META[b.group].order === 0 ? 0 : 1))
+      .slice(0, 4)
+  ), [notificationItems]);
 
   // Today's Progress — reuses the shadcn Progress bar, not a new stat type.
   const todayChecklist = useMemo(() => {
@@ -233,18 +314,32 @@ export default function Dashboard() {
 
   // Recent Activity — orders + every hearing's own timeline + notifications,
   // merged and sorted client-side, newest first. No new backend endpoint.
+  // Hearing timeline entries go through humanizeHearingActivity so this
+  // reads as a timeline of business events (Payment Successful, Hearing
+  // Scheduled, ...) — never the raw "<from_status> -> <to_status>" string
+  // hearings.py's state machine writes to timeline[].note. Those raw
+  // transitions stay admin-only (see HearingTimeline's mode="raw" in
+  // AdminHearingVerification.jsx).
   const recentActivity = useMemo(() => {
     const items = [];
-    orders.forEach((o) => items.push({
-      key: `order-${o.order_id}`, at: o.updated_at || o.created_at,
-      label: `Order ${o.order_id} — ${(o.status || "").replace(/_/g, " ")}`, to: `/orders/${o.order_id}`,
+    orders.forEach((o) => {
+      const statusLabel = (o.status || "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      items.push({
+        key: `order-${o.order_id}`, at: o.updated_at || o.created_at, icon: Package,
+        title: `Order ${statusLabel}`, description: `Order ${o.order_id}`,
+        to: `/orders/${o.order_id}`,
+      });
+    });
+    hearings.forEach((h) => (h.timeline || []).forEach((t, i) => {
+      const { icon, title, description } = humanizeHearingActivity(t, h);
+      items.push({
+        key: `hearing-${h.hearing_id}-${i}`, at: t.at, icon, title, description,
+        onClick: () => setActiveHearingId(h.hearing_id),
+      });
     }));
-    hearings.forEach((h) => (h.timeline || []).forEach((t, i) => items.push({
-      key: `hearing-${h.hearing_id}-${i}`, at: t.at, label: `${h.court_id}: ${t.note}`,
-      onClick: () => setActiveHearingId(h.hearing_id),
-    })));
     notifications.forEach((n) => items.push({
-      key: `notif-${n.notification_id}`, at: n.created_at, label: n.title, to: "/notifications",
+      key: `notif-${n.notification_id}`, at: n.created_at, icon: classifyNotification(n).icon,
+      title: n.title, description: n.body, to: "/notifications",
     }));
     return items.filter((i) => i.at).sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 12);
   }, [orders, hearings, notifications]);
@@ -333,9 +428,10 @@ export default function Dashboard() {
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-        {/* Upcoming Hearings */}
-        <div className="lg:col-span-2">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 mb-8">
+        {/* Upcoming Hearings — the primary column; the sidebar next to it is
+            a fixed ~360px so it can't crowd this out on wide screens. */}
+        <div className="min-w-0">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-display font-bold text-2xl tracking-tight">Upcoming Hearings</h2>
             {canHireProxyCounsel && (
@@ -392,30 +488,68 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Pending Actions — urgency color-coded */}
-        <div>
-          <h2 className="font-display font-bold text-2xl tracking-tight mb-4">Pending Actions</h2>
-          {loading ? (
-            <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-12 shimmer rounded-xl"></div>)}</div>
-          ) : pendingActions.length === 0 ? (
-            <Card className="border-dashed border-2" data-testid="empty-pending-actions">
-              <CardContent className="p-6 text-center text-sm text-muted-foreground">You're all caught up — nothing needs your attention.</CardContent>
-            </Card>
-          ) : (
-            <div className="space-y-2">
-              {pendingActions.map((a) => (
-                <button
-                  key={a.key}
-                  onClick={() => a.onClick ? a.onClick() : navigate(a.to)}
-                  className="w-full text-left bento-card p-3 flex items-center gap-2.5"
-                  data-testid={`pending-action-${a.key}`}
-                >
-                  <Badge className={`${PENDING_TIER_BADGE[a.tier]} border-0 text-2xs font-bold uppercase flex-shrink-0`}>{PENDING_TIER_LABEL[a.tier]}</Badge>
-                  <span className="text-sm font-semibold truncate flex-1">{a.label}</span>
-                </button>
-              ))}
+        {/* Notifications — compact SaaS-style sidebar widget (Linear/Stripe/
+            GitHub-ish): fixed ~60-70px rows, top 4 only, full history is one
+            click away on /notifications. Group (Action Required > Recent
+            Activity > Information) decides sort + icon tint, not a section
+            header — there's no vertical room for one at this row height. */}
+        <div className="w-full lg:w-[360px] flex-shrink-0">
+          <div className="bg-white border border-border rounded-2xl p-3">
+            <div className="flex items-center justify-between px-1 pb-2">
+              <h2 className="font-display font-bold text-base tracking-tight">Notifications</h2>
+              {unreadNotifications.length > 0 && (
+                <Badge className="bg-accent/10 text-accent border-0 text-2xs font-bold h-5 px-2">{unreadNotifications.length} new</Badge>
+              )}
             </div>
-          )}
+            {loading ? (
+              <div className="space-y-1.5">{[1, 2, 3, 4].map((i) => <div key={i} className="h-16 shimmer rounded-lg"></div>)}</div>
+            ) : dashboardNotifications.length === 0 ? (
+              <div className="py-8 text-center text-sm text-muted-foreground" data-testid="empty-pending-actions">
+                You're all caught up.
+              </div>
+            ) : (
+              <div className="divide-y divide-border/60">
+                {dashboardNotifications.map((n) => {
+                  const meta = NOTIFICATION_GROUP_META[n.group];
+                  return (
+                    <div key={n.key} className="flex items-center gap-2.5 py-2.5 px-1" data-testid={`notification-${n.key}`}>
+                      <div className={`relative w-8 h-8 rounded-full ${meta.iconWrap} flex items-center justify-center flex-shrink-0`}>
+                        <n.icon className="w-4 h-4" strokeWidth={2} />
+                        {n.unread && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent ring-2 ring-white" aria-hidden="true" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-bold truncate">{n.title}</span>
+                          <span className="text-2xs text-muted-foreground/70 font-semibold flex-shrink-0">{n.at ? timeAgo(n.at) : ""}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-muted-foreground truncate">{n.description}</span>
+                          {n.cta && (
+                            <button
+                              onClick={() => n.cta.onClick ? n.cta.onClick() : navigate(n.cta.to)}
+                              title={n.cta.label}
+                              aria-label={n.cta.label}
+                              className="text-xs font-bold text-accent hover:underline flex-shrink-0"
+                              data-testid={`notification-cta-${n.key}`}
+                            >
+                              View →
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <Link
+              to="/notifications"
+              className="mt-2 flex items-center justify-center text-xs font-bold text-accent hover:underline py-2 border-t border-border/60"
+              data-testid="dash-view-all-notifications"
+            >
+              View All Notifications →
+            </Link>
+          </div>
         </div>
       </div>
 
@@ -569,16 +703,24 @@ export default function Dashboard() {
             </CardContent>
           </Card>
         ) : (
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             {recentActivity.map((item) => (
               <button
                 key={item.key}
                 onClick={() => item.onClick ? item.onClick() : navigate(item.to)}
-                className="w-full text-left flex items-center justify-between gap-3 px-4 py-2.5 rounded-lg hover:bg-secondary/60 transition-colors"
+                className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-secondary/60 transition-colors"
                 data-testid={`activity-${item.key}`}
               >
-                <span className="text-sm font-medium truncate">{item.label}</span>
-                <span className="text-2xs text-muted-foreground font-semibold flex-shrink-0">{timeAgo(item.at)}</span>
+                <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center flex-shrink-0">
+                  <item.icon className="w-4 h-4 text-muted-foreground" strokeWidth={2} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-bold truncate">{item.title}</span>
+                    <span className="text-2xs text-muted-foreground font-semibold flex-shrink-0">{timeAgo(item.at)}</span>
+                  </div>
+                  {item.description && <p className="text-xs text-muted-foreground truncate">{item.description}</p>}
+                </div>
               </button>
             ))}
           </div>

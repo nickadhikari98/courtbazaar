@@ -251,7 +251,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           </div>
         </div>
 
-        <HearingTimeline timeline={hearing.timeline} />
+        <HearingTimeline timeline={hearing.timeline} hearing={hearing} />
 
         {canRate && (
           <div className="border-t pt-3">

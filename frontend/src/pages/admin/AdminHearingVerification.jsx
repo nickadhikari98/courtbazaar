@@ -201,7 +201,7 @@ function HearingVerificationDialog({ hearingId, open, onOpenChange, onChanged })
         </div>
 
         <div className="border-t pt-3">
-          <HearingTimeline timeline={hearing.timeline} />
+          <HearingTimeline timeline={hearing.timeline} hearing={hearing} mode="raw" />
         </div>
       </DialogContent>
     </Dialog>
