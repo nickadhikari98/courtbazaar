@@ -24,9 +24,22 @@ jobs:
           nc -zv -w8 "${{ secrets.VPS_HOST }}" "${{ secrets.VPS_PORT }}" && echo "TCP_OK" || echo "TCP_FAILED"
 
       # deploy/deploy.sh is the single source of truth for what a deploy does
-      # (git pull, backend restart, frontend build, nginx reload, and a
-      # post-deploy verification that the live commit matches). This step
-      # intentionally does not duplicate those steps.
+      # (backend restart, frontend build, nginx reload, and a post-deploy
+      # verification that the live commit matches). This step intentionally
+      # does not duplicate those steps.
+      #
+      # The `git pull` runs here, as its own command BEFORE deploy.sh starts
+      # — deliberately not inside deploy.sh itself. A process that has
+      # deploy.sh open (as this one does, the moment `bash deploy/deploy.sh`
+      # starts) keeps reading its OLD inode for the rest of that run even
+      # after a git checkout replaces the file on disk; a self-pulling
+      # deploy.sh would silently execute its entire run — including its own
+      # domain-verification check — against the PRE-pull version of itself
+      # on any deploy that changed deploy.sh, which is exactly what caused a
+      # past deploy to fail verifying against a stale domain that had
+      # already been fixed on disk. Pulling here, in a separate command
+      # before deploy.sh is ever invoked, guarantees it always starts as the
+      # current, freshly-checked-out version.
       #
       # Retries only on SSH's own connection-error exit code (255) — the
       # intermittent Azure(GitHub Actions) -> Hostinger(Mumbai) network path
@@ -51,7 +64,7 @@ jobs:
           while :; do
             echo "==> SSH deploy attempt $n/$max_attempts"
             ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new \
-              root@"$VPS_HOST" 'cd /root/courtbazaar && bash deploy/deploy.sh'
+              root@"$VPS_HOST" 'cd /root/courtbazaar && git fetch origin && git pull origin main && bash deploy/deploy.sh'
             status=$?
 
             if [ "$status" -eq 0 ]; then

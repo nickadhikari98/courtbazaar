@@ -155,14 +155,29 @@ cross-reference `backend/.env.example` for the full list with inline notes.
 
 ## 7. Redeploying after a change
 
-Use `deploy/deploy.sh` — it runs every step below in order and, critically,
-**fails loudly instead of finishing silently wrong** if the live site's
-`version.json` doesn't match the commit it just deployed:
+Pull first, then run `deploy/deploy.sh` — it runs every step below in order
+and, critically, **fails loudly instead of finishing silently wrong** if the
+live site's `version.json` doesn't match the commit it just deployed:
 
 ```bash
 cd /var/www/courtbazaar
+git fetch origin && git pull origin main
 ./deploy/deploy.sh
 ```
+
+**Always pull as its own command before invoking the script — never let
+deploy.sh pull itself.** The moment `bash deploy/deploy.sh` starts, that
+process has the script open by inode; a `git pull` run from inside it
+replaces the file on disk via a new inode, which an already-open file
+descriptor never sees — the running script silently finishes its entire
+current run against the OLD content (every variable, every check) even
+though the checkout is already correct for next time. This is exactly what
+once made a deploy fail verifying `https://courtbazaar.in/version.json`
+after every committed reference to `.in` had already been fixed: that
+deploy's own pull updated the file, but the process already running it kept
+executing the pre-fix version through to its final check. Pulling first, as
+a separate command, guarantees `deploy.sh` always starts as the version
+that's actually on disk.
 
 Equivalent by hand, if you need to run a step in isolation:
 
@@ -209,9 +224,10 @@ directly on the VPS via systemd/Nginx as described above, with no container
 runtime.
 
 CI/CD: `.github/workflows/deploy.yml` deploys automatically on every push to
-`main`. It SSHes into the VPS as `root` and runs `deploy/deploy.sh` — the
-same script described in §7, unchanged. The workflow does not reimplement
-any deploy steps itself; it only triggers the existing script, so §7 remains
+`main`. It SSHes into the VPS as `root`, pulls (the same pull-before-invoking
+order described in §7), and runs `deploy/deploy.sh` — the same script
+described in §7, unchanged. The workflow does not reimplement any deploy
+steps itself; it only pulls and triggers the existing script, so §7 remains
 the source of truth for what a deploy actually does. It can also be run
 manually from the Actions tab (`workflow_dispatch`) without a new push.
 
