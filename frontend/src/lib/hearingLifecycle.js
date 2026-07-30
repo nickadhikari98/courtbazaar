@@ -28,6 +28,11 @@
      status. Same hearing, different text depending on which screen you
      opened it from — roleAwareStatusLabel below is now shared by both. */
 
+import {
+  FileText, Handshake, UploadCloud, CheckCircle2, CalendarClock, Gavel,
+  ShieldCheck, AlertTriangle, Banknote, Star, XCircle, Ban, Clock, Info, Wallet,
+} from "lucide-react";
+
 // Truly closed — no further action possible, matches the UI's own "start a
 // new request to try again" copy. Deliberately excludes "disputed": that's
 // still open, under active admin review (resubmit or refund), not a dead
@@ -36,6 +41,18 @@ export const CLOSED_HEARING_STATUSES = ["rejected", "cancelled", "expired"];
 
 export function isHearingClosed(hearing) {
   return !!hearing && CLOSED_HEARING_STATUSES.includes(hearing.status);
+}
+
+// Successful, paid-out dead ends — distinct from CLOSED_HEARING_STATUSES
+// (rejected/cancelled/expired), which are dead ends with no payout.
+export const COMPLETED_HEARING_STATUSES = ["completed", "rated"];
+
+// Still moving: not yet a dead end either way. This is the default-view
+// filter for hearing-list screens (Hire Proxy Counsel, My Practice) — keeps
+// the list focused on actionable work, with Completed/Cancelled as
+// separate tabs rather than mixed into the same list.
+export function isHearingActive(hearing) {
+  return !!hearing && !CLOSED_HEARING_STATUSES.includes(hearing.status) && !COMPLETED_HEARING_STATUSES.includes(hearing.status);
 }
 
 // Same palette every screen showing a hearing.status badge uses.
@@ -162,4 +179,61 @@ export function getHearingPermissions(hearing, user) {
     viewerRole: getViewerRole(hearing, userId),
     isClosed: isHearingClosed(hearing),
   };
+}
+
+/* Business-friendly event per to_status — for a hearing.timeline entry
+   produced by a state-machine transition (hearings.py's
+   _make_timeline_hook writes every entry's `note` as the literal
+   "<from_status> -> <to_status>" string and `status` as the to_status).
+   That raw string is an implementation detail of the workflow engine, not
+   something a Hiring Advocate or Proxy Counsel should ever read — admin/
+   audit views may still show the raw transition; every user-facing screen
+   must go through humanizeHearingActivity below instead. "requested" never
+   appears here because no transition ever produces it (it's only the
+   hearing's initial status). */
+const HEARING_TRANSITION_EVENT_META = {
+  broadcast: { icon: Wallet, title: "Payment Successful", description: (h) => `Payment confirmed — ${h.fee ? `₹${h.fee} is` : "funds are"} now held in escrow.` },
+  accepted: { icon: Handshake, title: "Proxy Counsel Accepted Hearing", description: (h) => `A Proxy Counsel accepted the request for ${h.court_id || "this hearing"}.` },
+  documents_shared: { icon: UploadCloud, title: "Case Documents Needed", description: (h) => `Case documents are being exchanged for ${h.court_id || "this hearing"}.` },
+  preparation: { icon: CheckCircle2, title: "Documents Shared", description: (h) => `Case documents were shared — ${h.court_id || "the hearing"} is being prepared.` },
+  hearing_scheduled: { icon: CalendarClock, title: "Hearing Scheduled", description: (h) => `The hearing at ${h.court_id || "court"} has been scheduled${h.hearing_date ? ` for ${h.hearing_date}` : ""}.` },
+  hearing_completed: { icon: Gavel, title: "Hearing Conducted", description: (h) => `The hearing at ${h.court_id || "court"} was conducted.` },
+  verification_pending: { icon: UploadCloud, title: "Order Sheet Uploaded", description: (h) => `The Court Order Sheet for ${h.court_id || "the hearing"} is awaiting verification.` },
+  verified: { icon: ShieldCheck, title: "Hearing Verified", description: (h) => `The order sheet for ${h.court_id || "the hearing"} was verified.` },
+  disputed: { icon: AlertTriangle, title: "Order Sheet Disputed", description: (h) => `The order sheet for ${h.court_id || "the hearing"} was disputed and is under review.` },
+  completed: { icon: Banknote, title: "Escrow Released", description: (h) => `Escrow for ${h.court_id || "the hearing"} has been released.` },
+  rated: { icon: Star, title: "Rating Submitted", description: () => "A rating was submitted for this hearing." },
+  rejected: { icon: XCircle, title: "Request Declined", description: (h) => `The hearing request for ${h.court_id || "this hearing"} was declined.` },
+  cancelled: { icon: Ban, title: "Request Cancelled", description: (h) => `The hearing request for ${h.court_id || "this hearing"} was cancelled.` },
+  expired: { icon: Clock, title: "Request Expired", description: (h) => `The hearing request for ${h.court_id || "this hearing"} expired.` },
+};
+
+// Non-transition entries (hearings.py's _push_activity — document uploads,
+// negotiated fee, refunds, payout release) already carry a full, readable
+// sentence in `note`; these just need a short title split out of it, not a
+// business-event lookup.
+function describeFreeTextActivity(note) {
+  if (note === "Request created") return { icon: FileText, title: "Request Created" };
+  if (note?.startsWith("Order sheet uploaded")) return { icon: UploadCloud, title: "Order Sheet Uploaded" };
+  if (note?.startsWith("Case document uploaded")) return { icon: UploadCloud, title: "Case Document Uploaded" };
+  if (note?.startsWith("Fee agreed")) return { icon: Handshake, title: "Fee Agreed" };
+  if (note?.startsWith("Payout of")) return { icon: Banknote, title: "Payout Released" };
+  if (note?.startsWith("Escrow refunded")) return { icon: Banknote, title: "Refund Issued" };
+  return { icon: Info, title: "Update" };
+}
+
+/* The one place a hearing.timeline entry becomes user-facing text. Returns
+   {icon, title, description} — never the raw entry.note transition string.
+   `hearing` is optional context (court_id/fee/hearing_date) for the
+   description; omit it and the description just reads a little more
+   generically. */
+export function humanizeHearingActivity(entry, hearing) {
+  const h = hearing || {};
+  if (entry.note?.includes(" -> ")) {
+    const meta = HEARING_TRANSITION_EVENT_META[entry.status];
+    if (meta) return { icon: meta.icon, title: meta.title, description: meta.description(h) };
+    return { icon: Info, title: "Status Updated", description: `${h.court_id || "This hearing"} was updated.` };
+  }
+  const { icon, title } = describeFreeTextActivity(entry.note);
+  return { icon, title, description: entry.note || "" };
 }

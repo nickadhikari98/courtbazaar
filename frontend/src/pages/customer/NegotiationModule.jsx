@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
-  ClipboardList, FileStack, BadgeCheck, Star, ArrowLeft, Gavel, Ban, CheckCircle2, History,
+  ClipboardList, FileStack, BadgeCheck, Star, ArrowLeft, ArrowRight, Gavel, Ban, CheckCircle2, History,
 } from "lucide-react";
 import { getHearingRequest, getHearingCounselProfile } from "@/lib/hearingRequestsApi";
 import { payForHearing as payForHearingShared } from "@/lib/hearingPayment";
@@ -17,6 +17,7 @@ import { formatINR } from "@/lib/api";
 import { initialsOf } from "@/components/proxyCounsel/CounselCard";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
 import HearingTimeline from "@/components/shared/HearingTimeline";
+import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import NegotiationChat from "@/components/negotiation/NegotiationChat";
 import NegotiationOfferPanel from "@/components/negotiation/NegotiationOfferPanel";
 import NegotiationNextAction from "@/components/negotiation/NegotiationNextAction";
@@ -25,12 +26,15 @@ import NegotiationOfferChain from "@/components/negotiation/NegotiationOfferChai
 import { useNegotiationPoll } from "@/components/negotiation/useNegotiationPoll";
 import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions } from "@/lib/hearingLifecycle";
 
-// Still genuinely future work, not part of this milestone's ordered list
-// (chat / offers / agreement / locking / payment) — see NegotiationChat.jsx
-// and NegotiationOfferPanel.jsx for the sections that are now real.
-const COMING_SOON_SECTIONS = [
-  { icon: ClipboardList, title: "Assignment Discussion", body: "Confirm scope, hearing logistics, and expectations with the counsel." },
-  { icon: FileStack, title: "Document Sharing", body: "Share case papers and receive drafts back from the counsel." },
+// Both already fully implemented — HearingDetailDialog.jsx's own Chat/Notes
+// section is the assignment discussion, and its Documents section is the
+// document sharing, for this exact hearing. These cards are just a second,
+// discoverable entry point to that same dialog from the Negotiation page
+// (which otherwise only surfaces the pre-payment NegotiationChat), not a
+// separate feature — no "Coming Soon" involved.
+const ASSIGNMENT_MODULES = [
+  { icon: ClipboardList, title: "Assignment Discussion", body: "Discuss hearing strategy, logistics and case instructions with the counsel.", cta: "Open Discussion" },
+  { icon: FileStack, title: "Document Sharing", body: "Securely share case papers, evidence, orders and receive updated drafts.", cta: "Open Documents" },
 ];
 
 /* Navigation target for BOTH selection paths in HireProxyCounsel.jsx (AI
@@ -66,6 +70,10 @@ export default function NegotiationModule() {
   // couple seconds, or immediately on "Continue", so the requester doesn't
   // just get silently redirected without knowing why.
   const [negotiationEnded, setNegotiationEnded] = useState(false);
+  // Assignment Discussion / Document Sharing cards below both just open the
+  // shared HearingDetailDialog for this hearing — that's where the real
+  // Chat/Notes and Documents sections already live.
+  const [detailOpen, setDetailOpen] = useState(false);
 
   const loadHearing = () => getHearingRequest(hearingId)
     .then((data) => setHearing(data))
@@ -305,7 +313,7 @@ export default function NegotiationModule() {
                       <summary className="text-xs font-bold uppercase tracking-wide text-muted-foreground cursor-pointer flex items-center gap-1.5">
                         <History className="w-3.5 h-3.5" /> Full activity log
                       </summary>
-                      <div className="mt-2"><HearingTimeline timeline={hearing.timeline} /></div>
+                      <div className="mt-2"><HearingTimeline timeline={hearing.timeline} hearing={hearing} /></div>
                     </details>
                   ) : (
                     <p className="text-sm text-muted-foreground">No activity yet.</p>
@@ -315,15 +323,25 @@ export default function NegotiationModule() {
 
               {!isTerminal && (
                 <div className="grid sm:grid-cols-2 gap-4">
-                  {COMING_SOON_SECTIONS.map(({ icon: Icon, title, body }) => (
-                    <Card key={title} className="dashboard-card border-none border-dashed">
+                  {ASSIGNMENT_MODULES.map(({ icon: Icon, title, body, cta }) => (
+                    <Card
+                      key={title}
+                      className="dashboard-card border-none cursor-pointer hover:shadow-md transition-all"
+                      onClick={() => setDetailOpen(true)}
+                      data-testid={`assignment-module-${title.toLowerCase().replace(/\s+/g, "-")}`}
+                    >
                       <CardContent className="p-5">
-                        <div className="flex items-center justify-between mb-2">
+                        <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center mb-3">
                           <Icon className="w-5 h-5 text-accent" />
-                          <Badge variant="outline" className="text-2xs font-bold uppercase">Coming Soon</Badge>
                         </div>
                         <div className="font-display font-bold text-sm mb-1">{title}</div>
-                        <p className="text-xs text-muted-foreground">{body}</p>
+                        <p className="text-xs text-muted-foreground mb-3">{body}</p>
+                        <Button
+                          type="button" size="sm" variant="outline" className="font-bold"
+                          onClick={(e) => { e.stopPropagation(); setDetailOpen(true); }}
+                        >
+                          {cta} <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
+                        </Button>
                       </CardContent>
                     </Card>
                   ))}
@@ -333,6 +351,8 @@ export default function NegotiationModule() {
           )}
         </>
       )}
+
+      <HearingDetailDialog hearingId={hearingId} open={detailOpen} onOpenChange={setDetailOpen} onChanged={loadHearing} />
     </PageContainer>
   );
 }

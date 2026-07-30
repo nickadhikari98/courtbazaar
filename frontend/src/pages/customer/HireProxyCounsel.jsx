@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import PageContainer from "@/components/layout/PageContainer";
@@ -6,6 +6,7 @@ import PageHeader from "@/components/layout/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Pencil } from "lucide-react";
 import { createHearingRequest, listHearingRequests, uploadHearingDocument } from "@/lib/hearingRequestsApi";
 import { getErrorMessage } from "@/lib/api";
@@ -14,7 +15,12 @@ import LegalServiceRequestForm from "@/components/shared/LegalServiceRequestForm
 import CounselDiscoveryPanel from "@/components/proxyCounsel/CounselDiscoveryPanel";
 import { SERVICE_CONFIGS } from "@/config/serviceRequestFields";
 import { useAuth } from "@/context/AuthContext";
-import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole } from "@/lib/hearingLifecycle";
+import {
+  HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole,
+  isHearingActive, COMPLETED_HEARING_STATUSES, CLOSED_HEARING_STATUSES,
+} from "@/lib/hearingLifecycle";
+
+const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
 
 const serviceConfig = SERVICE_CONFIGS.proxy_counsel;
 
@@ -84,6 +90,17 @@ export default function HireProxyCounsel() {
 
   const load = () => listHearingRequests().then(setHearings);
   useEffect(() => { load(); }, []);
+
+  // Default view stays focused on actionable work — Completed/Cancelled
+  // (which also covers rejected/expired) are one tab away, not mixed in.
+  const hearingTabs = useMemo(() => {
+    const list = hearings || [];
+    return {
+      active: list.filter(isHearingActive),
+      completed: list.filter((h) => COMPLETED_HEARING_STATUSES.includes(h.status)),
+      cancelled: list.filter((h) => CLOSED_HEARING_STATUSES.includes(h.status)),
+    };
+  }, [hearings]);
 
   // End Negotiation (NegotiationModule.jsx) navigates here with the ended
   // hearing's own case details already filled in, landing straight on the
@@ -194,8 +211,9 @@ export default function HireProxyCounsel() {
 
       <div className="mt-10">
         <h2 className="font-display font-bold text-xl tracking-tight mb-4">My Requests</h2>
-        {hearings === null && <div className="text-center text-muted-foreground py-10">Loading…</div>}
-        {hearings?.length === 0 && (
+        {hearings === null ? (
+          <div className="text-center text-muted-foreground py-10">Loading…</div>
+        ) : hearings.length === 0 ? (
           <Card className="border-dashed border-2">
             <CardContent className="p-10 text-center">
               <serviceConfig.heroIcon className="w-10 h-10 mx-auto text-muted-foreground mb-3" strokeWidth={1.5} />
@@ -203,22 +221,40 @@ export default function HireProxyCounsel() {
               <p className="text-sm text-muted-foreground mt-1">{serviceConfig.emptyStateCopy.body}</p>
             </CardContent>
           </Card>
+        ) : (
+          <Tabs defaultValue="active">
+            <TabsList data-testid="hearing-requests-tabs">
+              {Object.entries(hearingTabs).map(([key, list]) => (
+                <TabsTrigger key={key} value={key} data-testid={`tab-${key}`}>
+                  {HEARING_TAB_LABELS[key]} ({list.length})
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            {Object.entries(hearingTabs).map(([key, list]) => (
+              <TabsContent value={key} key={key} className="mt-4 space-y-3">
+                {list.length === 0 ? (
+                  <Card className="border-dashed border-2">
+                    <CardContent className="p-8 text-center text-sm text-muted-foreground">
+                      No {HEARING_TAB_LABELS[key].toLowerCase()} requests.
+                    </CardContent>
+                  </Card>
+                ) : list.map((h) => (
+                  <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveId(h.hearing_id)} data-testid={`hearing-row-${h.hearing_id}`}>
+                    <CardContent className="p-5 flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="font-display font-bold">{h.request_details?.common?.case_title || h.court_id}</div>
+                        <div className="text-sm text-muted-foreground">{h.hearing_date} {h.fee ? `· ₹${h.fee}` : ""}</div>
+                      </div>
+                      <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} border-0 font-bold uppercase`}>
+                        {roleAwareStatusLabel(h, getViewerRole(h, user?.user_id))}
+                      </Badge>
+                    </CardContent>
+                  </Card>
+                ))}
+              </TabsContent>
+            ))}
+          </Tabs>
         )}
-        <div className="space-y-3">
-          {hearings?.map((h) => (
-            <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveId(h.hearing_id)}>
-              <CardContent className="p-5 flex items-center justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="font-display font-bold">{h.request_details?.common?.case_title || h.court_id}</div>
-                  <div className="text-sm text-muted-foreground">{h.hearing_date} {h.fee ? `· ₹${h.fee}` : ""}</div>
-                </div>
-                <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} border-0 font-bold uppercase`}>
-                  {roleAwareStatusLabel(h, getViewerRole(h, user?.user_id))}
-                </Badge>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
       </div>
 
       <HearingDetailDialog

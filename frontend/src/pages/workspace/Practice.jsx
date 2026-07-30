@@ -25,7 +25,12 @@ import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import CapabilitiesCard from "@/components/shared/CapabilitiesCard";
 import StatGrid from "@/components/shared/StatGrid";
 import { useAuth } from "@/context/AuthContext";
-import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole } from "@/lib/hearingLifecycle";
+import {
+  HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole,
+  isHearingActive, COMPLETED_HEARING_STATUSES, CLOSED_HEARING_STATUSES,
+} from "@/lib/hearingLifecycle";
+
+const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const KINDS = [
@@ -304,6 +309,14 @@ function HearingsTab() {
     && ["requested", "payment_pending"].includes(h.status)) || [];
   const open = hearings?.filter((h) => h.status === "broadcast" && h.requesting_user_id !== user?.user_id) || [];
   const mine = hearings?.filter((h) => h.proxy_counsel_user_id === user?.user_id) || [];
+  // Assigned hearings run the full lifecycle (including cancel/expire), so
+  // unlike Negotiation/Open Requests above this needs its own Active/
+  // Completed/Cancelled split rather than one flat list.
+  const mineTabs = {
+    active: mine.filter(isHearingActive),
+    completed: mine.filter((h) => COMPLETED_HEARING_STATUSES.includes(h.status)),
+    cancelled: mine.filter((h) => CLOSED_HEARING_STATUSES.includes(h.status)),
+  };
 
   const renderCard = (h, onClick) => (
     <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow" onClick={onClick}>
@@ -338,8 +351,26 @@ function HearingsTab() {
       </div>
       <div>
         <div className="font-display font-bold mb-2">My Hearings</div>
+        {hearings === null && <div className="text-center text-muted-foreground py-6 text-sm">Loading…</div>}
         {hearings && mine.length === 0 && <p className="text-sm text-muted-foreground">Nothing accepted yet.</p>}
-        <div className="space-y-2">{mine.map((h) => renderCard(h, () => setActiveId(h.hearing_id)))}</div>
+        {hearings && mine.length > 0 && (
+          <Tabs defaultValue="active">
+            <TabsList data-testid="my-hearings-tabs">
+              {Object.entries(mineTabs).map(([key, list]) => (
+                <TabsTrigger key={key} value={key} data-testid={`tab-my-${key}`}>
+                  {HEARING_TAB_LABELS[key]} ({list.length})
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            {Object.entries(mineTabs).map(([key, list]) => (
+              <TabsContent value={key} key={key} className="mt-3 space-y-2">
+                {list.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-2">No {HEARING_TAB_LABELS[key].toLowerCase()} hearings.</p>
+                ) : list.map((h) => renderCard(h, () => setActiveId(h.hearing_id)))}
+              </TabsContent>
+            ))}
+          </Tabs>
+        )}
       </div>
       <HearingDetailDialog hearingId={activeId} open={!!activeId} onOpenChange={(v) => !v && setActiveId(null)} onChanged={load} />
     </div>
