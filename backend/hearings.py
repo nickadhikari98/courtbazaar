@@ -46,6 +46,7 @@ a reject is a global, terminal `rejected` — not a personal decline). When
 absent, the request behaves exactly as the broadcast case above always has.
 """
 import inspect
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
@@ -54,6 +55,8 @@ from fastapi import HTTPException
 from pymongo import ReturnDocument
 
 from workflow import StateMachine, IllegalTransition
+
+logger = logging.getLogger(__name__)
 
 HEARING_STATUSES = (
     "requested", "broadcast", "accepted", "payment_pending", "documents_shared", "preparation",
@@ -828,12 +831,19 @@ async def check_pending_order_sheets(db) -> int:
     Returns the count notified, for the scheduler's log line."""
     from notifications import notify, record_notification_event
     cutoff = (datetime.now(timezone.utc) - timedelta(days=ORDER_SHEET_REMINDER_DELAY_DAYS)).isoformat()
+    scan_cap = 500
     candidates = await db.hearing_requests.find({
         "status": {"$in": _ORDER_SHEET_PENDING_STATUSES},
         "payment_confirmed_at": {"$ne": None, "$lte": cutoff},
         "order_sheet_reminder_sent_at": None,
         "proxy_counsel_user_id": {"$ne": None},
-    }, {"_id": 0}).to_list(500)
+    }, {"_id": 0}).to_list(scan_cap)
+    if len(candidates) == scan_cap:
+        # Not lost — just delayed to next hour's poll (each notified hearing
+        # sets order_sheet_reminder_sent_at, so it drops out of the query on
+        # the next pass) — but silent backlog growth at this volume is worth
+        # someone noticing rather than only inferring from delayed reminders.
+        logger.warning(f"check_pending_order_sheets hit its {scan_cap}-row scan cap — some reminders deferred to next poll")
 
     notified = 0
     for hearing in candidates:
