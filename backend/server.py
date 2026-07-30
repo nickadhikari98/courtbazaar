@@ -607,7 +607,7 @@ async def otp_verify(req: OtpVerify):
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         user = {
             "user_id": user_id,
-            "email": f"{req.phone}@phone.courtbazaar.in",
+            "email": f"{req.phone}@phone.courtbazaar.com",
             "name": req.name or f"User {req.phone[-4:]}",
             "phone": req.phone,
             "role": req.role,
