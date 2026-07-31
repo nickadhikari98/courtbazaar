@@ -40,6 +40,14 @@ export async function cancelHearingRequest(hearingId) {
   return data;
 }
 
+// Distinct from cancelHearingRequest — closes the negotiation with the
+// current targeted counsel only; the underlying request is not cancelled
+// (the frontend routes the requester back to counsel selection afterward).
+export async function endNegotiation(hearingId) {
+  const { data } = await api.put(`/hearing-requests/${hearingId}/end-negotiation`);
+  return data;
+}
+
 export async function markHearingConducted(hearingId) {
   const { data } = await api.put(`/hearing-requests/${hearingId}/mark-conducted`);
   return data;
@@ -57,6 +65,14 @@ export async function verifyHearingPayment(hearingId, payload) {
 
 export async function getHearingEscrow(hearingId) {
   const { data } = await api.get(`/hearing-requests/${hearingId}/escrow`);
+  return data;
+}
+
+// Fallback for NegotiationModule.jsx when it didn't arrive via router state
+// (refresh, direct/shared link) — same card shape advocateRecommendationsApi's
+// getAvailableAdvocates returns, for the one advocate targeted on this hearing.
+export async function getHearingCounselProfile(hearingId) {
+  const { data } = await api.get(`/hearing-requests/${hearingId}/counsel-profile`);
   return data;
 }
 
@@ -97,6 +113,23 @@ export async function uploadHearingDocument(hearingId, kind, file) {
 
 export async function getHearingDocumentUrl(hearingId, docId) {
   const { data } = await api.get(`/hearing-requests/${hearingId}/documents/${docId}/download-url`);
+  return data;
+}
+
+// Escrow Module: the Hiring Advocate's one-click "Verify Hearing" — verify
+// and release happen server-side in a single call (hearings.verify_and_
+// release_payout), unlike the admin pair below which stay deliberately
+// separate. Requester-only; backend enforces this too.
+export async function verifyAndReleaseHearingPayout(hearingId) {
+  const { data } = await api.put(`/hearing-requests/${hearingId}/verify-and-release`);
+  return data;
+}
+
+// Same endpoint the admin dispute queue below uses (reject-verification) —
+// this is now also reachable by the requester ("Raise Dispute" on the
+// Negotiation page), routing into the same, unchanged admin dispute queue.
+export async function raiseHearingDispute(hearingId, remark) {
+  const { data } = await api.put(`/hearing-requests/${hearingId}/reject-verification`, { remark });
   return data;
 }
 

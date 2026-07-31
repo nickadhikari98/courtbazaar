@@ -54,7 +54,7 @@ Build a complete enterprise-grade Legal Operations & Court Services Marketplace 
 ### Demo credentials (seeded)
 - Advocate: `advocate@demo.in` / `Advocate@123`
 - Vendor: `vendor@demo.in` / `Vendor@123`
-- Admin: `admin@courtbazaar.in` / `Admin@123`
+- Admin: `admin@courtbazaar.com` / `Admin@123`
 
 ## Deferred / Next Action Items (P1, P2)
 - Real SMS/WhatsApp/Email notifications (Twilio, SendGrid) — currently mock

@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Pencil } from "lucide-react";
 import { createHearingRequest, listHearingRequests, uploadHearingDocument } from "@/lib/hearingRequestsApi";
 import { getErrorMessage } from "@/lib/api";
@@ -13,27 +14,15 @@ import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import LegalServiceRequestForm from "@/components/shared/LegalServiceRequestForm";
 import CounselDiscoveryPanel from "@/components/proxyCounsel/CounselDiscoveryPanel";
 import { SERVICE_CONFIGS } from "@/config/serviceRequestFields";
+import { useAuth } from "@/context/AuthContext";
+import {
+  HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole,
+  isHearingActive, COMPLETED_HEARING_STATUSES, CLOSED_HEARING_STATUSES,
+} from "@/lib/hearingLifecycle";
+
+const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
 
 const serviceConfig = SERVICE_CONFIGS.proxy_counsel;
-
-const STATUS_BADGE = {
-  requested: "bg-amber-100 text-amber-700",
-  broadcast: "bg-amber-100 text-amber-700",
-  accepted: "bg-blue-100 text-blue-700",
-  payment_pending: "bg-amber-100 text-amber-700",
-  documents_shared: "bg-blue-100 text-blue-700",
-  preparation: "bg-blue-100 text-blue-700",
-  hearing_scheduled: "bg-blue-100 text-blue-700",
-  hearing_completed: "bg-indigo-100 text-indigo-700",
-  verification_pending: "bg-amber-100 text-amber-700",
-  verified: "bg-emerald-100 text-emerald-700",
-  completed: "bg-emerald-100 text-emerald-700",
-  rated: "bg-emerald-100 text-emerald-700",
-  rejected: "bg-red-100 text-red-700",
-  cancelled: "bg-red-100 text-red-700",
-  disputed: "bg-red-100 text-red-700",
-  expired: "bg-slate-100 text-slate-600",
-};
 
 // AvailableAdvocatesPanel's live-context recommendations (shown while
 // typing, before any request existed) is gone — per the founder's product
@@ -86,18 +75,50 @@ function payloadToFields(payload) {
    "Continue" on the form below only moves to the recommendations step
    in-memory; nothing is persisted until Select Counsel. */
 export default function HireProxyCounsel() {
+  const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [hearings, setHearings] = useState(null);
   const [activeId, setActiveId] = useState(null);
   const [pendingRequest, setPendingRequest] = useState(null); // { payload, files, context } | null
   const [editing, setEditing] = useState(false); // true while re-showing the form to edit an already-continued request
   const [selectingId, setSelectingId] = useState(null);
+  // Set only via NegotiationModule.jsx's "End Negotiation" — excludes that
+  // counsel from the AI recommendations list so the customer isn't nudged
+  // right back to the one who just didn't work out.
+  const [excludeAdvocateId, setExcludeAdvocateId] = useState(null);
 
   const load = () => listHearingRequests().then(setHearings);
   useEffect(() => { load(); }, []);
 
+  // Default view stays focused on actionable work — Completed/Cancelled
+  // (which also covers rejected/expired) are one tab away, not mixed in.
+  const hearingTabs = useMemo(() => {
+    const list = hearings || [];
+    return {
+      active: list.filter(isHearingActive),
+      completed: list.filter((h) => COMPLETED_HEARING_STATUSES.includes(h.status)),
+      cancelled: list.filter((h) => CLOSED_HEARING_STATUSES.includes(h.status)),
+    };
+  }, [hearings]);
+
+  // End Negotiation (NegotiationModule.jsx) navigates here with the ended
+  // hearing's own case details already filled in, landing straight on the
+  // counsel-selection step instead of the empty form — the underlying
+  // request was never cancelled, only the negotiation with that one counsel.
+  useEffect(() => {
+    const resume = location.state?.resumeRequest;
+    if (!resume) return;
+    setPendingRequest({ payload: resume.payload, files: [], context: deriveMatchContext(resume.payload) });
+    setExcludeAdvocateId(resume.excludeAdvocateId || null);
+    setEditing(false);
+    navigate(location.pathname, { replace: true, state: null }); // consume it — a later refresh/back must not replay it
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, off the location state present on mount only
+  }, []);
+
   const handleContinue = (payload, files) => {
     setPendingRequest({ payload, files, context: deriveMatchContext(payload) });
+    setExcludeAdvocateId(null); // a freshly-submitted form is unrelated to any prior negotiation
     setEditing(false);
   };
 
@@ -144,6 +165,7 @@ export default function HireProxyCounsel() {
 
     setPendingRequest(null);
     setSelectingId(null);
+    setExcludeAdvocateId(null);
     load();
     navigate(`/hearing-requests/${hearing.hearing_id}/negotiate`, { state: { counsel, hearing } });
   };
@@ -179,15 +201,19 @@ export default function HireProxyCounsel() {
               </CardContent>
             </Card>
 
-            <CounselDiscoveryPanel context={pendingRequest.context} onSelect={handleSelectCounsel} selectingId={selectingId} />
+            <CounselDiscoveryPanel
+              context={pendingRequest.context} onSelect={handleSelectCounsel} selectingId={selectingId}
+              excludeAdvocateId={excludeAdvocateId}
+            />
           </div>
         )}
       </div>
 
       <div className="mt-10">
         <h2 className="font-display font-bold text-xl tracking-tight mb-4">My Requests</h2>
-        {hearings === null && <div className="text-center text-muted-foreground py-10">Loading…</div>}
-        {hearings?.length === 0 && (
+        {hearings === null ? (
+          <div className="text-center text-muted-foreground py-10">Loading…</div>
+        ) : hearings.length === 0 ? (
           <Card className="border-dashed border-2">
             <CardContent className="p-10 text-center">
               <serviceConfig.heroIcon className="w-10 h-10 mx-auto text-muted-foreground mb-3" strokeWidth={1.5} />
@@ -195,20 +221,40 @@ export default function HireProxyCounsel() {
               <p className="text-sm text-muted-foreground mt-1">{serviceConfig.emptyStateCopy.body}</p>
             </CardContent>
           </Card>
+        ) : (
+          <Tabs defaultValue="active">
+            <TabsList data-testid="hearing-requests-tabs">
+              {Object.entries(hearingTabs).map(([key, list]) => (
+                <TabsTrigger key={key} value={key} data-testid={`tab-${key}`}>
+                  {HEARING_TAB_LABELS[key]} ({list.length})
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            {Object.entries(hearingTabs).map(([key, list]) => (
+              <TabsContent value={key} key={key} className="mt-4 space-y-3">
+                {list.length === 0 ? (
+                  <Card className="border-dashed border-2">
+                    <CardContent className="p-8 text-center text-sm text-muted-foreground">
+                      No {HEARING_TAB_LABELS[key].toLowerCase()} requests.
+                    </CardContent>
+                  </Card>
+                ) : list.map((h) => (
+                  <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveId(h.hearing_id)} data-testid={`hearing-row-${h.hearing_id}`}>
+                    <CardContent className="p-5 flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="font-display font-bold">{h.request_details?.common?.case_title || h.court_id}</div>
+                        <div className="text-sm text-muted-foreground">{h.hearing_date} {h.fee ? `· ₹${h.fee}` : ""}</div>
+                      </div>
+                      <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} border-0 font-bold uppercase`}>
+                        {roleAwareStatusLabel(h, getViewerRole(h, user?.user_id))}
+                      </Badge>
+                    </CardContent>
+                  </Card>
+                ))}
+              </TabsContent>
+            ))}
+          </Tabs>
         )}
-        <div className="space-y-3">
-          {hearings?.map((h) => (
-            <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveId(h.hearing_id)}>
-              <CardContent className="p-5 flex items-center justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="font-display font-bold">{h.request_details?.common?.case_title || h.court_id}</div>
-                  <div className="text-sm text-muted-foreground">{h.hearing_date} {h.fee ? `· ₹${h.fee}` : ""}</div>
-                </div>
-                <Badge className={`${STATUS_BADGE[h.status] || ""} border-0 font-bold uppercase`}>{h.status.replace(/_/g, " ")}</Badge>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
       </div>
 
       <HearingDetailDialog

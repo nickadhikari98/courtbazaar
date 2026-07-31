@@ -50,7 +50,7 @@ def test_deletion_invalidates_jwt_token():
     assert request_id, f"no request_id in response: {dr.json()}"
 
     # 4) Admin executes deletion
-    admin_token = _login("admin@courtbazaar.in", "Admin@123")
+    admin_token = _login("admin@courtbazaar.com", "Admin@123")
     ah = {"Authorization": f"Bearer {admin_token}"}
     ex = requests.post(f"{API}/admin/dpdp/requests/{request_id}/execute", headers=ah, timeout=30)
     assert ex.status_code == 200, f"admin execute failed: {ex.status_code} {ex.text}"
@@ -73,7 +73,7 @@ def test_regression_normal_user_auth_still_works():
 
 
 def test_regression_admin_audit_log_works():
-    token = _login("admin@courtbazaar.in", "Admin@123")
+    token = _login("admin@courtbazaar.com", "Admin@123")
     r = requests.get(f"{API}/admin/audit-log", headers={"Authorization": f"Bearer {token}"}, timeout=30)
     assert r.status_code == 200, f"admin audit-log failed: {r.status_code} {r.text}"
     data = r.json()
