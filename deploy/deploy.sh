@@ -16,9 +16,20 @@ DOMAIN="https://courtbazaar.com"
 
 cd "$REPO_DIR"
 
-echo "==> Fetching latest code"
-git fetch origin
-git pull origin main
+# Deliberately does NOT `git pull` here. This file is executed as
+# `bash deploy/deploy.sh` — the running process holds THIS file open by
+# inode from the moment it starts. `git pull`'s checkout replaces a tracked
+# file via unlink+create (a new inode), which an already-open file
+# descriptor never sees; a process reading its own script never notices,
+# and keeps executing the OLD content for the rest of that same run. So a
+# pull done from inside this script — the bug this replaces — silently ran
+# every following line (including the DOMAIN check below) against
+# whatever this file said BEFORE the pull, on any deploy that changed
+# deploy.sh itself, even though the checkout on disk was already correct
+# for the next run. The caller (deploy.yml's SSH step / DEPLOYMENT.md §7's
+# manual instructions) pulls first, in a separate command, before this
+# script is ever invoked — by the time this line runs, the repo is
+# guaranteed already up to date.
 TARGET_COMMIT="$(git rev-parse HEAD)"
 echo "    target commit: $TARGET_COMMIT"
 

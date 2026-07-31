@@ -132,7 +132,7 @@ function HearingVerificationDialog({ hearingId, open, onOpenChange, onChanged })
           <DialogDescription>Hearing date {hearing.hearing_date}</DialogDescription>
         </DialogHeader>
 
-        <HearingProgressStepper status={hearing.status} compact />
+        <HearingProgressStepper status={hearing.status} compact targeted={!!hearing.target_advocate_id} />
 
         {/* Escrow amount / commission / final payout — shown before any action */}
         {escrow && (
@@ -201,7 +201,7 @@ function HearingVerificationDialog({ hearingId, open, onOpenChange, onChanged })
         </div>
 
         <div className="border-t pt-3">
-          <HearingTimeline timeline={hearing.timeline} />
+          <HearingTimeline timeline={hearing.timeline} hearing={hearing} mode="raw" />
         </div>
       </DialogContent>
     </Dialog>

@@ -265,6 +265,36 @@ def extract_fee_amount(fee_structure: Optional[str]) -> Optional[float]:
         return None
 
 
+def build_advocate_card(candidate: dict, name: Optional[str], court_names_by_id: Dict[str, str]) -> dict:
+    """Shared shape-builder for a proxy_counsel_profiles document, used both
+    by recommendations_advocates (a ranked list, confidence_score present)
+    and the single-advocate counsel-profile lookup (no ranking, so
+    confidence_score is simply absent from `candidate`) — one definition
+    instead of two dicts drifting apart."""
+    return {
+        "advocate_id": candidate["user_id"],
+        "name": name or "Proxy Counsel",
+        "avatar_url": None,
+        "verified": True,
+        "primary_courts": [court_names_by_id.get(cid, cid) for cid in (candidate.get("courts") or [])],
+        "practice_areas": candidate.get("practice_areas") or [],
+        "languages": candidate.get("languages") or [],
+        "rating": candidate.get("rating") or 0,
+        "hearings_completed": candidate.get("cases_completed") or 0,
+        "availability": {
+            "available_now": bool(candidate.get("availability_mode")),
+            "note": "Available Today" if candidate.get("availability_mode") else "Not Available Now",
+        },
+        "proposed_fee": extract_fee_amount(candidate.get("fee_structure")),
+        "bio": candidate.get("bio"),
+        "experience_years": candidate.get("experience_years"),
+        "education": candidate.get("education"),
+        "ai_match_score": round((candidate.get("confidence_score") or 0) * 100),
+        "ai_match_reasons": None,
+        "estimated_response_time": None,
+    }
+
+
 async def list_and_recommend(
     db,
     court_id: Optional[str] = None,

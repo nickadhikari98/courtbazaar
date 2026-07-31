@@ -38,7 +38,7 @@ ADV_EMAIL = "advocate@demo.in"
 ADV_PASS = "Advocate@123"
 VENDOR_EMAIL = "vendor@demo.in"
 VENDOR_PASS = "Vendor@123"
-ADMIN_EMAIL = "admin@courtbazaar.in"
+ADMIN_EMAIL = "admin@courtbazaar.com"
 ADMIN_PASS = "Admin@123"
 
 
