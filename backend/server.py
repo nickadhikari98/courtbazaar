@@ -21,6 +21,8 @@ import bcrypt
 import requests
 from datetime import datetime, timezone, timedelta
 
+from automation.n8n_client import publish_event
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -54,6 +56,21 @@ ALLOWED_IMAGE_CONTENT_TYPES = {'image/jpeg', 'image/jpg', 'image/png'}
 
 app = FastAPI(title="CourtBazaar API")
 api_router = APIRouter(prefix="/api")
+
+if os.getenv("ENVIRONMENT", "development") != "production":
+    @app.get("/dev/test-hearing")
+    async def test_hearing():
+        await publish_event(
+            event="hearing_created",
+            payload={
+                "hearing_id": "test123",
+                "requesting_user_id": "user123",
+                "court_id": "court_dwarka",
+                "hearing_date": "2026-08-01",
+                "status": "broadcast"
+            }
+        )
+        return {"success": True}
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)

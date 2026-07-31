@@ -56,6 +56,8 @@ from pymongo import ReturnDocument
 
 from workflow import StateMachine, IllegalTransition
 
+from automation.n8n_client import publish_event
+
 logger = logging.getLogger(__name__)
 
 HEARING_STATUSES = (
@@ -371,6 +373,39 @@ async def accept_hearing_request(db, hearing_id: str, user: dict) -> dict:
                        note="Payment already held — proceeding directly to document sharing")
     updated["status"] = "documents_shared"
     updated["match_tier_deadline_at"] = None
+
+    # n8n automation: fires only here, after the acceptance flow above has
+    # fully committed (accept-race won, escrow payee assigned, match-tier
+    # deadline cleared, transition to documents_shared done) — same
+    # reasoning as mark_payment_confirmed's publish_event call: a publish
+    # failure must never roll back or block a business transaction that
+    # already committed. court_name/requester_name/requester_email aren't on
+    # hearing_requests itself (only court_id/requesting_user_id are) — n8n
+    # has no service-auth path to fetch them itself, so they're resolved
+    # here, inside the same best-effort try/except, rather than invented or
+    # left for n8n to call back.
+    from automation.n8n_client import publish_event
+    try:
+        court = await db.courts.find_one({"court_id": hearing.get("court_id")}, {"_id": 0, "name": 1})
+        requester = await db.users.find_one({"user_id": hearing["requesting_user_id"]}, {"_id": 0, "name": 1, "email": 1})
+        await publish_event(
+            event="proxy_counsel_accepted",
+            payload={
+                "hearing_id": hearing_id,
+                "proxy_counsel_user_id": user["user_id"],
+                "requesting_user_id": hearing["requesting_user_id"],
+                "court_id": hearing.get("court_id"),
+                "court_name": court.get("name") if court else None,
+                "requester_name": requester.get("name") if requester else None,
+                "requester_email": requester.get("email") if requester else None,
+                "fee": hearing.get("fee"),
+                "hearing_date": hearing.get("hearing_date"),
+                "status": "documents_shared",
+            },
+        )
+    except Exception as e:
+        logger.error(f"n8n publish_event failed for hearing {hearing_id}: {e}")
+
     return updated
 
 
@@ -707,6 +742,35 @@ async def mark_payment_confirmed(db, hearing_id: str, user: dict) -> dict:
             await counsel_matching.run_matching(db, hearing)
         except Exception as e:
             await log_audit(db, "matching.dispatch_failed", None, {"hearing_id": hearing_id, "error": str(e)})
+
+    # n8n automation: fires only from here, never on hearing creation — this
+    # is the first point the hearing is actually "broadcast". Best-effort,
+    # same reasoning as the matching dispatch above: a publish failure must
+    # never roll back or block payment confirmation, which already committed.
+    # court_name/requester_name/requester_email aren't on hearing_requests
+    # itself (only court_id/requesting_user_id are) — n8n has no service-auth
+    # path to fetch them itself, so they're resolved here, inside the same
+    # best-effort try/except, rather than invented or left for n8n to call back.
+    from automation.n8n_client import publish_event
+    try:
+        court = await db.courts.find_one({"court_id": hearing.get("court_id")}, {"_id": 0, "name": 1})
+        requester = await db.users.find_one({"user_id": hearing["requesting_user_id"]}, {"_id": 0, "name": 1, "email": 1})
+        await publish_event(
+            event="hearing_created",
+            payload={
+                "hearing_id": hearing_id,
+                "requesting_user_id": hearing["requesting_user_id"],
+                "court_id": hearing.get("court_id"),
+                "court_name": court.get("name") if court else None,
+                "requester_name": requester.get("name") if requester else None,
+                "requester_email": requester.get("email") if requester else None,
+                "fee": hearing.get("fee"),
+                "hearing_date": hearing.get("hearing_date"),
+                "status": "broadcast",
+            },
+        )
+    except Exception as e:
+        logger.error(f"n8n publish_event failed for hearing {hearing_id}: {e}")
 
     return {"ok": True, "status": "broadcast"}
 
