@@ -191,7 +191,7 @@ export default function LegalServiceRequestForm({
         <CardContent className="p-5 space-y-4">
           {serviceConfig.requiresWorkType && (
             <div>
-              <div className="font-display font-bold mb-2">Work Required</div>
+              <div className="font-display font-bold mb-2">Work Required *</div>
               <div className="grid sm:grid-cols-2 gap-2">
                 {serviceConfig.workTypeOptions.map((option) => (
                   <label key={option} className="flex items-center gap-2 text-sm font-medium">
@@ -212,7 +212,7 @@ export default function LegalServiceRequestForm({
           )}
 
           <div>
-            <div className="font-display font-bold mb-2">Priority</div>
+            <div className="font-display font-bold mb-2">Priority *</div>
             <RadioGroup value={fields.priority} onValueChange={(v) => set({ priority: v })} className="flex flex-wrap gap-4">
               {PRIORITY_OPTIONS.map((p) => (
                 <label key={p} className="flex items-center gap-2 text-sm font-medium">
@@ -220,6 +220,7 @@ export default function LegalServiceRequestForm({
                 </label>
               ))}
             </RadioGroup>
+            {errors.priority && <p className="text-xs text-destructive mt-1">{errors.priority}</p>}
           </div>
 
           {serviceConfig.supportsTargeting && (
@@ -270,7 +271,30 @@ export default function LegalServiceRequestForm({
             {serviceConfig.supportsBudget && (
               <div>
                 <Label>Proposed Budget (optional)</Label>
-                <Input type="number" value={fields.budget} onChange={(e) => set({ budget: e.target.value })} placeholder="₹" />
+                <Input
+                  type="number" value={fields.budget} onChange={(e) => set({ budget: e.target.value })}
+                  // No native `min` here deliberately — every other field on
+                  // this form validates purely at the JS level (serviceConfig.
+                  // validate, styled error text below), never via a native
+                  // HTML constraint. A native `min`/`required` fails
+                  // checkValidity() BEFORE the browser ever dispatches
+                  // "submit", which means React's onSubmit (and this form's
+                  // whole custom error-message system) never runs at all —
+                  // confirmed directly: rangeUnderflow blocked the submit
+                  // event entirely, silently, with no custom message shown.
+                  // The negative-budget guard belongs in validate() only.
+                  //
+                  // Chrome (and other browsers) changes a focused number
+                  // input's value on mouse-wheel scroll — scrolling the page
+                  // with the cursor resting over this field can silently
+                  // decrement an untouched, blank budget to 0 or negative
+                  // without the customer ever typing anything. Blurring on
+                  // wheel is the standard fix: the field simply doesn't
+                  // respond to scroll, same as every other field on this form.
+                  onWheel={(e) => e.target.blur()}
+                  placeholder="₹"
+                />
+                {errors.budget && <p className="text-xs text-destructive mt-1">{errors.budget}</p>}
               </div>
             )}
           </CardContent>

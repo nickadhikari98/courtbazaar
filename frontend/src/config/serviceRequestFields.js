@@ -48,6 +48,15 @@ export const SERVICE_CONFIGS = {
       if (fields.work_required?.includes("Other") && !fields.work_required_notes?.trim()) {
         errors.work_required_notes = "Add a note describing the other work required";
       }
+      if (!fields.priority) errors.priority = "Priority is required";
+      // Budget is genuinely optional (blank is valid — the counsel's own
+      // reference fee applies instead), but if a value IS present it must be
+      // positive. Guards against native <input type="number">'s own
+      // scroll-wheel-over-a-focused-field behavior silently decrementing an
+      // untouched field to 0 or negative — not just a typed mistake.
+      if (fields.budget !== "" && fields.budget != null && Number(fields.budget) <= 0) {
+        errors.budget = "Proposed budget must be greater than 0";
+      }
       return errors;
     },
   },

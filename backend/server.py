@@ -2386,9 +2386,22 @@ async def create_hearing_request(payload: HearingRequestCreate, user=Depends(get
         payload.matter_id, payload.target_advocate_id, payload.service_type, payload.request_details,
     )
     if hearing.get("target_advocate_id"):
-        await _notify_hearing_event(hearing["target_advocate_id"], "New hearing request",
-                                     f"You've been requested for a hearing at {hearing['court_id']}. Open Negotiation to respond.",
-                                     hearing["hearing_id"])
+        if payload.fee:
+            # Hiring-flow simplification: a fee typed on the intake form used
+            # to just sit on the hearing record — the requester still had to
+            # separately open Negotiation and click "Propose Offer" for that
+            # same number before the counsel could act on anything. Auto-
+            # creating that first offer here (reusing propose_offer verbatim,
+            # no new negotiation logic) means the counsel always has a real,
+            # respondable offer the moment they open the request. Its own
+            # "New offer" notification is the only ping for this — deliberately
+            # not ALSO sending "New hearing request" below for the same event.
+            import negotiation as negotiation_svc
+            await negotiation_svc.propose_offer(db, hearing["hearing_id"], user, payload.fee, None)
+        else:
+            await _notify_hearing_event(hearing["target_advocate_id"], "New hearing request",
+                                         f"You've been requested for a hearing at {hearing['court_id']}. Open Negotiation to respond.",
+                                         hearing["hearing_id"])
     return hearing
 
 @api_router.get("/hearing-requests")
@@ -2555,7 +2568,13 @@ async def list_hearing_messages(hearing_id: str, user=Depends(get_current_user))
 
 @api_router.post("/hearing-requests/{hearing_id}/messages")
 async def post_hearing_message(hearing_id: str, payload: HearingMessageCreate, user=Depends(get_current_user)):
-    return await hearings_svc.add_message(db, hearing_id, user, payload.text)
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)  # visibility check
+    message = await hearings_svc.add_message(db, hearing_id, user, payload.text)
+    preview = payload.text if len(payload.text) <= 120 else f"{payload.text[:117]}..."
+    for recipient_id in hearings_svc.other_participant_ids(hearing, user["user_id"]):
+        await _notify_hearing_event(recipient_id, f"New message from {user.get('name') or 'a participant'}",
+                                     preview, hearing_id)
+    return message
 
 # ----------------------------------------------------------------------
 # Negotiation Module — offer/counter-offer/agreement state (negotiation.py).

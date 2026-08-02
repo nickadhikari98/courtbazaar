@@ -43,7 +43,7 @@ async def _cleanup(db, user_ids=(), hearing_ids=()):
         await db.negotiations.delete_many({"hearing_id": {"$in": list(hearing_ids)}})
 
 
-def test_target_advocate_notified_immediately_on_hearing_creation(monkeypatch):
+def test_target_advocate_notified_immediately_on_hearing_creation_without_fee(monkeypatch):
     async def body():
         db = _db()
         # server.create_hearing_request reads the module-global `db` — point
@@ -60,7 +60,7 @@ def test_target_advocate_notified_immediately_on_hearing_creation(monkeypatch):
             await _insert_user(db, counsel)
             payload = server.HearingRequestCreate(
                 court_id="court_tishazari", hearing_date="2026-08-01", case_details="Test case",
-                fee=1500.0, target_advocate_id=counsel["user_id"],
+                fee=None, target_advocate_id=counsel["user_id"],
             )
             hearing = await server.create_hearing_request(payload, requester)
             hearing_id = hearing["hearing_id"]
@@ -73,6 +73,49 @@ def test_target_advocate_notified_immediately_on_hearing_creation(monkeypatch):
             assert event["related_entity_type"] == "hearing"
             assert event["related_entity_id"] == hearing_id
             assert "request" in event["title"].lower()
+
+            # No fee was offered, so no offer should have been auto-created.
+            negotiation_doc = await db.negotiations.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert negotiation_doc is None or not negotiation_doc.get("offers")
+        finally:
+            await _cleanup(db, [requester["user_id"], counsel["user_id"]], [hearing_id] if hearing_id else [])
+    asyncio.run(body())
+
+
+def test_target_advocate_gets_auto_created_first_offer_when_fee_given(monkeypatch):
+    """Hiring-flow UX rewrite: a fee typed on the intake form must not just
+    sit on the hearing record — it becomes a real, respondable negotiation
+    offer immediately, reusing propose_offer verbatim (no duplicated
+    negotiation logic). The counsel gets exactly one notification for this
+    ("New offer") — not also the generic "New hearing request" ping, which
+    would be a redundant second notification for the same event."""
+    async def body():
+        db = _db()
+        monkeypatch.setattr(server, "db", db)
+        requester, counsel = _user("requester"), _user("counsel")
+        hearing_id = None
+        try:
+            await _insert_user(db, requester)
+            await _insert_user(db, counsel)
+            payload = server.HearingRequestCreate(
+                court_id="court_tishazari", hearing_date="2026-08-01", case_details="Test case",
+                fee=1500.0, target_advocate_id=counsel["user_id"],
+            )
+            hearing = await server.create_hearing_request(payload, requester)
+            hearing_id = hearing["hearing_id"]
+            assert hearing["status"] == "requested"
+
+            negotiation_doc = await db.negotiations.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert negotiation_doc is not None
+            assert len(negotiation_doc["offers"]) == 1
+            offer = negotiation_doc["offers"][0]
+            assert offer["amount"] == 1500.0
+            assert offer["proposed_by_user_id"] == requester["user_id"]
+
+            events = await db.notification_events.find({"user_id": counsel["user_id"]}, {"_id": 0}).to_list(10)
+            assert len(events) == 1, f"expected exactly one notification, got {[e['title'] for e in events]}"
+            assert events[0]["title"] == "New offer"
+            assert events[0]["related_entity_id"] == hearing_id
         finally:
             await _cleanup(db, [requester["user_id"], counsel["user_id"]], [hearing_id] if hearing_id else [])
     asyncio.run(body())
@@ -132,6 +175,34 @@ def test_propose_offer_notifies_the_other_party():
                 {"user_id": requester["user_id"], "title": "Counter offer"}, {"_id": 0},
             )
             assert counter_event is not None
+        finally:
+            await _cleanup(db, [requester["user_id"], counsel["user_id"]], [hearing_id])
+    asyncio.run(body())
+
+
+def test_post_message_notifies_the_other_party_with_sender_name(monkeypatch):
+    async def body():
+        db = _db()
+        monkeypatch.setattr(server, "db", db)
+        requester, counsel = _user("requester"), _user("counsel")
+        hearing_id = await _make_hearing(db, requester, counsel)
+        try:
+            await _insert_user(db, requester)
+            await _insert_user(db, counsel)
+
+            payload = server.HearingMessageCreate(text="Can we move the hearing prep call?")
+            message = await server.post_hearing_message(hearing_id, payload, requester)
+            assert message["sender_user_id"] == requester["user_id"]
+            assert message["sender_name"] == f"Test {requester['user_id']}"
+
+            event = await db.notification_events.find_one({"user_id": counsel["user_id"]}, {"_id": 0})
+            assert event is not None
+            assert f"Test {requester['user_id']}" in event["title"]
+            assert "move the hearing prep call" in event["body"]
+
+            # Sender must not notify themselves.
+            no_self_notify = await db.notification_events.find_one({"user_id": requester["user_id"]}, {"_id": 0})
+            assert no_self_notify is None
         finally:
             await _cleanup(db, [requester["user_id"], counsel["user_id"]], [hearing_id])
     asyncio.run(body())

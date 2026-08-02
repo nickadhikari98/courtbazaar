@@ -15,12 +15,13 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty, TableLoading,
 } from "@/components/ui/table";
-import { Briefcase, X, Plus, Trash2, Star, CheckCircle2, Clock } from "lucide-react";
+import { Briefcase, X, Plus, Trash2, Star, CheckCircle2, Clock, ArrowRight } from "lucide-react";
 import {
   getPracticeProfile, updatePracticeProfile, listAvailabilitySlots,
   addAvailabilitySlot, removeAvailabilitySlot, getPracticePerformance,
 } from "@/lib/practiceApi";
 import { listHearingRequests } from "@/lib/hearingRequestsApi";
+import { formatINR } from "@/lib/api";
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import CapabilitiesCard from "@/components/shared/CapabilitiesCard";
 import StatGrid from "@/components/shared/StatGrid";
@@ -334,12 +335,36 @@ function HearingsTab() {
 
   return (
     <div className="space-y-6">
+      {/* Pending Offers — hiring-flow UX rewrite: a counsel should never have
+          to hunt through notifications to find work waiting on them. This is
+          the one place a targeted, pre-payment hearing (see hearings.py's
+          list_hearing_requests — invisible everywhere else until "broadcast")
+          actually surfaces in their own workspace. Each card shows only what's
+          needed to recognize the request at a glance; the actual Accept/
+          Reject/Negotiate actions live on the (also redesigned) Negotiation
+          page — one "Respond to Offer" CTA here, not a second copy of those
+          three buttons competing for space on this list. */}
       {!!negotiating.length && (
         <div>
-          <div className="font-display font-bold mb-2">Negotiation Requests</div>
-          <p className="text-xs text-muted-foreground mb-2">A client has requested you directly — negotiate the fee before payment.</p>
-          <div className="space-y-2">
-            {negotiating.map((h) => renderCard(h, () => navigate(`/hearing-requests/${h.hearing_id}/negotiate`)))}
+          <div className="font-display font-bold mb-2">Pending Offers</div>
+          <p className="text-xs text-muted-foreground mb-3">A client has requested you directly — respond to move forward.</p>
+          <div className="grid sm:grid-cols-2 gap-3">
+            {negotiating.map((h) => (
+              <Card key={h.hearing_id} className="border-l-4 border-l-accent shadow-sm" data-testid={`pending-offer-${h.hearing_id}`}>
+                <CardContent className="p-4">
+                  <div className="font-display font-bold text-sm truncate">{h.request_details?.common?.case_title || h.court_id}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{h.request_details?.common?.court_name || h.court_id} · {h.hearing_date}</div>
+                  {h.fee != null && <div className="text-lg font-display font-bold mt-2">{formatINR(h.fee)}</div>}
+                  <Button
+                    type="button" size="sm" className="w-full font-bold bg-accent hover:bg-accent/90 mt-3"
+                    onClick={() => navigate(`/hearing-requests/${h.hearing_id}/negotiate`)}
+                    data-testid={`respond-to-offer-${h.hearing_id}`}
+                  >
+                    Respond to Offer <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
           </div>
         </div>
       )}
