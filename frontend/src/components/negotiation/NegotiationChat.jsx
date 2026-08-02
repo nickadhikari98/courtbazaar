@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Send, HandCoins, CheckCircle2, MessageCircle, Info } from "lucide-react";
 import { listHearingMessages, postHearingMessage } from "@/lib/hearingRequestsApi";
 import { formatINR } from "@/lib/api";
@@ -74,7 +76,8 @@ function useMessageFeed(hearingId, timeline, hearing) {
 
   const feed = [
     ...messages.map((m) => ({
-      type: "message", at: m.created_at, key: m.message_id, text: m.text, senderUserId: m.sender_user_id,
+      type: "message", at: m.created_at, key: m.message_id, text: m.text,
+      senderUserId: m.sender_user_id, senderName: m.sender_name,
     })),
     ...(timeline || []).filter((e) => e.event === "offer_proposed").map(offerEventToEntry),
     ...(timeline || []).filter((e) => e.event === "negotiation_agreed").map((e) => agreedEventToEntry(e, hearing)),
@@ -117,7 +120,10 @@ function FeedEntry({ entry, isMine }) {
   }
 
   return (
-    <div className={`flex ${isMine ? "justify-end" : "justify-start"}`} data-testid="feed-message">
+    <div className={`flex flex-col ${isMine ? "items-end" : "items-start"}`} data-testid="feed-message">
+      <div className={`text-2xs font-bold text-muted-foreground mb-0.5 px-0.5 ${isMine ? "text-right" : "text-left"}`}>
+        {isMine ? "You" : entry.senderName || "Participant"}
+      </div>
       <div className={`max-w-[80%] rounded-lg px-3 py-1.5 text-sm ${isMine ? "bg-accent/10" : "bg-secondary"}`}>
         {entry.text}
         <div className="text-2xs text-muted-foreground mt-0.5">{time}</div>
@@ -134,31 +140,72 @@ export default function NegotiationChat({ hearingId, timeline, negotiationStatus
   const { user } = useAuth();
   const { feed, sendMessage, sending } = useMessageFeed(hearingId, timeline, hearing);
   const [text, setText] = useState("");
+  const [unreadCount, setUnreadCount] = useState(0);
   const bottomRef = useRef(null);
+  // Tracks which message ids we've already accounted for (toast + unread
+  // badge) across polls — null on first render means "just mounted, don't
+  // toast for history that already existed before this page was opened".
+  const knownIdsRef = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [feed.length]);
 
+  // New-message notifications: this panel polls independently of the app's
+  // global notification bell (which only reflects the backend's persisted
+  // notification_events on its own cadence) — this gives an immediate toast
+  // + a running unread count the moment a poll picks up the other party's
+  // message, without waiting on that separate system.
+  useEffect(() => {
+    const messageEntries = feed.filter((e) => e.type === "message");
+    const currentIds = new Set(messageEntries.map((e) => e.key));
+    if (knownIdsRef.current) {
+      const newFromOthers = messageEntries.filter((e) => !knownIdsRef.current.has(e.key) && e.senderUserId !== user?.user_id);
+      if (newFromOthers.length) {
+        setUnreadCount((n) => n + newFromOthers.length);
+        newFromOthers.forEach((e) => {
+          toast.message(e.senderName || "New message", { description: e.text });
+        });
+      }
+    }
+    knownIdsRef.current = currentIds;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-derive off feed identity, not user (stable for the page's lifetime)
+  }, [feed]);
+
+  const markSeen = () => setUnreadCount(0);
+
   const handleSend = async () => {
     const trimmed = text.trim();
     if (!trimmed) return;
     setText("");
+    markSeen();
     await sendMessage(trimmed);
   };
 
   return (
-    <Card className="border shadow-none">
+    <Card className="border shadow-none" data-testid="negotiation-chat-panel">
       <CardContent className="p-5">
-        <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
-          <MessageCircle className="w-3.5 h-3.5" /> Discussion Chat
+        <div className="flex items-center justify-between gap-1.5 mb-2">
+          <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">
+            <MessageCircle className="w-3.5 h-3.5" /> Discussion Chat
+          </div>
+          {unreadCount > 0 && (
+            <Badge className="bg-accent text-white border-0 text-2xs font-bold h-5 px-2" data-testid="chat-unread-badge">
+              {unreadCount} new
+            </Badge>
+          )}
         </div>
         {negotiationStatus === "agreed" && (
           <div className="flex items-center gap-1.5 text-2xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-1.5 mb-3">
             <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" /> Amount agreed — chat is for hearing logistics now.
           </div>
         )}
-        <div className="space-y-2 max-h-72 overflow-y-auto mb-3 pr-1" data-testid="negotiation-feed">
+        <div
+          className="space-y-2 max-h-72 overflow-y-auto mb-3 pr-1"
+          data-testid="negotiation-feed"
+          onMouseEnter={markSeen}
+          onFocus={markSeen}
+        >
           {!feed.length && <p className="text-sm text-muted-foreground text-center py-6">No messages yet — say hello.</p>}
           {feed.map((entry) => (
             <FeedEntry key={entry.key} entry={entry} isMine={entry.senderUserId === user?.user_id || entry.proposedByUserId === user?.user_id} />
@@ -169,6 +216,7 @@ export default function NegotiationChat({ hearingId, timeline, negotiationStatus
           <Input
             value={text} onChange={(e) => setText(e.target.value)} placeholder="Message"
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSend(); } }}
+            onFocus={markSeen}
             data-testid="negotiation-chat-input"
           />
           <Button type="button" variant="outline" onClick={handleSend} disabled={sending || !text.trim()} data-testid="negotiation-chat-send">

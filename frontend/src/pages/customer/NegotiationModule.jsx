@@ -9,11 +9,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
-  ClipboardList, FileStack, BadgeCheck, Star, ArrowLeft, ArrowRight, Gavel, Ban, CheckCircle2, History,
+  MessagesSquare, BadgeCheck, Star, ArrowLeft, ArrowRight, Gavel, Ban, CheckCircle2, History,
 } from "lucide-react";
-import { getHearingRequest, getHearingCounselProfile } from "@/lib/hearingRequestsApi";
+import {
+  getHearingRequest, getHearingCounselProfile, acceptHearingRequest, markHearingConducted,
+} from "@/lib/hearingRequestsApi";
 import { payForHearing as payForHearingShared } from "@/lib/hearingPayment";
-import { formatINR } from "@/lib/api";
+import { formatINR, getErrorMessage } from "@/lib/api";
 import { initialsOf } from "@/components/proxyCounsel/CounselCard";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
 import HearingTimeline from "@/components/shared/HearingTimeline";
@@ -26,16 +28,17 @@ import NegotiationOfferChain from "@/components/negotiation/NegotiationOfferChai
 import { useNegotiationPoll } from "@/components/negotiation/useNegotiationPoll";
 import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions } from "@/lib/hearingLifecycle";
 
-// Both already fully implemented — HearingDetailDialog.jsx's own Chat/Notes
+// Already fully implemented — HearingDetailDialog.jsx's own Chat/Notes
 // section is the assignment discussion, and its Documents section is the
-// document sharing, for this exact hearing. These cards are just a second,
-// discoverable entry point to that same dialog from the Negotiation page
-// (which otherwise only surfaces the pre-payment NegotiationChat), not a
-// separate feature — no "Coming Soon" involved.
-const ASSIGNMENT_MODULES = [
-  { icon: ClipboardList, title: "Assignment Discussion", body: "Discuss hearing strategy, logistics and case instructions with the counsel.", cta: "Open Discussion" },
-  { icon: FileStack, title: "Document Sharing", body: "Securely share case papers, evidence, orders and receive updated drafts.", cta: "Open Documents" },
-];
+// document sharing, for this exact hearing. Previously two separate cards
+// that both opened the same dialog; merged into one since every feature
+// inside (chat, notes, documents) is available to both sides regardless of
+// which card they clicked — a single, honest entry point.
+const ASSIGNMENT_MODULE = {
+  icon: MessagesSquare, title: "Assignment Discussion & Document Sharing",
+  body: "Discuss hearing strategy, logistics and case instructions, and securely share case papers, evidence, orders and updated drafts — all in one place.",
+  cta: "Open Discussion & Documents",
+};
 
 /* Navigation target for BOTH selection paths in HireProxyCounsel.jsx (AI
    recommendation or Search More Counsels) — there is exactly one
@@ -58,6 +61,8 @@ export default function NegotiationModule() {
   const [hearing, setHearing] = useState(null);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
+  const [accepting, setAccepting] = useState(false);
+  const [markingConducted, setMarkingConducted] = useState(false);
   const { negotiation, reload: reloadNegotiation } = useNegotiationPoll(hearingId);
 
   // Passed directly from HireProxyCounsel.jsx at selection time so the rich
@@ -89,7 +94,9 @@ export default function NegotiationModule() {
   // Production-hardening pass: viewerRole/isTerminal(isClosed)/isEscrowParticipant
   // now come from the same shared resolver HearingDetailDialog.jsx calls —
   // no more independently-derived copies that could disagree between screens.
-  const { viewerRole, isClosed: isTerminal, isEscrowParticipant, negotiationRequired, canPay } = getHearingPermissions(hearing, user);
+  const {
+    viewerRole, isClosed: isTerminal, isEscrowParticipant, negotiationRequired, canPay, canAccept, canMarkConducted,
+  } = getHearingPermissions(hearing, user);
   // "Agreed" is read from hearing.commercially_locked (the field the backend
   // itself checks in initiate_payment/cancel_hearing_request), not from the
   // separately-polled negotiation.status — those two are supposed to always
@@ -165,8 +172,41 @@ export default function NegotiationModule() {
     }
   };
 
+  // Accept-the-hearing and Mark-Conducted used to only live in
+  // HearingDetailDialog/Practice.jsx, with this page linking out to Practice
+  // instead of acting directly — self-routable UI means the counsel's actual
+  // next action happens right here. Same endpoints
+  // (acceptHearingRequest/markHearingConducted), same success/error handling
+  // as HearingDetailDialog's — just called from this page instead of routing
+  // away to trigger them.
+  const handleAccept = async () => {
+    setAccepting(true);
+    try {
+      await acceptHearingRequest(hearingId);
+      toast.success("Hearing accepted — documents can now be shared.");
+      loadHearing();
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Could not accept this hearing"));
+    } finally {
+      setAccepting(false);
+    }
+  };
+
+  const handleMarkConducted = async () => {
+    setMarkingConducted(true);
+    try {
+      await markHearingConducted(hearingId);
+      toast.success("Hearing marked conducted — upload the Court Order Sheet to proceed.");
+      loadHearing();
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Could not mark this hearing conducted"));
+    } finally {
+      setMarkingConducted(false);
+    }
+  };
+
   return (
-    <PageContainer className="max-w-3xl">
+    <PageContainer className="max-w-6xl">
       <PageHeader
         eyebrow="Proxy Counsel" eyebrowIcon={Gavel} title="Negotiation"
         description="Finalize scope, fee, and documents with your selected counsel before payment."
@@ -178,7 +218,7 @@ export default function NegotiationModule() {
       />
 
       {negotiationEnded ? (
-        <Card className="dashboard-card border-none mt-6" data-testid="negotiation-ended-screen">
+        <Card className="dashboard-card border-none mt-6 max-w-xl mx-auto" data-testid="negotiation-ended-screen">
           <CardContent className="p-10 text-center">
             <CheckCircle2 className="w-10 h-10 mx-auto text-emerald-600 mb-3" />
             <div className="font-display font-bold text-lg">Negotiation Ended</div>
@@ -193,13 +233,14 @@ export default function NegotiationModule() {
           {loading && <div className="text-center text-muted-foreground py-10 mt-6">Loading…</div>}
 
           {!loading && !hearing && (
-            <Card className="border-dashed border-2 mt-6">
+            <Card className="border-dashed border-2 mt-6 max-w-xl mx-auto">
               <CardContent className="p-10 text-center text-sm text-muted-foreground">This request could not be found.</CardContent>
             </Card>
           )}
 
           {!loading && hearing && (
-            <div className="mt-6 space-y-5">
+            <div className={`mt-6 ${isTerminal ? "" : "lg:grid lg:grid-cols-[1fr_360px] lg:gap-5 lg:items-start"}`}>
+            <div className="space-y-5">
               {/* ① Hearing Summary */}
               <Card className="dashboard-card border-none">
                 <CardContent className="p-5">
@@ -279,14 +320,12 @@ export default function NegotiationModule() {
                     onNegotiationEnded={handleNegotiationEnded}
                   />
 
-                  {/* ④ Discussion Chat — SECONDARY */}
-                  <NegotiationChat hearingId={hearingId} timeline={negotiation?.timeline} negotiationStatus={negotiation?.status} hearing={hearing} />
-
                   {/* ⑤ Next Action — pre-payment/payment stages */}
                   {negotiation && (
                     <NegotiationNextAction
                       stage={negotiationStage} viewerRole={viewerRole} hearing={hearing} canPay={canPay}
                       paying={paying} onPay={handlePay}
+                      canAccept={canAccept} accepting={accepting} onAccept={handleAccept}
                     />
                   )}
 
@@ -297,7 +336,10 @@ export default function NegotiationModule() {
                       isEscrowParticipant-gated to match HearingDetailDialog.jsx —
                       an admin viewing this page must never see it either. */}
                   {isEscrowParticipant && (
-                    <EscrowStagePanel hearingId={hearingId} hearing={hearing} viewerRole={viewerRole} onChanged={loadHearing} />
+                    <EscrowStagePanel
+                      hearingId={hearingId} hearing={hearing} viewerRole={viewerRole} onChanged={loadHearing}
+                      canMarkConducted={canMarkConducted} markingConducted={markingConducted} onMarkConducted={handleMarkConducted}
+                    />
                   )}
                 </>
               )}
@@ -322,31 +364,39 @@ export default function NegotiationModule() {
               </Card>
 
               {!isTerminal && (
-                <div className="grid sm:grid-cols-2 gap-4">
-                  {ASSIGNMENT_MODULES.map(({ icon: Icon, title, body, cta }) => (
-                    <Card
-                      key={title}
-                      className="dashboard-card border-none cursor-pointer hover:shadow-md transition-all"
-                      onClick={() => setDetailOpen(true)}
-                      data-testid={`assignment-module-${title.toLowerCase().replace(/\s+/g, "-")}`}
-                    >
-                      <CardContent className="p-5">
-                        <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center mb-3">
-                          <Icon className="w-5 h-5 text-accent" />
-                        </div>
-                        <div className="font-display font-bold text-sm mb-1">{title}</div>
-                        <p className="text-xs text-muted-foreground mb-3">{body}</p>
-                        <Button
-                          type="button" size="sm" variant="outline" className="font-bold"
-                          onClick={(e) => { e.stopPropagation(); setDetailOpen(true); }}
-                        >
-                          {cta} <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
-                        </Button>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
+                <Card
+                  className="dashboard-card border-none cursor-pointer hover:shadow-md transition-all"
+                  onClick={() => setDetailOpen(true)}
+                  data-testid="assignment-module-combined"
+                >
+                  <CardContent className="p-5 flex items-start gap-4">
+                    <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center flex-shrink-0">
+                      <MessagesSquare className="w-5 h-5 text-accent" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-display font-bold text-sm mb-1">{ASSIGNMENT_MODULE.title}</div>
+                      <p className="text-xs text-muted-foreground mb-3">{ASSIGNMENT_MODULE.body}</p>
+                      <Button
+                        type="button" size="sm" variant="outline" className="font-bold"
+                        onClick={(e) => { e.stopPropagation(); setDetailOpen(true); }}
+                      >
+                        {ASSIGNMENT_MODULE.cta} <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
               )}
+            </div>
+
+            {/* Right sidebar — Discussion Chat, sticky so new messages stay
+                visible while scrolling the rest of the page, instead of
+                being buried inline where they only surface after scrolling
+                all the way down (the earlier single-column placement). */}
+            {!isTerminal && (
+              <div className="mt-5 lg:mt-0 lg:sticky lg:top-20">
+                <NegotiationChat hearingId={hearingId} timeline={negotiation?.timeline} negotiationStatus={negotiation?.status} hearing={hearing} />
+              </div>
+            )}
             </div>
           )}
         </>

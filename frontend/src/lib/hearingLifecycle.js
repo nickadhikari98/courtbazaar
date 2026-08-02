@@ -153,10 +153,20 @@ export function getHearingPermissions(hearing, user) {
   const isEligibleAdvocate = hearingIsAcceptableByMe(hearing, user);
   const canAccept = isEligibleAdvocate;
   const canDecline = isEligibleAdvocate && !hearing.target_advocate_id;
-  // Commercially locked (fee agreed) hearings can no longer be walked away
-  // from through this pre-negotiation path — mirrors the backend refusal in
+  // Deliberately NOT gated on isEligibleAdvocate as a whole (which requires
+  // status "broadcast", i.e. post-payment) — hearings.HEARING_TRANSITIONS
+  // defines ("requested", "reject") specifically so the targeted advocate
+  // can walk away during pre-payment negotiation too, not just from
+  // "broadcast" (see hearings.py's module docstring and
+  // reject_hearing_request). Still requires can_practice_proxy_counsel,
+  // matching the backend endpoint's own capability gate (server.py's PUT
+  // .../reject), same "never show a button the backend would then 403"
+  // rule the rest of this file follows. Commercially locked (fee agreed)
+  // hearings can no longer be walked away from through this pre-negotiation
+  // path — mirrors the backend refusal in
   // hearings.reject_hearing_request/cancel_hearing_request.
-  const canReject = isEligibleAdvocate && isTargetedAtMe && !hearing.commercially_locked;
+  const canReject = !!user?.capabilities?.includes("can_practice_proxy_counsel")
+    && isTargetedAtMe && !hearing.commercially_locked && ["requested", "broadcast"].includes(hearing.status);
   const negotiationRequired = !!hearing.target_advocate_id;
   const negotiationAgreed = !!hearing.commercially_locked;
   const negotiationPending = (isRequester || isTargetedAtMe) && hearing.status === "requested"

@@ -237,11 +237,21 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
         <div>
           <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Chat</div>
           <div className="space-y-1.5 mb-2 max-h-40 overflow-y-auto">
-            {messages.map((m) => (
-              <div key={m.message_id} className={`text-sm rounded-lg px-3 py-1.5 max-w-[80%] ${m.sender_user_id === user?.user_id ? "bg-accent/10 ml-auto" : "bg-secondary"}`}>
-                {m.text}
-              </div>
-            ))}
+            {messages.map((m) => {
+              const isMine = m.sender_user_id === user?.user_id;
+              const time = m.created_at ? new Date(m.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "";
+              return (
+                <div key={m.message_id} className={`flex flex-col ${isMine ? "items-end" : "items-start"}`}>
+                  <div className={`text-2xs font-bold text-muted-foreground mb-0.5 px-0.5 ${isMine ? "text-right" : "text-left"}`}>
+                    {isMine ? "You" : m.sender_name || "Participant"}
+                  </div>
+                  <div className={`text-sm rounded-lg px-3 py-1.5 max-w-[80%] ${isMine ? "bg-accent/10" : "bg-secondary"}`}>
+                    {m.text}
+                    {time && <div className="text-2xs text-muted-foreground mt-0.5">{time}</div>}
+                  </div>
+                </div>
+              );
+            })}
             {!messages.length && <p className="text-sm text-muted-foreground">No messages yet.</p>}
           </div>
           <div className="flex gap-2">
