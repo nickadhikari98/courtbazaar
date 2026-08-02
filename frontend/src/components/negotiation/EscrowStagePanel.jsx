@@ -1,5 +1,4 @@
 import React, { useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -26,14 +25,14 @@ const OWNED_STATUSES = [
 
 /* Escrow Module (founder's rules 3-9) — same one-primary-action-per-stage
    discipline as NegotiationOfferPanel/NegotiationNextAction, now covering
-   the post-payment operational lifecycle. Accept-the-hearing and Mark-
-   Conducted stay exactly where they already lived (Practice.jsx/
-   HearingDetailDialog) — founder's explicit call not to touch that
-   machinery — this panel only owns what rules 3-9 actually describe: the
-   escrow-held messaging, order sheet upload, and the requester's Verify/
-   Dispute action. */
-export default function EscrowStagePanel({ hearingId, hearing, viewerRole, onChanged }) {
-  const navigate = useNavigate();
+   the post-payment operational lifecycle: escrow-held messaging, Mark
+   Conducted, order sheet upload, and the requester's Verify/Dispute action.
+   Mark Conducted calls the exact same hearings.mark_hearing_conducted
+   endpoint HearingDetailDialog/Practice.jsx's own button uses — self-
+   routable, not a hop to a different page to trigger one action. */
+export default function EscrowStagePanel({
+  hearingId, hearing, viewerRole, onChanged, canMarkConducted, markingConducted, onMarkConducted,
+}) {
   const [busy, setBusy] = useState(false);
   const [disputeOpen, setDisputeOpen] = useState(false);
   const [remark, setRemark] = useState("");
@@ -124,12 +123,10 @@ export default function EscrowStagePanel({ hearingId, hearing, viewerRole, onCha
 
   // hearing_scheduled has a real pending action — Mark Hearing Conducted,
   // only possible once the actual court date has passed (an order sheet
-  // can't exist for a hearing that hasn't happened yet). That button lives
-  // in HearingDetailDialog/Practice.jsx (founder's call not to touch that
-  // machinery), so this names the action and links there instead of
-  // duplicating the button — the previous generic "escrow held" text never
-  // said Mark Conducted was needed, which is the gap the production audit
-  // traced ("why can't I reach Upload Order Sheet").
+  // can't exist for a hearing that hasn't happened yet). The previous
+  // generic "escrow held" text never said Mark Conducted was needed, which
+  // is the gap the production audit traced ("why can't I reach Upload Order
+  // Sheet") — this both names the action and lets the counsel do it here.
   if (hearing.status === "hearing_scheduled") {
     return (
       <Card className="border-none bg-secondary/50 shadow-none" data-testid="escrow-stage-panel">
@@ -140,9 +137,9 @@ export default function EscrowStagePanel({ hearingId, hearing, viewerRole, onCha
               ? `${amount} is securely held in Escrow — waiting for the ${otherRoleLabel} to mark the hearing conducted.`
               : `${amount} is securely held in Escrow. Once the hearing takes place, mark it conducted to unlock Order Sheet upload.`}
           </div>
-          {viewerRole === "counsel" && (
-            <Button type="button" variant="outline" className="font-bold" onClick={() => navigate("/practice")} data-testid="go-to-practice-mark-conducted">
-              Go to Practice to Mark Conducted
+          {canMarkConducted && (
+            <Button type="button" onClick={onMarkConducted} disabled={markingConducted} className="bg-accent hover:bg-accent/90 font-bold" data-testid="mark-hearing-conducted">
+              {markingConducted && <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />} Mark Hearing Conducted
             </Button>
           )}
         </CardContent>

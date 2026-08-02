@@ -547,12 +547,23 @@ async def add_message(db, hearing_id: str, user: dict, text: str) -> dict:
         "message_id": f"msg_{uuid.uuid4().hex[:12]}",
         "hearing_id": hearing_id,
         "sender_user_id": user["user_id"],
+        "sender_name": user.get("name") or "User",
         "text": text,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.hearing_messages.insert_one(message)
     message.pop("_id", None)
     return message
+
+
+def other_participant_ids(hearing: dict, sender_user_id: str) -> List[str]:
+    """The other side(s) of a hearing's chat thread — everyone
+    `_check_participant` would admit, minus whoever just sent the message.
+    Used to fan out the new-message notification without notifying yourself."""
+    ids = {hearing["requesting_user_id"], hearing.get("proxy_counsel_user_id"), hearing.get("target_advocate_id")}
+    ids.discard(None)
+    ids.discard(sender_user_id)
+    return list(ids)
 
 
 async def list_messages(db, hearing_id: str) -> List[dict]:

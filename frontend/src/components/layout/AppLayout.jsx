@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { NavLink, Outlet, Link, useNavigate } from "react-router-dom";
+import React, { useEffect, useRef, useState } from "react";
+import { NavLink, Outlet, Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
@@ -123,8 +123,42 @@ export default function AppLayout() {
   const { user, logout } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const items = navItems(user);
   const initials = (user?.name || "U").split(" ").map(s => s[0]).slice(0, 2).join("").toUpperCase();
+
+  // The sidebar's <nav> scrolls independently of the page — a route change
+  // (e.g. Dashboard's "View All Notifications" link, or the topbar bell
+  // button below) highlights the matching item via NavLink's own isActive,
+  // but never scrolls THIS container, so an item further down the list (like
+  // Notifications, well below the Services section) can end up highlighted
+  // but entirely off-screen with no visual sign anything changed.
+  //
+  // Deliberately NOT el.scrollIntoView({block:"nearest"}) — that still
+  // shifted the scroll position (and pushed items like Home out of view)
+  // even when the active item was already fully visible, e.g. clicking the
+  // 4th of ~5 on-screen items. Computing the two rects ourselves and only
+  // touching scrollTop on the exact branch that applies guarantees a
+  // genuine no-op when nothing needs to move — the sidebar's scroll
+  // position is otherwise left completely alone.
+  const navRefs = useRef({});
+  useEffect(() => {
+    const active = items.find((item) => !item.section && (
+      item.to === "/dashboard" ? location.pathname === item.to : location.pathname.startsWith(item.to)
+    ));
+    const el = navRefs.current[active?.to];
+    const container = el?.closest("nav");
+    if (!el || !container) return;
+    const elRect = el.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    if (elRect.top < containerRect.top) {
+      container.scrollTop -= (containerRect.top - elRect.top);
+    } else if (elRect.bottom > containerRect.bottom) {
+      container.scrollTop += (elRect.bottom - containerRect.bottom);
+    }
+    // else: already fully visible — scroll position untouched, on purpose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
 
   const handleLogout = async () => {
     await logout();
@@ -155,6 +189,7 @@ export default function AppLayout() {
             <NavLink
               key={item.to}
               to={item.to}
+              ref={(el) => { navRefs.current[item.to] = el; }}
               data-testid={`nav-${item.label.toLowerCase().replace(/\s+/g, '-')}`}
               className={({ isActive }) =>
                 `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all ${

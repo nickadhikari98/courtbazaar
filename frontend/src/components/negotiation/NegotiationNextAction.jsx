@@ -1,5 +1,4 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Loader2 } from "lucide-react";
@@ -19,8 +18,9 @@ import { ROLE_LABEL } from "@/lib/negotiationRoles";
    HearingDetailDialog.jsx uses — this component never re-derives its own
    "can this viewer pay" logic from viewerRole/hearing.status locally, so
    the two screens can't drift on when the button shows. */
-export default function NegotiationNextAction({ stage, viewerRole, hearing, canPay, paying, onPay }) {
-  const navigate = useNavigate();
+export default function NegotiationNextAction({
+  stage, viewerRole, hearing, canPay, paying, onPay, canAccept, accepting, onAccept,
+}) {
   const otherRoleLabel = ROLE_LABEL[viewerRole === "customer" ? "counsel" : "customer"];
 
   // create-order's initiate_payment call can land the hearing on
@@ -51,13 +51,10 @@ export default function NegotiationNextAction({ stage, viewerRole, hearing, canP
 
   // Payment just landed (targeted hearing, escrow held via
   // escrow.create_and_hold at payment-verify time) — role-aware because only
-  // the Hiring Advocate ever pays. The Proxy Counsel's real next action here
-  // is Accept — that button lives in HearingDetailDialog/Practice.jsx (per
-  // the founder's explicit call not to touch that machinery), not on this
-  // page, so this card names the action and links there instead of
-  // duplicating the button — the vague "waiting for you to perform the
-  // hearing" text this used to show never actually said Accept was needed,
-  // which is the gap traced in the production audit.
+  // the Hiring Advocate ever pays. Accept calls hearings.accept_hearing_request
+  // directly (same endpoint HearingDetailDialog/Practice.jsx's own Accept
+  // button uses) instead of routing the counsel away to trigger it there —
+  // self-routable, one page for the whole hearing lifecycle.
   if (hearing.status === "broadcast" && hearing.target_advocate_id) {
     return (
       <Card className="border-none bg-emerald-50 shadow-none" data-testid="next-action">
@@ -68,9 +65,9 @@ export default function NegotiationNextAction({ stage, viewerRole, hearing, canP
               ? "Payment completed — escrow funded. Waiting for the Proxy Counsel to accept and begin work."
               : "Escrow funded — accept this hearing to begin."}
           </div>
-          {viewerRole === "counsel" && (
-            <Button type="button" variant="outline" className="font-bold" onClick={() => navigate("/practice")} data-testid="go-to-practice-accept">
-              Go to Practice to Accept
+          {canAccept && (
+            <Button type="button" onClick={onAccept} disabled={accepting} className="bg-accent hover:bg-accent/90 font-bold" data-testid="accept-hearing">
+              {accepting && <Loader2 className="w-4 h-4 animate-spin mr-1.5" />} Accept Hearing
             </Button>
           )}
         </CardContent>
@@ -85,10 +82,12 @@ export default function NegotiationNextAction({ stage, viewerRole, hearing, canP
   if (hearing.status !== "requested") return null;
 
   if (stage !== "agreed") {
+    // Plain-language stage text (hiring-flow UX rewrite) — no internal state
+    // names (no_offer/waiting/action_required) ever reach the user.
     const text = {
       no_offer: "Propose an offer above to begin the fee negotiation.",
-      waiting: `Waiting for ${otherRoleLabel} to respond to your offer.`,
-      action_required: "Accept the offer above, or send a counter, to move forward.",
+      waiting: viewerRole === "counsel" ? "Waiting for the Hiring Advocate to respond to your counter." : "Waiting for Counsel Response",
+      action_required: viewerRole === "customer" ? "Counter Offer Received — respond above to move forward." : "Accept the offer above, or send a counter, to move forward.",
     }[stage];
     return (
       <Card className="border-none bg-secondary/50 shadow-none" data-testid="next-action">
@@ -102,15 +101,19 @@ export default function NegotiationNextAction({ stage, viewerRole, hearing, canP
   return (
     <Card className="border-none bg-accent/5 shadow-none" data-testid="next-action">
       <CardContent className="p-4 flex items-center justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-2 text-sm font-semibold">
-          <ArrowRight className="w-4 h-4 text-accent flex-shrink-0" />
-          Amount locked at {formatINR(hearing.fee)} — {canPay
-            ? "payment required to proceed."
-            : "waiting for Hiring Advocate payment."}
+        <div className="text-sm font-semibold">
+          <div className="flex items-center gap-2">
+            <ArrowRight className="w-4 h-4 text-accent flex-shrink-0" /> Offer accepted — {formatINR(hearing.fee)} agreed.
+          </div>
+          <div className="text-muted-foreground font-normal mt-0.5 ml-6">
+            {canPay
+              ? "Next step: complete payment to confirm engagement."
+              : `Waiting for the ${ROLE_LABEL.customer} to complete payment.`}
+          </div>
         </div>
         {canPay && (
           <Button type="button" onClick={onPay} disabled={paying} className="bg-accent hover:bg-accent/90 font-bold" data-testid="pay-via-escrow">
-            {paying && <Loader2 className="w-4 h-4 animate-spin mr-1.5" />} Pay {formatINR(hearing.fee)} via Escrow
+            {paying && <Loader2 className="w-4 h-4 animate-spin mr-1.5" />} Proceed to Payment
           </Button>
         )}
       </CardContent>
