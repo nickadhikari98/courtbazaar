@@ -875,6 +875,46 @@ async def mark_hearing_conducted(db, hearing_id: str, user: dict) -> dict:
 # explicitly-triggered actions (never bundled) so a payout can't happen
 # without a distinct verification step immediately before it.
 # ---------------------------------------------------------------------------
+async def _publish_order_sheet_verified(db, hearing_id: str, hearing: dict, user: dict, verification_path: str) -> None:
+    """Shared payload-builder for the order_sheet_verified n8n event — called
+    only after the caller's own "verify" _transition has already committed
+    (verify_order_sheet and verify_and_release_payout below), never before,
+    same as every other publish_event call site (add_document's
+    order_sheet_uploaded, mark_payment_confirmed's hearing_created,
+    accept_hearing_request's proxy_counsel_accepted). Best-effort: a publish
+    failure must never roll back or block a business transaction that
+    already committed, so it's caught and logged here, never raised.
+    court_name/requester_name/requester_email aren't on hearing_requests
+    itself (only court_id/requesting_user_id are) — n8n has no service-auth
+    path to fetch them itself, so they're resolved here, inside the same
+    best-effort try/except, rather than invented or left for n8n to call
+    back."""
+    from automation.n8n_client import publish_event
+    try:
+        court = await db.courts.find_one({"court_id": hearing.get("court_id")}, {"_id": 0, "name": 1})
+        requester = await db.users.find_one({"user_id": hearing["requesting_user_id"]}, {"_id": 0, "name": 1, "email": 1})
+        await publish_event(
+            event="order_sheet_verified",
+            payload={
+                "hearing_id": hearing_id,
+                "verified_by": user["user_id"],
+                "verification_path": verification_path,
+                "proxy_counsel_user_id": hearing.get("proxy_counsel_user_id"),
+                "requesting_user_id": hearing["requesting_user_id"],
+                "requester_name": requester.get("name") if requester else None,
+                "requester_email": requester.get("email") if requester else None,
+                "court_id": hearing.get("court_id"),
+                "court_name": court.get("name") if court else None,
+                "order_sheet_doc_id": hearing.get("order_sheet_doc_id"),
+                "hearing_date": hearing.get("hearing_date"),
+                "fee": hearing.get("fee"),
+                "status": "verified",
+            },
+        )
+    except Exception as e:
+        logger.error(f"n8n publish_event failed for hearing {hearing_id}: {e}")
+
+
 async def verify_order_sheet(db, hearing_id: str, user: dict) -> dict:
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
     if not hearing:
@@ -884,6 +924,11 @@ async def verify_order_sheet(db, hearing_id: str, user: dict) -> dict:
         await _transition(db, sm, hearing, hearing["status"], "verify", user)
     except IllegalTransition:
         raise HTTPException(400, "This hearing isn't awaiting verification")
+
+    # n8n automation: fires only here, after the verify transition has fully
+    # committed — see _publish_order_sheet_verified above.
+    await _publish_order_sheet_verified(db, hearing_id, hearing, user, "admin")
+
     return {"ok": True, "status": "verified"}
 
 
@@ -917,6 +962,49 @@ async def resolve_dispute(db, hearing_id: str, user: dict, action: str, remark: 
     return {"ok": True, "status": new_status}
 
 
+async def _publish_payout_released(db, hearing_id: str, hearing: dict, user: dict, escrow: dict, release_path: str) -> None:
+    """Shared payload-builder for the payout_released n8n event — called only
+    after the caller's own escrow release has already committed (
+    release_hearing_payout and verify_and_release_payout below), never
+    before, same as every other publish_event call site (add_document's
+    order_sheet_uploaded, mark_payment_confirmed's hearing_created,
+    accept_hearing_request's proxy_counsel_accepted,
+    _publish_order_sheet_verified's order_sheet_verified above). Best-effort:
+    a publish failure must never roll back or block a business transaction
+    that already committed, so it's caught and logged here, never raised.
+    court_name/requester_name/requester_email aren't on hearing_requests
+    itself (only court_id/requesting_user_id are) — n8n has no service-auth
+    path to fetch them itself, so they're resolved here, inside the same
+    best-effort try/except, rather than invented or left for n8n to call
+    back. wallet_transaction_id is None until escrow.release() is changed to
+    generate and return one — not invented here."""
+    from automation.n8n_client import publish_event
+    try:
+        court = await db.courts.find_one({"court_id": hearing.get("court_id")}, {"_id": 0, "name": 1})
+        requester = await db.users.find_one({"user_id": hearing["requesting_user_id"]}, {"_id": 0, "name": 1, "email": 1})
+        await publish_event(
+            event="payout_released",
+            payload={
+                "hearing_id": hearing_id,
+                "released_by": user["user_id"],
+                "release_path": release_path,
+                "proxy_counsel_user_id": hearing.get("proxy_counsel_user_id"),
+                "requesting_user_id": hearing["requesting_user_id"],
+                "requester_name": requester.get("name") if requester else None,
+                "requester_email": requester.get("email") if requester else None,
+                "court_id": hearing.get("court_id"),
+                "court_name": court.get("name") if court else None,
+                "fee": hearing.get("fee"),
+                "escrow_transaction_id": escrow.get("escrow_id"),
+                "wallet_transaction_id": None,
+                "released_at": datetime.now(timezone.utc).isoformat(),
+                "status": "completed",
+            },
+        )
+    except Exception as e:
+        logger.error(f"n8n publish_event failed for hearing {hearing_id}: {e}")
+
+
 async def release_hearing_payout(db, hearing_id: str, user: dict) -> dict:
     """verified -> completed, only reachable once verify_order_sheet has
     already run — see the transition table. Calls escrow.release, which owns
@@ -935,6 +1023,12 @@ async def release_hearing_payout(db, hearing_id: str, user: dict) -> dict:
     await db.proxy_counsel_profiles.update_one(
         {"user_id": hearing["proxy_counsel_user_id"]}, {"$inc": {"cases_completed": 1}},
     )
+
+    # n8n automation: fires only here, after the release transition, escrow
+    # release, activity note, and cases_completed increment above have all
+    # fully committed — see _publish_payout_released above.
+    await _publish_payout_released(db, hearing_id, hearing, user, escrow, "admin")
+
     return {"ok": True, "status": "completed", "escrow": escrow}
 
 
@@ -961,6 +1055,15 @@ async def verify_and_release_payout(db, hearing_id: str, user: dict) -> dict:
         await _transition(db, sm, hearing, hearing["status"], "verify", user)
     except IllegalTransition:
         raise HTTPException(400, "This hearing isn't awaiting verification")
+
+    # n8n automation: fires only here, right after the verify transition
+    # (not release_payout below) has committed — order_sheet_verified models
+    # the verify step alone, and per the "verify already landed and is
+    # durable" note on the release_payout except-branch below, it must fire
+    # even if the immediately-following release_payout step fails. See
+    # _publish_order_sheet_verified above.
+    await _publish_order_sheet_verified(db, hearing_id, hearing, user, "requester_one_click")
+
     try:
         await _transition(db, sm, {**hearing, "status": "verified"}, "verified", "release_payout", user)
     except IllegalTransition:
@@ -976,6 +1079,12 @@ async def verify_and_release_payout(db, hearing_id: str, user: dict) -> dict:
     await db.proxy_counsel_profiles.update_one(
         {"user_id": hearing["proxy_counsel_user_id"]}, {"$inc": {"cases_completed": 1}},
     )
+
+    # n8n automation: fires only here, after the release transition, escrow
+    # release, activity note, and cases_completed increment above have all
+    # fully committed — see _publish_payout_released above.
+    await _publish_payout_released(db, hearing_id, hearing, user, escrow, "requester_one_click")
+
     return {"ok": True, "status": "completed", "escrow": escrow}
 
 
