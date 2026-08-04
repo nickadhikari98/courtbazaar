@@ -8,10 +8,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Pencil } from "lucide-react";
-import { createHearingRequest, listHearingRequests, uploadHearingDocument } from "@/lib/hearingRequestsApi";
+import { createHearingRequest, listHearingRequests } from "@/lib/hearingRequestsApi";
 import { getErrorMessage } from "@/lib/api";
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
-import LegalServiceRequestForm from "@/components/shared/LegalServiceRequestForm";
+import ProxyCounselLocationForm from "@/components/proxyCounsel/ProxyCounselLocationForm";
 import CounselDiscoveryPanel from "@/components/proxyCounsel/CounselDiscoveryPanel";
 import { SERVICE_CONFIGS } from "@/config/serviceRequestFields";
 import { useAuth } from "@/context/AuthContext";
@@ -27,45 +27,28 @@ const serviceConfig = SERVICE_CONFIGS.proxy_counsel;
 // AvailableAdvocatesPanel's live-context recommendations (shown while
 // typing, before any request existed) is gone — per the founder's product
 // direction, recommendations are AI-driven and appear automatically only
-// once the request form itself is complete, not before. The fields used
-// for matching are exactly the ones already collected by the form, so no
-// new inputs are introduced here — just read back out of its payload.
+// once the (now much shorter) intake form is complete, not before. The
+// fields used for matching — court/state/district/hearing_date — are
+// exactly the ones the slimmed-down ProxyCounselLocationForm collects; no
+// work_type/priority/budget context is available (or needed — see
+// counsel_matching.list_and_recommend) until a counsel is selected.
 function deriveMatchContext(payload) {
-  const common = payload.request_details?.common || {};
-  const serviceSpecific = payload.request_details?.service_specific || {};
   return {
-    court_id: payload.court_id, court_name: common.court_name,
-    state_id: common.state_id, district: common.district,
-    work_type: serviceSpecific.work_required, priority: common.priority,
-    hearing_date: payload.hearing_date, budget: payload.fee,
+    court_id: payload.court_id, court_name: payload.court_name,
+    state_id: payload.state_id, district: payload.district,
+    hearing_date: payload.hearing_date,
   };
 }
 
-// Inverse of LegalServiceRequestForm's handleSubmit payload-building — used
-// only to re-populate the form's fields when the customer clicks "Edit
-// Request" after already continuing past it, so editing one field doesn't
-// throw away everything else they filled in.
-function payloadToFields(payload) {
-  const common = payload.request_details?.common || {};
-  const serviceSpecific = payload.request_details?.service_specific || {};
-  return {
-    state_id: common.state_id || "", state_name: common.state_name || "", district: common.district || "",
-    court_id: payload.court_id || "", court_name: common.court_name || "",
-    case_title: common.case_title || "", case_number: common.case_number || "", case_type: common.case_type || "",
-    hearing_date: payload.hearing_date || "", hearing_time: common.hearing_time || "", case_stage: common.case_stage || "",
-    work_required: serviceSpecific.work_required || [], work_required_notes: serviceSpecific.work_required_notes || "",
-    priority: common.priority || "Normal",
-    case_details: payload.case_details || "",
-    budget: payload.fee != null ? String(payload.fee) : "",
-    target_type: payload.target_advocate_id ? "specific" : "any", target_advocate_id: payload.target_advocate_id || "",
-  };
-}
-
-/* Proxy Counsel request flow (founder direction, see PR description):
-     Fill Request -> Find a Proxy Counsel (AI Recommendation / Search
-     Manually toggle, see CounselDiscoveryPanel) -> customer selects a
-     counsel from whichever tab they used -> create the hearing request
-     targeted at that counsel -> Negotiation Module.
+/* Proxy Counsel request flow — BlaBlaCar-style, per founder direction:
+     Fill Location + Date -> Find a Proxy Counsel (AI Recommendation /
+     Search Manually toggle, see CounselDiscoveryPanel) -> customer selects
+     a counsel -> create the hearing request targeted at that counsel ->
+     Negotiation Module (fee agreement + payment) -> only once payment is
+     confirmed does HearingDetailDialog reveal the case-details form and
+     document sharing. The full case brief (title, type, instructions,
+     work required, attachments) is intentionally NOT collected here
+     anymore — see ProxyCounselCaseDetailsForm, filled in post-payment.
 
    The actual POST /hearing-requests call is deliberately deferred until a
    counsel is selected (not fired on form submit) — the backend only
@@ -80,7 +63,7 @@ export default function HireProxyCounsel() {
   const location = useLocation();
   const [hearings, setHearings] = useState(null);
   const [activeId, setActiveId] = useState(null);
-  const [pendingRequest, setPendingRequest] = useState(null); // { payload, files, context } | null
+  const [pendingRequest, setPendingRequest] = useState(null); // { payload, context } | null
   const [editing, setEditing] = useState(false); // true while re-showing the form to edit an already-continued request
   const [selectingId, setSelectingId] = useState(null);
   // Set only via NegotiationModule.jsx's "End Negotiation" — excludes that
@@ -109,15 +92,15 @@ export default function HireProxyCounsel() {
   useEffect(() => {
     const resume = location.state?.resumeRequest;
     if (!resume) return;
-    setPendingRequest({ payload: resume.payload, files: [], context: deriveMatchContext(resume.payload) });
+    setPendingRequest({ payload: resume.payload, context: deriveMatchContext(resume.payload) });
     setExcludeAdvocateId(resume.excludeAdvocateId || null);
     setEditing(false);
     navigate(location.pathname, { replace: true, state: null }); // consume it — a later refresh/back must not replay it
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, off the location state present on mount only
   }, []);
 
-  const handleContinue = (payload, files) => {
-    setPendingRequest({ payload, files, context: deriveMatchContext(payload) });
+  const handleContinue = (payload) => {
+    setPendingRequest({ payload, context: deriveMatchContext(payload) });
     setExcludeAdvocateId(null); // a freshly-submitted form is unrelated to any prior negotiation
     setEditing(false);
   };
@@ -132,42 +115,27 @@ export default function HireProxyCounsel() {
     if (!pendingRequest || selectingId) return;
     setSelectingId(counsel.advocate_id);
 
-    let hearing;
+    const { state_id, state_name, district, court_id, court_name, hearing_date } = pendingRequest.payload;
+    // Minimal, BlaBlaCar-style creation payload — no case_details/work_required/
+    // budget/attachments here anymore (case_details is left blank; the
+    // backend fills in a placeholder — see hearings.create_hearing_request).
+    // The full brief is collected post-payment via ProxyCounselCaseDetailsForm.
     try {
-      hearing = await createHearingRequest({ ...pendingRequest.payload, target_advocate_id: counsel.advocate_id });
+      const hearing = await createHearingRequest({
+        court_id, hearing_date, case_details: "", service_type: serviceConfig.serviceType,
+        target_advocate_id: counsel.advocate_id,
+        request_details: { common: { state_id, state_name, district, court_name }, service_specific: {} },
+      });
+      toast.success(`Request sent to ${counsel.name} — continue in the Negotiation Module`);
+      setPendingRequest(null);
+      setSelectingId(null);
+      setExcludeAdvocateId(null);
+      load();
+      navigate(`/hearing-requests/${hearing.hearing_id}/negotiate`, { state: { counsel, hearing } });
     } catch (err) {
       toast.error(getErrorMessage(err, "Could not send the request"));
       setSelectingId(null);
-      return;
     }
-
-    // The hearing now exists in the backend — nothing past this point may
-    // block navigation or make it look like the request failed. Document
-    // upload is best-effort: a failed upload is recoverable (documents can
-    // be added later from the hearing itself) and must never be conflated
-    // with hearing-creation failure.
-    let uploadFailures = 0;
-    for (const file of pendingRequest.files) {
-      try {
-        // eslint-disable-next-line no-await-in-loop -- sequential uploads to the same hearing, order doesn't matter but simplicity does
-        await uploadHearingDocument(hearing.hearing_id, "case_document", file);
-      } catch {
-        uploadFailures += 1;
-      }
-    }
-
-    if (uploadFailures > 0) {
-      const plural = uploadFailures > 1 ? "s" : "";
-      toast.warning(`Request sent to ${counsel.name} — ${uploadFailures} document${plural} could not be uploaded and can be added later.`);
-    } else {
-      toast.success(`Request sent to ${counsel.name} — continue in the Negotiation Module`);
-    }
-
-    setPendingRequest(null);
-    setSelectingId(null);
-    setExcludeAdvocateId(null);
-    load();
-    navigate(`/hearing-requests/${hearing.hearing_id}/negotiate`, { state: { counsel, hearing } });
   };
 
   return (
@@ -178,10 +146,9 @@ export default function HireProxyCounsel() {
       <div className="mt-6">
         {(!pendingRequest || editing) && (
           <div className="max-w-3xl">
-            <LegalServiceRequestForm
-              serviceConfig={serviceConfig} onSubmit={handleContinue} submitting={false}
-              initialValues={pendingRequest ? payloadToFields(pendingRequest.payload) : undefined}
-              initialFiles={pendingRequest?.files}
+            <ProxyCounselLocationForm
+              onSubmit={handleContinue}
+              initialValues={pendingRequest ? pendingRequest.payload : undefined}
             />
           </div>
         )}

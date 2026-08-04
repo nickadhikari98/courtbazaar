@@ -10,11 +10,12 @@ import { toast } from "sonner";
 import { ArrowRight, Phone, Mail, Loader2, Eye, EyeOff } from "lucide-react";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import Logo from "@/components/shared/Logo";
+import GoogleAuthButton from "@/components/shared/GoogleAuthButton";
 
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { login, otpRequest, otpVerify } = useAuth();
+  const { login, otpRequest, otpVerify, googleLogin, googleOAuthEnabled } = useAuth();
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -185,6 +186,17 @@ export default function Login() {
                 )}
               </TabsContent>
             </Tabs>
+
+            {googleOAuthEnabled && (
+              <>
+                <div className="flex items-center gap-3 my-6">
+                  <div className="h-px flex-1 bg-border" />
+                  <span className="text-2xs uppercase tracking-wide font-bold text-muted-foreground">Or continue with</span>
+                  <div className="h-px flex-1 bg-border" />
+                </div>
+                <GoogleAuthButton onClick={() => googleLogin()} label="Continue with Google" />
+              </>
+            )}
           </CardContent>
         </Card>
       </div>

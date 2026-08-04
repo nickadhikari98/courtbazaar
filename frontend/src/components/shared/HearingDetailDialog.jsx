@@ -15,11 +15,13 @@ import {
   getHearingRequest, acceptHearingRequest, declineHearingRequest, rejectHearingRequest, cancelHearingRequest,
   markHearingConducted, rateHearingRequest, addHearingNote, listHearingMessages,
   postHearingMessage, listHearingDocuments, uploadHearingDocument, getHearingDocumentUrl,
+  submitHearingCaseDetails,
 } from "@/lib/hearingRequestsApi";
 import { payForHearing as payForHearingShared } from "@/lib/hearingPayment";
 import HearingTimeline from "@/components/shared/HearingTimeline";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
 import EscrowStagePanel from "@/components/negotiation/EscrowStagePanel";
+import ProxyCounselCaseDetailsForm from "@/components/proxyCounsel/ProxyCounselCaseDetailsForm";
 import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions } from "@/lib/hearingLifecycle";
 
 /* Shared between the advocate side (HireProxyCounsel.jsx) and the proxy
@@ -38,6 +40,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   const [review, setReview] = useState("");
   const [busy, setBusy] = useState(false);
   const [paying, setPaying] = useState(false);
+  const [submittingDetails, setSubmittingDetails] = useState(false);
   const fileInputRef = useRef(null);
 
   const load = () => {
@@ -101,6 +104,22 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
     }
   };
 
+  // BlaBlaCar-style flow (founder direction): only reachable once payment
+  // is confirmed — see ProxyCounselCaseDetailsForm/hearings.submit_case_details.
+  const submitCaseDetails = async (fields) => {
+    setSubmittingDetails(true);
+    try {
+      await submitHearingCaseDetails(hearingId, fields);
+      toast.success("Case details shared with your counsel");
+      onChanged?.();
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not share case details");
+    } finally {
+      setSubmittingDetails(false);
+    }
+  };
+
   const sendMessage = async () => {
     if (!messageText.trim()) return;
     await postHearingMessage(hearingId, messageText.trim());
@@ -153,7 +172,21 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
 
         <HearingProgressStepper status={hearing.status} negotiationAgreed={!negotiationRequired || negotiationAgreed} targeted={negotiationRequired} />
 
-        <div className="text-sm border rounded-lg p-3 bg-secondary/30">{hearing.case_details}</div>
+        {/* BlaBlaCar-style flow (founder direction): the case brief only
+            exists once the requester has submitted it, which the backend
+            only allows once payment_confirmed_at is set — see
+            hearings.submit_case_details. Three states: already shared (show
+            it), requester can share it now (show the form), or nothing to
+            show yet (status line, for the counsel/other viewer). */}
+        {hearing.details_submitted ? (
+          <div className="text-sm border rounded-lg p-3 bg-secondary/30">{hearing.case_details}</div>
+        ) : isRequester && hearing.payment_confirmed_at ? (
+          <ProxyCounselCaseDetailsForm onSubmit={submitCaseDetails} submitting={submittingDetails} />
+        ) : (
+          <div className="text-sm border rounded-lg p-3 bg-secondary/30 text-muted-foreground italic">
+            {hearing.payment_confirmed_at ? "Waiting for the client to share case details." : "Case details will be shared once payment is confirmed."}
+          </div>
+        )}
 
         {canPay && (
           <div className="border rounded-lg p-4 bg-accent/5 border-accent/30 space-y-2">
@@ -211,8 +244,11 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           </div>
           {/* Case documents only — the Court Order Sheet upload now lives
               exclusively in EscrowStagePanel above (rule 5's primary CTA),
-              so there's exactly one place to upload it, not two. */}
-          {(isRequester || isAssignedProxyCounsel) && (
+              so there's exactly one place to upload it, not two. Gated on
+              details_submitted — BlaBlaCar-style flow (founder direction):
+              nothing case-specific to attach a document to before the case
+              brief itself has been shared. */}
+          {(isRequester || isAssignedProxyCounsel) && hearing.details_submitted && (
             <div className="flex items-center gap-2">
               <input ref={fileInputRef} type="file" className="text-xs flex-1" />
               <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => uploadFile("case_document")}>

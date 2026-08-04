@@ -148,8 +148,8 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
                                   target_advocate_id: Optional[str] = None,
                                   service_type: str = "proxy_counsel",
                                   request_details: Optional[dict] = None) -> dict:
-    if not court_id or not hearing_date or not case_details:
-        raise HTTPException(400, "Court, hearing date, and case details are required")
+    if not court_id or not hearing_date:
+        raise HTTPException(400, "Court and hearing date are required")
     now = datetime.now(timezone.utc)
     doc = {
         "hearing_id": new_hearing_id(),
@@ -158,7 +158,19 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
         "target_advocate_id": target_advocate_id,  # set -> addressed to one advocate; None -> broadcast to all
         "court_id": court_id,
         "hearing_date": hearing_date,
-        "case_details": case_details,
+        # BlaBlaCar-style flow (founder direction): the intake form now only
+        # collects location + hearing date to get matched and paid — the
+        # actual case brief (title, type, instructions, work required, ...)
+        # is collected afterward via submit_case_details, once payment is
+        # confirmed, so nothing case-specific is visible to a counsel before
+        # money is held. `case_details` is left optional here (was previously
+        # required) so a hearing can exist before that brief does; every
+        # other reader (chat header, Negotiation summary, ...) gets this
+        # placeholder in the meantime. `details_submitted` is what the
+        # frontend actually branches on to tell "still a placeholder" apart
+        # from "customer deliberately wrote something short".
+        "case_details": case_details or "Case details will be shared once payment is confirmed.",
+        "details_submitted": False,
         "matter_id": matter_id,
         "fee": fee,
         # `service_type` is a discriminator for the generic Legal Service
@@ -697,6 +709,43 @@ async def mark_payment_confirmed(db, hearing_id: str, user: dict) -> dict:
             await log_audit(db, "matching.dispatch_failed", None, {"hearing_id": hearing_id, "error": str(e)})
 
     return {"ok": True, "status": "broadcast"}
+
+
+async def submit_case_details(db, hearing_id: str, user: dict, details: dict) -> dict:
+    """Requester-only case-brief handoff — the second half of the
+    BlaBlaCar-style flow (founder direction): create_hearing_request only
+    ever collects court_id/hearing_date, so this is where case_title/
+    case_number/case_type/case_stage/work_required/instructions actually
+    reach the record. Gated on payment_confirmed_at so nothing case-specific
+    is ever visible to a counsel before money is held in escrow — the whole
+    point of the reorder. Not write-once: a requester can call this again to
+    correct a typo; `details_submitted` only flips the frontend from "fill
+    this in" to "here's what was shared", it isn't an access lock."""
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    if hearing["requesting_user_id"] != user["user_id"]:
+        raise HTTPException(403, "Only the requester can share case details")
+    if not hearing.get("payment_confirmed_at"):
+        raise HTTPException(400, "Case details can be shared once payment is confirmed")
+
+    common_fields = ("case_title", "case_number", "case_type", "case_stage", "hearing_time", "priority")
+    service_specific_fields = ("work_required", "work_required_notes")
+    existing_request_details = hearing.get("request_details") or {}
+    common = {**existing_request_details.get("common", {}), **{k: details[k] for k in common_fields if k in details}}
+    service_specific = {**existing_request_details.get("service_specific", {}),
+                         **{k: details[k] for k in service_specific_fields if k in details}}
+
+    update = {
+        "case_details": details.get("case_details") or hearing["case_details"],
+        "request_details": {"common": common, "service_specific": service_specific},
+        "details_submitted": True,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$set": update})
+    await _push_activity(db, hearing_id, "Case details shared with the counsel", user["user_id"])
+    updated = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+    return updated
 
 
 async def mark_hearing_conducted(db, hearing_id: str, user: dict) -> dict:
