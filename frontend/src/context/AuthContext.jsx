@@ -6,6 +6,14 @@ const AuthContext = createContext(null);
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Whether the server has Google OAuth configured at all (GOOGLE_OAUTH_ENABLED)
+  // — starts false so "Continue with Google" doesn't flash on then off in
+  // environments where it isn't set, e.g. local dev.
+  const [googleOAuthEnabled, setGoogleOAuthEnabled] = useState(false);
+
+  useEffect(() => {
+    api.get("/config/public").then(({ data }) => setGoogleOAuthEnabled(!!data.google_oauth_enabled)).catch(() => {});
+  }, []);
 
   const checkAuth = useCallback(async () => {
     const tok = getToken();
@@ -96,7 +104,7 @@ export const AuthProvider = ({ children }) => {
   return (
     <AuthContext.Provider value={{
       user, loading, login, register, otpRequest, otpVerify, googleLogin,
-      exchangeGoogleSession, logout, refresh, checkAuth, hasRole, hasCapability,
+      exchangeGoogleSession, logout, refresh, checkAuth, hasRole, hasCapability, googleOAuthEnabled,
     }}>
       {children}
     </AuthContext.Provider>

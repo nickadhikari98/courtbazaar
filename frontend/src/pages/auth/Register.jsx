@@ -10,6 +10,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { ArrowRight, Loader2, ShieldCheck, Eye, EyeOff } from "lucide-react";
 import Logo from "@/components/shared/Logo";
+import GoogleAuthButton from "@/components/shared/GoogleAuthButton";
 import RoleSelectModal from "@/components/landing/join/RoleSelectModal";
 import { vendorSections } from "@/components/landing/join/roleFormData";
 
@@ -26,7 +27,7 @@ const VENDOR_JOIN_FORMS = {
 
 export default function Register() {
   const navigate = useNavigate();
-  const { register } = useAuth();
+  const { register, googleLogin, googleOAuthEnabled } = useAuth();
   const [loading, setLoading] = useState(false);
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", phone: "", password: "", role: "advocate" });
@@ -177,6 +178,17 @@ export default function Register() {
                 </>
               )}
             </form>
+
+            {googleOAuthEnabled && (
+              <>
+                <div className="flex items-center gap-3 my-6">
+                  <div className="h-px flex-1 bg-border" />
+                  <span className="text-2xs uppercase tracking-wide font-bold text-muted-foreground">Or continue with</span>
+                  <div className="h-px flex-1 bg-border" />
+                </div>
+                <GoogleAuthButton onClick={() => googleLogin(form.role)} label="Continue with Google" />
+              </>
+            )}
           </CardContent>
         </Card>
       </div>

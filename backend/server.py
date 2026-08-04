@@ -392,6 +392,23 @@ class HearingRequestCreate(BaseModel):
     service_type: str = "proxy_counsel"
     request_details: Optional[dict] = None
 
+# BlaBlaCar-style flow (founder direction): the case brief is submitted
+# separately from creation, once payment is confirmed — see
+# hearings.submit_case_details. case_details is the only required field
+# (mirrors HearingRequestCreate); everything else is optional so a partial
+# save (e.g. correcting just the case title later) doesn't need to resend
+# the whole brief.
+class HearingCaseDetailsUpdate(BaseModel):
+    case_details: str
+    case_title: Optional[str] = None
+    case_number: Optional[str] = None
+    case_type: Optional[str] = None
+    case_stage: Optional[str] = None
+    hearing_time: Optional[str] = None
+    priority: Optional[str] = None
+    work_required: Optional[List[str]] = None
+    work_required_notes: Optional[str] = None
+
 class HearingDisputeResolve(BaseModel):
     action: str  # "resubmit" | "refund"
     remark: Optional[str] = None
@@ -475,6 +492,14 @@ async def seed_initial_data():
 async def root():
     return {"message": "CourtBazaar API - India's Legal Marketplace", "version": "1.0"}
 
+# Unauthenticated, deliberately tiny — just enough for the frontend to know
+# whether to render the "Continue with Google" button on Login/Register at
+# all, rather than showing it in every environment and having it fail with a
+# 501 wherever GOOGLE_OAUTH_ENABLED isn't set (e.g. local dev).
+@api_router.get("/config/public")
+async def public_config():
+    return {"google_oauth_enabled": GOOGLE_OAUTH_ENABLED}
+
 # ---------- AUTH ----------
 # Roles that must never be created by any self-service signup path
 # (/auth/register, /auth/otp/verify) — checked centrally here rather than
@@ -509,9 +534,20 @@ async def register(req: RegisterRequest):
     if req.role not in ROLES:
         raise HTTPException(400, "Invalid role")
     _reject_self_register_blocked_role(req.role)
-    if await db.users.find_one({"email": req.email}):
+    existing = await db.users.find_one({"email": req.email})
+    # A deactivated account (admin "Delete User", i.e. audit_log.deactivate_user)
+    # is a soft delete — it sets `deleted: True` and wipes password_hash, but
+    # deliberately keeps the email on the record (see that function's
+    # docstring). Without this check, that email is permanently stuck: this
+    # endpoint always refuses it as "already registered", and login always
+    # fails since there's no password to check against — with no way back in
+    # short of an admin manually editing the database. Reusing the same
+    # user_id (rather than minting a second row for the same email) means the
+    # account genuinely starts fresh while any existing orders/audit history
+    # for that user_id still attribute correctly.
+    if existing and not existing.get("deleted"):
         raise HTTPException(400, "Email already registered")
-    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    user_id = existing["user_id"] if existing else f"user_{uuid.uuid4().hex[:12]}"
     user_doc = {
         "user_id": user_id,
         "email": req.email,
@@ -530,7 +566,14 @@ async def register(req: RegisterRequest):
         "professional_profile_types": [req.role],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    await db.users.insert_one(user_doc)
+    if existing:
+        # replace_one with no "_id" in the replacement keeps Mongo's original
+        # _id automatically — this is a genuine reset of the row, not a patch,
+        # so every deactivation-era field (deleted, deleted_at, deactivated_by,
+        # set_password_token_hash, ...) is dropped rather than lingering.
+        await db.users.replace_one({"user_id": user_id}, user_doc)
+    else:
+        await db.users.insert_one(user_doc)
     token = make_jwt(user_id, req.role)
     user_doc.pop("password_hash", None)
     user_doc.pop("_id", None)
@@ -600,6 +643,11 @@ async def otp_verify(req: OtpVerify):
         raise HTTPException(400, "Invalid OTP")
     await db.otp_codes.update_one({"_id": rec["_id"]}, {"$set": {"used": True}})
     user = await db.users.find_one({"phone": req.phone}, {"_id": 0})
+    # Same guard login() already applies — without it, a deactivated account
+    # (password_hash cleared, `deleted: True`) could still get back in
+    # through phone OTP, silently bypassing the deactivation entirely.
+    if user and user.get("deleted"):
+        raise HTTPException(401, "Your account has been deactivated. Please contact the administrator.")
     if not user:
         if req.role not in ROLES:
             raise HTTPException(400, "Invalid role")
@@ -2422,6 +2470,12 @@ async def accept_hearing_request(hearing_id: str, user=Depends(get_current_user)
                                  f"Your hearing request for {hearing['court_id']} was accepted.",
                                  hearing_id)
     return hearing
+
+@api_router.put("/hearing-requests/{hearing_id}/case-details")
+async def submit_hearing_case_details(hearing_id: str, payload: HearingCaseDetailsUpdate, user=Depends(get_current_user)):
+    """BlaBlaCar-style flow: the requester fills this in once payment is
+    confirmed — see hearings.submit_case_details for the gate."""
+    return await hearings_svc.submit_case_details(db, hearing_id, user, payload.model_dump(exclude_none=True))
 
 @api_router.put("/hearing-requests/{hearing_id}/decline")
 async def decline_hearing_request(hearing_id: str, user=Depends(get_current_user)):
