@@ -48,6 +48,14 @@ export async function endNegotiation(hearingId) {
   return data;
 }
 
+// BlaBlaCar-style flow (founder direction): the case brief is submitted
+// here, separately from creation, once payment is confirmed — the backend
+// (hearings.submit_case_details) refuses this call otherwise.
+export async function submitHearingCaseDetails(hearingId, payload) {
+  const { data } = await api.put(`/hearing-requests/${hearingId}/case-details`, payload);
+  return data;
+}
+
 export async function markHearingConducted(hearingId) {
   const { data } = await api.put(`/hearing-requests/${hearingId}/mark-conducted`);
   return data;

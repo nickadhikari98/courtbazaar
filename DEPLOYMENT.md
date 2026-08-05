@@ -151,6 +151,7 @@ cross-reference `backend/.env.example` for the full list with inline notes.
 - [ ] `EMAIL_PROVIDER` + `BREVO_API_KEY` (or `RESEND_API_KEY`) — real key, or lead/status emails silently no-op
 - [ ] `SMS_PROVIDER` + `FAST2SMS_API_KEY` (or `MSG91_AUTH_KEY`) — real key, or OTP login can't actually deliver codes
 - [ ] `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` — production (not test) keys
+- [ ] `GOOGLE_OAUTH_ENABLED=true` — without it, "Continue with Google" doesn't render on Login/Register at all (frontend checks `GET /config/public`)
 - [ ] `REACT_APP_BACKEND_URL` (frontend `.env`, baked in at build time) — the real API domain
 
 ## 7. Redeploying after a change

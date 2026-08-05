@@ -126,10 +126,14 @@ export default function NegotiationModule() {
     navigate("/hire-proxy-counsel", {
       state: {
         resumeRequest: {
+          // Matches ProxyCounselLocationForm's field shape (BlaBlaCar-style
+          // slim intake) — location + date only, not the old full-brief
+          // payload; the case details this hearing may already have picked
+          // up were never re-shared with the new counsel pre-payment anyway.
           payload: {
-            court_id: hearing.court_id, hearing_date: hearing.hearing_date, case_details: hearing.case_details,
-            fee: hearing.fee, matter_id: hearing.matter_id, service_type: hearing.service_type,
-            request_details: hearing.request_details,
+            court_id: hearing.court_id, court_name: common.court_name,
+            state_id: common.state_id, state_name: common.state_name, district: common.district,
+            hearing_date: hearing.hearing_date,
           },
           excludeAdvocateId: hearing.target_advocate_id,
         },
@@ -257,7 +261,11 @@ export default function NegotiationModule() {
                     <div><dt className="text-muted-foreground text-xs">Priority</dt><dd className="font-semibold">{common.priority || "Normal"}</dd></div>
                     <div><dt className="text-muted-foreground text-xs">{agreed ? "Agreed Fee" : "Reference Fee"}</dt><dd className="font-semibold">{hearing.fee ? formatINR(hearing.fee) : "Not specified"}</dd></div>
                   </dl>
-                  {hearing.case_details && <div className="mt-3 text-sm border rounded-lg p-3 bg-secondary/30">{hearing.case_details}</div>}
+                  {/* BlaBlaCar-style flow (founder direction): case_details is a
+                      placeholder until submit_case_details runs post-payment
+                      (see HearingDetailDialog) — details_submitted is what
+                      actually distinguishes "nothing shared yet" from a real brief. */}
+                  {hearing.details_submitted && <div className="mt-3 text-sm border rounded-lg p-3 bg-secondary/30">{hearing.case_details}</div>}
                 </CardContent>
               </Card>
 

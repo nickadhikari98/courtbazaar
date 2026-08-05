@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { useSearchParams, useLocation } from "react-router-dom";
+import { motion } from "framer-motion";
 import {
   Clock, Network, Activity, Shield, BadgeCheck, ShieldCheck, Mic,
 } from "lucide-react";
@@ -45,6 +46,24 @@ const LANDING_ILLUSTRATIONS = {
   svc_efile_district: { icon: EFilingDistrictIcon, color: "rose" },
   svc_efile_hc: { icon: EFilingHighIcon, color: "cyan" },
   svc_steno_hearing: { icon: Mic, color: "orange" },
+};
+
+const servicesGridVariants = {
+  hidden: {},
+  visible: {
+    transition: { staggerChildren: 0.12 },
+  },
+};
+
+const serviceCardVariants = {
+  hidden: { opacity: 0, y: 32, scale: 0.94, rotateX: -8 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    rotateX: 0,
+    transition: { duration: 0.6, ease: [0.22, 1, 0.36, 1] },
+  },
 };
 
 const proxyCounselService = {
@@ -171,18 +190,24 @@ export default function Landing() {
               Everything you need to manage your legal operations efficiently
             </p>
           </div>
-          <div className="lg:grid lg:grid-cols-[1fr_300px] xl:grid-cols-[1fr_340px] lg:gap-7 lg:items-stretch">
+          <motion.div
+            className="lg:grid lg:grid-cols-[1fr_300px] xl:grid-cols-[1fr_340px] lg:gap-7 lg:items-stretch"
+            variants={servicesGridVariants}
+            initial="hidden"
+            whileInView="visible"
+            viewport={{ once: false, amount: 0.2 }}
+          >
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-7">
               {coreServices.map(({ key, ...service }) => (
-                <ServiceCard key={key} {...service} />
+                <motion.div key={key} variants={serviceCardVariants} style={{ transformPerspective: 800 }}>
+                  <ServiceCard {...service} />
+                </motion.div>
               ))}
             </div>
-            <FeaturedServiceCard
-              {...proxyCounselService}
-              vertical
-              className="mt-7 lg:mt-0"
-            />
-          </div>
+            <motion.div variants={serviceCardVariants} style={{ transformPerspective: 800 }} className="h-full mt-7 lg:mt-0">
+              <FeaturedServiceCard {...proxyCounselService} vertical className="h-full" />
+            </motion.div>
+          </motion.div>
         </div>
       </section>
 
