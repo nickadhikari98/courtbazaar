@@ -540,7 +540,6 @@ def _check_participant(hearing: dict, user: dict) -> None:
 
 async def add_document(db, put_object_fn, validate_upload_fn, hearing_id: str, user: dict,
                         kind: str, filename: str, content_type: str, data: bytes) -> dict:
-    print(f"[WF03-DEBUG] add_document() ENTERED: hearing_id={hearing_id!r} kind={kind!r} filename={filename!r}", flush=True)
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
@@ -588,14 +587,12 @@ async def add_document(db, put_object_fn, validate_upload_fn, hearing_id: str, u
     # has no service-auth path to fetch them itself, so they're resolved
     # here, inside the same best-effort try/except, rather than invented or
     # left for n8n to call back.
-    print(f"[WF03-DEBUG] reached publish gate check: kind={kind!r} (need == 'order_sheet')", flush=True)
     if kind == "order_sheet":
         from automation.n8n_client import publish_event
         try:
             court = await db.courts.find_one({"court_id": hearing.get("court_id")}, {"_id": 0, "name": 1})
             requester = await db.users.find_one({"user_id": hearing["requesting_user_id"]}, {"_id": 0, "name": 1, "email": 1})
-            print(f"[WF03-DEBUG] about to call publish_event(event='order_sheet_uploaded') for hearing_id={hearing_id}", flush=True)
-            n8n_result = await publish_event(
+            await publish_event(
                 event="order_sheet_uploaded",
                 payload={
                     "hearing_id": hearing_id,
@@ -611,12 +608,8 @@ async def add_document(db, put_object_fn, validate_upload_fn, hearing_id: str, u
                     "status": hearing.get("status"),
                 },
             )
-            print(f"[WF03-DEBUG] publish_event() RETURNED: {n8n_result!r} for hearing_id={hearing_id}", flush=True)
         except Exception as e:
-            print(f"[WF03-DEBUG] publish_event() RAISED: {e!r} for hearing_id={hearing_id}", flush=True)
             logger.error(f"n8n publish_event failed for hearing {hearing_id}: {e}")
-    else:
-        print(f"[WF03-DEBUG] SKIPPED publish_event: kind={kind!r} != 'order_sheet'", flush=True)
 
     record.pop("_id", None)
     return record
