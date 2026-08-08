@@ -10,6 +10,7 @@ import PageContainer from "@/components/layout/PageContainer";
 import WidgetGrid from "@/components/dashboard/WidgetGrid";
 import { homeWidgets, hearingNeedsMyAction, hearingNeedsMyDocument } from "@/config/homeWidgets";
 import { CLOSED_HEARING_STATUSES, getHearingPermissions, humanizeHearingActivity } from "@/lib/hearingLifecycle";
+import { timeAgo } from "@/lib/utils";
 import {
   Plus, Printer, FileText, Gavel, Stamp, Package, BookOpen, Sparkles, Truck, ArrowRight,
   Scale, Type, FileSignature, Briefcase, Wallet, CheckCircle2, Circle, Store, Banknote,
@@ -113,17 +114,6 @@ function classifyNotification(n) {
 // are excluded here for reasons specific to an *upcoming*-hearings list,
 // not because either is "closed" in the NegotiationModule.jsx sense.
 const UPCOMING_HEARINGS_EXCLUDED_STATUSES = [...CLOSED_HEARING_STATUSES, "disputed", "rated"];
-
-function timeAgo(iso) {
-  if (!iso) return "";
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const mins = Math.round(diffMs / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.round(hrs / 24)}d ago`;
-}
 
 export default function Dashboard() {
   const { user, hasCapability } = useAuth();
