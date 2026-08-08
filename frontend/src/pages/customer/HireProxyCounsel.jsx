@@ -11,6 +11,7 @@ import { Pencil } from "lucide-react";
 import { createHearingRequest, listHearingRequests } from "@/lib/hearingRequestsApi";
 import { getErrorMessage } from "@/lib/api";
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
+import HearingActivityPreview from "@/components/shared/HearingActivityPreview";
 import ProxyCounselLocationForm from "@/components/proxyCounsel/ProxyCounselLocationForm";
 import CounselDiscoveryPanel from "@/components/proxyCounsel/CounselDiscoveryPanel";
 import { SERVICE_CONFIGS } from "@/config/serviceRequestFields";
@@ -207,14 +208,17 @@ export default function HireProxyCounsel() {
                   </Card>
                 ) : list.map((h) => (
                   <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveId(h.hearing_id)} data-testid={`hearing-row-${h.hearing_id}`}>
-                    <CardContent className="p-5 flex items-center justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="font-display font-bold">{h.request_details?.common?.case_title || h.court_id}</div>
-                        <div className="text-sm text-muted-foreground">{h.hearing_date} {h.fee ? `· ₹${h.fee}` : ""}</div>
+                    <CardContent className="p-5">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className="font-display font-bold">{h.request_details?.common?.case_title || h.court_id}</div>
+                          <div className="text-sm text-muted-foreground">{h.hearing_date} {h.fee ? `· ₹${h.fee}` : ""}</div>
+                        </div>
+                        <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} border-0 font-bold uppercase`}>
+                          {roleAwareStatusLabel(h, getViewerRole(h, user?.user_id))}
+                        </Badge>
                       </div>
-                      <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} border-0 font-bold uppercase`}>
-                        {roleAwareStatusLabel(h, getViewerRole(h, user?.user_id))}
-                      </Badge>
+                      <HearingActivityPreview hearing={h} />
                     </CardContent>
                   </Card>
                 ))}

@@ -505,6 +505,105 @@ async def get_lead_detail(db, lead_id: str) -> dict:
     return {**lead, "documents": documents, "status_history": history, "linked_account_deactivated": linked_account_deactivated}
 
 
+# Bucketed "Total Years of Practice" radio (see frontend roleFormData.js's
+# proxy_counsel/counsel "Professional Details" section) -> a representative
+# experience_years number for proxy_counsel_profiles, which stores a plain
+# float. Midpoints of each bucket, "More than 10 Years" given a round 12.
+_YEARS_OF_PRACTICE_TO_EXPERIENCE_YEARS = {
+    "Less than 1 Year": 0.5,
+    "1-3 Years": 2,
+    "3-5 Years": 4,
+    "5-10 Years": 7,
+    "More than 10 Years": 12,
+}
+
+# "Language" radio's specify-a-second-language options (see languageOptions
+# in roleFormData.js) -> the base language implied by the choice itself,
+# before the free-text "__other" companion field is appended.
+_LANGUAGE_OTHER_TRIGGER_BASE = {
+    "Hindi & Other (Specify)": "Hindi",
+    "English & Other (Specify)": "English",
+}
+
+
+def _derive_practice_profile_patch(form_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Best-effort mapping from a proxy_counsel/counsel lead's form_data
+    (frontend roleFormData.js's "Professional Details" section — total years
+    of practice, primary area of practice, language, primary court of
+    practice) onto proxy_counsel_profiles fields. Called once, right after
+    lead approval creates the profile row (see _activate_professional) —
+    without this, everything the applicant already typed into the lead form
+    just sat unused: recommendations_advocates/CounselProfileDialog read
+    straight from proxy_counsel_profiles, which get_or_create_profile always
+    seeds blank, so an approved counsel's marketplace-facing profile stayed
+    empty until they separately visited their own Practice page and re-typed
+    the same information.
+
+    bio/education have no equivalent field anywhere in the lead form —
+    intentionally left unset here (not invented) for the counsel to fill in
+    themselves later via Practice.
+
+    Field keys/value shapes here are load-bearing on roleFormData.js's exact
+    labels (fieldKey() slugifies "Professional Details" + the field label) —
+    a relabel there without a matching update here silently stops mapping,
+    same failure mode _extract_contact_fields above already accepts for
+    contact fields."""
+    patch: Dict[str, Any] = {}
+
+    years_bucket = form_data.get("professional_details__total_years_of_practice")
+    if years_bucket in _YEARS_OF_PRACTICE_TO_EXPERIENCE_YEARS:
+        patch["experience_years"] = _YEARS_OF_PRACTICE_TO_EXPERIENCE_YEARS[years_bucket]
+
+    practice_areas = form_data.get("professional_details__primary_area_of_practice")
+    if isinstance(practice_areas, list) and practice_areas:
+        areas = [a for a in practice_areas if a != "Other"]
+        other_area = form_data.get("professional_details__primary_area_of_practice__other")
+        if "Other" in practice_areas and isinstance(other_area, str) and other_area.strip():
+            areas.append(other_area.strip())
+        if areas:
+            patch["practice_areas"] = areas
+
+    language = form_data.get("professional_details__language")
+    if isinstance(language, str) and language.strip():
+        if language == "Both":
+            languages = ["Hindi", "English"]
+        elif language in _LANGUAGE_OTHER_TRIGGER_BASE or language == "Other (Specify)":
+            base = _LANGUAGE_OTHER_TRIGGER_BASE.get(language)
+            other_lang = form_data.get("professional_details__language__other")
+            other_lang = other_lang.strip() if isinstance(other_lang, str) and other_lang.strip() else None
+            languages = [l for l in (base, other_lang) if l]
+        else:
+            languages = [language]
+        if languages:
+            patch["languages"] = languages
+
+    courts = form_data.get("professional_details__primary_court_of_practice")
+    if isinstance(courts, list) and courts:
+        # Court *names* as typed on the form, not court_ids — resolved to
+        # real court_ids in _activate_professional (needs a db lookup this
+        # pure function doesn't have); falls back to the raw name for any
+        # court that doesn't resolve, same as build_advocate_card's own
+        # court_names_by_id.get(cid, cid) fallback.
+        patch["courts"] = courts
+
+    return patch
+
+
+async def _resolve_court_names_to_ids(db, court_names: List[str]) -> List[str]:
+    """Best-effort court-name -> court_id resolution for
+    _derive_practice_profile_patch's "courts" patch — an unresolved name is
+    kept as-is rather than dropped, so it still renders as a plain-text badge
+    via build_advocate_card's court_names_by_id.get(cid, cid) fallback
+    instead of silently disappearing."""
+    if not court_names:
+        return []
+    docs = await db.courts.find(
+        {"name": {"$in": court_names}}, {"_id": 0, "court_id": 1, "name": 1},
+    ).to_list(len(court_names))
+    id_by_name = {d["name"]: d["court_id"] for d in docs}
+    return [id_by_name.get(name, name) for name in court_names]
+
+
 async def _activate_professional(db, lead: dict) -> None:
     """Side effect of an approved proxy_counsel/counsel lead: link to an
     existing account (matched by normalized email) or create a new one,
@@ -571,6 +670,11 @@ async def _activate_professional(db, lead: dict) -> None:
     if account_role == "proxy_counsel":
         import practice as practice_svc
         await practice_svc.get_or_create_profile(db, user_id)
+        profile_patch = _derive_practice_profile_patch(lead.get("form_data") or {})
+        if profile_patch.get("courts"):
+            profile_patch["courts"] = await _resolve_court_names_to_ids(db, profile_patch["courts"])
+        if profile_patch:
+            await practice_svc.update_profile(db, user_id, profile_patch)
         await practice_svc.approve_kyc(db, user_id)
         await practice_svc.verify_bar_council(db, user_id)
 
