@@ -177,9 +177,53 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
             only allows once payment_confirmed_at is set — see
             hearings.submit_case_details. Three states: already shared (show
             it), requester can share it now (show the form), or nothing to
-            show yet (status line, for the counsel/other viewer). */}
+            show yet (status line, for the counsel/other viewer). Shown to
+            every viewer (requester and proxy counsel alike) — this used to
+            render only the free-text case_details field, silently dropping
+            case_title/case_number/case_type/case_stage/hearing_time/priority/
+            work_required (all submitted by the same form, stored on
+            request_details.common/.service_specific — see
+            ProxyCounselCaseDetailsForm), so the counsel never actually saw
+            the case brief, just an unlabeled instructions blob. */}
         {hearing.details_submitted ? (
-          <div className="text-sm border rounded-lg p-3 bg-secondary/30">{hearing.case_details}</div>
+          <div>
+            <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Case Details</div>
+            <div className="border rounded-lg p-3 bg-secondary/30 space-y-2 text-sm">
+              <div className="grid sm:grid-cols-2 gap-x-4 gap-y-1.5">
+                {hearing.request_details?.common?.case_title && (
+                  <div><span className="text-muted-foreground">Case Title:</span> <span className="font-medium">{hearing.request_details.common.case_title}</span></div>
+                )}
+                {hearing.request_details?.common?.case_number && (
+                  <div><span className="text-muted-foreground">Case Number:</span> <span className="font-medium">{hearing.request_details.common.case_number}</span></div>
+                )}
+                {hearing.request_details?.common?.case_type && (
+                  <div><span className="text-muted-foreground">Case Type:</span> <span className="font-medium">{hearing.request_details.common.case_type}</span></div>
+                )}
+                {hearing.request_details?.common?.case_stage && (
+                  <div><span className="text-muted-foreground">Stage:</span> <span className="font-medium">{hearing.request_details.common.case_stage}</span></div>
+                )}
+                {hearing.request_details?.common?.hearing_time && (
+                  <div><span className="text-muted-foreground">Hearing Time:</span> <span className="font-medium">{hearing.request_details.common.hearing_time}</span></div>
+                )}
+                {hearing.request_details?.common?.priority && (
+                  <div><span className="text-muted-foreground">Priority:</span> <span className="font-medium">{hearing.request_details.common.priority}</span></div>
+                )}
+              </div>
+              {!!hearing.request_details?.service_specific?.work_required?.length && (
+                <div>
+                  <span className="text-muted-foreground">Work Required:</span>{" "}
+                  <span className="font-medium">{hearing.request_details.service_specific.work_required.join(", ")}</span>
+                  {hearing.request_details.service_specific.work_required_notes && (
+                    <span className="text-muted-foreground"> — {hearing.request_details.service_specific.work_required_notes}</span>
+                  )}
+                </div>
+              )}
+              <div className="pt-1.5 border-t">
+                <span className="text-2xs font-bold uppercase tracking-wide text-muted-foreground">Instructions</span>
+                <p className="mt-0.5">{hearing.case_details}</p>
+              </div>
+            </div>
+          </div>
         ) : isRequester && hearing.payment_confirmed_at ? (
           <ProxyCounselCaseDetailsForm onSubmit={submitCaseDetails} submitting={submittingDetails} />
         ) : (

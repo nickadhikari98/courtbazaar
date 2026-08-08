@@ -23,6 +23,7 @@ import {
 import { listHearingRequests } from "@/lib/hearingRequestsApi";
 import { formatINR } from "@/lib/api";
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
+import HearingActivityPreview from "@/components/shared/HearingActivityPreview";
 import CapabilitiesCard from "@/components/shared/CapabilitiesCard";
 import StatGrid from "@/components/shared/StatGrid";
 import { useAuth } from "@/context/AuthContext";
@@ -321,14 +322,17 @@ function HearingsTab() {
 
   const renderCard = (h, onClick) => (
     <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow" onClick={onClick}>
-      <CardContent className="p-4 flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <div className="font-display font-bold text-sm">{h.court_id}</div>
-          <div className="text-xs text-muted-foreground">{h.hearing_date} {h.fee ? `· ₹${h.fee}` : ""}</div>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="font-display font-bold text-sm">{h.court_id}</div>
+            <div className="text-xs text-muted-foreground">{h.hearing_date} {h.fee ? `· ₹${h.fee}` : ""}</div>
+          </div>
+          <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} border-0 font-bold uppercase text-2xs`}>
+            {roleAwareStatusLabel(h, getViewerRole(h, user?.user_id))}
+          </Badge>
         </div>
-        <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} border-0 font-bold uppercase text-2xs`}>
-          {roleAwareStatusLabel(h, getViewerRole(h, user?.user_id))}
-        </Badge>
+        <HearingActivityPreview hearing={h} />
       </CardContent>
     </Card>
   );

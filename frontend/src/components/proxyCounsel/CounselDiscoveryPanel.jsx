@@ -25,10 +25,15 @@ const MATCH_FACTORS = ["Court", "Expertise", "Experience", "Availability", "Rati
    card shows a spinner without this component needing its own submission
    state. */
 export default function CounselDiscoveryPanel({ context, onSelect, selectingId, excludeAdvocateId }) {
-  const [mode, setMode] = useState("ai"); // "ai" | "manual"
+  // Manual search is the default, proven hiring path — AI Recommendation is
+  // still in development, so it's opt-in (a tab away) rather than the first
+  // thing a customer sees. See fetch-on-open below: this also means no AI
+  // matching call fires until someone actually opens that tab.
+  const [mode, setMode] = useState("manual"); // "ai" | "manual"
   const [status, setStatus] = useState("loading");
   const [advocates, setAdvocates] = useState([]);
   const [profileCounsel, setProfileCounsel] = useState(null);
+  const [aiFetched, setAiFetched] = useState(false);
 
   const fetchRecommendations = () => {
     setStatus("loading");
@@ -44,10 +49,16 @@ export default function CounselDiscoveryPanel({ context, onSelect, selectingId, 
       .catch(() => setStatus("error"));
   };
 
+  // Fetches once, the first time the AI tab is actually opened — not on
+  // mount, since manual is now the default and most customers will never
+  // touch this tab.
   useEffect(() => {
-    fetchRecommendations();
+    if (mode === "ai" && !aiFetched) {
+      setAiFetched(true);
+      fetchRecommendations();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one fetch per submitted request; context is fixed for the lifetime of this step
-  }, []);
+  }, [mode, aiFetched]);
 
   return (
     <div>
