@@ -28,7 +28,12 @@ import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions
    counsel side (Practice.jsx's Hearings tab) — the same dialog, with
    contextual actions computed from the viewer's relationship to the hearing
    (requester vs assigned proxy counsel) and its current status. */
-export default function HearingDetailDialog({ hearingId, open, onOpenChange, onChanged }) {
+// showActivityHistory defaults on: for most callers (Dashboard, Practice,
+// HireProxyCounsel) this dialog is the ONLY place the hearing's event log is
+// shown. NegotiationModule passes it false because that page already renders a
+// dedicated, always-visible Activity History card — keeping it here too would
+// just make this dialog longer and duplicate it.
+export default function HearingDetailDialog({ hearingId, open, onOpenChange, onChanged, showActivityHistory = true }) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [hearing, setHearing] = useState(null);
@@ -293,11 +298,24 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
               nothing case-specific to attach a document to before the case
               brief itself has been shared. */}
           {(isRequester || isAssignedProxyCounsel) && hearing.details_submitted && (
-            <div className="flex items-center gap-2">
-              <input ref={fileInputRef} type="file" className="text-xs flex-1" />
-              <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => uploadFile("case_document")}>
-                <Upload className="w-3.5 h-3.5 mr-1.5" /> Upload Case Document
-              </Button>
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <input ref={fileInputRef} type="file" className="text-xs flex-1" />
+                <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => uploadFile("case_document")}>
+                  {/* Role-aware label: the counsel's headline deliverable is the
+                      Court Order Sheet (uploaded from the Escrow panel above at
+                      hearing_completed — deliberately ONE upload point, see
+                      EscrowStagePanel), so this generic slot is only for their
+                      supporting papers and is labelled as such to avoid it being
+                      mistaken for the order-sheet upload. */}
+                  <Upload className="w-3.5 h-3.5 mr-1.5" /> {isAssignedProxyCounsel ? "Upload Supporting Document" : "Upload Case Document"}
+                </Button>
+              </div>
+              {isAssignedProxyCounsel && (
+                <p className="text-2xs text-muted-foreground">
+                  Uploading the <span className="font-semibold text-foreground">Court Order Sheet</span>? That's done from the <span className="font-semibold text-foreground">Escrow panel above</span>, once the hearing is marked conducted — not here.
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -341,7 +359,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           </div>
         </div>
 
-        <HearingTimeline timeline={hearing.timeline} hearing={hearing} />
+        {showActivityHistory && <HearingTimeline timeline={hearing.timeline} hearing={hearing} />}
 
         {canRate && (
           <div className="border-t pt-3">

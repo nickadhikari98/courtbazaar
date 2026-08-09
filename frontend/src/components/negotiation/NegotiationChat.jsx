@@ -2,10 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Send, HandCoins, CheckCircle2, MessageCircle, Info } from "lucide-react";
+import { HandCoins, CheckCircle2, Bell } from "lucide-react";
 import { listHearingMessages, postHearingMessage } from "@/lib/hearingRequestsApi";
 import { formatINR } from "@/lib/api";
 import { ROLE_LABEL } from "@/lib/negotiationRoles";
@@ -132,14 +130,22 @@ function FeedEntry({ entry, isMine }) {
   );
 }
 
-// SECONDARY to NegotiationOfferPanel by design — quieter header, no accent
-// border/glow, smaller max-height feed — so the Fee Negotiation card above
-// always reads as the more important surface. See NegotiationOfferPanel.jsx
-// for why: commercial actions live there, never here.
-export default function NegotiationChat({ hearingId, timeline, negotiationStatus, hearing }) {
+// SECONDARY, READ-ONLY activity feed. Every hearing message, offer, counter
+// and agreement surfaces here as a running "Recent Activity" list so a glance
+// shows what just happened — but you don't reply here. Sending messages and
+// sharing documents both live in the "Assignment Discussion & Document
+// Sharing" surface (HearingDetailDialog), which reads/writes this same thread;
+// a duplicate send box here just posted the same message into two places,
+// which read as confusing. Commercial actions live in NegotiationOfferPanel
+// above.
+// How many of the most-recent feed items the sidebar shows before collapsing
+// the rest behind "View all" — this panel is a recent-activity glance, the
+// full history lives in the Assignment Discussion & Document Sharing dialog.
+const RECENT_LIMIT = 6;
+
+export default function NegotiationChat({ hearingId, timeline, negotiationStatus, hearing, onViewAll }) {
   const { user } = useAuth();
-  const { feed, sendMessage, sending } = useMessageFeed(hearingId, timeline, hearing);
-  const [text, setText] = useState("");
+  const { feed } = useMessageFeed(hearingId, timeline, hearing);
   const [unreadCount, setUnreadCount] = useState(0);
   const bottomRef = useRef(null);
   // Tracks which message ids we've already accounted for (toast + unread
@@ -151,7 +157,7 @@ export default function NegotiationChat({ hearingId, timeline, negotiationStatus
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [feed.length]);
 
-  // New-message notifications: this panel polls independently of the app's
+  // New-activity notifications: this panel polls independently of the app's
   // global notification bell (which only reflects the backend's persisted
   // notification_events on its own cadence) — this gives an immediate toast
   // + a running unread count the moment a poll picks up the other party's
@@ -174,20 +180,17 @@ export default function NegotiationChat({ hearingId, timeline, negotiationStatus
 
   const markSeen = () => setUnreadCount(0);
 
-  const handleSend = async () => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    setText("");
-    markSeen();
-    await sendMessage(trimmed);
-  };
+  // Only the most recent items render here; the count kept back tells the
+  // "View all" link how many older items live in the full discussion.
+  const visibleFeed = feed.slice(-RECENT_LIMIT);
+  const hiddenCount = feed.length - visibleFeed.length;
 
   return (
     <Card className="border shadow-none" data-testid="negotiation-chat-panel">
       <CardContent className="p-5">
         <div className="flex items-center justify-between gap-1.5 mb-2">
           <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">
-            <MessageCircle className="w-3.5 h-3.5" /> Discussion Chat
+            <Bell className="w-3.5 h-3.5" /> Recent Activity
           </div>
           {unreadCount > 0 && (
             <Badge className="bg-accent text-white border-0 text-2xs font-bold h-5 px-2" data-testid="chat-unread-badge">
@@ -197,7 +200,7 @@ export default function NegotiationChat({ hearingId, timeline, negotiationStatus
         </div>
         {negotiationStatus === "agreed" && (
           <div className="flex items-center gap-1.5 text-2xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-1.5 mb-3">
-            <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" /> Amount agreed — chat is for hearing logistics now.
+            <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" /> Amount agreed — remaining discussion is about hearing logistics.
           </div>
         )}
         <div
@@ -206,29 +209,26 @@ export default function NegotiationChat({ hearingId, timeline, negotiationStatus
           onMouseEnter={markSeen}
           onFocus={markSeen}
         >
-          {!feed.length && <p className="text-sm text-muted-foreground text-center py-6">No messages yet — say hello.</p>}
-          {feed.map((entry) => (
+          {!feed.length && <p className="text-sm text-muted-foreground text-center py-6">No activity yet.</p>}
+          {visibleFeed.map((entry) => (
             <FeedEntry key={entry.key} entry={entry} isMine={entry.senderUserId === user?.user_id || entry.proposedByUserId === user?.user_id} />
           ))}
           <div ref={bottomRef} />
         </div>
-        <div className="flex gap-2">
-          <Input
-            value={text} onChange={(e) => setText(e.target.value)} placeholder="Message"
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSend(); } }}
-            onFocus={markSeen}
-            data-testid="negotiation-chat-input"
-          />
-          <Button type="button" variant="outline" onClick={handleSend} disabled={sending || !text.trim()} data-testid="negotiation-chat-send">
-            <Send className="w-4 h-4" />
-          </Button>
-        </div>
-        <div className="flex items-start gap-1.5 text-2xs text-muted-foreground mt-2.5 bg-secondary/50 rounded-lg px-2.5 py-2" data-testid="chat-negotiation-hint">
-          <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-          <p>
-            This chat is for discussing hearing details. <span className="font-bold text-foreground">Fee agreements made in chat are NOT official.</span> Use the Fee Negotiation panel above.
+        {onViewAll ? (
+          <button
+            type="button" onClick={onViewAll} data-testid="recent-activity-view-all"
+            className="w-full text-2xs font-semibold text-accent hover:underline text-center"
+          >
+            {hiddenCount > 0
+              ? `View all activity (${hiddenCount} more) — reply & share documents →`
+              : "Reply & share documents in Assignment Discussion →"}
+          </button>
+        ) : (
+          <p className="text-2xs text-muted-foreground text-center">
+            Reply and share documents from <span className="font-semibold text-foreground">Assignment Discussion &amp; Document Sharing</span>.
           </p>
-        </div>
+        )}
       </CardContent>
     </Card>
   );

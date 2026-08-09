@@ -291,7 +291,55 @@ async def list_hearing_requests(db, user: dict) -> List[dict]:
         # but negotiation happens BEFORE payment, so without this clause the
         # advocate would have no way to even discover a pending negotiation.
         clauses.append({"target_advocate_id": user["user_id"], "status": {"$in": ["requested", "payment_pending"]}})
-    return await db.hearing_requests.find({"$or": clauses}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    hearings = await db.hearing_requests.find({"$or": clauses}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    await _attach_negotiation_action_flags(db, hearings, user["user_id"])
+    return hearings
+
+
+def _viewer_must_act_on_negotiation(neg: Optional[dict], hearing: dict, user_id: str) -> bool:
+    """Is the ball in THIS viewer's court on a live fee negotiation? Powers the
+    dashboard "Hearings Needing Action" tile (see hearingLifecycle.js's
+    hearingNeedsMyAction). Mirrors NegotiationOfferPanel.jsx's own stage logic:
+      - agreed negotiation -> nothing to do here (payment is a separate action
+        already counted by hearingNeedsMyAction's paymentDue branch);
+      - a standing offer proposed by the OTHER side -> my turn to accept/counter;
+      - no offer yet -> the requester is expected to open (the counsel's screen
+        literally reads "Waiting for the customer to send an offer"), so it's
+        the requester's action, not the counsel's. A hearing with no negotiation
+        row created yet is treated the same as "no offer yet"."""
+    if neg and neg.get("status") != "open":
+        return False
+    current_offer_id = neg.get("current_offer_id") if neg else None
+    if not current_offer_id:
+        return hearing.get("requesting_user_id") == user_id
+    current = next((o for o in (neg.get("offers") or []) if o.get("offer_id") == current_offer_id), None)
+    if not current:
+        return False
+    return current.get("proposed_by_user_id") != user_id
+
+
+async def _attach_negotiation_action_flags(db, hearings: List[dict], user_id: str) -> None:
+    """Sets `negotiation_action_required` on each pre-payment negotiation
+    hearing — whether `user_id` must act on it right now. Done here (one extra
+    query for all of them, keyed by hearing_id) rather than per-hearing on the
+    client, because the answer lives in the separate `negotiations` collection
+    the hearing doc doesn't carry."""
+    pending = [h for h in hearings
+               if h.get("target_advocate_id")
+               and not h.get("commercially_locked")
+               and h.get("status") in ("requested", "payment_pending")]
+    if not pending:
+        return
+    neg_by_hearing = {
+        n["hearing_id"]: n
+        for n in await db.negotiations.find(
+            {"hearing_id": {"$in": [h["hearing_id"] for h in pending]}},
+            {"_id": 0, "hearing_id": 1, "status": 1, "current_offer_id": 1, "offers": 1},
+        ).to_list(len(pending))
+    }
+    for h in pending:
+        h["negotiation_action_required"] = _viewer_must_act_on_negotiation(
+            neg_by_hearing.get(h["hearing_id"]), h, user_id)
 
 
 async def get_hearing_request(db, hearing_id: str, user: dict) -> dict:

@@ -246,7 +246,12 @@ export default function AppLayout() {
               <Bell className="w-5 h-5" />
               <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-accent rounded-full"></span>
             </button>
-            <DropdownMenu>
+            {/* modal={false}: keep Radix out of body scroll-lock / pointer-events
+                management. In modal mode a menu item that navigates (react-router)
+                can unmount the menu before Radix restores `pointer-events` and the
+                scroll lock on <body>, leaving the whole page unscrollable/stuck
+                after the dropdown closes. */}
+            <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
                 <button className="flex items-center gap-2 p-1 pr-2 hover:bg-secondary rounded-lg" data-testid="user-menu-trigger">
                   <Avatar className="w-8 h-8">
