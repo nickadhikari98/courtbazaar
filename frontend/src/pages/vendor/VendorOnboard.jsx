@@ -126,7 +126,7 @@ export default function VendorOnboard() {
             <select value={stateId} onChange={(e) => setStateId(e.target.value)} className="border border-border rounded-md h-10 px-3 text-sm bg-white w-full mb-3" data-testid="ob-state-select">
               {states.map(s => <option key={s.state_id} value={s.state_id}>{s.name}</option>)}
             </select>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto p-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto cb-scroll p-1">
               {courts.filter(c => c.serviceable !== false).map(c => (
                 <label key={c.court_id} className="flex items-center gap-2 p-2 hover:bg-secondary rounded-lg cursor-pointer" data-testid={`ob-court-${c.court_id}`}>
                   <Checkbox checked={form.court_ids.includes(c.court_id)} onCheckedChange={() => toggleCourt(c.court_id)} />
@@ -139,7 +139,7 @@ export default function VendorOnboard() {
 
           <div>
             <div className="cb-overline mb-3">5. Services you offer * ({selectedCat?.name})</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto p-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto cb-scroll p-1">
               {relevantServices.map(s => (
                 <label key={s.service_id} className="flex items-center gap-2 p-2 hover:bg-secondary rounded-lg cursor-pointer" data-testid={`ob-svc-${s.service_id}`}>
                   <Checkbox checked={form.service_ids.includes(s.service_id)} onCheckedChange={() => toggleSvc(s.service_id)} />

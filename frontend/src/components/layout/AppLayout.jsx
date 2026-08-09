@@ -3,12 +3,11 @@ import { NavLink, Outlet, Link, useNavigate, useLocation } from "react-router-do
 import { useAuth } from "@/context/AuthContext";
 import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
-  User, Settings, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck,
+  User, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck,
   Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic, Banknote,
   UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
 import { formatINR } from "@/lib/api";
@@ -176,7 +175,7 @@ export default function AppLayout() {
           </button>
         </div>
 
-        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto cb-scroll">
           {items.map((item) => (
             item.section ? (
               <div

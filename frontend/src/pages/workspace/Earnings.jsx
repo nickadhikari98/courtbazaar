@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty, TableLoading,
 } from "@/components/ui/table";
-import { Wallet, IndianRupee, TrendingUp, Clock, Receipt, FileText } from "lucide-react";
+import { Wallet, IndianRupee, TrendingUp, Clock, Receipt } from "lucide-react";
 import { formatINR } from "@/lib/api";
 import { getEarningsMe, withdrawEarnings, getEarningsSettlements, getWallet } from "@/lib/earningsApi";
 import StatGrid from "@/components/shared/StatGrid";

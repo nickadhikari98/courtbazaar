@@ -3,9 +3,8 @@ import { useAuth } from "@/context/AuthContext";
 import { api, formatINR, API_BASE } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Upload, Download, CheckCircle2, XCircle, FileSpreadsheet, Loader2, AlertTriangle } from "lucide-react";
+import { Upload, Download, XCircle, FileSpreadsheet, Loader2, AlertTriangle } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 
 export default function BulkImport() {

@@ -32,7 +32,7 @@ export default function VendorSettlements() {
       try {
         const { data } = await api.get("/vendors/me/settlements");
         if (alive) setData(data);
-      } catch (e) {
+      } catch {
         toast.error("Could not load settlements");
       } finally {
         if (alive) setLoading(false);
@@ -125,7 +125,7 @@ export default function VendorSettlements() {
               <Skeleton className="h-12 w-full" />
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto cb-scroll">
               <table className="w-full text-sm">
                 <thead className="bg-secondary text-xs cb-overline text-left">
                   <tr>

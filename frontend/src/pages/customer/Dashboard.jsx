@@ -169,7 +169,6 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canPracticeProxyCounsel]);
 
-  const active = useMemo(() => orders.filter((o) => !["completed", "delivered", "cancelled"].includes(o.status)), [orders]);
   const unreadNotifications = useMemo(() => notifications.filter((n) => !n.read_at), [notifications]);
   const myActionHearings = useMemo(() => hearings.filter((h) => hearingNeedsMyAction(h, user)), [hearings, user]);
   const myDocumentHearings = useMemo(() => hearings.filter((h) => hearingNeedsMyDocument(h, user?.user_id)), [hearings, user]);

@@ -11,7 +11,7 @@ export default function CourtDirectory() {
   const [activeState, setActiveState] = useState(null);
   const [courts, setCourts] = useState([]);
   const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
 
   useEffect(() => {
     api.get("/states").then(r => {

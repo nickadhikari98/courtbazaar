@@ -124,7 +124,7 @@ function ReviewDetailDialog({ reviewId, open, onOpenChange, onChanged }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto cb-scroll">
         <DialogHeader>
           <DialogTitle className="font-display text-xl flex items-center gap-2">
             {review.name}

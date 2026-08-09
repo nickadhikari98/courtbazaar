@@ -3,7 +3,6 @@ import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
-import { setToken } from "@/lib/api";
 import ScrollToTop from "@/components/ScrollToTop";
 import Logo from "@/components/shared/Logo";
 // AppLayout is the shared authenticated-app shell, not a route-level page —

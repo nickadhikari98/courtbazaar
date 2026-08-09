@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
  */
 
 const Table = React.forwardRef(({ className, ...props }, ref) => (
-  <div className="overflow-x-auto">
+  <div className="overflow-x-auto cb-scroll">
     <table ref={ref} className={cn("w-full text-sm", className)} {...props} />
   </div>
 ));

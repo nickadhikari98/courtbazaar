@@ -129,7 +129,7 @@ export default function AdminReconciliation() {
       {/* Table */}
       <Card className="dashboard-card border-none overflow-hidden">
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto cb-scroll">
             <table className="w-full text-sm">
               <thead className="bg-secondary">
                 <tr className="text-left text-xs cb-overline">

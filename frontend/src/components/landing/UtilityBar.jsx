@@ -37,7 +37,7 @@ export default function UtilityBar({
   return (
     <div className="landing-utility-bar">
       <div className="landing-container flex flex-col gap-2 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-0 sm:h-9 sm:py-0">
-        <div className="flex items-center gap-5 overflow-x-auto sm:overflow-visible">
+        <div className="flex items-center gap-5 overflow-x-auto cb-scroll sm:overflow-visible">
           <span className="landing-utility-link flex-shrink-0">
             <MapPin className="w-3.5 h-3.5" strokeWidth={2} />
             <span>{location}</span>

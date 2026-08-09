@@ -3,8 +3,8 @@ import { api, formatINR } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
-  TrendingUp, IndianRupee, Truck, Receipt, Zap, Store, ShieldCheck, Users,
-  Package, Crown, AlertCircle, Activity, FileX, Database
+  TrendingUp, IndianRupee, Receipt, Store, ShieldCheck, Users,
+  Package, Crown, AlertCircle, Activity, FileX
 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis } from "recharts";
 import { CHART_COLORS_EXTENDED as COLORS } from "@/lib/chartColors";

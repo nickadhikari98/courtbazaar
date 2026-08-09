@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search, Filter, ArrowRight, Gavel, Scale, CreditCard, Building2 } from "lucide-react";
+import { Search, ArrowRight, Gavel, Scale, CreditCard, Building2 } from "lucide-react";
 import * as Icons from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
@@ -53,7 +53,7 @@ export default function Marketplace() {
       </div>
 
       {/* Category chips */}
-      <div className="mt-5 flex gap-2 overflow-x-auto pb-2">
+      <div className="mt-5 flex gap-2 overflow-x-auto cb-scroll pb-2">
         <Button type="button" size="sm" variant={cat === "all" ? "default" : "ghost"}
                 className={`rounded-full shrink-0 font-bold ${cat === "all" ? "" : "bg-secondary text-foreground hover:bg-secondary/80"}`}
                 onClick={() => setCat("all")} data-testid="cat-all">All</Button>

@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from "@/components/ui/dialog";
-import { Lock, Upload, FileText, CheckCircle2, Ban, ShieldAlert, Loader2 } from "lucide-react";
+import { Lock, Upload, FileText, CheckCircle2, ShieldAlert, Loader2 } from "lucide-react";
 import {
   uploadHearingDocument, getHearingDocumentUrl, verifyAndReleaseHearingPayout, raiseHearingDispute,
 } from "@/lib/hearingRequestsApi";
