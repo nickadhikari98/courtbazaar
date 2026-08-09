@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { api, formatINR } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -7,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Truck, MapPin, Package, CheckCircle2, Bike, Navigation } from "lucide-react";
+import { Truck, MapPin, CheckCircle2, Navigation } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 
 export default function DeliveryHub() {

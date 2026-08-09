@@ -10,7 +10,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Send, CheckCircle2, XCircle, Plus, FileText, Trash2, Edit3, Clock } from "lucide-react";
+import { Send, CheckCircle2, XCircle, Plus, FileText, Trash2, Clock } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 
 const statusStyle = {

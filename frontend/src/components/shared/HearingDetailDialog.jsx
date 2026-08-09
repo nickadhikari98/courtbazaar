@@ -74,7 +74,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   // that NegotiationModule.jsx also calls — this dialog no longer maintains
   // its own copy that could drift out of sync with the Negotiation page.
   const {
-    isRequester, isAssignedProxyCounsel, isTargetedAtMe, canAccept, canDecline, canReject,
+    isRequester, isAssignedProxyCounsel, canAccept, canDecline, canReject,
     negotiationRequired, negotiationAgreed, negotiationPending, canPay, canCancel, canMarkConducted, canRate,
     isEscrowParticipant, viewerRole,
   } = getHearingPermissions(hearing, user);
@@ -162,7 +162,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto cb-scroll">
         <DialogHeader>
           <DialogTitle className="font-display text-xl flex items-center gap-2">
             {hearing.court_id}
@@ -322,7 +322,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
 
         <div>
           <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Notes</div>
-          <div className="space-y-1 text-xs mb-2 max-h-28 overflow-y-auto">
+          <div className="space-y-1 text-xs mb-2 max-h-28 overflow-y-auto cb-scroll">
             {hearing.hearing_notes?.map((n, i) => <div key={i} className="bg-secondary rounded px-2 py-1">{n.text}</div>)}
             {!hearing.hearing_notes?.length && <p className="text-muted-foreground">No notes yet.</p>}
           </div>
@@ -334,7 +334,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
 
         <div>
           <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Chat</div>
-          <div className="space-y-1.5 mb-2 max-h-40 overflow-y-auto">
+          <div className="space-y-1.5 mb-2 max-h-40 overflow-y-auto cb-scroll">
             {messages.map((m) => {
               const isMine = m.sender_user_id === user?.user_id;
               const time = m.created_at ? new Date(m.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "";

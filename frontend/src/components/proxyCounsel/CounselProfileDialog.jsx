@@ -12,7 +12,7 @@ import { formatINR } from "@/lib/api";
 export default function CounselProfileDialog({ counsel, onOpenChange }) {
   return (
     <Dialog open={!!counsel} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto cb-scroll">
         {counsel && (
           <>
             <DialogHeader>

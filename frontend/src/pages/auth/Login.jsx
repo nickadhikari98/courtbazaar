@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Link, useNavigate, useLocation } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,6 @@ import GoogleAuthButton from "@/components/shared/GoogleAuthButton";
 
 export default function Login() {
   const navigate = useNavigate();
-  const location = useLocation();
   const { login, otpRequest, otpVerify, googleLogin, googleOAuthEnabled } = useAuth();
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState("");
@@ -56,7 +55,7 @@ export default function Login() {
       await otpRequest(phone);
       setOtpSent(true);
       toast.success("OTP sent");
-    } catch (e) {
+    } catch {
       toast.error("Could not send OTP");
     } finally { setLoading(false); }
   };

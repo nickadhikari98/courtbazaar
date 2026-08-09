@@ -120,7 +120,7 @@ export default function NegotiationModule() {
           <History className="w-3.5 h-3.5" /> Activity History
         </div>
         {hearing?.timeline?.length ? (
-          <div className="max-h-96 overflow-y-auto pr-1">
+          <div className="max-h-96 overflow-y-auto cb-scroll pr-1">
             <HearingTimeline timeline={hearing.timeline} hearing={hearing} />
           </div>
         ) : (

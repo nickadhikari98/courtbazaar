@@ -119,7 +119,7 @@ export default function ReviewsSection() {
           onMouseLeave={() => setPaused(false)}
           onFocus={() => setPaused(true)}
           onBlur={() => setPaused(false)}
-          className="landing-review-track flex gap-6 overflow-x-auto snap-x snap-mandatory scroll-smooth pb-2 -mx-6 px-6 sm:mx-0 sm:px-0"
+          className="landing-review-track flex gap-6 overflow-x-auto cb-scroll snap-x snap-mandatory scroll-smooth pb-2 -mx-6 px-6 sm:mx-0 sm:px-0"
         >
           {testimonials.map((t) => (
             <div

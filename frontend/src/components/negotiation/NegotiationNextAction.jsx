@@ -21,7 +21,6 @@ import { ROLE_LABEL } from "@/lib/negotiationRoles";
 export default function NegotiationNextAction({
   stage, viewerRole, hearing, canPay, paying, onPay, canAccept, accepting, onAccept,
 }) {
-  const otherRoleLabel = ROLE_LABEL[viewerRole === "customer" ? "counsel" : "customer"];
 
   // create-order's initiate_payment call can land the hearing on
   // "payment_pending" even when the Razorpay checkout right after it is

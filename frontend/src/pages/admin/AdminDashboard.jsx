@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { api, formatINR } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { TrendingUp, Users, Store, IndianRupee, ShoppingBag, AlertCircle } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, PieChart, Pie } from "recharts";
 import PageContainer from "@/components/layout/PageContainer";

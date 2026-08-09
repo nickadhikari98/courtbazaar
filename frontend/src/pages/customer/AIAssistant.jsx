@@ -31,7 +31,7 @@ export default function AIAssistant() {
     try {
       const { data } = await api.post("/ai/chat", { session_id: sessionId, message: content });
       setMsgs(prev => [...prev, { role: "assistant", text: data.reply }]);
-    } catch (e) {
+    } catch {
       toast.error("AI is unavailable. Try again.");
     } finally { setLoading(false); }
   };
@@ -48,7 +48,7 @@ export default function AIAssistant() {
       </div>
 
       <Card className="dashboard-card border-none flex-1 flex flex-col overflow-hidden">
-        <CardContent className="flex-1 overflow-y-auto p-6 space-y-4" data-testid="ai-messages">
+        <CardContent className="flex-1 overflow-y-auto cb-scroll p-6 space-y-4" data-testid="ai-messages">
           {msgs.length === 0 && (
             <div className="text-center py-10">
               <div className="w-16 h-16 mx-auto bg-accent/10 rounded-2xl flex items-center justify-center mb-4">

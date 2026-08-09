@@ -9,8 +9,8 @@ import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  CheckCircle2, Clock, Loader2, Truck, Package, FileText, Star,
-  MapPin, ShieldCheck, Receipt, Download, AlertCircle, ArrowLeft
+  CheckCircle2, Clock, Loader2, Truck, FileText, Star,
+  ShieldCheck, ArrowLeft
 } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
@@ -75,7 +75,7 @@ export default function OrderDetail() {
         }
         if (attempts < 8) setTimeout(poll, 2500);
         else setStatusPolling(false);
-      } catch (e) { setStatusPolling(false); }
+      } catch { setStatusPolling(false); }
     };
     poll();
   }, [sessionId]);
@@ -88,7 +88,7 @@ export default function OrderDetail() {
         origin_url: window.location.origin,
       });
       window.location.href = data.url;
-    } catch (e) {
+    } catch {
       toast.error("Could not start payment");
       setPaying(false);
     }
@@ -124,7 +124,7 @@ export default function OrderDetail() {
         });
         rzp.open();
       }
-    } catch (e) { toast.error("Razorpay error"); }
+    } catch { toast.error("Razorpay error"); }
     finally { setRzpLoading(false); }
   };
 

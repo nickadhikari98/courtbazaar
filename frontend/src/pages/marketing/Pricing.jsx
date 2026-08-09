@@ -153,7 +153,7 @@ export default function Pricing() {
             <p className="text-sm text-muted-foreground mb-6">
               Add e-filing to any package only when you need it.
             </p>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto cb-scroll">
               <table className="w-full text-sm border-collapse min-w-[480px]">
                 <thead>
                   <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground border-b border-slate-200">

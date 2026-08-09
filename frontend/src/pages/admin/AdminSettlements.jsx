@@ -5,9 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Download, Play, CheckCircle2, XCircle, Receipt, Loader2 } from "lucide-react";
+import { Download, Play, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
 
@@ -34,7 +34,7 @@ export default function AdminSettlements() {
       const { data } = await api.post("/admin/settlements/run", { dry_run: dry });
       toast.success(`${dry ? '[Dry] ' : ''}${data.settlements_created} settlement(s) · ${formatINR(data.total_amount)}`);
       if (!dry) load();
-    } catch (e) { toast.error("Run failed"); }
+    } catch { toast.error("Run failed"); }
     finally { setRunning(false); }
   };
 
@@ -100,7 +100,7 @@ export default function AdminSettlements() {
 
       <Card className="dashboard-card border-none overflow-hidden">
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto cb-scroll">
             <table className="w-full text-sm">
               <thead className="bg-secondary text-xs cb-overline text-left">
                 <tr><th className="px-4 py-3">Settlement ID</th><th className="px-4 py-3">Vendor</th><th className="px-4 py-3">Cycle</th><th className="px-4 py-3 text-right">Orders</th><th className="px-4 py-3 text-right">Amount</th><th className="px-4 py-3">Mode</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Actions</th></tr>

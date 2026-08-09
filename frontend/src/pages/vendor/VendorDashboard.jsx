@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, formatINR } from "@/lib/api";
-import { useAuth } from "@/context/AuthContext";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +9,6 @@ import { Store, Package, TrendingUp, ShieldCheck, ArrowRight, Star, AlertCircle,
 import PageContainer from "@/components/layout/PageContainer";
 
 export default function VendorDashboard() {
-  const { user } = useAuth();
   const [vendor, setVendor] = useState(null);
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);

@@ -18,7 +18,7 @@ const roleIcons = { owner: Crown, partner: ShieldCheck, associate: Briefcase, pa
 const roleLabels = { owner: "Owner", partner: "Partner", associate: "Associate", paralegal: "Paralegal" };
 
 export default function FirmManagement() {
-  const { user, refresh } = useAuth();
+  const { refresh } = useAuth();
   const [firmData, setFirmData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);

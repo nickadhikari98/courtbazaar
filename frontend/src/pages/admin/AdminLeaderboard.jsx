@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { api, formatINR } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Trophy, Crown, Star, TrendingUp, Clock, ShieldCheck, Award } from "lucide-react";
+import { Trophy, Crown, Award } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
 
@@ -73,7 +73,7 @@ export default function AdminLeaderboard() {
           {rest.length > 0 && (
             <Card className="mt-6 dashboard-card border-none overflow-hidden">
               <CardContent className="p-0">
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto cb-scroll">
                   <table className="w-full text-sm">
                     <thead className="bg-secondary text-xs cb-overline text-left">
                       <tr><th className="px-4 py-3">Rank</th><th className="px-4 py-3">Vendor</th><th className="px-4 py-3">Grade</th><th className="px-4 py-3 text-right">SLA</th><th className="px-4 py-3 text-right">On-time</th><th className="px-4 py-3 text-right">Avg TAT</th><th className="px-4 py-3 text-right">Rating</th><th className="px-4 py-3 text-right">Orders</th><th className="px-4 py-3 text-right">Revenue</th><th className="px-4 py-3 text-right">Disputes</th></tr>

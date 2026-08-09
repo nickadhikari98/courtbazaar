@@ -204,7 +204,7 @@ export default function NegotiationChat({ hearingId, timeline, negotiationStatus
           </div>
         )}
         <div
-          className="space-y-2 max-h-72 overflow-y-auto mb-3 pr-1"
+          className="space-y-2 max-h-72 overflow-y-auto cb-scroll mb-3 pr-1"
           data-testid="negotiation-feed"
           onMouseEnter={markSeen}
           onFocus={markSeen}

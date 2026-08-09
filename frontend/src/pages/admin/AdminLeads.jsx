@@ -274,7 +274,7 @@ function LeadDetailDialog({ leadId, open, onOpenChange, onChanged, onDeleteReque
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto cb-scroll">
         <DialogHeader>
           <DialogTitle className="font-display text-xl flex items-center gap-2">
             {lead.full_name || "Unnamed applicant"}
@@ -288,7 +288,7 @@ function LeadDetailDialog({ leadId, open, onOpenChange, onChanged, onDeleteReque
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-1 text-sm border rounded-lg p-3 max-h-56 overflow-y-auto">
+        <div className="space-y-1 text-sm border rounded-lg p-3 max-h-56 overflow-y-auto cb-scroll">
           {Object.entries(lead.form_data || {}).map(([k, v]) => (
             <div key={k} className="flex gap-2">
               <span className="text-muted-foreground min-w-[40%] flex-shrink-0">{k.split("__").pop().replace(/_/g, " ")}</span>
