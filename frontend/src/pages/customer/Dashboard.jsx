@@ -283,6 +283,19 @@ export default function Dashboard() {
       .slice(0, 4)
   ), [notificationItems]);
 
+  // "View All Notifications" doubles as "mark them seen": clear the unread
+  // state (badge + per-row highlight) in one bulk call, then open the full
+  // feed. Optimistic local update so the effect is instant if the user comes
+  // back; awaits the write so /notifications loads already-read, not racing.
+  const handleViewAllNotifications = async () => {
+    if (unreadNotifications.length) {
+      const seenAt = new Date().toISOString();
+      setNotifications((prev) => prev.map((n) => (n.read_at ? n : { ...n, read_at: seenAt })));
+      try { await api.put("/notifications/read-all"); } catch { /* best-effort — still open the feed */ }
+    }
+    navigate("/notifications");
+  };
+
   // Today's Progress — reuses the shadcn Progress bar, not a new stat type.
   const todayChecklist = useMemo(() => {
     const items = [];
@@ -502,14 +515,24 @@ export default function Dashboard() {
                 {dashboardNotifications.map((n) => {
                   const meta = NOTIFICATION_GROUP_META[n.group];
                   return (
-                    <div key={n.key} className="flex items-center gap-2.5 py-2.5 px-1" data-testid={`notification-${n.key}`}>
+                    <div
+                      key={n.key}
+                      className={`flex items-center gap-2.5 py-2.5 px-2 -mx-1 rounded-lg ${n.unread ? "bg-accent/5" : ""}`}
+                      data-testid={`notification-${n.key}`}
+                    >
+                      {/* Unread accent rail — the "different from the others"
+                          cue the read rows don't get, alongside the tint + dot. */}
+                      {n.unread && <span className="w-1 self-stretch rounded-full bg-accent flex-shrink-0" aria-hidden="true" />}
                       <div className={`relative w-8 h-8 rounded-full ${meta.iconWrap} flex items-center justify-center flex-shrink-0`}>
                         <n.icon className="w-4 h-4" strokeWidth={2} />
                         {n.unread && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent ring-2 ring-white" aria-hidden="true" />}
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm font-bold truncate">{n.title}</span>
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            <span className={`text-sm truncate ${n.unread ? "font-extrabold" : "font-bold"}`}>{n.title}</span>
+                            {n.unread && <span className="text-2xs font-extrabold uppercase tracking-wide text-accent bg-accent/10 rounded px-1 leading-tight flex-shrink-0">New</span>}
+                          </span>
                           <span className="text-2xs text-muted-foreground/70 font-semibold flex-shrink-0">{n.at ? timeAgo(n.at) : ""}</span>
                         </div>
                         <div className="flex items-center justify-between gap-2">
@@ -532,13 +555,14 @@ export default function Dashboard() {
                 })}
               </div>
             )}
-            <Link
-              to="/notifications"
-              className="mt-2 flex items-center justify-center text-xs font-bold text-accent hover:underline py-2 border-t border-border/60"
+            <button
+              type="button"
+              onClick={handleViewAllNotifications}
+              className="mt-2 w-full flex items-center justify-center text-xs font-bold text-accent hover:underline py-2 border-t border-border/60"
               data-testid="dash-view-all-notifications"
             >
               View All Notifications →
-            </Link>
+            </button>
           </div>
         </div>
       </div>

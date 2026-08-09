@@ -136,6 +136,12 @@ export function hearingNeedsMyAction(h, user) {
   const paymentDue = h.requesting_user_id === user?.user_id && PAYABLE_HEARING_STATUSES.includes(h.status)
     && hearingCommerciallyReadyForPayment(h);
   return paymentDue
+    // Live fee negotiation where the ball is in my court (make the opening
+    // offer, or respond to a standing offer from the other side). Computed
+    // server-side in hearings._attach_negotiation_action_flags because whose
+    // turn it is lives in the negotiations collection, not on the hearing doc.
+    // Without this, a hearing stuck at "Negotiating Fee" never counted here.
+    || !!h.negotiation_action_required
     || (h.proxy_counsel_user_id === user?.user_id && h.status === "hearing_scheduled") // mark conducted due
     || hearingIsAcceptableByMe(h, user);
 }

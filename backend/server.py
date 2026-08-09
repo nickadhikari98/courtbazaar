@@ -2176,6 +2176,18 @@ async def list_notifications(user=Depends(get_current_user), unread_only: bool =
         query["read_at"] = None
     return await db.notification_events.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
 
+@api_router.put("/notifications/read-all")
+async def mark_all_notifications_read(user=Depends(get_current_user)):
+    """Marks every currently-unread notification for this user as read in one
+    call — backs the dashboard's "View All Notifications" seen-effect and the
+    Notifications page's "Mark all read". Only touches unread rows so read_at
+    keeps the timestamp of when each was actually first seen."""
+    result = await db.notification_events.update_many(
+        {"user_id": user["user_id"], "read_at": None},
+        {"$set": {"read_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "marked_read": result.modified_count}
+
 @api_router.put("/notifications/{notification_id}/read")
 async def mark_notification_read(notification_id: str, user=Depends(get_current_user)):
     result = await db.notification_events.update_one(
