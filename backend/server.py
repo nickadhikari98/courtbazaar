@@ -625,7 +625,14 @@ async def otp_request(req: OtpRequest):
         "created_at": now.isoformat(),
     })
     from notifications import notify
-    notify({"phone": req.phone, "notif_prefs": {"sms": True, "whatsapp": True, "email": False}}, "otp", {"otp": code})
+    existing = await db.users.find_one(
+        {"$or": [{"phone": req.phone}, {"alt_phones": req.phone}]}, {"_id": 0, "email": 1}
+    )
+    notify(
+        {"phone": req.phone, "email": existing.get("email") if existing else None,
+         "notif_prefs": {"sms": True, "whatsapp": True, "email": True}},
+        "otp", {"otp": code},
+    )
     return {"ok": True, "message": "OTP sent", "phone": req.phone}
 
 @api_router.post("/auth/otp/verify")
@@ -642,7 +649,9 @@ async def otp_verify(req: OtpVerify):
         await db.otp_codes.update_one({"_id": rec["_id"]}, {"$inc": {"attempts": 1}})
         raise HTTPException(400, "Invalid OTP")
     await db.otp_codes.update_one({"_id": rec["_id"]}, {"$set": {"used": True}})
-    user = await db.users.find_one({"phone": req.phone}, {"_id": 0})
+    user = await db.users.find_one(
+        {"$or": [{"phone": req.phone}, {"alt_phones": req.phone}]}, {"_id": 0}
+    )
     # Same guard login() already applies — without it, a deactivated account
     # (password_hash cleared, `deleted: True`) could still get back in
     # through phone OTP, silently bypassing the deactivation entirely.
