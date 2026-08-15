@@ -24,6 +24,7 @@ import { CAPABILITY_LABELS } from "@/components/shared/CapabilitiesCard";
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
 import WorkspaceHero from "@/components/shared/WorkspaceHero";
+import EmptyState from "@/components/shared/EmptyState";
 
 const aiQuickAction = { id: "__ai_assistant", icon: Sparkles, label: "AI Assistant", price: "Ask anything", color: "bg-violet-50", iconColor: "text-violet-700" };
 
@@ -443,20 +444,18 @@ export default function Dashboard() {
           {loading ? (
             <div className="space-y-3">{[1, 2].map((i) => <div key={i} className="h-28 shimmer rounded-xl"></div>)}</div>
           ) : upcomingHearings.length === 0 ? (
-            <Card className="border-dashed border-2" data-testid="empty-upcoming-hearings">
-              <CardContent className="p-10 text-center">
-                <Gavel className="w-12 h-12 mx-auto text-muted-foreground mb-3" strokeWidth={1.5} />
-                <div className="font-display font-bold text-lg">You don't have any hearings scheduled.</div>
-                {canHireProxyCounsel && (
-                  <>
-                    <p className="text-sm text-muted-foreground mt-1">Send a request and any available Proxy Counsel can accept it.</p>
-                    <Button onClick={() => navigate("/hire-proxy-counsel")} className="mt-4 bg-accent hover:bg-accent/90 font-bold">
-                      <Plus className="w-4 h-4 mr-2" /> Browse Hearing Requests
-                    </Button>
-                  </>
-                )}
-              </CardContent>
-            </Card>
+            <EmptyState
+              size="lg"
+              icon={Gavel}
+              testId="empty-upcoming-hearings"
+              title="You don't have any hearings scheduled."
+              description={canHireProxyCounsel ? "Send a request and any available Proxy Counsel can accept it." : undefined}
+              action={canHireProxyCounsel ? (
+                <Button onClick={() => navigate("/hire-proxy-counsel")} className="bg-accent hover:bg-accent/90 font-bold">
+                  <Plus className="w-4 h-4 mr-2" /> Browse Hearing Requests
+                </Button>
+              ) : undefined}
+            />
           ) : (
             <div className="space-y-3">
               {upcomingHearings.map((h) => {
@@ -705,16 +704,18 @@ export default function Dashboard() {
         {loading ? (
           <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-12 shimmer rounded-xl"></div>)}</div>
         ) : recentActivity.length === 0 ? (
-          <Card className="border-dashed border-2" data-testid="empty-recent-activity">
-            <CardContent className="p-10 text-center">
-              <Package className="w-12 h-12 mx-auto text-muted-foreground mb-3" strokeWidth={1.5} />
-              <div className="font-display font-bold text-lg">Need legal services today?</div>
-              <p className="text-sm text-muted-foreground mt-1">Place your first order — it takes 30 seconds.</p>
-              <Button onClick={() => navigate("/marketplace")} className="mt-4 bg-accent hover:bg-accent/90 font-bold" data-testid="dash-empty-activity-marketplace">
+          <EmptyState
+            size="lg"
+            icon={Package}
+            testId="empty-recent-activity"
+            title="Need legal services today?"
+            description="Place your first order — it takes 30 seconds."
+            action={(
+              <Button onClick={() => navigate("/marketplace")} className="bg-accent hover:bg-accent/90 font-bold" data-testid="dash-empty-activity-marketplace">
                 <Store className="w-4 h-4 mr-2" /> Marketplace
               </Button>
-            </CardContent>
-          </Card>
+            )}
+          />
         ) : (
           <div className="space-y-1">
             {recentActivity.map((item) => (

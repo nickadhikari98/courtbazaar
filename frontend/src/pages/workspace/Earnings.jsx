@@ -15,6 +15,7 @@ import { Wallet, IndianRupee, TrendingUp, Clock, Receipt } from "lucide-react";
 import { formatINR } from "@/lib/api";
 import { getEarningsMe, withdrawEarnings, getEarningsSettlements, getWallet } from "@/lib/earningsApi";
 import StatGrid from "@/components/shared/StatGrid";
+import EmptyState from "@/components/shared/EmptyState";
 
 const SETTLEMENT_BADGE = {
   queued: "bg-amber-100 text-amber-700",
@@ -172,15 +173,11 @@ function SettlementsTab() {
 
 function InvoicesTab() {
   return (
-    <Card className="border-dashed border-2">
-      <CardContent className="p-10 text-center">
-        <Receipt className="w-10 h-10 mx-auto text-muted-foreground mb-3" strokeWidth={1.5} />
-        <div className="font-display font-bold">Tax invoices coming soon</div>
-        <p className="text-sm text-muted-foreground mt-1 max-w-sm mx-auto">
-          GST/tax invoices for professional earnings — and TDS — will appear here once wired up.
-        </p>
-      </CardContent>
-    </Card>
+    <EmptyState
+      icon={Receipt}
+      title="Tax invoices coming soon"
+      description="GST/tax invoices for professional earnings — and TDS — will appear here once wired up."
+    />
   );
 }
 

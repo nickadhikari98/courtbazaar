@@ -80,6 +80,10 @@ export const addOnServices = [
   { service: "Supreme Court E-Filing", individual: 3999, addOn: 2999, savings: 1000 },
 ];
 
-export function formatINR(n) {
+/* Whole-rupee display for marketing pricing tiles (no decimals) — distinct
+   from lib/api.js's formatINR (currency-formatted, always 2 decimals, used
+   for financial data like wallet/settlements). Same name on both would let a
+   wrong import silently change how prices are displayed. */
+export function formatINRWhole(n) {
   return `₹${n.toLocaleString("en-IN")}`;
 }

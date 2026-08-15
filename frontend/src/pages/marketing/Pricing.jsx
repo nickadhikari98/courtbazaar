@@ -3,7 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import { Wallet } from "lucide-react";
 import MarketingLayout from "@/components/layout/MarketingLayout";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { packages, addOnServices, formatINR } from "@/lib/pricingData";
+import { packages, addOnServices, formatINRWhole } from "@/lib/pricingData";
 import { listPublicServices, formatServicePrice } from "@/lib/servicesApi";
 
 // Same short icon keys PricingServiceRow.jsx already maps internally
@@ -167,9 +167,9 @@ export default function Pricing() {
                   {addOnServices.map((addOn) => (
                     <tr key={addOn.service} className="border-b border-slate-100 last:border-0">
                       <td className="py-3 pr-4 font-medium">{addOn.service}</td>
-                      <td className="py-3 px-4 text-muted-foreground">{formatINR(addOn.individual)}</td>
-                      <td className="py-3 px-4 font-bold">{formatINR(addOn.addOn)}</td>
-                      <td className="py-3 pl-4 text-emerald-600 font-semibold">{formatINR(addOn.savings)}</td>
+                      <td className="py-3 px-4 text-muted-foreground">{formatINRWhole(addOn.individual)}</td>
+                      <td className="py-3 px-4 font-bold">{formatINRWhole(addOn.addOn)}</td>
+                      <td className="py-3 pl-4 text-emerald-600 font-semibold">{formatINRWhole(addOn.savings)}</td>
                     </tr>
                   ))}
                 </tbody>

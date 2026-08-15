@@ -23,6 +23,8 @@ import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import NegotiationChat from "@/components/negotiation/NegotiationChat";
 import NegotiationOfferPanel from "@/components/negotiation/NegotiationOfferPanel";
 import NegotiationNextAction from "@/components/negotiation/NegotiationNextAction";
+import EmptyState from "@/components/shared/EmptyState";
+import Loading from "@/components/shared/Loading";
 import EscrowStagePanel from "@/components/negotiation/EscrowStagePanel";
 import NegotiationOfferChain from "@/components/negotiation/NegotiationOfferChain";
 import { useNegotiationPoll } from "@/components/negotiation/useNegotiationPoll";
@@ -256,12 +258,10 @@ export default function NegotiationModule() {
         </Card>
       ) : (
         <>
-          {loading && <div className="text-center text-muted-foreground py-10 mt-6">Loading…</div>}
+          {loading && <Loading className="mt-6" />}
 
           {!loading && !hearing && (
-            <Card className="border-dashed border-2 mt-6 max-w-xl mx-auto">
-              <CardContent className="p-10 text-center text-sm text-muted-foreground">This request could not be found.</CardContent>
-            </Card>
+            <EmptyState className="mt-6 max-w-xl mx-auto" description="This request could not be found." />
           )}
 
           {!loading && hearing && (
@@ -329,13 +329,13 @@ export default function NegotiationModule() {
               </Card>
 
               {isTerminal ? (
-                <Card className="border-dashed border-2">
-                  <CardContent className="p-8 text-center">
-                    <Ban className="w-8 h-8 mx-auto text-red-500 mb-2" strokeWidth={1.5} />
-                    <p className="text-sm font-semibold">This request was {hearing.status}.</p>
-                    <p className="text-xs text-muted-foreground mt-1">Negotiation is closed — start a new request to try again.</p>
-                  </CardContent>
-                </Card>
+                <EmptyState
+                  size="sm"
+                  icon={Ban}
+                  iconClassName="text-red-500"
+                  title={`This request was ${hearing.status}.`}
+                  description="Negotiation is closed — start a new request to try again."
+                />
               ) : (
                 <>
                   {/* ③ Fee Negotiation — PRIMARY */}

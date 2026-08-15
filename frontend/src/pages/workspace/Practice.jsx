@@ -26,6 +26,7 @@ import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import HearingActivityPreview from "@/components/shared/HearingActivityPreview";
 import CapabilitiesCard from "@/components/shared/CapabilitiesCard";
 import StatGrid from "@/components/shared/StatGrid";
+import Loading from "@/components/shared/Loading";
 import { useAuth } from "@/context/AuthContext";
 import {
   HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole,
@@ -283,7 +284,7 @@ function AvailabilityTab() {
 function PerformanceTab() {
   const [perf, setPerf] = useState(null);
   useEffect(() => { getPracticePerformance().then(setPerf); }, []);
-  if (!perf) return <div className="text-center text-muted-foreground py-10">Loading…</div>;
+  if (!perf) return <Loading />;
 
   const stats = [
     { label: "Rating", value: perf.rating || "—", icon: Star, color: "bg-amber-100 text-amber-700" },
@@ -374,13 +375,13 @@ function HearingsTab() {
       )}
       <div>
         <div className="font-display font-bold mb-2">Open Requests</div>
-        {hearings === null && <div className="text-center text-muted-foreground py-6 text-sm">Loading…</div>}
+        {hearings === null && <Loading size="sm" />}
         {hearings && open.length === 0 && <p className="text-sm text-muted-foreground">No open requests right now.</p>}
         <div className="space-y-2">{open.map((h) => renderCard(h, () => setActiveId(h.hearing_id)))}</div>
       </div>
       <div>
         <div className="font-display font-bold mb-2">My Hearings</div>
-        {hearings === null && <div className="text-center text-muted-foreground py-6 text-sm">Loading…</div>}
+        {hearings === null && <Loading size="sm" />}
         {hearings && mine.length === 0 && <p className="text-sm text-muted-foreground">Nothing accepted yet.</p>}
         {hearings && mine.length > 0 && (
           <Tabs defaultValue="active">
@@ -422,7 +423,7 @@ export default function Practice() {
           <TabsTrigger value="performance">Performance</TabsTrigger>
         </TabsList>
         <TabsContent value="profile" className="mt-4">
-          {profile ? <ProfileTab profile={profile} onSaved={setProfile} /> : <div className="text-center text-muted-foreground py-10">Loading…</div>}
+          {profile ? <ProfileTab profile={profile} onSaved={setProfile} /> : <Loading />}
         </TabsContent>
         <TabsContent value="availability" className="mt-4">
           <AvailabilityTab />

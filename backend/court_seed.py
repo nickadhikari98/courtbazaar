@@ -1,80 +1,8 @@
-"""Court hierarchy and service catalog seed data for CourtBazaar India."""
+"""Service catalog seed data for CourtBazaar India.
 
-COURT_DATA = [
-    {
-        "state_id": "state_delhi", "name": "Delhi", "code": "DL",
-        "courts": [
-            {"court_id": "court_sc_india", "name": "Supreme Court of India", "type": "supreme", "address": "Tilak Marg, New Delhi"},
-            {"court_id": "court_delhi_hc", "name": "Delhi High Court", "type": "high_court", "address": "Sher Shah Road, New Delhi"},
-            {"court_id": "court_tishazari", "name": "Tis Hazari Court Complex", "type": "district", "district": "Central", "address": "Tis Hazari, Delhi"},
-            {"court_id": "court_patiala_house", "name": "Patiala House Court", "type": "district", "district": "New Delhi", "address": "Bhagwan Das Road, New Delhi"},
-            {"court_id": "court_karkardooma", "name": "Karkardooma Court", "type": "district", "district": "East", "address": "Karkardooma, Delhi"},
-            {"court_id": "court_saket", "name": "Saket District Court", "type": "district", "district": "South", "address": "Saket, New Delhi"},
-            {"court_id": "court_rohini", "name": "Rohini District Court", "type": "district", "district": "North", "address": "Rohini, Delhi"},
-            {"court_id": "court_dwarka", "name": "Dwarka District Court", "type": "district", "district": "South West", "address": "Dwarka, Delhi"},
-            {"court_id": "court_nclt_delhi", "name": "NCLT Delhi Bench", "type": "tribunal", "address": "CGO Complex, Delhi"},
-            {"court_id": "court_drt_delhi", "name": "DRT Delhi", "type": "tribunal", "address": "Jeevan Tara Building, New Delhi"},
-        ],
-    },
-    {
-        "state_id": "state_mh", "name": "Maharashtra", "code": "MH",
-        "courts": [
-            {"court_id": "court_bombay_hc", "name": "Bombay High Court", "type": "high_court", "address": "Fort, Mumbai"},
-            {"court_id": "court_bombay_hc_nagpur", "name": "Bombay HC Nagpur Bench", "type": "high_court", "address": "Civil Lines, Nagpur"},
-            {"court_id": "court_mumbai_city", "name": "Mumbai City Civil Court", "type": "district", "district": "Mumbai", "address": "Fort, Mumbai"},
-            {"court_id": "court_pune", "name": "Pune District Court", "type": "district", "district": "Pune", "address": "Shivajinagar, Pune"},
-            {"court_id": "court_nclt_mumbai", "name": "NCLT Mumbai Bench", "type": "tribunal", "address": "MTNL Building, Mumbai"},
-        ],
-    },
-    {
-        "state_id": "state_ka", "name": "Karnataka", "code": "KA",
-        "courts": [
-            {"court_id": "court_karnataka_hc", "name": "Karnataka High Court", "type": "high_court", "address": "Bengaluru"},
-            {"court_id": "court_bangalore_city", "name": "Bengaluru City Civil Court", "type": "district", "district": "Bengaluru Urban", "address": "Mayo Hall, Bengaluru"},
-            {"court_id": "court_mysuru", "name": "Mysuru District Court", "type": "district", "district": "Mysuru", "address": "Mysuru"},
-            {"court_id": "court_nclt_bengaluru", "name": "NCLT Bengaluru Bench", "type": "tribunal", "address": "Kendriya Sadan, Bengaluru"},
-        ],
-    },
-    {
-        "state_id": "state_tn", "name": "Tamil Nadu", "code": "TN",
-        "courts": [
-            {"court_id": "court_madras_hc", "name": "Madras High Court", "type": "high_court", "address": "Parry's Corner, Chennai"},
-            {"court_id": "court_madras_city", "name": "Madras City Civil Court", "type": "district", "district": "Chennai", "address": "Chennai"},
-            {"court_id": "court_coimbatore", "name": "Coimbatore District Court", "type": "district", "district": "Coimbatore", "address": "Coimbatore"},
-            {"court_id": "court_nclt_chennai", "name": "NCLT Chennai Bench", "type": "tribunal", "address": "Corporate Bhawan, Chennai"},
-        ],
-    },
-    {
-        "state_id": "state_up", "name": "Uttar Pradesh", "code": "UP",
-        "courts": [
-            {"court_id": "court_allahabad_hc", "name": "Allahabad High Court", "type": "high_court", "address": "Prayagraj"},
-            {"court_id": "court_allahabad_hc_lko", "name": "Allahabad HC Lucknow Bench", "type": "high_court", "address": "Lucknow"},
-            {"court_id": "court_lucknow_dist", "name": "Lucknow District Court", "type": "district", "district": "Lucknow", "address": "Lucknow"},
-            {"court_id": "court_noida", "name": "Gautam Budh Nagar District Court", "type": "district", "district": "Gautam Budh Nagar", "address": "Surajpur, Noida"},
-        ],
-    },
-    {
-        "state_id": "state_gj", "name": "Gujarat", "code": "GJ",
-        "courts": [
-            {"court_id": "court_gujarat_hc", "name": "Gujarat High Court", "type": "high_court", "address": "Sola, Ahmedabad"},
-            {"court_id": "court_ahmedabad_city", "name": "Ahmedabad City Civil Court", "type": "district", "district": "Ahmedabad", "address": "Bhadra, Ahmedabad"},
-        ],
-    },
-    {
-        "state_id": "state_wb", "name": "West Bengal", "code": "WB",
-        "courts": [
-            {"court_id": "court_calcutta_hc", "name": "Calcutta High Court", "type": "high_court", "address": "Esplanade, Kolkata"},
-            {"court_id": "court_alipore", "name": "Alipore District Court", "type": "district", "district": "South 24 Parganas", "address": "Alipore, Kolkata"},
-        ],
-    },
-    {
-        "state_id": "state_tg", "name": "Telangana", "code": "TG",
-        "courts": [
-            {"court_id": "court_telangana_hc", "name": "Telangana High Court", "type": "high_court", "address": "Hyderabad"},
-            {"court_id": "court_hyderabad_city", "name": "Hyderabad City Civil Court", "type": "district", "district": "Hyderabad", "address": "Nampally, Hyderabad"},
-        ],
-    },
-]
+Court hierarchy data lives in court_seed_expanded.py (COURT_DATA here was an
+early, superseded subset — server.py only ever imports SERVICE_CATALOG from
+this module)."""
 
 SERVICE_CATALOG = [
     # Document Services

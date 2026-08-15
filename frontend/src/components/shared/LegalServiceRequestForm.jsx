@@ -5,12 +5,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Info, Paperclip, Loader2 } from "lucide-react";
 import { formatINR } from "@/lib/api";
+import { toggleInArray } from "@/lib/utils";
 import CourtLocationSelector from "@/components/shared/CourtLocationSelector";
-import { PRIORITY_OPTIONS } from "@/config/serviceRequestFields";
+import WorkRequiredField from "@/components/shared/WorkRequiredField";
+import PriorityField from "@/components/shared/PriorityField";
 
 const ATTACHMENT_HELPER = "Case papers, Vakalatnama, prior order sheets, or other supporting documents — attached after the request is created.";
 
@@ -90,10 +91,7 @@ export default function LegalServiceRequestForm({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- report only the fields relevant to advocate matching
   }, [fields.court_id, fields.court_name, fields.state_id, fields.district, fields.work_required, fields.priority, fields.hearing_date, fields.budget]);
-  const toggleWorkType = (option) => {
-    const has = fields.work_required.includes(option);
-    set({ work_required: has ? fields.work_required.filter((w) => w !== option) : [...fields.work_required, option] });
-  };
+  const toggleWorkType = (option) => set({ work_required: toggleInArray(fields.work_required, option) });
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -190,38 +188,18 @@ export default function LegalServiceRequestForm({
       <Card className="dashboard-card border-none">
         <CardContent className="p-5 space-y-4">
           {serviceConfig.requiresWorkType && (
-            <div>
-              <div className="font-display font-bold mb-2">Work Required *</div>
-              <div className="grid sm:grid-cols-2 gap-2">
-                {serviceConfig.workTypeOptions.map((option) => (
-                  <label key={option} className="flex items-center gap-2 text-sm font-medium">
-                    <Checkbox checked={fields.work_required.includes(option)} onCheckedChange={() => toggleWorkType(option)} data-testid={`work-type-${option.toLowerCase().replace(/\s+/g, '-')}`} />
-                    {option}
-                  </label>
-                ))}
-              </div>
-              {errors.work_required && <p className="text-xs text-destructive mt-1">{errors.work_required}</p>}
-              {fields.work_required.includes("Other") && (
-                <div className="mt-2">
-                  <Label>Describe the other work required</Label>
-                  <Input value={fields.work_required_notes} onChange={(e) => set({ work_required_notes: e.target.value })} />
-                  {errors.work_required_notes && <p className="text-xs text-destructive mt-1">{errors.work_required_notes}</p>}
-                </div>
-              )}
-            </div>
+            <WorkRequiredField
+              options={serviceConfig.workTypeOptions}
+              value={fields.work_required}
+              onToggle={toggleWorkType}
+              notes={fields.work_required_notes}
+              onNotesChange={(v) => set({ work_required_notes: v })}
+              error={errors.work_required}
+              notesError={errors.work_required_notes}
+            />
           )}
 
-          <div>
-            <div className="font-display font-bold mb-2">Priority *</div>
-            <RadioGroup value={fields.priority} onValueChange={(v) => set({ priority: v })} className="flex flex-wrap gap-4">
-              {PRIORITY_OPTIONS.map((p) => (
-                <label key={p} className="flex items-center gap-2 text-sm font-medium">
-                  <RadioGroupItem value={p} /> {p}
-                </label>
-              ))}
-            </RadioGroup>
-            {errors.priority && <p className="text-xs text-destructive mt-1">{errors.priority}</p>}
-          </div>
+          <PriorityField value={fields.priority} onChange={(v) => set({ priority: v })} error={errors.priority} required />
 
           {serviceConfig.supportsTargeting && (
             <div>

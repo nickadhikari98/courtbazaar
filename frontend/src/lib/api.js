@@ -72,3 +72,23 @@ export const getErrorMessage = (err, fallback = "Something went wrong") => {
   }
   return fallback;
 };
+
+/* Downloads a file from an authenticated backend route (CSV/JSON exports,
+   templates, ...) by fetching it as a blob and triggering a save via a
+   throwaway <a> — axios's JSON-oriented client doesn't suit a binary
+   response like this. Every export button (reconciliation, settlements,
+   bulk-import template, DPDP data) hand-rolled this same fetch+blob+anchor
+   sequence; `path` (starting with "/", api-relative) and `filename` are the
+   only things that actually varied between them. */
+export const downloadFile = async (path, filename) => {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { Authorization: `Bearer ${getToken()}` },
+  });
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};

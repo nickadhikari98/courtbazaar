@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, formatINR } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,12 +12,13 @@ import { CHART_COLORS_EXTENDED as COLORS } from "@/lib/chartColors";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
 import StatGrid from "@/components/shared/StatGrid";
+import Loading from "@/components/shared/Loading";
 
 export default function SuperAdminConsole() {
   const [data, setData] = useState(null);
 
   useEffect(() => { api.get("/admin/command-center").then(r => setData(r.data)); }, []);
-  if (!data) return <div className="p-10">Loading command center…</div>;
+  if (!data) return <Loading text="Loading command center…" />;
 
   const revenuePie = [
     { name: "Commission (20%)", value: data.revenue.platform_commission_20pct },

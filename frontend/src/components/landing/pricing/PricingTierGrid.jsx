@@ -1,7 +1,7 @@
 import React from "react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { formatINR } from "@/lib/pricingData";
+import { formatINRWhole } from "@/lib/pricingData";
 
 /* Page-wise tier pricing, laid out as a responsive grid of compact cards
    instead of a single tall vertical list — lets a 10-tier package use the
@@ -21,11 +21,11 @@ export default function PricingTierGrid({ pkg }) {
         <div key={tier.pages} className="landing-pricing-tier-card">
           <p className="landing-pricing-tier-pages">Up to {tier.pages} pages</p>
           <div className="landing-pricing-tier-price-row">
-            <span className="landing-pricing-tier-price">{formatINR(tier.package)}</span>
-            <span className="landing-pricing-tier-price-strike">{formatINR(tier.individual)}</span>
+            <span className="landing-pricing-tier-price">{formatINRWhole(tier.package)}</span>
+            <span className="landing-pricing-tier-price-strike">{formatINRWhole(tier.individual)}</span>
           </div>
           <p className="landing-pricing-tier-savings">
-            Save {formatINR(tier.savings)} · {tier.discount}
+            Save {formatINRWhole(tier.savings)} · {tier.discount}
           </p>
           <button
             type="button"

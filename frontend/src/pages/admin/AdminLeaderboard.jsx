@@ -2,9 +2,12 @@ import React, { useEffect, useState } from "react";
 import { api, formatINR } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { Trophy, Crown, Award } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
+import EmptyState from "@/components/shared/EmptyState";
+import Loading from "@/components/shared/Loading";
 
 const gradeColors = {
   "A+": "bg-emerald-600 text-white",
@@ -33,7 +36,7 @@ export default function AdminLeaderboard() {
         description="Ranked by composite SLA score (on-time × 35% + completion × 25% + rating × 25% + dispute-free × 15%)"
       />
 
-      {loading ? <div className="mt-6">Loading…</div> : (
+      {loading ? <Loading className="mt-6" /> : (
         <>
           {/* Top 3 podium */}
           {top3.length > 0 && (
@@ -73,41 +76,48 @@ export default function AdminLeaderboard() {
           {rest.length > 0 && (
             <Card className="mt-6 dashboard-card border-none overflow-hidden">
               <CardContent className="p-0">
-                <div className="overflow-x-auto cb-scroll">
-                  <table className="w-full text-sm">
-                    <thead className="bg-secondary text-xs cb-overline text-left">
-                      <tr><th className="px-4 py-3">Rank</th><th className="px-4 py-3">Vendor</th><th className="px-4 py-3">Grade</th><th className="px-4 py-3 text-right">SLA</th><th className="px-4 py-3 text-right">On-time</th><th className="px-4 py-3 text-right">Avg TAT</th><th className="px-4 py-3 text-right">Rating</th><th className="px-4 py-3 text-right">Orders</th><th className="px-4 py-3 text-right">Revenue</th><th className="px-4 py-3 text-right">Disputes</th></tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {rest.map((v, i) => (
-                        <tr key={v.vendor_id} className="hover:bg-secondary/40" data-testid={`leaderboard-row-${i}`}>
-                          <td className="px-4 py-3 font-mono font-bold">{i + 4}</td>
-                          <td className="px-4 py-3">
-                            <div className="font-display font-bold flex items-center gap-1.5">{v.shop_name}
-                              {v.sponsored && <Crown className="w-3.5 h-3.5 text-accent fill-accent" />}
-                            </div>
-                            <div className="text-xs text-muted-foreground">{v.city} · {v.court_count} courts</div>
-                          </td>
-                          <td className="px-4 py-3"><Badge className={`${gradeColors[v.grade]} border-0 font-black`}>{v.grade}</Badge></td>
-                          <td className="px-4 py-3 text-right font-bold">{v.sla_score}</td>
-                          <td className="px-4 py-3 text-right">{v.on_time_rate}%</td>
-                          <td className="px-4 py-3 text-right">{v.avg_turnaround_hours}h</td>
-                          <td className="px-4 py-3 text-right">{v.avg_rating ? `${v.avg_rating}/5` : "—"}</td>
-                          <td className="px-4 py-3 text-right font-semibold">{v.total_orders}</td>
-                          <td className="px-4 py-3 text-right font-semibold">{formatINR(v.revenue)}</td>
-                          <td className="px-4 py-3 text-right">{v.dispute_rate}%</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Rank</TableHead>
+                      <TableHead>Vendor</TableHead>
+                      <TableHead>Grade</TableHead>
+                      <TableHead className="text-right">SLA</TableHead>
+                      <TableHead className="text-right">On-time</TableHead>
+                      <TableHead className="text-right">Avg TAT</TableHead>
+                      <TableHead className="text-right">Rating</TableHead>
+                      <TableHead className="text-right">Orders</TableHead>
+                      <TableHead className="text-right">Revenue</TableHead>
+                      <TableHead className="text-right">Disputes</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {rest.map((v, i) => (
+                      <TableRow key={v.vendor_id} data-testid={`leaderboard-row-${i}`}>
+                        <TableCell className="font-mono font-bold">{i + 4}</TableCell>
+                        <TableCell>
+                          <div className="font-display font-bold flex items-center gap-1.5">{v.shop_name}
+                            {v.sponsored && <Crown className="w-3.5 h-3.5 text-accent fill-accent" />}
+                          </div>
+                          <div className="text-xs text-muted-foreground">{v.city} · {v.court_count} courts</div>
+                        </TableCell>
+                        <TableCell><Badge className={`${gradeColors[v.grade]} border-0 font-black`}>{v.grade}</Badge></TableCell>
+                        <TableCell className="text-right font-bold">{v.sla_score}</TableCell>
+                        <TableCell className="text-right">{v.on_time_rate}%</TableCell>
+                        <TableCell className="text-right">{v.avg_turnaround_hours}h</TableCell>
+                        <TableCell className="text-right">{v.avg_rating ? `${v.avg_rating}/5` : "—"}</TableCell>
+                        <TableCell className="text-right font-semibold">{v.total_orders}</TableCell>
+                        <TableCell className="text-right font-semibold">{formatINR(v.revenue)}</TableCell>
+                        <TableCell className="text-right">{v.dispute_rate}%</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
               </CardContent>
             </Card>
           )}
 
-          {vendors.length === 0 && (
-            <Card className="mt-6 border-dashed border-2"><CardContent className="p-10 text-center"><Trophy className="w-10 h-10 mx-auto text-muted-foreground mb-3" /><div className="font-display font-bold">No approved vendors yet</div></CardContent></Card>
-          )}
+          {vendors.length === 0 && <EmptyState className="mt-6" icon={Trophy} title="No approved vendors yet" />}
         </>
       )}
     </PageContainer>

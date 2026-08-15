@@ -14,6 +14,8 @@ import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
 import HearingTimeline from "@/components/shared/HearingTimeline";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
+import EmptyState from "@/components/shared/EmptyState";
+import Loading from "@/components/shared/Loading";
 import {
   adminListHearingRequests, adminVerifyHearingOrderSheet, adminRejectHearingVerification,
   adminResolveHearingDispute, adminReleaseHearingPayout, getHearingEscrow, getHearingRequest,
@@ -48,12 +50,8 @@ export default function AdminHearingVerification() {
       </Tabs>
 
       <div className="mt-4 space-y-3">
-        {hearings === null && <div className="text-center text-muted-foreground py-10">Loading…</div>}
-        {hearings?.length === 0 && (
-          <Card className="border-dashed border-2">
-            <CardContent className="p-10 text-center text-muted-foreground">Nothing here right now.</CardContent>
-          </Card>
-        )}
+        {hearings === null && <Loading />}
+        {hearings?.length === 0 && <EmptyState description="Nothing here right now." />}
         {hearings?.map((h) => (
           <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow"
                 onClick={() => setActiveId(h.hearing_id)} data-testid={`admin-hearing-row-${h.hearing_id}`}>

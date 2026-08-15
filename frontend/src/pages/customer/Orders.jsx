@@ -8,6 +8,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Package, Search, ArrowRight } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
+import EmptyState from "@/components/shared/EmptyState";
 
 export default function Orders() {
   const [orders, setOrders] = useState([]);
@@ -73,13 +74,7 @@ export default function Orders() {
           <TabsContent value={k} key={k} className="mt-4 space-y-3">
             {loading ? [1,2,3].map(i => <div key={i} className="h-24 shimmer rounded-xl"></div>) :
               filter(list).length === 0 ? (
-                <Card className="border-dashed border-2">
-                  <CardContent className="p-10 text-center">
-                    <Package className="w-10 h-10 mx-auto text-muted-foreground mb-3" strokeWidth={1.5} />
-                    <div className="font-display font-bold">No orders yet</div>
-                    <p className="text-sm text-muted-foreground mt-1">Place your first order — it takes 30 seconds.</p>
-                  </CardContent>
-                </Card>
+                <EmptyState icon={Package} title="No orders yet" description="Place your first order — it takes 30 seconds." />
               ) : filter(list).map(o => <OrderCard key={o.order_id} o={o} />)}
           </TabsContent>
         ))}
