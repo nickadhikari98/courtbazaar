@@ -14,6 +14,8 @@ import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import HearingActivityPreview from "@/components/shared/HearingActivityPreview";
 import ProxyCounselLocationForm from "@/components/proxyCounsel/ProxyCounselLocationForm";
 import CounselDiscoveryPanel from "@/components/proxyCounsel/CounselDiscoveryPanel";
+import EmptyState from "@/components/shared/EmptyState";
+import Loading from "@/components/shared/Loading";
 import { SERVICE_CONFIGS } from "@/config/serviceRequestFields";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -180,15 +182,13 @@ export default function HireProxyCounsel() {
       <div className="mt-10">
         <h2 className="font-display font-bold text-xl tracking-tight mb-4">My Requests</h2>
         {hearings === null ? (
-          <div className="text-center text-muted-foreground py-10">Loading…</div>
+          <Loading />
         ) : hearings.length === 0 ? (
-          <Card className="border-dashed border-2">
-            <CardContent className="p-10 text-center">
-              <serviceConfig.heroIcon className="w-10 h-10 mx-auto text-muted-foreground mb-3" strokeWidth={1.5} />
-              <div className="font-display font-bold">{serviceConfig.emptyStateCopy.title}</div>
-              <p className="text-sm text-muted-foreground mt-1">{serviceConfig.emptyStateCopy.body}</p>
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={serviceConfig.heroIcon}
+            title={serviceConfig.emptyStateCopy.title}
+            description={serviceConfig.emptyStateCopy.body}
+          />
         ) : (
           <Tabs defaultValue="active">
             <TabsList data-testid="hearing-requests-tabs">
@@ -201,11 +201,7 @@ export default function HireProxyCounsel() {
             {Object.entries(hearingTabs).map(([key, list]) => (
               <TabsContent value={key} key={key} className="mt-4 space-y-3">
                 {list.length === 0 ? (
-                  <Card className="border-dashed border-2">
-                    <CardContent className="p-8 text-center text-sm text-muted-foreground">
-                      No {HEARING_TAB_LABELS[key].toLowerCase()} requests.
-                    </CardContent>
-                  </Card>
+                  <EmptyState size="sm" description={`No ${HEARING_TAB_LABELS[key].toLowerCase()} requests.`} />
                 ) : list.map((h) => (
                   <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveId(h.hearing_id)} data-testid={`hearing-row-${h.hearing_id}`}>
                     <CardContent className="p-5">

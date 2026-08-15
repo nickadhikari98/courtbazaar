@@ -7,6 +7,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Bell, BellRing } from "lucide-react";
 import { NotificationPrefsCard } from "@/pages/customer/NotificationPrefs";
+import EmptyState from "@/components/shared/EmptyState";
+import Loading from "@/components/shared/Loading";
 
 /* Notification Center — the global feed every event across hearings,
    services, payments, documents, AI, and support fans into (see
@@ -35,15 +37,8 @@ export default function Notifications() {
         </TabsList>
 
         <TabsContent value="feed" className="mt-4 space-y-2">
-          {items === null && <div className="text-center text-muted-foreground py-10">Loading…</div>}
-          {items?.length === 0 && (
-            <Card className="border-dashed border-2">
-              <CardContent className="p-10 text-center">
-                <Bell className="w-10 h-10 mx-auto text-muted-foreground mb-3" strokeWidth={1.5} />
-                <p className="text-sm text-muted-foreground">You're all caught up.</p>
-              </CardContent>
-            </Card>
-          )}
+          {items === null && <Loading />}
+          {items?.length === 0 && <EmptyState icon={Bell} description="You're all caught up." />}
           {items?.map((n) => (
             <Card
               key={n.notification_id}

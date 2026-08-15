@@ -148,7 +148,7 @@ export default function OrderWizard() {
     if (step === 0) return files.length > 0 || totalSelectedItems > 0; // allow skip files for some flows
     if (step === 1) return totalSelectedItems > 0;
     if (step === 2) return !!courtId;
-    if (step === 3) return delivery !== "chamber" || deliveryAddress.length > 5 || delivery !== "chamber";
+    if (step === 3) return delivery !== "chamber" || deliveryAddress.length > 5;
     return true;
   };
 

@@ -5,10 +5,9 @@ so each flow's transition rules live in one small table instead of scattered
 fan-out, and later AI-orchestration hooks attach in exactly one place per
 flow instead of being reimplemented per flow.
 
-Not wired into any flow yet — the first real instance is the
-Lead->Professional workflow (a later phase of the role-based-dashboard
-rollout). Deliberately small: this is a transition table + one hook, not a
-workflow-orchestration framework.
+Used by leads.py, hearings.py, escrow.py, and settlements.py. Deliberately
+small: this is a transition table + one hook, not a workflow-orchestration
+framework.
 """
 import inspect
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple, Union

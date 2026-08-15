@@ -13,6 +13,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { formatINR } from "@/lib/api";
 import { isFeatureEnabled } from "@/config/featureFlags";
 import Logo from "@/components/shared/Logo";
+import { initialsOf } from "@/components/proxyCounsel/CounselCard";
 
 // Workspace shell for the default (advocate / future proxy-counsel) account
 // type — everything else (vendor/delivery_partner/admin below) is untouched
@@ -124,7 +125,7 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const items = navItems(user);
-  const initials = (user?.name || "U").split(" ").map(s => s[0]).slice(0, 2).join("").toUpperCase();
+  const initials = initialsOf(user?.name || "U");
 
   // The sidebar's <nav> scrolls independently of the page — a route change
   // (e.g. Dashboard's "View All Notifications" link, or the topbar bell

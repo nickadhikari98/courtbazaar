@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
-import { api, API_BASE } from "@/lib/api";
+import { api, downloadFile } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -31,15 +31,9 @@ export default function MyData() {
     } catch { toast.error("Preview failed"); }
   };
 
-  const download = () => {
-    const token = localStorage.getItem("cb_token");
-    fetch(`${API_BASE}/dpdp/my-data/download`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.blob()).then(b => {
-        const url = URL.createObjectURL(b);
-        const a = document.createElement("a");
-        a.href = url; a.download = `courtbazaar-my-data-${user.user_id}.json`; a.click();
-        toast.success("Download started");
-      });
+  const download = async () => {
+    await downloadFile("/dpdp/my-data/download", `courtbazaar-my-data-${user.user_id}.json`);
+    toast.success("Download started");
   };
 
   const requestDeletion = async () => {

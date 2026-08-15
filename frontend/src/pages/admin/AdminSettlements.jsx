@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { api, formatINR, API_BASE } from "@/lib/api";
+import { api, formatINR, downloadFile } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Download, Play, CheckCircle2, XCircle, Loader2 } from "lucide-react";
@@ -39,14 +40,9 @@ export default function AdminSettlements() {
   };
 
   const exportCSV = (format = "h2h") => {
-    const token = localStorage.getItem("cb_token");
     const s = status === "all" ? "all" : status;
-    fetch(`${API_BASE}/admin/settlements/export?status_filter=${s}&format=${format}`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.blob()).then(b => {
-        const url = URL.createObjectURL(b);
-        const a = document.createElement("a");
-        a.href = url; a.download = format === "h2h" ? "courtbazaar-neft-h2h.csv" : "courtbazaar-settlements.csv"; a.click();
-      });
+    const filename = format === "h2h" ? "courtbazaar-neft-h2h.csv" : "courtbazaar-settlements.csv";
+    downloadFile(`/admin/settlements/export?status_filter=${s}&format=${format}`, filename);
   };
 
   const markPaid = async () => {
@@ -100,42 +96,51 @@ export default function AdminSettlements() {
 
       <Card className="dashboard-card border-none overflow-hidden">
         <CardContent className="p-0">
-          <div className="overflow-x-auto cb-scroll">
-            <table className="w-full text-sm">
-              <thead className="bg-secondary text-xs cb-overline text-left">
-                <tr><th className="px-4 py-3">Settlement ID</th><th className="px-4 py-3">Vendor</th><th className="px-4 py-3">Cycle</th><th className="px-4 py-3 text-right">Orders</th><th className="px-4 py-3 text-right">Amount</th><th className="px-4 py-3">Mode</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Actions</th></tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {data.settlements.map(s => (
-                  <tr key={s.settlement_id} className="hover:bg-secondary/40" data-testid={`settle-row-${s.settlement_id}`}>
-                    <td className="px-4 py-3 font-mono text-xs">{s.settlement_id}</td>
-                    <td className="px-4 py-3">
-                      <div className="font-display font-bold text-sm">{s.shop_name}</div>
-                      <div className="text-xs text-muted-foreground font-mono">{s.bank_account || "—"} · {s.bank_ifsc || ""}</div>
-                    </td>
-                    <td className="px-4 py-3 text-xs font-mono">{s.cycle_date}</td>
-                    <td className="px-4 py-3 text-right font-bold">{s.order_count}</td>
-                    <td className="px-4 py-3 text-right font-bold">{formatINR(s.amount)}</td>
-                    <td className="px-4 py-3"><Badge variant="outline" className="font-bold uppercase text-2xs">{s.payment_mode}</Badge></td>
-                    <td className="px-4 py-3"><Badge className={`${statusColor[s.status] || ''} border-0 font-bold uppercase text-2xs`}>{s.status}</Badge>{s.utr && <div className="text-2xs font-mono mt-0.5">UTR: {s.utr}</div>}</td>
-                    <td className="px-4 py-3">
-                      {s.status === "queued" && (
-                        <div className="flex gap-1">
-                          <Button onClick={() => { setActiveS(s); setPaidOpen(true); }} size="sm" className="bg-emerald-600 hover:bg-emerald-700 font-bold h-7 text-xs" data-testid={`mark-paid-${s.settlement_id}`}>
-                            <CheckCircle2 className="w-3 h-3 mr-1" /> Paid
-                          </Button>
-                          <Button onClick={() => markFailed(s.settlement_id)} size="sm" variant="outline" className="h-7 text-xs text-rose-600 border-rose-300 font-bold" data-testid={`mark-failed-${s.settlement_id}`}>
-                            <XCircle className="w-3 h-3" />
-                          </Button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {data.settlements.length === 0 && <tr><td colSpan={8} className="px-4 py-10 text-center text-muted-foreground">No settlements yet — click "Run T+1 cycle" to generate</td></tr>}
-              </tbody>
-            </table>
-          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Settlement ID</TableHead>
+                <TableHead>Vendor</TableHead>
+                <TableHead>Cycle</TableHead>
+                <TableHead className="text-right">Orders</TableHead>
+                <TableHead className="text-right">Amount</TableHead>
+                <TableHead>Mode</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.settlements.map(s => (
+                <TableRow key={s.settlement_id} data-testid={`settle-row-${s.settlement_id}`}>
+                  <TableCell className="font-mono text-xs">{s.settlement_id}</TableCell>
+                  <TableCell>
+                    <div className="font-display font-bold text-sm">{s.shop_name}</div>
+                    <div className="text-xs text-muted-foreground font-mono">{s.bank_account || "—"} · {s.bank_ifsc || ""}</div>
+                  </TableCell>
+                  <TableCell className="text-xs font-mono">{s.cycle_date}</TableCell>
+                  <TableCell className="text-right font-bold">{s.order_count}</TableCell>
+                  <TableCell className="text-right font-bold">{formatINR(s.amount)}</TableCell>
+                  <TableCell><Badge variant="outline" className="font-bold uppercase text-2xs">{s.payment_mode}</Badge></TableCell>
+                  <TableCell><Badge className={`${statusColor[s.status] || ''} border-0 font-bold uppercase text-2xs`}>{s.status}</Badge>{s.utr && <div className="text-2xs font-mono mt-0.5">UTR: {s.utr}</div>}</TableCell>
+                  <TableCell>
+                    {s.status === "queued" && (
+                      <div className="flex gap-1">
+                        <Button onClick={() => { setActiveS(s); setPaidOpen(true); }} size="sm" className="bg-emerald-600 hover:bg-emerald-700 font-bold h-7 text-xs" data-testid={`mark-paid-${s.settlement_id}`}>
+                          <CheckCircle2 className="w-3 h-3 mr-1" /> Paid
+                        </Button>
+                        <Button onClick={() => markFailed(s.settlement_id)} size="sm" variant="outline" className="h-7 text-xs text-rose-600 border-rose-300 font-bold" data-testid={`mark-failed-${s.settlement_id}`}>
+                          <XCircle className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+              {data.settlements.length === 0 && (
+                <TableEmpty colSpan={8}>No settlements yet — click "Run T+1 cycle" to generate</TableEmpty>
+              )}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
 

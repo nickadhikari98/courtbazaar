@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { toast } from "sonner";
 import { Truck, MapPin, CheckCircle2, Navigation } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import EmptyState from "@/components/shared/EmptyState";
 
 export default function DeliveryHub() {
   const [orders, setOrders] = useState([]);
@@ -67,9 +68,7 @@ export default function DeliveryHub() {
       </div>
 
       <div className="space-y-3">
-        {orders.length === 0 && (
-          <Card className="border-dashed border-2"><CardContent className="p-10 text-center"><Truck className="w-10 h-10 mx-auto text-muted-foreground mb-3" /><div className="font-display font-bold">No deliveries in queue</div></CardContent></Card>
-        )}
+        {orders.length === 0 && <EmptyState icon={Truck} title="No deliveries in queue" />}
         {orders.map(o => (
           <Card key={o.order_id} className="dashboard-card border-none" data-testid={`delivery-order-${o.order_id}`}>
             <CardContent className="p-5">

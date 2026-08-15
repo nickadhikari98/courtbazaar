@@ -7,11 +7,10 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import {
-  Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription,
-} from "@/components/ui/dialog";
 import { Search, Trash2 } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import ConfirmDialog from "@/components/shared/ConfirmDialog";
+import { initialsOf } from "@/components/proxyCounsel/CounselCard";
 
 function DeactivateUserDialog({ targetUser, open, onOpenChange, onDeactivated }) {
   const [busy, setBusy] = useState(false);
@@ -32,26 +31,22 @@ function DeactivateUserDialog({ targetUser, open, onOpenChange, onDeactivated })
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !busy && onOpenChange(v)}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle className="font-display">Deactivate this user?</DialogTitle>
-          <DialogDescription>
-            Are you sure you want to deactivate{" "}
-            <b className="text-foreground">{targetUser?.name || "this user"}</b>? They will immediately lose access
-            to CourtBazaar. Historical records will be preserved.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
-            Cancel
-          </Button>
-          <Button type="button" variant="destructive" className="font-bold" onClick={confirmDeactivate} disabled={busy}>
-            <Trash2 className="w-4 h-4 mr-1.5" /> Deactivate User
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      busy={busy}
+      title="Deactivate this user?"
+      description={(
+        <>
+          Are you sure you want to deactivate{" "}
+          <b className="text-foreground">{targetUser?.name || "this user"}</b>? They will immediately lose access
+          to CourtBazaar. Historical records will be preserved.
+        </>
+      )}
+      confirmLabel="Deactivate User"
+      confirmIcon={Trash2}
+      onConfirm={confirmDeactivate}
+    />
   );
 }
 
@@ -87,7 +82,7 @@ export default function AdminUsers() {
         <CardContent className="p-0">
           <div className="divide-y divide-border">
             {filtered.map(u => {
-              const initials = (u.name || "U").split(" ").map(s => s[0]).slice(0, 2).join("").toUpperCase();
+              const initials = initialsOf(u.name || "U");
               const canDeactivate = !u.deleted && u.role !== "admin" && u.user_id !== currentAdmin?.user_id;
               return (
                 <div key={u.user_id} className="p-4 flex items-center gap-4" data-testid={`admin-user-${u.user_id}`}>

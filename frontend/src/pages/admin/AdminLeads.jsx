@@ -14,6 +14,8 @@ import {
   Search, FileText, Download, CheckCircle2, XCircle, MessageSquareWarning, StickyNote, Trash2, Mail, RotateCcw,
 } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import ConfirmDialog from "@/components/shared/ConfirmDialog";
+import StatCard from "@/components/shared/StatCard";
 import {
   adminListLeads, adminGetLead, adminChangeLeadStatus, adminAddLeadNote,
   adminGetLeadDocumentUrl, adminGetLeadStats, adminDeleteLead, adminResendWelcomeEmail, adminReactivateUser,
@@ -44,15 +46,6 @@ const STATUS_BADGE = {
   more_info_requested: "bg-blue-100 text-blue-700",
 };
 
-function StatCard({ label, value }) {
-  return (
-    <div className="rounded-lg border bg-white px-4 py-3">
-      <div className="text-2xl font-display font-black tracking-tight">{value}</div>
-      <div className="text-xs text-muted-foreground font-semibold uppercase tracking-wide mt-0.5">{label}</div>
-    </div>
-  );
-}
-
 function DeleteLeadDialog({ lead, open, onOpenChange, onDeleted }) {
   const [busy, setBusy] = useState(false);
   // Best-effort client-side hint only — the backend is the source of truth
@@ -76,39 +69,29 @@ function DeleteLeadDialog({ lead, open, onOpenChange, onDeleted }) {
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !busy && onOpenChange(v)}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle className="font-display">
-            {willDeactivate ? "Deactivate this user?" : "Delete lead request?"}
-          </DialogTitle>
-          <DialogDescription>
-            {willDeactivate ? (
-              <>
-                Are you sure you want to deactivate{" "}
-                <b className="text-foreground">{lead?.full_name || "this user"}</b>? They will immediately lose
-                access to CourtBazaar. Historical records will be preserved.
-              </>
-            ) : (
-              <>
-                Are you sure you want to permanently delete{" "}
-                <b className="text-foreground">{lead?.full_name || "this applicant"}</b>'s{" "}
-                {ROLE_LABELS[lead?.role_applied_for] || lead?.role_applied_for || "lead"} request? This action cannot
-                be undone — the application and any uploaded documents will be permanently removed.
-              </>
-            )}
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
-            Cancel
-          </Button>
-          <Button type="button" variant="destructive" className="font-bold" onClick={confirmDelete} disabled={busy}>
-            <Trash2 className="w-4 h-4 mr-1.5" /> {willDeactivate ? "Deactivate User" : "Delete"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      busy={busy}
+      title={willDeactivate ? "Deactivate this user?" : "Delete lead request?"}
+      description={willDeactivate ? (
+        <>
+          Are you sure you want to deactivate{" "}
+          <b className="text-foreground">{lead?.full_name || "this user"}</b>? They will immediately lose
+          access to CourtBazaar. Historical records will be preserved.
+        </>
+      ) : (
+        <>
+          Are you sure you want to permanently delete{" "}
+          <b className="text-foreground">{lead?.full_name || "this applicant"}</b>'s{" "}
+          {ROLE_LABELS[lead?.role_applied_for] || lead?.role_applied_for || "lead"} request? This action cannot
+          be undone — the application and any uploaded documents will be permanently removed.
+        </>
+      )}
+      confirmLabel={willDeactivate ? "Deactivate User" : "Delete"}
+      confirmIcon={Trash2}
+      onConfirm={confirmDelete}
+    />
   );
 }
 
@@ -143,44 +126,40 @@ function BulkDeleteLeadsDialog({ leads, open, onOpenChange, onDeleted }) {
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !busy && onOpenChange(v)}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle className="font-display">Confirm removal of {count} item{count === 1 ? "" : "s"}?</DialogTitle>
-          <DialogDescription>
-            {deactivateHint === 0 && (
-              <>
-                Are you sure you want to permanently delete these <b className="text-foreground">{count}</b> lead
-                request{count === 1 ? "" : "s"}? This action cannot be undone — the applications and any uploaded
-                documents will be permanently removed.
-              </>
-            )}
-            {deactivateHint === count && deactivateHint > 0 && (
-              <>
-                Are you sure you want to deactivate these <b className="text-foreground">{count}</b> users? They
-                will immediately lose access to CourtBazaar. Historical records will be preserved.
-              </>
-            )}
-            {deactivateHint > 0 && deactivateHint < count && (
-              <>
-                This selection is mixed: <b className="text-foreground">{count - deactivateHint}</b> lead
-                request{count - deactivateHint === 1 ? "" : "s"} will be permanently deleted, and{" "}
-                <b className="text-foreground">{deactivateHint}</b> registered user
-                {deactivateHint === 1 ? "" : "s"} will be deactivated (access revoked, history preserved).
-              </>
-            )}
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
-            Cancel
-          </Button>
-          <Button type="button" variant="destructive" className="font-bold" onClick={confirmDelete} disabled={busy}>
-            <Trash2 className="w-4 h-4 mr-1.5" /> Continue {count === 1 ? "" : `(${count})`}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      busy={busy}
+      title={`Confirm removal of ${count} item${count === 1 ? "" : "s"}?`}
+      description={(
+        <>
+          {deactivateHint === 0 && (
+            <>
+              Are you sure you want to permanently delete these <b className="text-foreground">{count}</b> lead
+              request{count === 1 ? "" : "s"}? This action cannot be undone — the applications and any uploaded
+              documents will be permanently removed.
+            </>
+          )}
+          {deactivateHint === count && deactivateHint > 0 && (
+            <>
+              Are you sure you want to deactivate these <b className="text-foreground">{count}</b> users? They
+              will immediately lose access to CourtBazaar. Historical records will be preserved.
+            </>
+          )}
+          {deactivateHint > 0 && deactivateHint < count && (
+            <>
+              This selection is mixed: <b className="text-foreground">{count - deactivateHint}</b> lead
+              request{count - deactivateHint === 1 ? "" : "s"} will be permanently deleted, and{" "}
+              <b className="text-foreground">{deactivateHint}</b> registered user
+              {deactivateHint === 1 ? "" : "s"} will be deactivated (access revoked, history preserved).
+            </>
+          )}
+        </>
+      )}
+      confirmLabel={`Continue ${count === 1 ? "" : `(${count})`}`}
+      confirmIcon={Trash2}
+      onConfirm={confirmDelete}
+    />
   );
 }
 

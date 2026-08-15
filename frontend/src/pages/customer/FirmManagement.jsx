@@ -13,6 +13,8 @@ import { toast } from "sonner";
 import { Users, UserPlus, Trash2, Crown, ShieldCheck, Briefcase, Building2 } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
+import { initialsOf } from "@/components/proxyCounsel/CounselCard";
+import Loading from "@/components/shared/Loading";
 
 const roleIcons = { owner: Crown, partner: ShieldCheck, associate: Briefcase, paralegal: Users };
 const roleLabels = { owner: "Owner", partner: "Partner", associate: "Associate", paralegal: "Paralegal" };
@@ -77,7 +79,7 @@ export default function FirmManagement() {
     } catch { toast.error("Failed"); }
   };
 
-  if (loading) return <div className="p-10">Loading…</div>;
+  if (loading) return <Loading />;
 
   if (!firmData?.onboarded) {
     return (
@@ -173,7 +175,7 @@ export default function FirmManagement() {
           <div className="space-y-2">
             {firmData.members.map(m => {
               const Icon = roleIcons[m.role] || Users;
-              const initials = (m.name || "U").split(" ").map(s => s[0]).slice(0, 2).join("").toUpperCase();
+              const initials = initialsOf(m.name || "U");
               return (
                 <div key={m.user_id} className="flex items-center gap-4 p-3 hover:bg-secondary rounded-lg" data-testid={`firm-member-${m.user_id}`}>
                   <Avatar className="w-10 h-10"><AvatarFallback className="bg-primary text-white text-xs">{initials}</AvatarFallback></Avatar>

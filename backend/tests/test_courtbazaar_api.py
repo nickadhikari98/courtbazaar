@@ -287,46 +287,21 @@ class TestOrders:
         assert "timeline" in o and "pricing" in o
 
 
-# ---------- Payments ----------
-class TestPayments:
-    def test_checkout_returns_stripe_url(self, s, advocate_token):
-        oid = pytest.advocate_order_id
-        r = s.post(f"{API}/payments/checkout", headers=hdr(advocate_token),
-                   json={"order_id": oid, "origin_url": "https://example.com"}, timeout=60)
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert "url" in body and body["url"].startswith("http")
-        assert "session_id" in body
-        pytest.session_id = body["session_id"]
-
-    def test_payment_status_pending(self, s, advocate_token):
-        sid = pytest.session_id
-        r = s.get(f"{API}/payments/status/{sid}", headers=hdr(advocate_token), timeout=30)
-        assert r.status_code == 200
-        tx = r.json()
-        assert tx["session_id"] == sid
-        # Initially unpaid - either 'unpaid' or 'pending'
-        assert tx.get("payment_status") in ("pending", "unpaid", "no_payment_required")
-
-
 # ---------- AI ----------
 class TestAI:
-    def test_ai_chat(self, s, advocate_token):
+    def test_ai_chat_stubbed(self, s, advocate_token):
+        # Not wired to a real LLM provider yet — expect a clear 503, not a 500.
         sid = f"TEST_chat_{uuid.uuid4().hex[:6]}"
         r = s.post(f"{API}/ai/chat", headers=hdr(advocate_token),
                    json={"session_id": sid, "message": "What documents are needed for filing a civil suit at Tis Hazari court?"},
-                   timeout=120)
-        assert r.status_code == 200, r.text
-        reply = r.json().get("reply", "")
-        assert isinstance(reply, str) and len(reply) > 20, f"empty/short reply: {reply!r}"
-        pytest.ai_session = sid
+                   timeout=30)
+        assert r.status_code == 503, r.text
 
-    def test_ai_history(self, s, advocate_token):
-        sid = pytest.ai_session
+    def test_ai_history_empty_for_unknown_session(self, s, advocate_token):
+        sid = f"TEST_chat_{uuid.uuid4().hex[:6]}"
         r = s.get(f"{API}/ai/history/{sid}", headers=hdr(advocate_token), timeout=15)
         assert r.status_code == 200
-        msgs = r.json()
-        assert isinstance(msgs, list) and len(msgs) >= 1
+        assert r.json() == []
 
     def test_filing_checklist(self, s, advocate_token):
         r = s.post(f"{API}/ai/filing-checklist", headers=hdr(advocate_token),
@@ -497,13 +472,11 @@ class TestPaymentsP1:
         r = s.get(f"{API}/payments/methods", timeout=15)
         assert r.status_code == 200
         b = r.json()
-        assert b.get("stripe") is True
         # No keys configured -> razorpay disabled, simulated mode on
         assert b.get("razorpay") is False
         assert b.get("razorpay_simulated") is True
 
     def test_razorpay_create_and_verify_simulated(self, s, advocate_token):
-        # Create a new order to pay via razorpay (separate from stripe-tested order)
         payload = dict(ORDER_PAYLOAD)
         payload["notes"] = "TEST razorpay order"
         ro = s.post(f"{API}/orders", headers=hdr(advocate_token), json=payload, timeout=15)
@@ -880,17 +853,8 @@ class TestDocIntelRealOCR:
 
 # ---------- Admin Reconciliation ----------
 class TestAdminReconciliation:
-    def test_seed_one_paid_stripe_and_one_paid_razorpay(self, s, advocate_token):
-        """Ensure at least one stripe + one razorpay txn exist for the report."""
-        # Stripe checkout (creates a payment_transactions row, status 'pending')
-        ro = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
-        assert ro.status_code == 200
-        oid = ro.json()["order_id"]
-        chk = s.post(f"{API}/payments/checkout", headers=hdr(advocate_token),
-                     json={"order_id": oid, "origin_url": "https://example.com"}, timeout=60)
-        assert chk.status_code == 200
-
-        # Razorpay simulated paid
+    def test_seed_one_paid_razorpay(self, s, advocate_token):
+        """Ensure at least one paid razorpay txn exists for the report."""
         ro2 = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
         assert ro2.status_code == 200
         oid2 = ro2.json()["order_id"]
@@ -936,36 +900,27 @@ class TestAdminReconciliation:
             assert row["payment_status"] == "paid", f"status filter leaked non-paid: {row}"
 
     def test_reconciliation_mismatch_detection(self, s, admin_token, advocate_token):
-        # Create order + stripe checkout (txn pending, order pending). Manually pull
-        # admin route then force a mismatch by activating the order's payment_status=paid
-        # while leaving the txn pending. We use razorpay create (txn pending) then mark
-        # order paid by hitting a parallel razorpay verify on a DIFFERENT razorpay_order_id
-        # — actually simpler: create a stripe checkout (txn pending), then razorpay-verify
-        # the same order so order.payment_status='paid' but stripe txn stays 'pending'.
+        # Create order + razorpay order (txn pending). There's no HTTP path that marks
+        # an order paid without also paying its txn, so — test-only, same rationale as
+        # _otp_db() above — flip the order's payment_status directly in the DB, leaving
+        # the txn pending, to produce a genuine reconciliation mismatch.
         ro = s.post(f"{API}/orders", headers=hdr(advocate_token), json=ORDER_PAYLOAD, timeout=15)
         assert ro.status_code == 200
         oid = ro.json()["order_id"]
-        # 1) stripe checkout -> creates stripe txn (pending)
-        chk = s.post(f"{API}/payments/checkout", headers=hdr(advocate_token),
-                     json={"order_id": oid, "origin_url": "https://example.com"}, timeout=60)
-        assert chk.status_code == 200
-        stripe_sid = chk.json()["session_id"]
-        # 2) razorpay simulated paid -> sets order.payment_status='paid'
         rzp = s.post(f"{API}/payments/razorpay/create-order", headers=hdr(advocate_token),
                      json={"order_id": oid}, timeout=15).json()
-        s.post(f"{API}/payments/razorpay/verify", headers=hdr(advocate_token),
-               json={"razorpay_order_id": rzp["razorpay_order_id"]}, timeout=15)
-        # Now stripe txn is still pending but order is paid -> mismatch
+        rzp_order_id = rzp["razorpay_order_id"]
+        _otp_db().orders.update_one({"order_id": oid}, {"$set": {"payment_status": "paid"}})
+        # Now the razorpay txn is still pending but order is paid -> mismatch
         r = s.get(f"{API}/admin/reconciliation", headers=hdr(admin_token), timeout=30)
         assert r.status_code == 200
         body = r.json()
-        # find the stripe row for this order
-        stripe_row = next((x for x in body["rows"] if x.get("session_id") == stripe_sid), None)
-        assert stripe_row is not None, f"stripe row missing for session {stripe_sid}"
-        assert stripe_row["mismatch"] is True, f"expected mismatch=True on stripe pending vs order paid: {stripe_row}"
+        row = next((x for x in body["rows"] if x.get("razorpay_order_id") == rzp_order_id), None)
+        assert row is not None, f"row missing for razorpay order {rzp_order_id}"
+        assert row["mismatch"] is True, f"expected mismatch=True on razorpay pending vs order paid: {row}"
         # Mismatches array must include it
-        mm_ids = [m.get("session_id") for m in body["mismatches"]]
-        assert stripe_sid in mm_ids, f"mismatches[] missing stripe session: {mm_ids}"
+        mm_ids = [m.get("order_id") for m in body["mismatches"]]
+        assert oid in mm_ids, f"mismatches[] missing order: {mm_ids}"
 
     def test_reconciliation_csv_export(self, s, admin_token):
         r = s.get(f"{API}/admin/reconciliation/export", headers=hdr(admin_token), timeout=30)

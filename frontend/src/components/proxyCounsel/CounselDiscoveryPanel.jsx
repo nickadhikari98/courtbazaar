@@ -7,6 +7,7 @@ import { getAvailableAdvocates } from "@/lib/advocateRecommendationsApi";
 import CounselCard from "./CounselCard";
 import CounselProfileDialog from "./CounselProfileDialog";
 import ManualCounselSearch from "./ManualCounselSearch";
+import EmptyState from "@/components/shared/EmptyState";
 
 const MATCH_FACTORS = ["Court", "Expertise", "Experience", "Availability", "Ratings"];
 
@@ -95,26 +96,30 @@ export default function CounselDiscoveryPanel({ context, onSelect, selectingId, 
           )}
 
           {status === "error" && (
-            <Card className="border-dashed border-2" data-testid="recommendations-error">
-              <CardContent className="p-8 text-center">
-                <p className="text-sm text-muted-foreground mb-3">Couldn't load recommendations right now.</p>
+            <EmptyState
+              size="sm"
+              testId="recommendations-error"
+              description="Couldn't load recommendations right now."
+              action={(
                 <Button type="button" variant="outline" size="sm" onClick={fetchRecommendations}>
                   <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Retry
                 </Button>
-              </CardContent>
-            </Card>
+              )}
+            />
           )}
 
           {status === "empty" && (
-            <Card className="border-dashed border-2" data-testid="recommendations-empty">
-              <CardContent className="p-8 text-center">
-                <Users className="w-8 h-8 mx-auto text-muted-foreground mb-2" strokeWidth={1.5} />
-                <p className="text-sm text-muted-foreground mb-3">No AI recommendations for this request yet.</p>
+            <EmptyState
+              size="sm"
+              icon={Users}
+              testId="recommendations-empty"
+              description="No AI recommendations for this request yet."
+              action={(
                 <Button type="button" variant="outline" size="sm" onClick={() => setMode("manual")} data-testid="empty-switch-to-manual">
                   <Search className="w-3.5 h-3.5 mr-1.5" /> Search Manually Instead
                 </Button>
-              </CardContent>
-            </Card>
+              )}
+            />
           )}
 
           {status === "ready" && (

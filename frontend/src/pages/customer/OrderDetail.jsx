@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useParams, useNavigate, useSearchParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { api, formatINR } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,16 +31,12 @@ export default function OrderDetail() {
   const { orderId } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [params] = useSearchParams();
-  const sessionId = params.get("session_id");
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [paying, setPaying] = useState(false);
   const [rzpLoading, setRzpLoading] = useState(false);
   const [rateOpen, setRateOpen] = useState(false);
   const [rating, setRating] = useState(5);
   const [review, setReview] = useState("");
-  const [statusPolling, setStatusPolling] = useState(false);
   const [paymentMethods, setPaymentMethods] = useState({});
 
   useEffect(() => { api.get("/payments/methods").then(r => setPaymentMethods(r.data)); }, []);
@@ -52,47 +48,6 @@ export default function OrderDetail() {
   };
 
   useEffect(() => { load(); }, [orderId]);
-
-  // Payment polling after Stripe return
-  useEffect(() => {
-    if (!sessionId) return;
-    setStatusPolling(true);
-    let attempts = 0;
-    const poll = async () => {
-      attempts++;
-      try {
-        const { data } = await api.get(`/payments/status/${sessionId}`);
-        if (data.payment_status === "paid") {
-          toast.success("Payment successful!");
-          setStatusPolling(false);
-          await load();
-          return;
-        }
-        if (data.status === "expired") {
-          toast.error("Payment session expired.");
-          setStatusPolling(false);
-          return;
-        }
-        if (attempts < 8) setTimeout(poll, 2500);
-        else setStatusPolling(false);
-      } catch { setStatusPolling(false); }
-    };
-    poll();
-  }, [sessionId]);
-
-  const pay = async () => {
-    setPaying(true);
-    try {
-      const { data } = await api.post("/payments/checkout", {
-        order_id: orderId,
-        origin_url: window.location.origin,
-      });
-      window.location.href = data.url;
-    } catch {
-      toast.error("Could not start payment");
-      setPaying(false);
-    }
-  };
 
   const payRazorpay = async () => {
     setRzpLoading(true);
@@ -173,32 +128,17 @@ export default function OrderDetail() {
         {order.urgent && <Badge className="bg-destructive text-white border-0 font-bold uppercase text-2xs">URGENT</Badge>}
       </div>
 
-      {statusPolling && (
-        <Card className="mb-6 bg-amber-50 border-amber-200">
-          <CardContent className="p-4 flex items-center gap-3">
-            <Loader2 className="w-5 h-5 animate-spin text-amber-700" />
-            <div className="text-sm font-semibold">Verifying payment status…</div>
-          </CardContent>
-        </Card>
-      )}
-
       {order.payment_status !== "paid" && user?.role === "advocate" && (
         <Card className="mb-6 border-accent bg-accent/5">
           <CardContent className="p-5 space-y-3">
             <div>
               <div className="font-display font-bold text-lg">Complete payment to start your order</div>
-              <div className="text-sm text-muted-foreground font-medium">Choose your preferred payment method</div>
+              <div className="text-sm text-muted-foreground font-medium">{formatINR(order.pricing.total)}</div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Button onClick={pay} disabled={paying} className="bg-primary hover:bg-primary/90 font-bold h-12" data-testid="pay-now-btn">
-                {paying ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-                <span>Pay with Stripe — {formatINR(order.pricing.total)}</span>
-              </Button>
-              <Button onClick={payRazorpay} disabled={rzpLoading} className="bg-accent hover:bg-accent/90 font-bold h-12" data-testid="pay-razorpay-btn">
-                {rzpLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-                <span>Pay with Razorpay {paymentMethods.razorpay_simulated && "(Simulated)"}</span>
-              </Button>
-            </div>
+            <Button onClick={payRazorpay} disabled={rzpLoading} className="bg-accent hover:bg-accent/90 font-bold h-12 w-full sm:w-auto" data-testid="pay-razorpay-btn">
+              {rzpLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              <span>Pay with Razorpay {paymentMethods.razorpay_simulated && "(Simulated)"}</span>
+            </Button>
             {paymentMethods.razorpay_simulated && (
               <div className="text-xs text-muted-foreground italic">Razorpay running in simulated mode. Add RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET to /app/backend/.env for live checkout.</div>
             )}
