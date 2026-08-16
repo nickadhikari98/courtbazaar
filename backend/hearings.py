@@ -937,7 +937,7 @@ async def check_pending_order_sheets(db) -> int:
     sheet uploaded yet and no reminder already sent, and notifies the
     assigned proxy counsel once (in-app + email via notifications.notify).
     Returns the count notified, for the scheduler's log line."""
-    from notifications import notify, record_notification_event
+    from notifications import notify, record_notification_event, get_hearing_email_thread
     cutoff = (datetime.now(timezone.utc) - timedelta(days=ORDER_SHEET_REMINDER_DELAY_DAYS)).isoformat()
     scan_cap = 500
     candidates = await db.hearing_requests.find({
@@ -961,7 +961,13 @@ async def check_pending_order_sheets(db) -> int:
                 continue
             title = "Order sheet reminder"
             body = "Your payment is waiting in Escrow. Please complete the hearing and upload the Court Order Sheet to receive payment."
-            notify(recipient, "hearing_event", {"title": title, "body": body})
+            ctx = {"title": title, "body": body}
+            if recipient.get("email"):
+                ctx["hearing_thread"] = await get_hearing_email_thread(
+                    db, hearing["hearing_id"], recipient["email"],
+                    f"CourtBazaar — Your Proxy Counsel Hearing (Ref: {hearing['hearing_id']})",
+                )
+            notify(recipient, "hearing_event", ctx)
             await record_notification_event(db, hearing["proxy_counsel_user_id"], "hearing_event", title, body, "hearing", hearing["hearing_id"])
             await db.hearing_requests.update_one(
                 {"hearing_id": hearing["hearing_id"]},

@@ -21,6 +21,8 @@ import { getStates, getCourtsByState } from "@/lib/referenceDataApi";
    which path is active; switching it clears whatever was already selected
    under the other one rather than merging them (a request is either
    addressed to a district court or a High Court, never both). */
+const CLEAR_DISTRICT = "__any_district__";
+
 export default function CourtLocationSelector({ value, onChange }) {
   const { state_id, district, court_id } = value || {};
   const [states, setStates] = useState([]);
@@ -91,12 +93,20 @@ export default function CourtLocationSelector({ value, onChange }) {
             <div>
               <Label>District *</Label>
               <Select
-                value={district || undefined}
-                onValueChange={(v) => onChange({ state_id, state_name: value?.state_name, district: v, court_id: "", court_name: "" })}
+                // Always a defined value (never `undefined`) — Radix's Select
+                // falls out of controlled mode the instant its value prop
+                // goes undefined, and then keeps showing whatever it last
+                // displayed instead of clearing: picking "Any district" would
+                // update `district` to "" but the trigger stayed stuck on the
+                // old district. Sentinel value + always-rendered item keeps it
+                // controlled through every state, clear included.
+                value={district || CLEAR_DISTRICT}
+                onValueChange={(v) => onChange({ state_id, state_name: value?.state_name, district: v === CLEAR_DISTRICT ? "" : v, court_id: "", court_name: "" })}
                 disabled={!state_id}
               >
                 <SelectTrigger data-testid="location-district"><SelectValue placeholder={state_id ? "Select district" : "Select a state first"} /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value={CLEAR_DISTRICT}>Any district</SelectItem>
                   {districts.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
                 </SelectContent>
               </Select>

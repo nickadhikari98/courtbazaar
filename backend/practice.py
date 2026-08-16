@@ -15,9 +15,79 @@ from fastapi import HTTPException
 AVAILABILITY_KINDS = ("recurring_weekly", "custom_date", "holiday_block", "emergency_unavailable")
 
 PROFILE_EDITABLE_FIELDS = (
-    "practice_areas", "courts", "languages", "experience_years", "education",
-    "bio", "office_address", "fee_structure", "availability_mode", "instant_booking",
+    "practice_areas", "courts", "languages", "experience_years", "experience_bracket", "education",
+    "bio", "office_address", "fee_structure", "pricing", "availability_mode", "instant_booking",
 )
+
+# Founder-set rate card (2026-08): a proxy counsel names their own price per
+# slot, but never below this platform floor — "no one can hire advocates
+# less than this price." Two independent tables (district vs high court,
+# roughly 2x) rather than one scaled by court type, since that's how the
+# founder specified it. Order matters — it's also the display order on both
+# the profile form and the public profile.
+PRICING_SLOTS = ["morning", "afternoon", "full_day", "weekend", "urgent"]
+PRICING_SLOT_LABELS = {
+    "morning": "10 AM – 1 PM",
+    "afternoon": "2 PM – 5 PM",
+    "full_day": "Full Day",
+    "weekend": "Weekends",
+    "urgent": "Urgent (same-day)",
+}
+PRICING_COURT_TYPES = ["district", "high_court"]
+PRICING_COURT_TYPE_LABELS = {"district": "District Courts", "high_court": "High Courts"}
+PRICING_MINIMUMS = {
+    "district": {"morning": 499, "afternoon": 499, "full_day": 899, "weekend": 1999, "urgent": 1999},
+    "high_court": {"morning": 999, "afternoon": 999, "full_day": 1499, "weekend": 2999, "urgent": 2999},
+}
+
+# Brackets, not a raw number — "in form it's named total years of practice"
+# (founder direction, 2026-08). `min_years` is what a submitted bracket
+# resolves to for the existing numeric experience_years field (kept in sync
+# so counsel_matching.list_and_recommend's min_experience_years filter and
+# any sort-by-experience keep working unchanged) — the bracket's lower bound,
+# so "at least 5 years" correctly includes both the "5-7" and "10+" brackets.
+EXPERIENCE_BRACKETS = [
+    {"key": "0-3", "label": "0–3 yrs", "min_years": 0},
+    {"key": "3-5", "label": "3–5 yrs", "min_years": 3},
+    {"key": "5-7", "label": "5–7 yrs", "min_years": 5},
+    {"key": "10+", "label": "10+ yrs", "min_years": 10},
+]
+_EXPERIENCE_BRACKET_YEARS = {b["key"]: b["min_years"] for b in EXPERIENCE_BRACKETS}
+_EXPERIENCE_BRACKET_LABELS = {b["key"]: b["label"] for b in EXPERIENCE_BRACKETS}
+
+
+def experience_bracket_label(bracket: Optional[str]) -> Optional[str]:
+    return _EXPERIENCE_BRACKET_LABELS.get(bracket)
+
+
+def validate_pricing(pricing: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+    """Clamps to only known court-type/slot keys and rejects anything below
+    the platform floor — the one place this is enforced, so a direct API
+    call can't slip a below-minimum rate in any more than the form can.
+    Slots an advocate leaves out (still deciding on high-court work, say)
+    simply aren't in the result — this is additive, not "fill every cell."""
+    cleaned: Dict[str, Dict[str, float]] = {}
+    for court_type, slots in (pricing or {}).items():
+        if court_type not in PRICING_COURT_TYPES or not isinstance(slots, dict):
+            continue
+        cleaned_slots = {}
+        for slot, amount in slots.items():
+            if slot not in PRICING_SLOTS or amount in (None, ""):
+                continue
+            try:
+                amount = float(amount)
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"Invalid price for {PRICING_COURT_TYPE_LABELS[court_type]} / {PRICING_SLOT_LABELS[slot]}")
+            minimum = PRICING_MINIMUMS[court_type][slot]
+            if amount < minimum:
+                raise HTTPException(
+                    400,
+                    f"{PRICING_COURT_TYPE_LABELS[court_type]} / {PRICING_SLOT_LABELS[slot]} must be at least ₹{minimum:g}",
+                )
+            cleaned_slots[slot] = amount
+        if cleaned_slots:
+            cleaned[court_type] = cleaned_slots
+    return cleaned
 
 
 async def get_or_create_profile(db, user_id: str) -> dict:
@@ -32,10 +102,12 @@ async def get_or_create_profile(db, user_id: str) -> dict:
         "courts": [],
         "languages": [],
         "experience_years": None,
+        "experience_bracket": None,
         "education": None,
         "bio": None,
         "office_address": None,
         "fee_structure": None,
+        "pricing": {},
         "kyc_status": "pending",  # admin-verified, not self-settable — see PROFILE_EDITABLE_FIELDS
         "bar_council_verified": False,  # admin-verified, not self-settable — see PROFILE_EDITABLE_FIELDS
         "availability_mode": False,
@@ -53,6 +125,17 @@ async def get_or_create_profile(db, user_id: str) -> dict:
 
 async def update_profile(db, user_id: str, patch: Dict[str, Any]) -> dict:
     update = {k: v for k, v in patch.items() if k in PROFILE_EDITABLE_FIELDS and v is not None}
+    if "pricing" in update:
+        update["pricing"] = validate_pricing(update["pricing"])
+    if "experience_bracket" in update:
+        bracket = update["experience_bracket"]
+        if bracket not in _EXPERIENCE_BRACKET_YEARS:
+            raise HTTPException(400, f"Invalid experience bracket. Allowed: {', '.join(_EXPERIENCE_BRACKET_YEARS)}")
+        # Keeps the existing numeric experience_years in sync with the
+        # bracket the advocate actually picked, so nothing downstream that
+        # reads experience_years as a number (min_experience_years filtering,
+        # sort-by-experience) needs to know brackets exist.
+        update["experience_years"] = _EXPERIENCE_BRACKET_YEARS[bracket]
     update["updated_at"] = datetime.now(timezone.utc).isoformat()
     await get_or_create_profile(db, user_id)  # ensure a row exists before the upsert-style update
     await db.proxy_counsel_profiles.update_one({"user_id": user_id}, {"$set": update})

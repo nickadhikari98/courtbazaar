@@ -22,6 +22,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
+from rate_limiter import get_limiter
+
 
 def new_match_id() -> str:
     return f"match_{uuid.uuid4().hex[:12]}"
@@ -265,12 +267,26 @@ def extract_fee_amount(fee_structure: Optional[str]) -> Optional[float]:
         return None
 
 
+def _cheapest_priced_slot(pricing: Optional[Dict[str, Dict[str, float]]]) -> Optional[float]:
+    """The lowest amount an advocate has actually priced across every
+    slot/court-type they've filled in — used as the one-number "starting
+    from" figure everywhere the old single proposed_fee already showed
+    (CounselCard, sort/filter) so those call sites don't need to know the
+    full grid exists."""
+    amounts = [amt for slots in (pricing or {}).values() for amt in (slots or {}).values()]
+    return min(amounts) if amounts else None
+
+
 def build_advocate_card(candidate: dict, name: Optional[str], court_names_by_id: Dict[str, str]) -> dict:
     """Shared shape-builder for a proxy_counsel_profiles document, used both
     by recommendations_advocates (a ranked list, confidence_score present)
     and the single-advocate counsel-profile lookup (no ranking, so
     confidence_score is simply absent from `candidate`) — one definition
     instead of two dicts drifting apart."""
+    import practice
+    pricing = candidate.get("pricing") or {}
+    cheapest = _cheapest_priced_slot(pricing)
+    experience_bracket = candidate.get("experience_bracket")
     return {
         "advocate_id": candidate["user_id"],
         "name": name or "Proxy Counsel",
@@ -285,13 +301,62 @@ def build_advocate_card(candidate: dict, name: Optional[str], court_names_by_id:
             "available_now": bool(candidate.get("availability_mode")),
             "note": "Available Today" if candidate.get("availability_mode") else "Not Available Now",
         },
-        "proposed_fee": extract_fee_amount(candidate.get("fee_structure")),
+        # Falls back to the old free-text fee_structure for any profile that
+        # hasn't set structured pricing yet — never both, cheapest-slot wins
+        # once real pricing exists since it's the number the advocate
+        # actually committed to (not a regex guess off a sentence).
+        "proposed_fee": cheapest if cheapest is not None else extract_fee_amount(candidate.get("fee_structure")),
+        "pricing": pricing,
         "bio": candidate.get("bio"),
         "experience_years": candidate.get("experience_years"),
+        "experience_bracket": experience_bracket,
+        "experience_bracket_label": practice.experience_bracket_label(experience_bracket),
         "education": candidate.get("education"),
         "ai_match_score": round((candidate.get("confidence_score") or 0) * 100),
         "ai_match_reasons": None,
         "estimated_response_time": None,
+    }
+
+
+PUBLIC_LIST_RATE_LIMIT = 60
+PUBLIC_LIST_RATE_WINDOW_SECONDS = 300
+
+
+def check_public_list_rate_limit(client_ip: str) -> None:
+    """Guards /public/proxy-counsels — the one counsel-matching surface
+    reachable with no login at all, so it's the one that needs a per-IP
+    ceiling the authenticated routes don't (an authenticated user is already
+    rate-limited by needing an account per abuse attempt)."""
+    get_limiter(
+        "public_proxy_counsel_list",
+        limit=PUBLIC_LIST_RATE_LIMIT,
+        window_seconds=PUBLIC_LIST_RATE_WINDOW_SECONDS,
+        message="Too many requests from this network. Please try again shortly.",
+    ).check(client_ip)
+
+
+def public_advocate_card(card: dict) -> dict:
+    """Trims a full build_advocate_card() shape down to what an anonymous
+    visitor is allowed to see — the same fields CounselCard already renders
+    (name, photo, rating, experience, top court, top practice area, fee/
+    pricing grid — pricing was already public as a single proposed_fee
+    number, the full per-slot breakdown is just a more detailed view of the
+    same information, not a new disclosure). bio/education/languages/the
+    full court+practice-area lists only ever reach an authenticated request
+    (see /advocates/{id}/profile)."""
+    return {
+        "advocate_id": card["advocate_id"],
+        "name": card["name"],
+        "avatar_url": card["avatar_url"],
+        "verified": card["verified"],
+        "primary_courts": card["primary_courts"][:1],
+        "practice_areas": card["practice_areas"][:1],
+        "rating": card["rating"],
+        "experience_years": card["experience_years"],
+        "experience_bracket": card["experience_bracket"],
+        "experience_bracket_label": card["experience_bracket_label"],
+        "proposed_fee": card["proposed_fee"],
+        "pricing": card["pricing"],
     }
 
 
@@ -481,7 +546,7 @@ async def dispatch_notifications(db, notification_batch: List[dict]) -> List[dic
     hearing status, never implements acceptance or waterfall logic — purely
     delivery + a per-notification result. One entry failing (missing
     recipient, an unexpected exception) never aborts the rest of the batch."""
-    from notifications import notify, record_notification_event
+    from notifications import notify, record_notification_event, get_hearing_email_thread
 
     results = []
     for entry in notification_batch:
@@ -497,7 +562,12 @@ async def dispatch_notifications(db, notification_batch: List[dict]) -> List[dic
                 continue
 
             title, body = _offer_message(entry)
-            channel_results = notify(recipient, "hearing_event", {"title": title, "body": body})
+            ctx = {"title": title, "body": body}
+            if recipient.get("email"):
+                ctx["hearing_thread"] = await get_hearing_email_thread(
+                    db, hearing_id, recipient["email"], f"CourtBazaar — Your Proxy Counsel Hearing (Ref: {hearing_id})",
+                )
+            channel_results = notify(recipient, "hearing_event", ctx)
             await record_notification_event(db, counsel_user_id, "hearing_event", title, body, "hearing", hearing_id)
             results.append({
                 "counsel_user_id": counsel_user_id, "hearing_id": hearing_id,

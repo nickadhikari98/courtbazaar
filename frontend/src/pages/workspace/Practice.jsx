@@ -32,6 +32,10 @@ import {
   HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole,
   isHearingActive, COMPLETED_HEARING_STATUSES, CLOSED_HEARING_STATUSES,
 } from "@/lib/hearingLifecycle";
+import {
+  PRICING_SLOTS, PRICING_SLOT_LABELS, PRICING_COURT_TYPES, PRICING_COURT_TYPE_LABELS,
+  PRICING_MINIMUMS, EXPERIENCE_BRACKETS,
+} from "@/config/proxyCounselPricing";
 
 const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
 
@@ -80,20 +84,36 @@ function ProfileTab({ profile, onSaved }) {
   const [form, setForm] = useState(profile);
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const setPricing = (courtType, slot, value) => {
+    setForm((f) => ({
+      ...f,
+      pricing: { ...f.pricing, [courtType]: { ...(f.pricing?.[courtType] || {}), [slot]: value === "" ? undefined : Number(value) } },
+    }));
+  };
 
   const save = async () => {
+    for (const courtType of PRICING_COURT_TYPES) {
+      for (const slot of PRICING_SLOTS) {
+        const amount = form.pricing?.[courtType]?.[slot];
+        const minimum = PRICING_MINIMUMS[courtType][slot];
+        if (amount != null && amount < minimum) {
+          toast.error(`${PRICING_COURT_TYPE_LABELS[courtType]} / ${PRICING_SLOT_LABELS[slot]} must be at least ₹${minimum}`);
+          return;
+        }
+      }
+    }
     setSaving(true);
     try {
       const updated = await updatePracticeProfile({
         practice_areas: form.practice_areas, courts: form.courts, languages: form.languages,
-        experience_years: form.experience_years, education: form.education, bio: form.bio,
-        office_address: form.office_address, fee_structure: form.fee_structure,
+        experience_bracket: form.experience_bracket, education: form.education, bio: form.bio,
+        office_address: form.office_address, fee_structure: form.fee_structure, pricing: form.pricing,
         availability_mode: form.availability_mode, instant_booking: form.instant_booking,
       });
       onSaved(updated);
       toast.success("Profile saved");
-    } catch {
-      toast.error("Could not save profile");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not save profile");
     } finally {
       setSaving(false);
     }
@@ -131,8 +151,13 @@ function ProfileTab({ profile, onSaved }) {
           </div>
           <div className="grid sm:grid-cols-2 gap-4">
             <div>
-              <Label>Years of experience</Label>
-              <Input type="number" value={form.experience_years || ""} onChange={(e) => set("experience_years", Number(e.target.value))} />
+              <Label>Total Years of Practice</Label>
+              <Select value={form.experience_bracket || undefined} onValueChange={(v) => set("experience_bracket", v)}>
+                <SelectTrigger data-testid="experience-bracket"><SelectValue placeholder="Select range" /></SelectTrigger>
+                <SelectContent>
+                  {EXPERIENCE_BRACKETS.map((b) => <SelectItem key={b.key} value={b.key}>{b.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <Label>Education</Label>
@@ -154,6 +179,40 @@ function ProfileTab({ profile, onSaved }) {
           <TagInput label="Practice areas" value={form.practice_areas || []} onChange={(v) => set("practice_areas", v)} placeholder="e.g. Civil, Criminal" />
           <TagInput label="Courts" value={form.courts || []} onChange={(v) => set("courts", v)} placeholder="e.g. Delhi High Court" />
           <TagInput label="Languages" value={form.languages || []} onChange={(v) => set("languages", v)} placeholder="e.g. Hindi, English" />
+          <Button type="button" onClick={save} disabled={saving} className="bg-accent hover:bg-accent/90 font-bold">Save profile</Button>
+        </CardContent>
+      </Card>
+
+      <Card className="dashboard-card border-none">
+        <CardContent className="p-5 space-y-4">
+          <div>
+            <div className="font-display font-bold">Availability & Pricing</div>
+            <p className="text-xs text-muted-foreground mt-0.5">Set your own price per slot — never below the platform minimum shown under each field. Leave a slot blank if you don't take that kind of work.</p>
+          </div>
+          {PRICING_COURT_TYPES.map((courtType) => (
+            <div key={courtType}>
+              <div className="text-sm font-bold mb-2">{PRICING_COURT_TYPE_LABELS[courtType]}</div>
+              <div className="grid sm:grid-cols-3 gap-3">
+                {PRICING_SLOTS.map((slot) => {
+                  const minimum = PRICING_MINIMUMS[courtType][slot];
+                  return (
+                    <div key={slot}>
+                      <Label>{PRICING_SLOT_LABELS[slot]}</Label>
+                      <Input
+                        type="number" min={minimum}
+                        value={form.pricing?.[courtType]?.[slot] ?? ""}
+                        onChange={(e) => setPricing(courtType, slot, e.target.value)}
+                        placeholder={`Min ₹${minimum}`}
+                        onWheel={(e) => e.target.blur()}
+                        data-testid={`pricing-${courtType}-${slot}`}
+                      />
+                      <p className="text-2xs text-muted-foreground mt-0.5">Min ₹{minimum}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
           <Button type="button" onClick={save} disabled={saving} className="bg-accent hover:bg-accent/90 font-bold">Save profile</Button>
         </CardContent>
       </Card>

@@ -453,12 +453,14 @@ async def seed_initial_data():
     import escrow as escrow_svc
     import counsel_matching as counsel_matching_svc
     import negotiation as negotiation_svc
+    import notifications as notifications_svc
     await leads_svc.ensure_indexes(db)
     await reviews_svc.ensure_indexes(db)
     await hearings_svc.ensure_indexes(db)
     await escrow_svc.ensure_indexes(db)
     await counsel_matching_svc.ensure_indexes(db)
     await negotiation_svc.ensure_indexes(db)
+    await notifications_svc.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -2257,6 +2259,30 @@ async def admin_verify_practice_bar_council(user_id: str, user=Depends(get_curre
 # reuses counsel_matching.list_and_recommend, which itself reuses the same
 # verified_counsel_query/score_candidates the hearing-time matching pipeline
 # (M5/M6) already uses, rather than a separate recommendation engine. ----
+async def _advocate_cards_for(ranked: list) -> list:
+    """Shared card-building for a ranked candidate list — used by
+    /recommendations/advocates (full, authenticated), /public/proxy-counsels
+    (trimmed, anonymous — see counsel_matching.public_advocate_card), and
+    nothing else, so the names/court lookups live in exactly one place."""
+    if not ranked:
+        return []
+    import counsel_matching
+    user_ids = [c["user_id"] for c in ranked]
+    names_by_id = {
+        u["user_id"]: u.get("name")
+        for u in await db.users.find({"user_id": {"$in": user_ids}}, {"_id": 0, "user_id": 1, "name": 1}).to_list(len(user_ids))
+    }
+    court_ids = sorted({cid for c in ranked for cid in (c.get("courts") or [])})
+    court_names_by_id = {
+        c["court_id"]: c["name"]
+        for c in (await db.courts.find({"court_id": {"$in": court_ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(court_ids)) if court_ids else [])
+    }
+    # list_and_recommend only ever returns verified_counsel_query() matches,
+    # so every result here has already passed KYC + bar council verification
+    # — this is what CounselCard/CounselProfileDialog's "Verified" badge reads.
+    return [counsel_matching.build_advocate_card(c, names_by_id.get(c["user_id"]), court_names_by_id) for c in ranked]
+
+
 @api_router.get("/recommendations/advocates")
 async def recommendations_advocates(
     court_id: Optional[str] = None, state_id: Optional[str] = None, district: Optional[str] = None,
@@ -2273,32 +2299,65 @@ async def recommendations_advocates(
         available_only=available_only, limit=limit,
     )
     generated_at = datetime.now(timezone.utc).isoformat()
-    if not ranked:
-        return {"source": "live", "metadata": {"total_candidates": total, "returned": 0, "generated_at": generated_at}, "advocates": []}
-
-    user_ids = [c["user_id"] for c in ranked]
-    names_by_id = {
-        u["user_id"]: u.get("name")
-        for u in await db.users.find({"user_id": {"$in": user_ids}}, {"_id": 0, "user_id": 1, "name": 1}).to_list(len(user_ids))
-    }
-    court_ids = sorted({cid for c in ranked for cid in (c.get("courts") or [])})
-    court_names_by_id = {
-        c["court_id"]: c["name"]
-        for c in (await db.courts.find({"court_id": {"$in": court_ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(court_ids)) if court_ids else [])
-    }
-
-    # list_and_recommend only ever returns verified_counsel_query() matches,
-    # so every result here has already passed KYC + bar council verification
-    # — this is what CounselCard/CounselProfileDialog's "Verified" badge reads.
-    advocates = [
-        counsel_matching.build_advocate_card(c, names_by_id.get(c["user_id"]), court_names_by_id)
-        for c in ranked
-    ]
+    advocates = await _advocate_cards_for(ranked)
     return {
         "source": "live",
         "metadata": {"total_candidates": total, "returned": len(advocates), "generated_at": generated_at},
         "advocates": advocates,
     }
+
+
+@api_router.get("/public/proxy-counsels")
+async def public_proxy_counsels(
+    request: Request,
+    court_id: Optional[str] = None, state_id: Optional[str] = None, district: Optional[str] = None,
+    specialization: Optional[str] = None, min_experience_years: Optional[float] = None,
+    min_rating: Optional[float] = None, fee_min: Optional[float] = None, fee_max: Optional[float] = None,
+    available_only: bool = False, limit: int = 20,
+):
+    """Public, unauthenticated counterpart to /recommendations/advocates —
+    the founder's direction is that the counsel browse grid itself is
+    public (no login wall), only viewing a full profile or booking one
+    requires an account (see /advocates/{id}/profile and
+    POST /hearing-requests). Returns counsel_matching.public_advocate_card's
+    trimmed shape only — never bio/education/languages/full court list."""
+    import counsel_matching
+    client_ip = request.client.host if request.client else "unknown"
+    counsel_matching.check_public_list_rate_limit(client_ip)
+    ranked, total = await counsel_matching.list_and_recommend(
+        db, court_id=court_id, state_id=state_id, district=district, specialization=specialization,
+        min_experience_years=min_experience_years, min_rating=min_rating, fee_min=fee_min, fee_max=fee_max,
+        available_only=available_only, limit=limit,
+    )
+    generated_at = datetime.now(timezone.utc).isoformat()
+    cards = await _advocate_cards_for(ranked)
+    advocates = [counsel_matching.public_advocate_card(c) for c in cards]
+    return {
+        "metadata": {"total_candidates": total, "returned": len(advocates), "generated_at": generated_at},
+        "advocates": advocates,
+    }
+
+
+@api_router.get("/advocates/{advocate_id}/profile")
+async def get_advocate_profile(advocate_id: str, user=Depends(get_current_user)):
+    """Full profile detail for the "View Profile" dialog — gated behind
+    login (see /public/proxy-counsels for the anonymous card-level browse
+    endpoint this complements). Only ever returns a verified_counsel_query()
+    match, same trust gate as the list."""
+    _require_capability(user, "can_hire_proxy_counsel")
+    import counsel_matching
+    profile = await db.proxy_counsel_profiles.find_one(
+        {"user_id": advocate_id, **counsel_matching.verified_counsel_query()}, {"_id": 0},
+    )
+    if not profile:
+        raise HTTPException(404, "Counsel profile not found")
+    name_doc = await db.users.find_one({"user_id": advocate_id}, {"_id": 0, "name": 1})
+    court_ids = profile.get("courts") or []
+    court_names_by_id = {
+        c["court_id"]: c["name"]
+        for c in (await db.courts.find({"court_id": {"$in": court_ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(court_ids)) if court_ids else [])
+    }
+    return counsel_matching.build_advocate_card(profile, name_doc.get("name") if name_doc else None, court_names_by_id)
 
 
 # ============================================================================
@@ -2315,11 +2374,16 @@ async def _notify_hearing_event(user_id: str, title: str, body: str, hearing_id:
     lifecycle event — same try/except-log, non-fatal pattern as every other
     notify() call site in this file."""
     try:
-        from notifications import notify, record_notification_event
+        from notifications import notify, record_notification_event, get_hearing_email_thread
         recipient = await db.users.find_one({"user_id": user_id})
         if not recipient:
             return
-        notify(recipient, "hearing_event", {"title": title, "body": body})
+        ctx = {"title": title, "body": body}
+        if recipient.get("email"):
+            ctx["hearing_thread"] = await get_hearing_email_thread(
+                db, hearing_id, recipient["email"], f"CourtBazaar — Your Proxy Counsel Hearing (Ref: {hearing_id})",
+            )
+        notify(recipient, "hearing_event", ctx)
         await record_notification_event(db, user_id, "hearing_event", title, body, "hearing", hearing_id)
     except Exception as e:
         logger.error(f"hearing notify error: {e}")

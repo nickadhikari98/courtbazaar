@@ -29,8 +29,12 @@ export default function CounselCard({ counsel, onViewProfile, onSelect, selectin
             </div>
             <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
               <Star className="w-3 h-3 fill-amber-400 text-amber-400 flex-shrink-0" /> {counsel.rating}
-              <span className="mx-1">·</span>
-              {counsel.experience_years} yrs experience
+              {(counsel.experience_bracket_label || counsel.experience_years != null) && (
+                <>
+                  <span className="mx-1">·</span>
+                  {counsel.experience_bracket_label || `${counsel.experience_years} yrs experience`}
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -50,7 +54,7 @@ export default function CounselCard({ counsel, onViewProfile, onSelect, selectin
 
         <div className="mt-2 text-sm font-bold">
           {counsel.proposed_fee != null
-            ? <>{formatINR(counsel.proposed_fee)} <span className="text-xs font-medium text-muted-foreground">reference fee</span></>
+            ? <>{formatINR(counsel.proposed_fee)} <span className="text-xs font-medium text-muted-foreground">starting from</span></>
             : <span className="text-xs font-medium text-muted-foreground">Fee to be discussed</span>}
         </div>
 
