@@ -77,11 +77,16 @@ async def _notify_negotiation_event(db, user_id: Optional[str], title: str, body
     if not user_id:
         return
     try:
-        from notifications import notify, record_notification_event
+        from notifications import notify, record_notification_event, get_hearing_email_thread
         recipient = await db.users.find_one({"user_id": user_id})
         if not recipient:
             return
-        notify(recipient, "hearing_event", {"title": title, "body": body})
+        ctx = {"title": title, "body": body}
+        if recipient.get("email"):
+            ctx["hearing_thread"] = await get_hearing_email_thread(
+                db, hearing_id, recipient["email"], f"CourtBazaar — Your Proxy Counsel Hearing (Ref: {hearing_id})",
+            )
+        notify(recipient, "hearing_event", ctx)
         await record_notification_event(db, user_id, "hearing_event", title, body, "hearing", hearing_id)
     except Exception:
         pass

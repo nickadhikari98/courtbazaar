@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,6 +14,12 @@ import GoogleAuthButton from "@/components/shared/GoogleAuthButton";
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
+  // Set by a page a visitor was bounced off of for needing an account (e.g.
+  // HireProxyCounsel.jsx's "View Profile"/"Select Counsel" on the public
+  // browse grid) — returns them to where they actually were instead of the
+  // generic role-based landing page below.
+  const returnTo = location.state?.from;
   const { login, otpRequest, otpVerify, googleLogin, googleOAuthEnabled } = useAuth();
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState("");
@@ -39,7 +45,7 @@ export default function Login() {
     try {
       const u = await login(email, password);
       toast.success(`Welcome back, ${u.name}`);
-      navigate(u.role === "admin" ? "/admin" : u.role === "vendor" ? "/vendor" : "/dashboard");
+      navigate(returnTo || (u.role === "admin" ? "/admin" : u.role === "vendor" ? "/vendor" : "/dashboard"));
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Login failed");
     } finally { setLoading(false); }
@@ -65,7 +71,7 @@ export default function Login() {
     try {
       const u = await otpVerify(phone, otp);
       toast.success(`Welcome, ${u.name}`);
-      navigate("/dashboard");
+      navigate(returnTo || "/dashboard");
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Invalid OTP");
     } finally { setLoading(false); }

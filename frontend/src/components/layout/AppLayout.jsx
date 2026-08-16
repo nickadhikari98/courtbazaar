@@ -119,9 +119,22 @@ const navItems = (user) => {
   return buildWorkspaceNav(user);
 };
 
-export default function AppLayout() {
+// Desktop sidebar collapse state is persisted per-browser — a user who
+// collapses it expects it to stay collapsed on the next visit, not reset.
+// Mobile always starts closed (drawer-over-content), regardless of the
+// stored desktop preference, since a wide viewport's "open" would otherwise
+// cover the whole screen on a phone.
+const SIDEBAR_OPEN_STORAGE_KEY = "cb_sidebar_open";
+const getInitialSidebarOpen = () => {
+  if (typeof window === "undefined") return true;
+  if (window.innerWidth < 1024) return false;
+  const stored = window.localStorage.getItem(SIDEBAR_OPEN_STORAGE_KEY);
+  return stored === null ? true : stored === "true";
+};
+
+export default function AppLayout({ children }) {
   const { user, logout } = useAuth();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(getInitialSidebarOpen);
   const navigate = useNavigate();
   const location = useLocation();
   const items = navItems(user);
@@ -165,13 +178,32 @@ export default function AppLayout() {
     navigate("/");
   };
 
+  // Toggling (hamburger / the sidebar's own X) is a deliberate "I want it
+  // this way" choice — persisted. Auto-closing after a mobile nav click, or
+  // tapping the mobile overlay to dismiss, is transient drawer behavior, not
+  // a stated preference — neither persists, and neither fires on desktop
+  // (there's no overlay there, and a nav click shouldn't collapse the
+  // sidebar out from under a desktop user who never touched the toggle).
+  const toggleSidebar = () => {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      window.localStorage.setItem(SIDEBAR_OPEN_STORAGE_KEY, String(next));
+      return next;
+    });
+  };
+  const closeSidebarOnMobileNav = () => {
+    if (window.innerWidth < 1024) setSidebarOpen(false);
+  };
+
   return (
-    <div className="min-h-screen bg-background flex">
-      {/* Sidebar */}
-      <aside className={`fixed lg:sticky top-0 left-0 z-40 w-72 h-screen bg-white border-r border-border transform transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0 flex flex-col`}>
+    <div className="min-h-screen bg-background">
+      {/* Sidebar — fixed at every breakpoint now (not lg:sticky-in-flow) so
+          collapsing it on desktop doesn't require a second reflow transition;
+          the main column's lg:ml-72/lg:ml-0 below does the reflow instead. */}
+      <aside className={`fixed top-0 left-0 z-40 w-72 h-screen bg-white border-r border-border transform transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} flex flex-col`}>
         <div className="px-6 py-5 border-b border-border flex items-center justify-between">
           <Logo to="/dashboard" size="sm" data-testid="sidebar-logo" />
-          <button className="lg:hidden" onClick={() => setSidebarOpen(false)} data-testid="close-sidebar-btn">
+          <button onClick={toggleSidebar} data-testid="close-sidebar-btn">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -201,7 +233,7 @@ export default function AppLayout() {
                 }`
               }
               end={item.to === "/dashboard"}
-              onClick={() => setSidebarOpen(false)}
+              onClick={closeSidebarOnMobileNav}
             >
               <item.icon className="w-[18px] h-[18px]" strokeWidth={2} />
               <span>{item.label}</span>
@@ -224,12 +256,14 @@ export default function AppLayout() {
         </div>
       </aside>
 
-      {/* Main */}
-      <div className="flex-1 flex flex-col min-w-0">
+      {/* Main — margin-left tracks the sidebar's own width/visibility so
+          collapsing it (desktop) reflows content instead of leaving a gap;
+          below lg the sidebar is always an overlay, so no margin there. */}
+      <div className={`flex flex-col min-h-screen transition-[margin] duration-200 ${sidebarOpen ? 'lg:ml-72' : 'lg:ml-0'}`}>
         {/* Topbar */}
         <header className="h-16 bg-white border-b border-border flex items-center justify-between px-4 sm:px-8 sticky top-0 z-30">
           <div className="flex items-center gap-3">
-            <button className="lg:hidden" onClick={() => setSidebarOpen(true)} data-testid="open-sidebar-btn">
+            <button onClick={toggleSidebar} data-testid="open-sidebar-btn" aria-label="Toggle sidebar">
               <Menu className="w-5 h-5" />
             </button>
             <div className="hidden sm:flex items-center gap-2 text-sm">
@@ -292,7 +326,7 @@ export default function AppLayout() {
         </header>
 
         <main className="flex-1 min-w-0">
-          <Outlet />
+          {children || <Outlet />}
         </main>
       </div>
 

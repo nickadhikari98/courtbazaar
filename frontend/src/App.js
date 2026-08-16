@@ -112,6 +112,21 @@ function AuthCallback() {
   );
 }
 
+// HireProxyCounsel.jsx is the one page in the app reachable without login
+// (founder direction, 2026-08) — it picks its own shell (AppLayout vs
+// MarketingLayout) based on auth state internally, so unlike every other
+// protected page it can't just sit inside the <ProtectedRoute><AppLayout/></ProtectedRoute>
+// group below. A logged-in user without the capability still gets bounced
+// to /dashboard, same as before this change — only "no user at all" is new.
+function HireProxyCounselRoute() {
+  const { user, loading } = useAuth();
+  if (loading) return <RouteLoadingFallback />;
+  if (user && !user.capabilities?.includes("can_hire_proxy_counsel")) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <HireProxyCounsel />;
+}
+
 function ProtectedRoute({ children, roles, capabilities }) {
   const { user, loading } = useAuth();
   if (loading) {
@@ -159,6 +174,8 @@ function AppRouter() {
       <Route path="/trust" element={<Trust />} />
       <Route path="/legal" element={<LegalCenter />} />
       <Route path="/legal/:slug" element={<LegalDocument />} />
+      {/* Public: browsable without login, see HireProxyCounselRoute above */}
+      <Route path="/hire-proxy-counsel" element={<HireProxyCounselRoute />} />
 
       <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route path="/dashboard" element={<Dashboard />} />
@@ -182,7 +199,6 @@ function AppRouter() {
             professional profile (see get_current_user's capability computation,
             server.py) — a plain advocate/customer account never sees these. */}
         <Route path="/practice" element={<ProtectedRoute capabilities={["can_practice_proxy_counsel", "can_manage_shop"]}><Practice /></ProtectedRoute>} />
-        <Route path="/hire-proxy-counsel" element={<ProtectedRoute capabilities={["can_hire_proxy_counsel"]}><HireProxyCounsel /></ProtectedRoute>} />
         <Route path="/hearing-requests/:hearingId/negotiate" element={<ProtectedRoute capabilities={["can_hire_proxy_counsel", "can_practice_proxy_counsel"]}><NegotiationModule /></ProtectedRoute>} />
         <Route path="/hire-counsel" element={<ProtectedRoute capabilities={["can_hire_proxy_counsel"]}><HireCounsel /></ProtectedRoute>} />
         <Route path="/earnings" element={<ProtectedRoute capabilities={["can_earn"]}><Earnings /></ProtectedRoute>} />
