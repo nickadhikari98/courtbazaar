@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
   User, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck,
   Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic, Banknote,
-  UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel,
+  UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel, ArrowLeft,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -124,6 +124,14 @@ const navItems = (user) => {
 // Mobile always starts closed (drawer-over-content), regardless of the
 // stored desktop preference, since a wide viewport's "open" would otherwise
 // cover the whole screen on a phone.
+// Landing/home destinations for each account type — no back arrow here,
+// since there's nowhere more "up" to go inside the app shell. Everywhere
+// else gets a persistent back arrow in the sticky topbar: most pages
+// (negotiation, hearing detail, etc.) never had their own local back
+// button, so the only way back was the browser's own (often invisible,
+// e.g. installed/PWA or embedded) back control.
+const HOME_PATHS = new Set(["/dashboard", "/vendor", "/delivery", "/admin/console", "/admin"]);
+
 const SIDEBAR_OPEN_STORAGE_KEY = "cb_sidebar_open";
 const getInitialSidebarOpen = () => {
   if (typeof window === "undefined") return true;
@@ -263,6 +271,16 @@ export default function AppLayout({ children }) {
         {/* Topbar */}
         <header className="h-16 bg-white border-b border-border flex items-center justify-between px-4 sm:px-8 sticky top-0 z-30">
           <div className="flex items-center gap-3">
+            {!HOME_PATHS.has(location.pathname) && (
+              <button
+                onClick={() => navigate(-1)}
+                data-testid="global-back-btn"
+                aria-label="Go back"
+                className="p-1.5 -ml-1.5 hover:bg-secondary rounded-lg text-muted-foreground hover:text-foreground"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+            )}
             <button onClick={toggleSidebar} data-testid="open-sidebar-btn" aria-label="Toggle sidebar">
               <Menu className="w-5 h-5" />
             </button>

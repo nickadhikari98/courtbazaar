@@ -88,13 +88,20 @@ def delete_object(path: str) -> bool:
         return False
 
 
-def presigned_download_url(path: str, filename: Optional[str] = None, expires_in: int = 600) -> str:
+def presigned_download_url(path: str, filename: Optional[str] = None, expires_in: int = 600,
+                            inline: bool = False) -> str:
     """A short-lived (default 10 min) signed URL — the only way this app
-    exposes a downloadable link. Raw bucket URLs are never returned."""
+    exposes a downloadable link. Raw bucket URLs are never returned.
+
+    `inline=True` sets Content-Disposition to "inline" instead of
+    "attachment" — the browser renders the file (PDF/image) in the tab
+    itself instead of forcing a Save dialog, for "preview without
+    downloading" call sites (see hearing document preview)."""
     params = {"Bucket": S3_BUCKET, "Key": path}
     if filename:
         safe_name = filename.replace('"', "")
-        params["ResponseContentDisposition"] = f'attachment; filename="{safe_name}"'
+        disposition = "inline" if inline else "attachment"
+        params["ResponseContentDisposition"] = f'{disposition}; filename="{safe_name}"'
     try:
         return _get_client().generate_presigned_url("get_object", Params=params, ExpiresIn=expires_in)
     except (ClientError, BotoCoreError) as e:

@@ -21,6 +21,7 @@ import {
   addAvailabilitySlot, removeAvailabilitySlot, getPracticePerformance,
 } from "@/lib/practiceApi";
 import { listHearingRequests } from "@/lib/hearingRequestsApi";
+import { getCourt, searchCourts } from "@/lib/referenceDataApi";
 import { formatINR } from "@/lib/api";
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import HearingActivityPreview from "@/components/shared/HearingActivityPreview";
@@ -75,6 +76,93 @@ function TagInput({ label, value, onChange, placeholder }) {
                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }} />
         <Button type="button" variant="outline" onClick={add}><Plus className="w-4 h-4" /></Button>
       </div>
+    </div>
+  );
+}
+
+/* Bug fix: "Courts" used to be a free-text TagInput — a counsel could type
+   "Gujarat High Court" and it would display fine everywhere (it's just
+   shown as typed), but list_and_recommend/public_proxy_counsels filter
+   proxy_counsel_profiles.courts by real court_id ($in a set of ids looked
+   up from the courts collection), so free text never matched and the
+   counsel silently never showed up when someone searched/selected that
+   court. This picks real courts by name (searchCourts, same /courts?q=
+   endpoint the public Court Directory uses) and stores court_id — display
+   names for already-saved ids are resolved lazily below, so legacy
+   free-text rows (pre-fix) still render as a removable chip instead of a
+   raw id, they just won't match search until re-picked from here. */
+function CourtPicker({ label, value, onChange }) {
+  const [nameById, setNameById] = useState({});
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const missing = value.filter((id) => !(id in nameById));
+    if (!missing.length) return;
+    let cancelled = false;
+    Promise.all(missing.map((id) => getCourt(id).then((c) => [id, c.name]).catch(() => [id, id])))
+      .then((pairs) => { if (!cancelled) setNameById((prev) => ({ ...prev, ...Object.fromEntries(pairs) })); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when `value` gains an id we haven't resolved yet
+  }, [value]);
+
+  useEffect(() => {
+    if (query.trim().length < 2) { setResults([]); return undefined; }
+    const t = setTimeout(() => {
+      searchCourts(query.trim()).then((list) => setResults(list.slice(0, 20))).catch(() => setResults([]));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const add = (court) => {
+    if (!value.includes(court.court_id)) {
+      setNameById((prev) => ({ ...prev, [court.court_id]: court.name }));
+      onChange([...value, court.court_id]);
+    }
+    setQuery("");
+    setResults([]);
+    setOpen(false);
+  };
+  const remove = (id) => onChange(value.filter((v) => v !== id));
+
+  return (
+    <div>
+      <Label>{label}</Label>
+      <div className="flex flex-wrap gap-1.5 mb-2 mt-1.5">
+        {value.map((id) => (
+          <Badge key={id} variant="outline" className="gap-1 font-semibold">
+            {nameById[id] || id}
+            <button type="button" onClick={() => remove(id)}>
+              <X className="w-3 h-3" />
+            </button>
+          </Badge>
+        ))}
+      </div>
+      <div className="relative">
+        <Input
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          placeholder="Search a court by name, e.g. Gujarat High Court"
+          data-testid="courts-picker-search"
+        />
+        {open && results.length > 0 && (
+          <div className="absolute z-20 mt-1 w-full bg-white border border-border rounded-lg shadow-lg max-h-56 overflow-y-auto cb-scroll">
+            {results.map((c) => (
+              <button
+                key={c.court_id} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => add(c)}
+                className="w-full text-left px-3 py-2 text-sm hover:bg-secondary flex items-center justify-between gap-2"
+              >
+                <span className="truncate">{c.name}</span>
+                <span className="text-2xs text-muted-foreground uppercase flex-shrink-0">{c.type?.replace("_", " ")}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <p className="text-2xs text-muted-foreground mt-1">Pick real courts from search — these are what a Counsel's court filter actually matches against.</p>
     </div>
   );
 }
@@ -177,7 +265,7 @@ function ProfileTab({ profile, onSaved }) {
             <Textarea rows={2} value={form.fee_structure || ""} onChange={(e) => set("fee_structure", e.target.value)} placeholder="e.g. ₹2,000 per appearance" />
           </div>
           <TagInput label="Practice areas" value={form.practice_areas || []} onChange={(v) => set("practice_areas", v)} placeholder="e.g. Civil, Criminal" />
-          <TagInput label="Courts" value={form.courts || []} onChange={(v) => set("courts", v)} placeholder="e.g. Delhi High Court" />
+          <CourtPicker label="Courts" value={form.courts || []} onChange={(v) => set("courts", v)} />
           <TagInput label="Languages" value={form.languages || []} onChange={(v) => set("languages", v)} placeholder="e.g. Hindi, English" />
           <Button type="button" onClick={save} disabled={saving} className="bg-accent hover:bg-accent/90 font-bold">Save profile</Button>
         </CardContent>

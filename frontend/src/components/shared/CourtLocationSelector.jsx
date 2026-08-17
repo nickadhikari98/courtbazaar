@@ -48,13 +48,13 @@ export default function CourtLocationSelector({ value, onChange }) {
   const highCourts = useMemo(() => courts.filter((c) => c.type === "high_court"), [courts]);
 
   const selectState = (v) => {
-    onChange({ state_id: v, state_name: states.find((s) => s.state_id === v)?.name, district: "", court_id: "", court_name: "" });
+    onChange({ state_id: v, state_name: states.find((s) => s.state_id === v)?.name, district: "", court_id: "", court_name: "", court_type: courtType });
   };
 
   const switchCourtType = (type) => {
     if (type === courtType) return;
     setCourtType(type);
-    onChange({ state_id, state_name: value?.state_name, district: "", court_id: "", court_name: "" });
+    onChange({ state_id, state_name: value?.state_name, district: "", court_id: "", court_name: "", court_type: type });
   };
 
   return (
@@ -101,7 +101,7 @@ export default function CourtLocationSelector({ value, onChange }) {
                 // old district. Sentinel value + always-rendered item keeps it
                 // controlled through every state, clear included.
                 value={district || CLEAR_DISTRICT}
-                onValueChange={(v) => onChange({ state_id, state_name: value?.state_name, district: v === CLEAR_DISTRICT ? "" : v, court_id: "", court_name: "" })}
+                onValueChange={(v) => onChange({ state_id, state_name: value?.state_name, district: v === CLEAR_DISTRICT ? "" : v, court_id: "", court_name: "", court_type: courtType })}
                 disabled={!state_id}
               >
                 <SelectTrigger data-testid="location-district"><SelectValue placeholder={state_id ? "Select district" : "Select a state first"} /></SelectTrigger>
@@ -115,7 +115,7 @@ export default function CourtLocationSelector({ value, onChange }) {
               <Label>Court *</Label>
               <Select
                 value={court_id || undefined}
-                onValueChange={(v) => onChange({ state_id, state_name: value?.state_name, district, court_id: v, court_name: courts.find((c) => c.court_id === v)?.name })}
+                onValueChange={(v) => onChange({ state_id, state_name: value?.state_name, district, court_id: v, court_name: courts.find((c) => c.court_id === v)?.name, court_type: courtType })}
                 disabled={!state_id}
               >
                 <SelectTrigger data-testid="location-court"><SelectValue placeholder={state_id ? "Select court" : "Select a state first"} /></SelectTrigger>
@@ -140,6 +140,7 @@ export default function CourtLocationSelector({ value, onChange }) {
               onValueChange={(v) => onChange({
                 state_id, state_name: value?.state_name, district: "",
                 court_id: v, court_name: highCourts.find((c) => c.court_id === v)?.name,
+                court_type: "high_court",
               })}
               disabled={!state_id}
             >
