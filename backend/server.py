@@ -353,6 +353,15 @@ class ProxyCounselProfileUpdate(BaseModel):
     courts: Optional[List[str]] = None
     languages: Optional[List[str]] = None
     experience_years: Optional[int] = None
+    # Bug fix: these two were editable per practice.PROFILE_EDITABLE_FIELDS
+    # and sent by Practice.jsx's save() on every submit, but were missing
+    # from this request model — Pydantic silently drops fields it doesn't
+    # declare, so every save looked successful (no error, "Profile saved"
+    # toast) while experience_bracket/pricing were never actually persisted.
+    # The next time the profile loaded fresh (component remount / re-login),
+    # those two appeared to have been "cleared".
+    experience_bracket: Optional[str] = None
+    pricing: Optional[Dict[str, Dict[str, float]]] = None
     education: Optional[str] = None
     bio: Optional[str] = None
     office_address: Optional[str] = None
@@ -2692,12 +2701,14 @@ async def upload_hearing_document(
     return result
 
 @api_router.get("/hearing-requests/{hearing_id}/documents/{doc_id}/download-url")
-async def get_hearing_document_url(hearing_id: str, doc_id: str, user=Depends(get_current_user)):
+async def get_hearing_document_url(hearing_id: str, doc_id: str, inline: bool = False, user=Depends(get_current_user)):
     await hearings_svc.get_hearing_request(db, hearing_id, user)  # visibility check
     rec = await db.hearing_documents.find_one({"doc_id": doc_id, "hearing_id": hearing_id, "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(404, "Document not found")
-    url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"))
+    # inline=true (Preview button): browser renders the file in-tab instead
+    # of prompting a download — see storage.presigned_download_url.
+    url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"), inline=inline)
     return {"url": url, "filename": rec.get("original_filename")}
 
 
@@ -3682,6 +3693,29 @@ async def schedule_order_sheet_reminders():
     except Exception as e:
         logger.warning(f"Order sheet reminder scheduler not started: {e}")
 
+
+@app.on_event("startup")
+async def schedule_auto_release_verifications():
+    """Escrow Module (3-day auto-release rule): if the requester neither
+    verifies nor disputes an uploaded order sheet within 3 days, auto-release
+    escrow to the proxy counsel. Same registration pattern as the schedulers
+    above; hourly poll is plenty for a multi-day deadline."""
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        async def _job():
+            try:
+                count = await hearings_svc.auto_release_stale_verifications(db)
+                if count:
+                    logger.info(f"Auto-released stale verifications: {count}")
+            except Exception as e:
+                logger.error(f"Scheduled auto-release error: {e}")
+        sched = AsyncIOScheduler()
+        sched.add_job(_job, IntervalTrigger(hours=1), max_instances=1)
+        sched.start()
+        logger.info("Auto-release verification scheduler started (poll every 1h)")
+    except Exception as e:
+        logger.warning(f"Auto-release verification scheduler not started: {e}")
 
 
 app.include_router(api_router)

@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Star, FileText, Send, Upload, CheckCircle2, X, Ban, Loader2, Gavel } from "lucide-react";
+import { Star, FileText, Send, Upload, Download, CheckCircle2, X, Ban, Loader2, Gavel } from "lucide-react";
 import {
   getHearingRequest, acceptHearingRequest, declineHearingRequest, rejectHearingRequest, cancelHearingRequest,
   markHearingConducted, rateHearingRequest, addHearingNote, listHearingMessages,
@@ -153,11 +153,42 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
 
   const openDocument = async (docId) => {
     try {
-      const { url } = await getHearingDocumentUrl(hearingId, docId);
+      // inline: true — opens in-tab (browser's native PDF/image viewer)
+      // instead of forcing a download, so it can be checked right there.
+      const { url } = await getHearingDocumentUrl(hearingId, docId, { inline: true });
       window.open(url, "_blank", "noopener,noreferrer");
     } catch {
       toast.error("Could not open this document");
     }
+  };
+
+  // Case details/instructions are plain text baked into the hearing record,
+  // not a stored file — no backend export endpoint exists (or is needed)
+  // for this, so the download is built client-side from the same fields
+  // already rendered above and handed to the browser as a .txt Blob.
+  const downloadCaseDetails = () => {
+    const c = hearing.request_details?.common || {};
+    const s = hearing.request_details?.service_specific || {};
+    const lines = [
+      `Case Details — ${hearing.court_id}`,
+      c.case_title ? `Case Title: ${c.case_title}` : null,
+      c.case_number ? `Case Number: ${c.case_number}` : null,
+      c.case_type ? `Case Type: ${c.case_type}` : null,
+      c.case_stage ? `Stage: ${c.case_stage}` : null,
+      `Hearing Date: ${hearing.hearing_date}${c.hearing_time ? ` at ${c.hearing_time}` : ""}`,
+      c.priority ? `Priority: ${c.priority}` : null,
+      s.work_required?.length ? `Work Required: ${s.work_required.join(", ")}${s.work_required_notes ? ` — ${s.work_required_notes}` : ""}` : null,
+      "",
+      "Instructions:",
+      hearing.case_details || "",
+    ].filter((l) => l !== null);
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `case-details-${hearing.hearing_id}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -192,7 +223,12 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
             the case brief, just an unlabeled instructions blob. */}
         {hearing.details_submitted ? (
           <div>
-            <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Case Details</div>
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Case Details</div>
+              <button type="button" onClick={downloadCaseDetails} className="flex items-center gap-1 text-2xs font-semibold text-accent hover:underline" data-testid="download-case-details">
+                <Download className="w-3.5 h-3.5" /> Download
+              </button>
+            </div>
             <div className="border rounded-lg p-3 bg-secondary/30 space-y-2 text-sm">
               <div className="grid sm:grid-cols-2 gap-x-4 gap-y-1.5">
                 {hearing.request_details?.common?.case_title && (

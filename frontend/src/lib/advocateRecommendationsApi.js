@@ -39,6 +39,11 @@ export async function getPublicProxyCounsels(context) {
     court_id: context?.court_id || undefined,
     state_id: context?.state_id || undefined,
     district: context?.district || undefined,
+    // Backend defaults to 20 (a reasonable AI-recommendation batch size),
+    // which silently truncated the browse grid — this page wants "show all
+    // verified counsels for these filters", not a top-20 pick, so it always
+    // asks for the backend's actual ceiling.
+    limit: context?.limit || 100,
   };
   const { data } = await api.get("/public/proxy-counsels", { params });
   return { metadata: data.metadata, advocates: data.advocates || [] };

@@ -23,6 +23,10 @@ const OWNED_STATUSES = [
   "verification_pending", "disputed", "verified", "completed", "rated",
 ];
 
+// Mirrors backend hearings.AUTO_RELEASE_DELAY_DAYS — display copy only, the
+// actual deadline is enforced server-side by the auto-release scheduler.
+const AUTO_RELEASE_DAYS = 3;
+
 /* Escrow Module (founder's rules 3-9) — same one-primary-action-per-stage
    discipline as NegotiationOfferPanel/NegotiationNextAction, now covering
    the post-payment operational lifecycle: escrow-held messaging, Mark
@@ -65,7 +69,9 @@ export default function EscrowStagePanel({
   const viewOrderSheet = async () => {
     if (!hearing.order_sheet_doc_id) return;
     try {
-      const { url } = await getHearingDocumentUrl(hearingId, hearing.order_sheet_doc_id);
+      // inline: true — opens in-tab (browser's native PDF/image viewer) so
+      // it can be checked right there, no download required.
+      const { url } = await getHearingDocumentUrl(hearingId, hearing.order_sheet_doc_id, { inline: true });
       window.open(url, "_blank", "noopener,noreferrer");
     } catch {
       toast.error("Could not open the order sheet");
@@ -188,9 +194,13 @@ export default function EscrowStagePanel({
               </p>
               {hearing.order_sheet_doc_id && (
                 <button type="button" onClick={viewOrderSheet} className="flex items-center gap-2 text-sm border rounded-md px-2.5 py-1.5 hover:bg-slate-50 mb-3" data-testid="view-order-sheet">
-                  <FileText className="w-4 h-4 text-accent flex-shrink-0" /> View Court Order Sheet
+                  <FileText className="w-4 h-4 text-accent flex-shrink-0" /> Preview Court Order Sheet
                 </button>
               )}
+              <p className="text-xs text-muted-foreground mb-3">
+                If you neither verify nor raise a dispute within {AUTO_RELEASE_DAYS} days of the order sheet being
+                uploaded, payment auto-releases to the Proxy Counsel.
+              </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Button type="button" className="font-bold bg-accent hover:bg-accent/90" disabled={busy} onClick={submitVerifyAndRelease} data-testid="verify-hearing">
                   {busy && <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />} <CheckCircle2 className="w-4 h-4 mr-1.5" /> Verify Hearing
@@ -222,7 +232,8 @@ export default function EscrowStagePanel({
             </>
           ) : (
             <p className="text-sm font-semibold">
-              Order sheet submitted — waiting for the {otherRoleLabel} to verify. {amount} is securely held in Escrow.
+              Order sheet submitted — waiting for the {otherRoleLabel} to verify. {amount} is securely held in Escrow,
+              and auto-releases to you in {AUTO_RELEASE_DAYS} days if the {otherRoleLabel} takes no action.
             </p>
           )}
         </CardContent>

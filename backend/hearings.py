@@ -202,6 +202,11 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
         # retroactive reminder storm).
         "payment_confirmed_at": None,
         "order_sheet_reminder_sent_at": None,
+        # Escrow Module (3-day auto-release rule): set whenever the hearing
+        # enters verification_pending, cleared the moment it leaves
+        # (verified/disputed) — read by auto_release_stale_verifications
+        # below to auto-verify+release if neither side acts within 3 days.
+        "verification_pending_at": None,
         "timeline": [{"status": "requested", "at": now.isoformat(), "note": "Request created"}],
         "created_at": now.isoformat(),
         "updated_at": now.isoformat(),
@@ -589,6 +594,10 @@ async def add_document(db, put_object_fn, validate_upload_fn, hearing_id: str, u
                                                note="Hearing date already confirmed at request creation")
     elif kind == "order_sheet" and hearing["status"] == "hearing_completed":
         await _transition(db, sm, hearing, "hearing_completed", "upload_order_sheet", user)
+        # Starts the 3-day auto-release clock — see auto_release_stale_verifications.
+        await db.hearing_requests.update_one(
+            {"hearing_id": hearing_id}, {"$set": {"verification_pending_at": datetime.now(timezone.utc).isoformat()}},
+        )
 
     record.pop("_id", None)
     return record
@@ -827,6 +836,7 @@ async def verify_order_sheet(db, hearing_id: str, user: dict) -> dict:
         await _transition(db, sm, hearing, hearing["status"], "verify", user)
     except IllegalTransition:
         raise HTTPException(400, "This hearing isn't awaiting verification")
+    await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$set": {"verification_pending_at": None}})
     return {"ok": True, "status": "verified"}
 
 
@@ -839,6 +849,7 @@ async def reject_order_sheet(db, hearing_id: str, user: dict, remark: Optional[s
         await _transition(db, sm, hearing, hearing["status"], "reject_verification", user, note=remark)
     except IllegalTransition:
         raise HTTPException(400, "This hearing isn't awaiting verification")
+    await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$set": {"verification_pending_at": None}})
     return {"ok": True, "status": "disputed"}
 
 
@@ -857,6 +868,12 @@ async def resolve_dispute(db, hearing_id: str, user: dict, action: str, remark: 
         raise HTTPException(400, "This hearing isn't currently disputed")
     if sm_action == "refund_and_cancel":
         await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason=remark or "Dispute resolved with refund")
+    elif sm_action == "resubmit":
+        # Back at verification_pending for another look — restart the 3-day
+        # auto-release clock (see auto_release_stale_verifications).
+        await db.hearing_requests.update_one(
+            {"hearing_id": hearing_id}, {"$set": {"verification_pending_at": datetime.now(timezone.utc).isoformat()}},
+        )
     return {"ok": True, "status": new_status}
 
 
@@ -904,6 +921,7 @@ async def verify_and_release_payout(db, hearing_id: str, user: dict) -> dict:
         await _transition(db, sm, hearing, hearing["status"], "verify", user)
     except IllegalTransition:
         raise HTTPException(400, "This hearing isn't awaiting verification")
+    await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$set": {"verification_pending_at": None}})
     try:
         await _transition(db, sm, {**hearing, "status": "verified"}, "verified", "release_payout", user)
     except IllegalTransition:
@@ -977,6 +995,86 @@ async def check_pending_order_sheets(db) -> int:
         except Exception:
             continue  # best-effort, same as every other notify call site — one failure never blocks the rest of the scan
     return notified
+
+
+# ---------------------------------------------------------------------------
+# Escrow Module: 3-day auto-release. If the requester neither verifies nor
+# disputes an uploaded order sheet within 3 days of it landing at
+# verification_pending, escrow auto-releases to the proxy counsel exactly as
+# verify_and_release_payout would — system-triggered (actor=None), same
+# registration pattern as check_pending_order_sheets above.
+# ---------------------------------------------------------------------------
+AUTO_RELEASE_DELAY_DAYS = 3
+
+
+async def auto_release_stale_verifications(db) -> int:
+    """Finds hearings sitting at verification_pending for 3+ days with no
+    Verify/Raise Dispute from the requester, and auto-verifies + releases
+    escrow to the proxy counsel. Returns the count auto-released, for the
+    scheduler's log line."""
+    import escrow as escrow_svc
+    from notifications import notify, record_notification_event, get_hearing_email_thread
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=AUTO_RELEASE_DELAY_DAYS)).isoformat()
+    scan_cap = 500
+    candidates = await db.hearing_requests.find({
+        "status": "verification_pending",
+        "verification_pending_at": {"$ne": None, "$lte": cutoff},
+    }, {"_id": 0}).to_list(scan_cap)
+    if len(candidates) == scan_cap:
+        logger.warning(f"auto_release_stale_verifications hit its {scan_cap}-row scan cap — some releases deferred to next poll")
+
+    released = 0
+    for hearing in candidates:
+        hearing_id = hearing["hearing_id"]
+        try:
+            # Re-fetch so a hearing verified/disputed by a human between the
+            # scan above and this write is skipped cleanly rather than
+            # double-processed — the _transition CAS below would also catch
+            # this, but re-checking first avoids a noisy 409 in the common case.
+            fresh = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+            if not fresh or fresh["status"] != "verification_pending":
+                continue
+            sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+            try:
+                await _transition(db, sm, fresh, "verification_pending", "verify", None,
+                                   note=f"Auto-verified — no verification or dispute from the client within {AUTO_RELEASE_DELAY_DAYS} days")
+            except (IllegalTransition, HTTPException):
+                continue  # lost the race to a human action between scan and write
+            await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$set": {"verification_pending_at": None}})
+            await _transition(db, sm, {**fresh, "status": "verified"}, "verified", "release_payout", None)
+            escrow = await escrow_svc.release(db, context_type="hearing", context_id=hearing_id, released_by_user_id="system")
+            await _push_activity(db, hearing_id, f"Payout of ₹{escrow['payee_amount']} auto-released to advocate wallet (no verification or dispute within {AUTO_RELEASE_DELAY_DAYS} days)")
+            await db.proxy_counsel_profiles.update_one(
+                {"user_id": fresh["proxy_counsel_user_id"]}, {"$inc": {"cases_completed": 1}},
+            )
+
+            title = "Payment auto-released"
+            for recipient_id, body in (
+                (fresh["requesting_user_id"],
+                 f"You didn't verify or dispute the order sheet within {AUTO_RELEASE_DELAY_DAYS} days, so payment for your hearing at "
+                 f"{fresh['court_id']} was automatically released to the proxy counsel."),
+                (fresh.get("proxy_counsel_user_id"),
+                 f"Payment for your hearing at {fresh['court_id']} was automatically released to your wallet — the client didn't verify "
+                 f"or dispute the order sheet within {AUTO_RELEASE_DELAY_DAYS} days."),
+            ):
+                if not recipient_id:
+                    continue
+                recipient = await db.users.find_one({"user_id": recipient_id})
+                if not recipient:
+                    continue
+                ctx = {"title": title, "body": body}
+                if recipient.get("email"):
+                    ctx["hearing_thread"] = await get_hearing_email_thread(
+                        db, hearing_id, recipient["email"],
+                        f"CourtBazaar — Your Proxy Counsel Hearing (Ref: {hearing_id})",
+                    )
+                notify(recipient, "hearing_event", ctx)
+                await record_notification_event(db, recipient_id, "hearing_event", title, body, "hearing", hearing_id)
+            released += 1
+        except Exception as e:
+            logger.error(f"auto_release_stale_verifications failed for {hearing_id}: {e}")
+            continue  # best-effort — one failure never blocks the rest of the scan
+    return released
 
 
 async def list_hearings_for_admin(db, status: Optional[str] = None) -> List[dict]:
