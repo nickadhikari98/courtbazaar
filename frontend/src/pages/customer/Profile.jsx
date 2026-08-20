@@ -8,10 +8,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { toast } from "sonner";
-import { Loader2, User, ShieldCheck } from "lucide-react";
+import { Loader2, ShieldCheck } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
 import CapabilitiesCard from "@/components/shared/CapabilitiesCard";
+import { initialsOf } from "@/components/proxyCounsel/CounselCard";
 
 export default function Profile() {
   const { user, refresh } = useAuth();
@@ -35,7 +36,7 @@ export default function Profile() {
     finally { setLoading(false); }
   };
 
-  const initials = (form.name || "U").split(" ").map(s => s[0]).slice(0, 2).join("").toUpperCase();
+  const initials = initialsOf(form.name || "U");
 
   return (
     <PageContainer className="max-w-3xl">

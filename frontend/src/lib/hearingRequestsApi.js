@@ -119,8 +119,8 @@ export async function uploadHearingDocument(hearingId, kind, file) {
   return data;
 }
 
-export async function getHearingDocumentUrl(hearingId, docId) {
-  const { data } = await api.get(`/hearing-requests/${hearingId}/documents/${docId}/download-url`);
+export async function getHearingDocumentUrl(hearingId, docId, { inline = false } = {}) {
+  const { data } = await api.get(`/hearing-requests/${hearingId}/documents/${docId}/download-url`, { params: inline ? { inline: true } : undefined });
   return data;
 }
 

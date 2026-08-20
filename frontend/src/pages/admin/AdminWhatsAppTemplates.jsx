@@ -10,8 +10,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Send, CheckCircle2, XCircle, Plus, FileText, Trash2, Edit3, Clock } from "lucide-react";
+import { Send, CheckCircle2, XCircle, Plus, FileText, Trash2, Clock } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import EmptyState from "@/components/shared/EmptyState";
 
 const statusStyle = {
   draft: "bg-secondary text-foreground",
@@ -149,9 +150,7 @@ export default function AdminWhatsAppTemplates() {
       </Tabs>
 
       <div className="space-y-3">
-        {tmpls.length === 0 && (
-          <Card className="border-dashed border-2"><CardContent className="p-10 text-center"><FileText className="w-10 h-10 mx-auto text-muted-foreground mb-3" /><div className="font-display font-bold">No templates</div></CardContent></Card>
-        )}
+        {tmpls.length === 0 && <EmptyState icon={FileText} title="No templates" />}
         {tmpls.map(t => (
           <Card key={t.template_id} className="dashboard-card border-none" data-testid={`template-${t.template_id}`}>
             <CardContent className="p-5">

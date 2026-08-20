@@ -37,7 +37,6 @@ if not JWT_SECRET:
         "JWT_SECRET environment variable is required and must not be empty. "
         "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
     )
-STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY')
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 APP_NAME = os.environ.get('APP_NAME', 'courtbazaar')
 GOOGLE_OAUTH_ENABLED = os.environ.get('GOOGLE_OAUTH_ENABLED', 'false').lower() == 'true'
@@ -286,10 +285,6 @@ class ChatMessage(BaseModel):
     session_id: str
     message: str
 
-class CheckoutRequest(BaseModel):
-    order_id: str
-    origin_url: str
-
 class RatingCreate(BaseModel):
     order_id: str
     rating: int
@@ -358,6 +353,15 @@ class ProxyCounselProfileUpdate(BaseModel):
     courts: Optional[List[str]] = None
     languages: Optional[List[str]] = None
     experience_years: Optional[int] = None
+    # Bug fix: these two were editable per practice.PROFILE_EDITABLE_FIELDS
+    # and sent by Practice.jsx's save() on every submit, but were missing
+    # from this request model — Pydantic silently drops fields it doesn't
+    # declare, so every save looked successful (no error, "Profile saved"
+    # toast) while experience_bracket/pricing were never actually persisted.
+    # The next time the profile loaded fresh (component remount / re-login),
+    # those two appeared to have been "cleared".
+    experience_bracket: Optional[str] = None
+    pricing: Optional[Dict[str, Dict[str, float]]] = None
     education: Optional[str] = None
     bio: Optional[str] = None
     office_address: Optional[str] = None
@@ -458,12 +462,14 @@ async def seed_initial_data():
     import escrow as escrow_svc
     import counsel_matching as counsel_matching_svc
     import negotiation as negotiation_svc
+    import notifications as notifications_svc
     await leads_svc.ensure_indexes(db)
     await reviews_svc.ensure_indexes(db)
     await hearings_svc.ensure_indexes(db)
     await escrow_svc.ensure_indexes(db)
     await counsel_matching_svc.ensure_indexes(db)
     await negotiation_svc.ensure_indexes(db)
+    await notifications_svc.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -625,7 +631,14 @@ async def otp_request(req: OtpRequest):
         "created_at": now.isoformat(),
     })
     from notifications import notify
-    notify({"phone": req.phone, "notif_prefs": {"sms": True, "whatsapp": True, "email": False}}, "otp", {"otp": code})
+    existing = await db.users.find_one(
+        {"$or": [{"phone": req.phone}, {"alt_phones": req.phone}]}, {"_id": 0, "email": 1}
+    )
+    notify(
+        {"phone": req.phone, "email": existing.get("email") if existing else None,
+         "notif_prefs": {"sms": True, "whatsapp": True, "email": True}},
+        "otp", {"otp": code},
+    )
     return {"ok": True, "message": "OTP sent", "phone": req.phone}
 
 @api_router.post("/auth/otp/verify")
@@ -642,7 +655,9 @@ async def otp_verify(req: OtpVerify):
         await db.otp_codes.update_one({"_id": rec["_id"]}, {"$inc": {"attempts": 1}})
         raise HTTPException(400, "Invalid OTP")
     await db.otp_codes.update_one({"_id": rec["_id"]}, {"$set": {"used": True}})
-    user = await db.users.find_one({"phone": req.phone}, {"_id": 0})
+    user = await db.users.find_one(
+        {"$or": [{"phone": req.phone}, {"alt_phones": req.phone}]}, {"_id": 0}
+    )
     # Same guard login() already applies — without it, a deactivated account
     # (password_hash cleared, `deleted: True`) could still get back in
     # through phone OTP, silently bypassing the deactivation entirely.
@@ -1412,79 +1427,6 @@ async def rate_order(order_id: str, payload: RatingCreate, user=Depends(get_curr
             await db.vendors.update_one({"vendor_id": order["vendor_id"]}, {"$set": {"rating": round(avg, 2)}})
     return {"ok": True}
 
-# ---------- PAYMENTS ----------
-@api_router.post("/payments/checkout")
-async def create_checkout(req: CheckoutRequest, http_request: Request, user=Depends(get_current_user)):
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
-    order = await db.orders.find_one({"order_id": req.order_id}, {"_id": 0})
-    if not order or order["user_id"] != user["user_id"]:
-        raise HTTPException(404, "Order not found")
-    amount = float(order["pricing"]["total"])
-    host_url = str(http_request.base_url).rstrip("/")
-    webhook_url = f"{host_url}/api/webhook/stripe"
-    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
-    success_url = f"{req.origin_url}/orders/{req.order_id}?session_id={{CHECKOUT_SESSION_ID}}"
-    cancel_url = f"{req.origin_url}/orders/{req.order_id}"
-    checkout_req = CheckoutSessionRequest(
-        amount=amount, currency="inr",
-        success_url=success_url, cancel_url=cancel_url,
-        metadata={"order_id": req.order_id, "user_id": user["user_id"]},
-    )
-    session = await stripe_checkout.create_checkout_session(checkout_req)
-    await db.payment_transactions.insert_one({
-        "session_id": session.session_id, "order_id": req.order_id,
-        "user_id": user["user_id"], "amount": amount, "currency": "inr",
-        "status": "initiated", "payment_status": "pending",
-        "metadata": {"order_id": req.order_id},
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-    return {"url": session.url, "session_id": session.session_id}
-
-@api_router.get("/payments/status/{session_id}")
-async def payment_status(session_id: str, user=Depends(get_current_user)):
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout
-    tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
-    if not tx:
-        raise HTTPException(404, "Transaction not found")
-    if tx.get("payment_status") == "paid":
-        return tx
-    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url="")
-    status = await stripe_checkout.get_checkout_status(session_id)
-    await db.payment_transactions.update_one(
-        {"session_id": session_id},
-        {"$set": {"status": status.status, "payment_status": status.payment_status}},
-    )
-    if status.payment_status == "paid" and tx.get("payment_status") != "paid":
-        await db.orders.update_one(
-            {"order_id": tx["order_id"]},
-            {"$set": {"payment_status": "paid", "status": "matched"},
-             "$push": {"timeline": {"status": "matched", "at": datetime.now(timezone.utc).isoformat(), "note": "Payment successful, vendor matched"}}},
-        )
-    return await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
-
-@api_router.post("/webhook/stripe")
-async def stripe_webhook(request: Request):
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout
-    body = await request.body()
-    sig = request.headers.get("Stripe-Signature")
-    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url="")
-    try:
-        ev = await stripe_checkout.handle_webhook(body, sig)
-        if ev.payment_status == "paid":
-            await db.payment_transactions.update_one(
-                {"session_id": ev.session_id},
-                {"$set": {"payment_status": "paid", "status": "complete"}},
-            )
-            tx = await db.payment_transactions.find_one({"session_id": ev.session_id})
-            if tx:
-                await db.orders.update_one(
-                    {"order_id": tx["order_id"]},
-                    {"$set": {"payment_status": "paid", "status": "matched"}},
-                )
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-    return {"ok": True}
-
 # ---------- WALLET ----------
 @api_router.get("/wallet")
 async def get_wallet(user=Depends(get_current_user)):
@@ -1578,35 +1520,12 @@ async def get_earnings_settlements(user=Depends(get_current_user)):
     ).sort("created_at", -1).to_list(200)
 
 # ---------- AI ASSISTANT ----------
+# Not wired to a real LLM provider yet (the previous integration depended on an
+# uninstalled package). /ai/chat is a clear stub rather than a 500; the filing
+# checklist still returns a useful deterministic answer.
 @api_router.post("/ai/chat")
 async def ai_chat(req: ChatMessage, user=Depends(get_current_user)):
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
-    system_msg = (
-        "You are CourtBazaar's AI Legal Assistant for India. Help advocates with: "
-        "1) Court selection guidance, 2) Filing checklists, 3) Defect detection, "
-        "4) Smart service recommendations (photocopy, e-filing, binding, notary, stamps). "
-        "Be concise, use Indian legal terminology (Vakalatnama, Cause List, Paper Book, Affidavit, Court Bundle). "
-        "Include INR pricing context when relevant. Keep replies under 200 words."
-    )
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY, session_id=req.session_id, system_message=system_msg,
-    ).with_model("anthropic", "claude-sonnet-4-6")
-    response_text = ""
-    try:
-        async for ev in chat.stream_message(UserMessage(text=req.message)):
-            if isinstance(ev, TextDelta):
-                response_text += ev.content
-            elif isinstance(ev, StreamDone):
-                break
-    except Exception as e:
-        logger.error(f"AI error: {e}")
-        raise HTTPException(500, f"AI error: {str(e)}")
-    await db.ai_messages.insert_one({
-        "session_id": req.session_id, "user_id": user["user_id"],
-        "user_message": req.message, "ai_response": response_text,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-    return {"reply": response_text}
+    raise HTTPException(503, "AI Assistant chat is not yet available.")
 
 @api_router.get("/ai/history/{session_id}")
 async def ai_history(session_id: str, user=Depends(get_current_user)):
@@ -1615,36 +1534,22 @@ async def ai_history(session_id: str, user=Depends(get_current_user)):
 
 @api_router.post("/ai/filing-checklist")
 async def filing_checklist(payload: dict, user=Depends(get_current_user)):
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
     court = payload.get("court", "")
     case_type = payload.get("case_type", "")
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"checklist_{user['user_id']}_{uuid.uuid4().hex[:8]}",
-        system_message="You are an Indian legal filing expert. Generate a concise numbered checklist (max 10 items) of documents and steps required for filing. Keep total output under 1500 characters.",
-    ).with_model("anthropic", "claude-sonnet-4-6")
-    msg = f"Generate a concise filing checklist for {case_type} at {court}. List documents, copies needed, court fees, stamp duty, and binding requirements as a numbered list. Keep it short."
-    out = ""
-    try:
-        out = await asyncio.wait_for(chat.send_message(UserMessage(text=msg)), timeout=45)
-    except (asyncio.TimeoutError, Exception) as e:
-        logger.warning(f"filing_checklist LLM call failed/timeout: {e}; using fallback")
-    if not out or len(str(out).strip()) < 30:
-        # Deterministic fallback so endpoint never returns 502
-        out = (
-            f"Filing checklist for {case_type or 'matter'} at {court or 'court'}:\n"
-            "1. Vakalatnama (signed by client, notarised) - 2 copies\n"
-            "2. Plaint / Petition - original + 2 copies, signed and verified\n"
-            "3. Statement of Truth / Affidavit - notarised\n"
-            "4. List of documents (Order VII Rule 14 CPC) with copies\n"
-            "5. Court fee stamps as per applicable Court Fees Act\n"
-            "6. Process fee (PF) and summons fee\n"
-            "7. Index, synopsis, list of dates\n"
-            "8. Spiral / cloth binding as per court rules\n"
-            "9. ID proof of advocate (Bar Council ID copy)\n"
-            "10. E-filing acknowledgement (if applicable)"
-        )
-    return {"checklist": str(out)}
+    checklist = (
+        f"Filing checklist for {case_type or 'matter'} at {court or 'court'}:\n"
+        "1. Vakalatnama (signed by client, notarised) - 2 copies\n"
+        "2. Plaint / Petition - original + 2 copies, signed and verified\n"
+        "3. Statement of Truth / Affidavit - notarised\n"
+        "4. List of documents (Order VII Rule 14 CPC) with copies\n"
+        "5. Court fee stamps as per applicable Court Fees Act\n"
+        "6. Process fee (PF) and summons fee\n"
+        "7. Index, synopsis, list of dates\n"
+        "8. Spiral / cloth binding as per court rules\n"
+        "9. ID proof of advocate (Bar Council ID copy)\n"
+        "10. E-filing acknowledgement (if applicable)"
+    )
+    return {"checklist": checklist}
 
 # ---------- ADMIN ----------
 @api_router.get("/admin/analytics")
@@ -1855,7 +1760,6 @@ async def rzp_verify(payload: dict, user=Depends(get_current_user)):
 async def payment_methods():
     import razorpay_svc
     return {
-        "stripe": bool(STRIPE_API_KEY),
         "razorpay": razorpay_svc.is_enabled(),
         "razorpay_simulated": not razorpay_svc.is_enabled(),
     }
@@ -2028,7 +1932,6 @@ class DocAnalyzeRequest(BaseModel):
 
 @api_router.post("/doc-intel/analyze")
 async def doc_intel_analyze(req: DocAnalyzeRequest, user=Depends(get_current_user)):
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
     from ocr_engine import analyze_document
     import json as _json
     files = await db.files.find({"file_id": {"$in": req.file_ids}, "user_id": user["user_id"]}, {"_id": 0}).to_list(50)
@@ -2063,19 +1966,6 @@ async def doc_intel_analyze(req: DocAnalyzeRequest, user=Depends(get_current_use
     combined_text = "\n\n".join(combined_text_chunks)[:12000]
     files_summary = "\n".join([f"- {a['filename']}: pages={a['page_count']}, chars={a['char_count']}, ocr_used={a['ocr_used']}, has_text_layer={a['has_text_layer']}, page_numbers_seen={a['page_numbers_detected']}" for a in analyses])
 
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"docint_{user['user_id']}_{uuid.uuid4().hex[:8]}",
-        system_message=(
-            "You are CourtBazaar's Document Intelligence engine for Indian courts. "
-            "Analyze the extracted text + metadata and return ONLY a single JSON object (no markdown, no prose) with: "
-            '{"filing_readiness_score": int 0-100, "ocr_quality_score": int 0-100, "pagination_score": int 0-100, '
-            '"missing_documents": [str], "defects": [{"severity": "high|medium|low", "issue": str, "fix": str}], '
-            '"recommended_services": [{"service_name": str, "reason": str}], '
-            '"summary": str}. Use Indian legal terminology. Keep arrays small (max 5 each). '
-            "Base scores on the actual extracted content, not just the filenames."
-        ),
-    ).with_model("anthropic", "claude-sonnet-4-6")
     prompt = f"File metadata:\n{files_summary}\n\nExtracted text (truncated):\n{combined_text or '[no text extracted]'}\n\n"
     if court:
         prompt += f"Target court: {court['name']} ({court.get('type')}).\n"
@@ -2085,6 +1975,22 @@ async def doc_intel_analyze(req: DocAnalyzeRequest, user=Depends(get_current_use
 
     raw = ""
     try:
+        # Not wired to a real LLM provider yet (the previous integration depended on
+        # an uninstalled package) — falls straight through to the heuristic report below.
+        from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"docint_{user['user_id']}_{uuid.uuid4().hex[:8]}",
+            system_message=(
+                "You are CourtBazaar's Document Intelligence engine for Indian courts. "
+                "Analyze the extracted text + metadata and return ONLY a single JSON object (no markdown, no prose) with: "
+                '{"filing_readiness_score": int 0-100, "ocr_quality_score": int 0-100, "pagination_score": int 0-100, '
+                '"missing_documents": [str], "defects": [{"severity": "high|medium|low", "issue": str, "fix": str}], '
+                '"recommended_services": [{"service_name": str, "reason": str}], '
+                '"summary": str}. Use Indian legal terminology. Keep arrays small (max 5 each). '
+                "Base scores on the actual extracted content, not just the filenames."
+            ),
+        ).with_model("anthropic", "claude-sonnet-4-6")
         async for ev in chat.stream_message(UserMessage(text=prompt)):
             if isinstance(ev, TextDelta):
                 raw += ev.content
@@ -2175,6 +2081,18 @@ async def list_notifications(user=Depends(get_current_user), unread_only: bool =
     if unread_only:
         query["read_at"] = None
     return await db.notification_events.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+
+@api_router.put("/notifications/read-all")
+async def mark_all_notifications_read(user=Depends(get_current_user)):
+    """Marks every currently-unread notification for this user as read in one
+    call — backs the dashboard's "View All Notifications" seen-effect and the
+    Notifications page's "Mark all read". Only touches unread rows so read_at
+    keeps the timestamp of when each was actually first seen."""
+    result = await db.notification_events.update_many(
+        {"user_id": user["user_id"], "read_at": None},
+        {"$set": {"read_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "marked_read": result.modified_count}
 
 @api_router.put("/notifications/{notification_id}/read")
 async def mark_notification_read(notification_id: str, user=Depends(get_current_user)):
@@ -2359,6 +2277,30 @@ async def admin_verify_practice_bar_council(user_id: str, user=Depends(get_curre
 # reuses counsel_matching.list_and_recommend, which itself reuses the same
 # verified_counsel_query/score_candidates the hearing-time matching pipeline
 # (M5/M6) already uses, rather than a separate recommendation engine. ----
+async def _advocate_cards_for(ranked: list) -> list:
+    """Shared card-building for a ranked candidate list — used by
+    /recommendations/advocates (full, authenticated), /public/proxy-counsels
+    (trimmed, anonymous — see counsel_matching.public_advocate_card), and
+    nothing else, so the names/court lookups live in exactly one place."""
+    if not ranked:
+        return []
+    import counsel_matching
+    user_ids = [c["user_id"] for c in ranked]
+    names_by_id = {
+        u["user_id"]: u.get("name")
+        for u in await db.users.find({"user_id": {"$in": user_ids}}, {"_id": 0, "user_id": 1, "name": 1}).to_list(len(user_ids))
+    }
+    court_ids = sorted({cid for c in ranked for cid in (c.get("courts") or [])})
+    court_names_by_id = {
+        c["court_id"]: c["name"]
+        for c in (await db.courts.find({"court_id": {"$in": court_ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(court_ids)) if court_ids else [])
+    }
+    # list_and_recommend only ever returns verified_counsel_query() matches,
+    # so every result here has already passed KYC + bar council verification
+    # — this is what CounselCard/CounselProfileDialog's "Verified" badge reads.
+    return [counsel_matching.build_advocate_card(c, names_by_id.get(c["user_id"]), court_names_by_id) for c in ranked]
+
+
 @api_router.get("/recommendations/advocates")
 async def recommendations_advocates(
     court_id: Optional[str] = None, state_id: Optional[str] = None, district: Optional[str] = None,
@@ -2375,32 +2317,65 @@ async def recommendations_advocates(
         available_only=available_only, limit=limit,
     )
     generated_at = datetime.now(timezone.utc).isoformat()
-    if not ranked:
-        return {"source": "live", "metadata": {"total_candidates": total, "returned": 0, "generated_at": generated_at}, "advocates": []}
-
-    user_ids = [c["user_id"] for c in ranked]
-    names_by_id = {
-        u["user_id"]: u.get("name")
-        for u in await db.users.find({"user_id": {"$in": user_ids}}, {"_id": 0, "user_id": 1, "name": 1}).to_list(len(user_ids))
-    }
-    court_ids = sorted({cid for c in ranked for cid in (c.get("courts") or [])})
-    court_names_by_id = {
-        c["court_id"]: c["name"]
-        for c in (await db.courts.find({"court_id": {"$in": court_ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(court_ids)) if court_ids else [])
-    }
-
-    # list_and_recommend only ever returns verified_counsel_query() matches,
-    # so every result here has already passed KYC + bar council verification
-    # — this is what CounselCard/CounselProfileDialog's "Verified" badge reads.
-    advocates = [
-        counsel_matching.build_advocate_card(c, names_by_id.get(c["user_id"]), court_names_by_id)
-        for c in ranked
-    ]
+    advocates = await _advocate_cards_for(ranked)
     return {
         "source": "live",
         "metadata": {"total_candidates": total, "returned": len(advocates), "generated_at": generated_at},
         "advocates": advocates,
     }
+
+
+@api_router.get("/public/proxy-counsels")
+async def public_proxy_counsels(
+    request: Request,
+    court_id: Optional[str] = None, state_id: Optional[str] = None, district: Optional[str] = None,
+    specialization: Optional[str] = None, min_experience_years: Optional[float] = None,
+    min_rating: Optional[float] = None, fee_min: Optional[float] = None, fee_max: Optional[float] = None,
+    available_only: bool = False, limit: int = 20,
+):
+    """Public, unauthenticated counterpart to /recommendations/advocates —
+    the founder's direction is that the counsel browse grid itself is
+    public (no login wall), only viewing a full profile or booking one
+    requires an account (see /advocates/{id}/profile and
+    POST /hearing-requests). Returns counsel_matching.public_advocate_card's
+    trimmed shape only — never bio/education/languages/full court list."""
+    import counsel_matching
+    client_ip = request.client.host if request.client else "unknown"
+    counsel_matching.check_public_list_rate_limit(client_ip)
+    ranked, total = await counsel_matching.list_and_recommend(
+        db, court_id=court_id, state_id=state_id, district=district, specialization=specialization,
+        min_experience_years=min_experience_years, min_rating=min_rating, fee_min=fee_min, fee_max=fee_max,
+        available_only=available_only, limit=limit,
+    )
+    generated_at = datetime.now(timezone.utc).isoformat()
+    cards = await _advocate_cards_for(ranked)
+    advocates = [counsel_matching.public_advocate_card(c) for c in cards]
+    return {
+        "metadata": {"total_candidates": total, "returned": len(advocates), "generated_at": generated_at},
+        "advocates": advocates,
+    }
+
+
+@api_router.get("/advocates/{advocate_id}/profile")
+async def get_advocate_profile(advocate_id: str, user=Depends(get_current_user)):
+    """Full profile detail for the "View Profile" dialog — gated behind
+    login (see /public/proxy-counsels for the anonymous card-level browse
+    endpoint this complements). Only ever returns a verified_counsel_query()
+    match, same trust gate as the list."""
+    _require_capability(user, "can_hire_proxy_counsel")
+    import counsel_matching
+    profile = await db.proxy_counsel_profiles.find_one(
+        {"user_id": advocate_id, **counsel_matching.verified_counsel_query()}, {"_id": 0},
+    )
+    if not profile:
+        raise HTTPException(404, "Counsel profile not found")
+    name_doc = await db.users.find_one({"user_id": advocate_id}, {"_id": 0, "name": 1})
+    court_ids = profile.get("courts") or []
+    court_names_by_id = {
+        c["court_id"]: c["name"]
+        for c in (await db.courts.find({"court_id": {"$in": court_ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(court_ids)) if court_ids else [])
+    }
+    return counsel_matching.build_advocate_card(profile, name_doc.get("name") if name_doc else None, court_names_by_id)
 
 
 # ============================================================================
@@ -2417,11 +2392,16 @@ async def _notify_hearing_event(user_id: str, title: str, body: str, hearing_id:
     lifecycle event — same try/except-log, non-fatal pattern as every other
     notify() call site in this file."""
     try:
-        from notifications import notify, record_notification_event
+        from notifications import notify, record_notification_event, get_hearing_email_thread
         recipient = await db.users.find_one({"user_id": user_id})
         if not recipient:
             return
-        notify(recipient, "hearing_event", {"title": title, "body": body})
+        ctx = {"title": title, "body": body}
+        if recipient.get("email"):
+            ctx["hearing_thread"] = await get_hearing_email_thread(
+                db, hearing_id, recipient["email"], f"CourtBazaar — Your Proxy Counsel Hearing (Ref: {hearing_id})",
+            )
+        notify(recipient, "hearing_event", ctx)
         await record_notification_event(db, user_id, "hearing_event", title, body, "hearing", hearing_id)
     except Exception as e:
         logger.error(f"hearing notify error: {e}")
@@ -2721,12 +2701,14 @@ async def upload_hearing_document(
     return result
 
 @api_router.get("/hearing-requests/{hearing_id}/documents/{doc_id}/download-url")
-async def get_hearing_document_url(hearing_id: str, doc_id: str, user=Depends(get_current_user)):
+async def get_hearing_document_url(hearing_id: str, doc_id: str, inline: bool = False, user=Depends(get_current_user)):
     await hearings_svc.get_hearing_request(db, hearing_id, user)  # visibility check
     rec = await db.hearing_documents.find_one({"doc_id": doc_id, "hearing_id": hearing_id, "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(404, "Document not found")
-    url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"))
+    # inline=true (Preview button): browser renders the file in-tab instead
+    # of prompting a download — see storage.presigned_download_url.
+    url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"), inline=inline)
     return {"url": url, "filename": rec.get("original_filename")}
 
 
@@ -3711,6 +3693,29 @@ async def schedule_order_sheet_reminders():
     except Exception as e:
         logger.warning(f"Order sheet reminder scheduler not started: {e}")
 
+
+@app.on_event("startup")
+async def schedule_auto_release_verifications():
+    """Escrow Module (3-day auto-release rule): if the requester neither
+    verifies nor disputes an uploaded order sheet within 3 days, auto-release
+    escrow to the proxy counsel. Same registration pattern as the schedulers
+    above; hourly poll is plenty for a multi-day deadline."""
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        async def _job():
+            try:
+                count = await hearings_svc.auto_release_stale_verifications(db)
+                if count:
+                    logger.info(f"Auto-released stale verifications: {count}")
+            except Exception as e:
+                logger.error(f"Scheduled auto-release error: {e}")
+        sched = AsyncIOScheduler()
+        sched.add_job(_job, IntervalTrigger(hours=1), max_instances=1)
+        sched.start()
+        logger.info("Auto-release verification scheduler started (poll every 1h)")
+    except Exception as e:
+        logger.warning(f"Auto-release verification scheduler not started: {e}")
 
 
 app.include_router(api_router)

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { jsPDF } from "jspdf";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { formatINR } from "@/lib/api";
@@ -10,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Star, FileText, Send, Upload, CheckCircle2, X, Ban, Loader2, Gavel } from "lucide-react";
+import { Star, FileText, Send, Upload, Download, CheckCircle2, X, Ban, Loader2, Gavel } from "lucide-react";
 import {
   getHearingRequest, acceptHearingRequest, declineHearingRequest, rejectHearingRequest, cancelHearingRequest,
   markHearingConducted, rateHearingRequest, addHearingNote, listHearingMessages,
@@ -20,6 +21,7 @@ import {
 import { payForHearing as payForHearingShared } from "@/lib/hearingPayment";
 import HearingTimeline from "@/components/shared/HearingTimeline";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
+import DocumentPreviewDialog from "@/components/shared/DocumentPreviewDialog";
 import EscrowStagePanel from "@/components/negotiation/EscrowStagePanel";
 import ProxyCounselCaseDetailsForm from "@/components/proxyCounsel/ProxyCounselCaseDetailsForm";
 import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions } from "@/lib/hearingLifecycle";
@@ -28,7 +30,12 @@ import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions
    counsel side (Practice.jsx's Hearings tab) — the same dialog, with
    contextual actions computed from the viewer's relationship to the hearing
    (requester vs assigned proxy counsel) and its current status. */
-export default function HearingDetailDialog({ hearingId, open, onOpenChange, onChanged }) {
+// showActivityHistory defaults on: for most callers (Dashboard, Practice,
+// HireProxyCounsel) this dialog is the ONLY place the hearing's event log is
+// shown. NegotiationModule passes it false because that page already renders a
+// dedicated, always-visible Activity History card — keeping it here too would
+// just make this dialog longer and duplicate it.
+export default function HearingDetailDialog({ hearingId, open, onOpenChange, onChanged, showActivityHistory = true }) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [hearing, setHearing] = useState(null);
@@ -41,6 +48,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   const [busy, setBusy] = useState(false);
   const [paying, setPaying] = useState(false);
   const [submittingDetails, setSubmittingDetails] = useState(false);
+  const [preview, setPreview] = useState(null); // { url, filename } — in-page document preview
   const fileInputRef = useRef(null);
 
   const load = () => {
@@ -69,7 +77,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   // that NegotiationModule.jsx also calls — this dialog no longer maintains
   // its own copy that could drift out of sync with the Negotiation page.
   const {
-    isRequester, isAssignedProxyCounsel, isTargetedAtMe, canAccept, canDecline, canReject,
+    isRequester, isAssignedProxyCounsel, canAccept, canDecline, canReject,
     negotiationRequired, negotiationAgreed, negotiationPending, canPay, canCancel, canMarkConducted, canRate,
     isEscrowParticipant, viewerRole,
   } = getHearingPermissions(hearing, user);
@@ -146,18 +154,74 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
     fileInputRef.current.value = "";
   };
 
-  const openDocument = async (docId) => {
+  const openDocument = async (docId, filename) => {
     try {
-      const { url } = await getHearingDocumentUrl(hearingId, docId);
-      window.open(url, "_blank", "noopener,noreferrer");
+      // inline: true — renders in the DocumentPreviewDialog below instead of
+      // forcing a download or hopping to a new tab, so it can be checked
+      // right there on the same page.
+      const { url } = await getHearingDocumentUrl(hearingId, docId, { inline: true });
+      setPreview({ url, filename });
     } catch {
       toast.error("Could not open this document");
     }
   };
 
+  // Case details/instructions are plain text baked into the hearing record,
+  // not a stored file — no backend export endpoint exists (or is needed)
+  // for this, so the PDF is built client-side (jsPDF) from the same fields
+  // already rendered above.
+  const downloadCaseDetails = () => {
+    const c = hearing.request_details?.common || {};
+    const s = hearing.request_details?.service_specific || {};
+    const lines = [
+      c.case_title ? `Case Title: ${c.case_title}` : null,
+      c.case_number ? `Case Number: ${c.case_number}` : null,
+      c.case_type ? `Case Type: ${c.case_type}` : null,
+      c.case_stage ? `Stage: ${c.case_stage}` : null,
+      `Hearing Date: ${hearing.hearing_date}${c.hearing_time ? ` at ${c.hearing_time}` : ""}`,
+      c.priority ? `Priority: ${c.priority}` : null,
+      s.work_required?.length ? `Work Required: ${s.work_required.join(", ")}${s.work_required_notes ? ` — ${s.work_required_notes}` : ""}` : null,
+    ].filter((l) => l !== null);
+
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const marginX = 48;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const wrapWidth = pageWidth - marginX * 2;
+    let y = 56;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.text(`Case Details — ${hearing.court_id}`, marginX, y);
+    y += 28;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    lines.forEach((line) => {
+      doc.splitTextToSize(line, wrapWidth).forEach((row) => {
+        if (y > doc.internal.pageSize.getHeight() - 48) { doc.addPage(); y = 56; }
+        doc.text(row, marginX, y);
+        y += 16;
+      });
+    });
+
+    y += 8;
+    doc.setFont("helvetica", "bold");
+    doc.text("Instructions", marginX, y);
+    y += 18;
+    doc.setFont("helvetica", "normal");
+    doc.splitTextToSize(hearing.case_details || "", wrapWidth).forEach((row) => {
+      if (y > doc.internal.pageSize.getHeight() - 48) { doc.addPage(); y = 56; }
+      doc.text(row, marginX, y);
+      y += 16;
+    });
+
+    doc.save(`case-details-${hearing.hearing_id}.pdf`);
+  };
+
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto cb-scroll">
         <DialogHeader>
           <DialogTitle className="font-display text-xl flex items-center gap-2">
             {hearing.court_id}
@@ -187,7 +251,12 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
             the case brief, just an unlabeled instructions blob. */}
         {hearing.details_submitted ? (
           <div>
-            <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Case Details</div>
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Case Details</div>
+              <button type="button" onClick={downloadCaseDetails} className="flex items-center gap-1 text-2xs font-semibold text-accent hover:underline" data-testid="download-case-details">
+                <Download className="w-3.5 h-3.5" /> Download
+              </button>
+            </div>
             <div className="border rounded-lg p-3 bg-secondary/30 space-y-2 text-sm">
               <div className="grid sm:grid-cols-2 gap-x-4 gap-y-1.5">
                 {hearing.request_details?.common?.case_title && (
@@ -277,7 +346,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           </div>
           <div className="space-y-1.5 mb-2">
             {documents.map((d) => (
-              <button key={d.doc_id} type="button" onClick={() => openDocument(d.doc_id)}
+              <button key={d.doc_id} type="button" onClick={() => openDocument(d.doc_id, d.original_filename)}
                       className="w-full flex items-center gap-2 text-sm border rounded-md px-2.5 py-1.5 hover:bg-slate-50 text-left">
                 <FileText className="w-4 h-4 text-accent flex-shrink-0" />
                 <span className="truncate flex-1">{d.original_filename}</span>
@@ -293,18 +362,31 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
               nothing case-specific to attach a document to before the case
               brief itself has been shared. */}
           {(isRequester || isAssignedProxyCounsel) && hearing.details_submitted && (
-            <div className="flex items-center gap-2">
-              <input ref={fileInputRef} type="file" className="text-xs flex-1" />
-              <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => uploadFile("case_document")}>
-                <Upload className="w-3.5 h-3.5 mr-1.5" /> Upload Case Document
-              </Button>
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <input ref={fileInputRef} type="file" className="text-xs flex-1" />
+                <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => uploadFile("case_document")}>
+                  {/* Role-aware label: the counsel's headline deliverable is the
+                      Court Order Sheet (uploaded from the Escrow panel above at
+                      hearing_completed — deliberately ONE upload point, see
+                      EscrowStagePanel), so this generic slot is only for their
+                      supporting papers and is labelled as such to avoid it being
+                      mistaken for the order-sheet upload. */}
+                  <Upload className="w-3.5 h-3.5 mr-1.5" /> {isAssignedProxyCounsel ? "Upload Supporting Document" : "Upload Case Document"}
+                </Button>
+              </div>
+              {isAssignedProxyCounsel && (
+                <p className="text-2xs text-muted-foreground">
+                  Uploading the <span className="font-semibold text-foreground">Court Order Sheet</span>? That's done from the <span className="font-semibold text-foreground">Escrow panel above</span>, once the hearing is marked conducted — not here.
+                </p>
+              )}
             </div>
           )}
         </div>
 
         <div>
           <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Notes</div>
-          <div className="space-y-1 text-xs mb-2 max-h-28 overflow-y-auto">
+          <div className="space-y-1 text-xs mb-2 max-h-28 overflow-y-auto cb-scroll">
             {hearing.hearing_notes?.map((n, i) => <div key={i} className="bg-secondary rounded px-2 py-1">{n.text}</div>)}
             {!hearing.hearing_notes?.length && <p className="text-muted-foreground">No notes yet.</p>}
           </div>
@@ -316,7 +398,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
 
         <div>
           <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Chat</div>
-          <div className="space-y-1.5 mb-2 max-h-40 overflow-y-auto">
+          <div className="space-y-1.5 mb-2 max-h-40 overflow-y-auto cb-scroll">
             {messages.map((m) => {
               const isMine = m.sender_user_id === user?.user_id;
               const time = m.created_at ? new Date(m.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "";
@@ -341,7 +423,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           </div>
         </div>
 
-        <HearingTimeline timeline={hearing.timeline} hearing={hearing} />
+        {showActivityHistory && <HearingTimeline timeline={hearing.timeline} hearing={hearing} />}
 
         {canRate && (
           <div className="border-t pt-3">
@@ -389,5 +471,12 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
         </div>
       </DialogContent>
     </Dialog>
+    <DocumentPreviewDialog
+      open={!!preview}
+      onOpenChange={(v) => { if (!v) setPreview(null); }}
+      url={preview?.url}
+      filename={preview?.filename}
+    />
+    </>
   );
 }

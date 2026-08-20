@@ -19,7 +19,7 @@ export default function HearingTimeline({ timeline, hearing, mode = "friendly" }
       <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5 flex items-center gap-1.5">
         <Activity className="w-3.5 h-3.5" /> Activity history
       </div>
-      <div className="space-y-1.5 max-h-48 overflow-y-auto">
+      <div className="space-y-1.5 max-h-48 overflow-y-auto cb-scroll">
         {entries.map((e, i) => {
           if (mode === "raw") {
             return (

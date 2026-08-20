@@ -1,11 +1,11 @@
 import React, { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
-import { api, formatINR, API_BASE } from "@/lib/api";
+import { api, formatINR, downloadFile } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { toast } from "sonner";
-import { Upload, Download, CheckCircle2, XCircle, FileSpreadsheet, Loader2, AlertTriangle } from "lucide-react";
+import { Upload, Download, XCircle, FileSpreadsheet, Loader2, AlertTriangle } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 
 export default function BulkImport() {
@@ -14,15 +14,7 @@ export default function BulkImport() {
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState(null);
 
-  const downloadTemplate = () => {
-    const token = localStorage.getItem("cb_token");
-    fetch(`${API_BASE}/firms/bulk-import/template`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.blob()).then(b => {
-        const url = URL.createObjectURL(b);
-        const a = document.createElement("a");
-        a.href = url; a.download = "courtbazaar-bulk-template.csv"; a.click();
-      });
-  };
+  const downloadTemplate = () => downloadFile("/firms/bulk-import/template", "courtbazaar-bulk-template.csv");
 
   const upload = async () => {
     if (!file) { toast.error("Pick a CSV first"); return; }
@@ -110,21 +102,26 @@ export default function BulkImport() {
             <Card className="dashboard-card border-none">
               <CardContent className="p-0">
                 <div className="p-4 border-b border-border font-display font-bold">Created orders</div>
-                <table className="w-full text-sm">
-                  <thead className="bg-secondary text-xs cb-overline">
-                    <tr><th className="px-4 py-2 text-left">Row</th><th className="px-4 py-2 text-left">Order ID</th><th className="px-4 py-2 text-left">Matter</th><th className="px-4 py-2 text-right">Total</th></tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Row</TableHead>
+                      <TableHead>Order ID</TableHead>
+                      <TableHead>Matter</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {result.success.map(s => (
-                      <tr key={s.order_id} data-testid={`bulk-success-${s.order_id}`}>
-                        <td className="px-4 py-2 font-mono text-xs">{s.row}</td>
-                        <td className="px-4 py-2 font-mono text-xs"><a href={`/orders/${s.order_id}`} className="text-accent font-bold hover:underline">{s.order_id}</a></td>
-                        <td className="px-4 py-2 font-semibold">{s.matter}</td>
-                        <td className="px-4 py-2 text-right font-bold">{formatINR(s.total)}</td>
-                      </tr>
+                      <TableRow key={s.order_id} data-testid={`bulk-success-${s.order_id}`}>
+                        <TableCell className="font-mono text-xs">{s.row}</TableCell>
+                        <TableCell className="font-mono text-xs"><a href={`/orders/${s.order_id}`} className="text-accent font-bold hover:underline">{s.order_id}</a></TableCell>
+                        <TableCell className="font-semibold">{s.matter}</TableCell>
+                        <TableCell className="text-right font-bold">{formatINR(s.total)}</TableCell>
+                      </TableRow>
                     ))}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </CardContent>
             </Card>
           )}

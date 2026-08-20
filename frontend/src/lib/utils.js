@@ -13,6 +13,14 @@ export function resolveDateBound(bound) {
   return bound;
 }
 
+/* Add/remove `value` from `arr` depending on whether it's already present —
+   the toggle logic behind every "select multiple" checkbox group (was a
+   byte-for-byte identical local closure in both LegalServiceRequestForm and
+   ProxyCounselCaseDetailsForm's work_required toggles). */
+export function toggleInArray(arr, value) {
+  return arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value];
+}
+
 /* "3h ago" / "2d ago" style relative time — was a local helper duplicated
    nowhere else until HearingActivityPreview needed it too; lifted here
    rather than copied a second time. */

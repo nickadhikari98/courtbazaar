@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from "react";
-import { api, formatINR, API_BASE } from "@/lib/api";
+import { api, formatINR, downloadFile } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty } from "@/components/ui/table";
 import { Download, AlertTriangle, CheckCircle2, XCircle, Clock } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
+import Loading from "@/components/shared/Loading";
 
 export default function AdminReconciliation() {
   const [data, setData] = useState(null);
@@ -22,17 +24,9 @@ export default function AdminReconciliation() {
   };
   useEffect(() => { load(); }, [gateway, statusFilter]);
 
-  const exportCSV = () => {
-    const token = localStorage.getItem("cb_token");
-    fetch(`${API_BASE}/admin/reconciliation/export`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.blob()).then(b => {
-        const url = URL.createObjectURL(b);
-        const a = document.createElement("a");
-        a.href = url; a.download = "courtbazaar-reconciliation.csv"; a.click();
-      });
-  };
+  const exportCSV = () => downloadFile("/admin/reconciliation/export", "courtbazaar-reconciliation.csv");
 
-  if (!data) return <div className="p-10">Loading…</div>;
+  if (!data) return <Loading />;
 
   const StatusBadge = ({ s }) => {
     const map = {
@@ -129,39 +123,35 @@ export default function AdminReconciliation() {
       {/* Table */}
       <Card className="dashboard-card border-none overflow-hidden">
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-secondary">
-                <tr className="text-left text-xs cb-overline">
-                  <th className="px-4 py-3">Txn / Session</th>
-                  <th className="px-4 py-3">Gateway</th>
-                  <th className="px-4 py-3">Order</th>
-                  <th className="px-4 py-3">Amount</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Order Status</th>
-                  <th className="px-4 py-3">Created</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {data.rows.map((r, i) => (
-                  <tr key={r.session_id + i} className={`hover:bg-secondary/40 ${r.mismatch ? 'bg-rose-50' : ''}`} data-testid={`recon-row-${i}`}>
-                    <td className="px-4 py-3 font-mono text-xs">{r.session_id?.slice(0, 24)}{r.session_id?.length > 24 && '…'}</td>
-                    <td className="px-4 py-3">
-                      <Badge className={`${r.gateway === 'stripe' ? 'bg-blue-100 text-blue-700' : 'bg-accent/15 text-accent'} border-0 font-bold uppercase text-2xs`}>{r.gateway}{r.simulated && ' SIM'}</Badge>
-                    </td>
-                    <td className="px-4 py-3 font-mono text-xs">{r.order_id}</td>
-                    <td className="px-4 py-3 font-bold">{formatINR(r.amount)}</td>
-                    <td className="px-4 py-3"><StatusBadge s={r.payment_status} /></td>
-                    <td className="px-4 py-3 text-xs">{r.order_payment_status || "—"} {r.mismatch && <span className="text-rose-700 font-bold">⚠ MISMATCH</span>}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{r.created_at ? new Date(r.created_at).toLocaleString('en-IN') : '—'}</td>
-                  </tr>
-                ))}
-                {data.rows.length === 0 && (
-                  <tr><td colSpan={7} className="px-4 py-10 text-center text-muted-foreground">No transactions</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Txn / Session</TableHead>
+                <TableHead>Gateway</TableHead>
+                <TableHead>Order</TableHead>
+                <TableHead>Amount</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Order Status</TableHead>
+                <TableHead>Created</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.rows.map((r, i) => (
+                <TableRow key={r.session_id + i} className={r.mismatch ? 'bg-rose-50' : ''} data-testid={`recon-row-${i}`}>
+                  <TableCell className="font-mono text-xs">{r.session_id?.slice(0, 24)}{r.session_id?.length > 24 && '…'}</TableCell>
+                  <TableCell>
+                    <Badge className={`${r.gateway === 'stripe' ? 'bg-blue-100 text-blue-700' : 'bg-accent/15 text-accent'} border-0 font-bold uppercase text-2xs`}>{r.gateway}{r.simulated && ' SIM'}</Badge>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">{r.order_id}</TableCell>
+                  <TableCell className="font-bold">{formatINR(r.amount)}</TableCell>
+                  <TableCell><StatusBadge s={r.payment_status} /></TableCell>
+                  <TableCell className="text-xs">{r.order_payment_status || "—"} {r.mismatch && <span className="text-rose-700 font-bold">⚠ MISMATCH</span>}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{r.created_at ? new Date(r.created_at).toLocaleString('en-IN') : '—'}</TableCell>
+                </TableRow>
+              ))}
+              {data.rows.length === 0 && <TableEmpty colSpan={7}>No transactions</TableEmpty>}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
     </PageContainer>

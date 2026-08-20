@@ -3,17 +3,17 @@ import { NavLink, Outlet, Link, useNavigate, useLocation } from "react-router-do
 import { useAuth } from "@/context/AuthContext";
 import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
-  User, Settings, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck,
+  User, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck,
   Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic, Banknote,
-  UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel,
+  UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel, ArrowLeft,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
 import { formatINR } from "@/lib/api";
 import { isFeatureEnabled } from "@/config/featureFlags";
 import Logo from "@/components/shared/Logo";
+import { initialsOf } from "@/components/proxyCounsel/CounselCard";
 
 // Workspace shell for the default (advocate / future proxy-counsel) account
 // type — everything else (vendor/delivery_partner/admin below) is untouched
@@ -119,13 +119,34 @@ const navItems = (user) => {
   return buildWorkspaceNav(user);
 };
 
-export default function AppLayout() {
+// Desktop sidebar collapse state is persisted per-browser — a user who
+// collapses it expects it to stay collapsed on the next visit, not reset.
+// Mobile always starts closed (drawer-over-content), regardless of the
+// stored desktop preference, since a wide viewport's "open" would otherwise
+// cover the whole screen on a phone.
+// Landing/home destinations for each account type — no back arrow here,
+// since there's nowhere more "up" to go inside the app shell. Everywhere
+// else gets a persistent back arrow in the sticky topbar: most pages
+// (negotiation, hearing detail, etc.) never had their own local back
+// button, so the only way back was the browser's own (often invisible,
+// e.g. installed/PWA or embedded) back control.
+const HOME_PATHS = new Set(["/dashboard", "/vendor", "/delivery", "/admin/console", "/admin"]);
+
+const SIDEBAR_OPEN_STORAGE_KEY = "cb_sidebar_open";
+const getInitialSidebarOpen = () => {
+  if (typeof window === "undefined") return true;
+  if (window.innerWidth < 1024) return false;
+  const stored = window.localStorage.getItem(SIDEBAR_OPEN_STORAGE_KEY);
+  return stored === null ? true : stored === "true";
+};
+
+export default function AppLayout({ children }) {
   const { user, logout } = useAuth();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(getInitialSidebarOpen);
   const navigate = useNavigate();
   const location = useLocation();
   const items = navItems(user);
-  const initials = (user?.name || "U").split(" ").map(s => s[0]).slice(0, 2).join("").toUpperCase();
+  const initials = initialsOf(user?.name || "U");
 
   // The sidebar's <nav> scrolls independently of the page — a route change
   // (e.g. Dashboard's "View All Notifications" link, or the topbar bell
@@ -165,18 +186,37 @@ export default function AppLayout() {
     navigate("/");
   };
 
+  // Toggling (hamburger / the sidebar's own X) is a deliberate "I want it
+  // this way" choice — persisted. Auto-closing after a mobile nav click, or
+  // tapping the mobile overlay to dismiss, is transient drawer behavior, not
+  // a stated preference — neither persists, and neither fires on desktop
+  // (there's no overlay there, and a nav click shouldn't collapse the
+  // sidebar out from under a desktop user who never touched the toggle).
+  const toggleSidebar = () => {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      window.localStorage.setItem(SIDEBAR_OPEN_STORAGE_KEY, String(next));
+      return next;
+    });
+  };
+  const closeSidebarOnMobileNav = () => {
+    if (window.innerWidth < 1024) setSidebarOpen(false);
+  };
+
   return (
-    <div className="min-h-screen bg-background flex">
-      {/* Sidebar */}
-      <aside className={`fixed lg:sticky top-0 left-0 z-40 w-72 h-screen bg-white border-r border-border transform transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0 flex flex-col`}>
+    <div className="min-h-screen bg-background">
+      {/* Sidebar — fixed at every breakpoint now (not lg:sticky-in-flow) so
+          collapsing it on desktop doesn't require a second reflow transition;
+          the main column's lg:ml-72/lg:ml-0 below does the reflow instead. */}
+      <aside className={`fixed top-0 left-0 z-40 w-72 h-screen bg-white border-r border-border transform transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} flex flex-col`}>
         <div className="px-6 py-5 border-b border-border flex items-center justify-between">
           <Logo to="/dashboard" size="sm" data-testid="sidebar-logo" />
-          <button className="lg:hidden" onClick={() => setSidebarOpen(false)} data-testid="close-sidebar-btn">
+          <button onClick={toggleSidebar} data-testid="close-sidebar-btn">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto cb-scroll">
           {items.map((item) => (
             item.section ? (
               <div
@@ -201,7 +241,7 @@ export default function AppLayout() {
                 }`
               }
               end={item.to === "/dashboard"}
-              onClick={() => setSidebarOpen(false)}
+              onClick={closeSidebarOnMobileNav}
             >
               <item.icon className="w-[18px] h-[18px]" strokeWidth={2} />
               <span>{item.label}</span>
@@ -224,12 +264,24 @@ export default function AppLayout() {
         </div>
       </aside>
 
-      {/* Main */}
-      <div className="flex-1 flex flex-col min-w-0">
+      {/* Main — margin-left tracks the sidebar's own width/visibility so
+          collapsing it (desktop) reflows content instead of leaving a gap;
+          below lg the sidebar is always an overlay, so no margin there. */}
+      <div className={`flex flex-col min-h-screen transition-[margin] duration-200 ${sidebarOpen ? 'lg:ml-72' : 'lg:ml-0'}`}>
         {/* Topbar */}
         <header className="h-16 bg-white border-b border-border flex items-center justify-between px-4 sm:px-8 sticky top-0 z-30">
           <div className="flex items-center gap-3">
-            <button className="lg:hidden" onClick={() => setSidebarOpen(true)} data-testid="open-sidebar-btn">
+            {!HOME_PATHS.has(location.pathname) && (
+              <button
+                onClick={() => navigate(-1)}
+                data-testid="global-back-btn"
+                aria-label="Go back"
+                className="p-1.5 -ml-1.5 hover:bg-secondary rounded-lg text-muted-foreground hover:text-foreground"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+            )}
+            <button onClick={toggleSidebar} data-testid="open-sidebar-btn" aria-label="Toggle sidebar">
               <Menu className="w-5 h-5" />
             </button>
             <div className="hidden sm:flex items-center gap-2 text-sm">
@@ -246,7 +298,12 @@ export default function AppLayout() {
               <Bell className="w-5 h-5" />
               <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-accent rounded-full"></span>
             </button>
-            <DropdownMenu>
+            {/* modal={false}: keep Radix out of body scroll-lock / pointer-events
+                management. In modal mode a menu item that navigates (react-router)
+                can unmount the menu before Radix restores `pointer-events` and the
+                scroll lock on <body>, leaving the whole page unscrollable/stuck
+                after the dropdown closes. */}
+            <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
                 <button className="flex items-center gap-2 p-1 pr-2 hover:bg-secondary rounded-lg" data-testid="user-menu-trigger">
                   <Avatar className="w-8 h-8">
@@ -287,7 +344,7 @@ export default function AppLayout() {
         </header>
 
         <main className="flex-1 min-w-0">
-          <Outlet />
+          {children || <Outlet />}
         </main>
       </div>
 

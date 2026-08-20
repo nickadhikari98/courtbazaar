@@ -27,17 +27,6 @@ SETTLEMENT_TRANSITIONS = {
 }
 
 
-def _parse_dt(s):
-    if not s:
-        return None
-    if isinstance(s, str):
-        try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00"))
-        except Exception:
-            return None
-    return s
-
-
 async def run_settlement_cycle(db, cycle_date: str = None, dry_run: bool = False) -> dict:
     """Process T+1 settlements: aggregate yesterday's completed+paid orders per vendor."""
     now = datetime.now(timezone.utc)
@@ -256,4 +245,3 @@ async def change_settlement_status(db, send_email_fn, settlement_id: str, action
     if to_status == "failed" and settlement.get("order_ids"):
         await db.orders.update_many({"order_id": {"$in": settlement["order_ids"]}}, {"$unset": {"settlement_id": ""}})
     return {"ok": True, "status": to_status}
-    return buf.getvalue()

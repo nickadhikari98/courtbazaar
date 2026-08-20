@@ -24,6 +24,7 @@ import { CAPABILITY_LABELS } from "@/components/shared/CapabilitiesCard";
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
 import WorkspaceHero from "@/components/shared/WorkspaceHero";
+import EmptyState from "@/components/shared/EmptyState";
 
 const aiQuickAction = { id: "__ai_assistant", icon: Sparkles, label: "AI Assistant", price: "Ask anything", color: "bg-violet-50", iconColor: "text-violet-700" };
 
@@ -169,7 +170,6 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canPracticeProxyCounsel]);
 
-  const active = useMemo(() => orders.filter((o) => !["completed", "delivered", "cancelled"].includes(o.status)), [orders]);
   const unreadNotifications = useMemo(() => notifications.filter((n) => !n.read_at), [notifications]);
   const myActionHearings = useMemo(() => hearings.filter((h) => hearingNeedsMyAction(h, user)), [hearings, user]);
   const myDocumentHearings = useMemo(() => hearings.filter((h) => hearingNeedsMyDocument(h, user?.user_id)), [hearings, user]);
@@ -282,6 +282,19 @@ export default function Dashboard() {
       .sort((a, b) => (NOTIFICATION_GROUP_META[a.group].order === 0 ? 0 : 1) - (NOTIFICATION_GROUP_META[b.group].order === 0 ? 0 : 1))
       .slice(0, 4)
   ), [notificationItems]);
+
+  // "View All Notifications" doubles as "mark them seen": clear the unread
+  // state (badge + per-row highlight) in one bulk call, then open the full
+  // feed. Optimistic local update so the effect is instant if the user comes
+  // back; awaits the write so /notifications loads already-read, not racing.
+  const handleViewAllNotifications = async () => {
+    if (unreadNotifications.length) {
+      const seenAt = new Date().toISOString();
+      setNotifications((prev) => prev.map((n) => (n.read_at ? n : { ...n, read_at: seenAt })));
+      try { await api.put("/notifications/read-all"); } catch { /* best-effort — still open the feed */ }
+    }
+    navigate("/notifications");
+  };
 
   // Today's Progress — reuses the shadcn Progress bar, not a new stat type.
   const todayChecklist = useMemo(() => {
@@ -431,20 +444,18 @@ export default function Dashboard() {
           {loading ? (
             <div className="space-y-3">{[1, 2].map((i) => <div key={i} className="h-28 shimmer rounded-xl"></div>)}</div>
           ) : upcomingHearings.length === 0 ? (
-            <Card className="border-dashed border-2" data-testid="empty-upcoming-hearings">
-              <CardContent className="p-10 text-center">
-                <Gavel className="w-12 h-12 mx-auto text-muted-foreground mb-3" strokeWidth={1.5} />
-                <div className="font-display font-bold text-lg">You don't have any hearings scheduled.</div>
-                {canHireProxyCounsel && (
-                  <>
-                    <p className="text-sm text-muted-foreground mt-1">Send a request and any available Proxy Counsel can accept it.</p>
-                    <Button onClick={() => navigate("/hire-proxy-counsel")} className="mt-4 bg-accent hover:bg-accent/90 font-bold">
-                      <Plus className="w-4 h-4 mr-2" /> Browse Hearing Requests
-                    </Button>
-                  </>
-                )}
-              </CardContent>
-            </Card>
+            <EmptyState
+              size="lg"
+              icon={Gavel}
+              testId="empty-upcoming-hearings"
+              title="You don't have any hearings scheduled."
+              description={canHireProxyCounsel ? "Send a request and any available Proxy Counsel can accept it." : undefined}
+              action={canHireProxyCounsel ? (
+                <Button onClick={() => navigate("/hire-proxy-counsel")} className="bg-accent hover:bg-accent/90 font-bold">
+                  <Plus className="w-4 h-4 mr-2" /> Browse Hearing Requests
+                </Button>
+              ) : undefined}
+            />
           ) : (
             <div className="space-y-3">
               {upcomingHearings.map((h) => {
@@ -502,14 +513,24 @@ export default function Dashboard() {
                 {dashboardNotifications.map((n) => {
                   const meta = NOTIFICATION_GROUP_META[n.group];
                   return (
-                    <div key={n.key} className="flex items-center gap-2.5 py-2.5 px-1" data-testid={`notification-${n.key}`}>
+                    <div
+                      key={n.key}
+                      className={`flex items-center gap-2.5 py-2.5 px-2 -mx-1 rounded-lg ${n.unread ? "bg-accent/5" : ""}`}
+                      data-testid={`notification-${n.key}`}
+                    >
+                      {/* Unread accent rail — the "different from the others"
+                          cue the read rows don't get, alongside the tint + dot. */}
+                      {n.unread && <span className="w-1 self-stretch rounded-full bg-accent flex-shrink-0" aria-hidden="true" />}
                       <div className={`relative w-8 h-8 rounded-full ${meta.iconWrap} flex items-center justify-center flex-shrink-0`}>
                         <n.icon className="w-4 h-4" strokeWidth={2} />
                         {n.unread && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent ring-2 ring-white" aria-hidden="true" />}
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm font-bold truncate">{n.title}</span>
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            <span className={`text-sm truncate ${n.unread ? "font-extrabold" : "font-bold"}`}>{n.title}</span>
+                            {n.unread && <span className="text-2xs font-extrabold uppercase tracking-wide text-accent bg-accent/10 rounded px-1 leading-tight flex-shrink-0">New</span>}
+                          </span>
                           <span className="text-2xs text-muted-foreground/70 font-semibold flex-shrink-0">{n.at ? timeAgo(n.at) : ""}</span>
                         </div>
                         <div className="flex items-center justify-between gap-2">
@@ -532,13 +553,14 @@ export default function Dashboard() {
                 })}
               </div>
             )}
-            <Link
-              to="/notifications"
-              className="mt-2 flex items-center justify-center text-xs font-bold text-accent hover:underline py-2 border-t border-border/60"
+            <button
+              type="button"
+              onClick={handleViewAllNotifications}
+              className="mt-2 w-full flex items-center justify-center text-xs font-bold text-accent hover:underline py-2 border-t border-border/60"
               data-testid="dash-view-all-notifications"
             >
               View All Notifications →
-            </Link>
+            </button>
           </div>
         </div>
       </div>
@@ -682,16 +704,18 @@ export default function Dashboard() {
         {loading ? (
           <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-12 shimmer rounded-xl"></div>)}</div>
         ) : recentActivity.length === 0 ? (
-          <Card className="border-dashed border-2" data-testid="empty-recent-activity">
-            <CardContent className="p-10 text-center">
-              <Package className="w-12 h-12 mx-auto text-muted-foreground mb-3" strokeWidth={1.5} />
-              <div className="font-display font-bold text-lg">Need legal services today?</div>
-              <p className="text-sm text-muted-foreground mt-1">Place your first order — it takes 30 seconds.</p>
-              <Button onClick={() => navigate("/marketplace")} className="mt-4 bg-accent hover:bg-accent/90 font-bold" data-testid="dash-empty-activity-marketplace">
+          <EmptyState
+            size="lg"
+            icon={Package}
+            testId="empty-recent-activity"
+            title="Need legal services today?"
+            description="Place your first order — it takes 30 seconds."
+            action={(
+              <Button onClick={() => navigate("/marketplace")} className="bg-accent hover:bg-accent/90 font-bold" data-testid="dash-empty-activity-marketplace">
                 <Store className="w-4 h-4 mr-2" /> Marketplace
               </Button>
-            </CardContent>
-          </Card>
+            )}
+          />
         ) : (
           <div className="space-y-1">
             {recentActivity.map((item) => (

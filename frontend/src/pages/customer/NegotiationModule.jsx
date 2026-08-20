@@ -23,6 +23,8 @@ import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import NegotiationChat from "@/components/negotiation/NegotiationChat";
 import NegotiationOfferPanel from "@/components/negotiation/NegotiationOfferPanel";
 import NegotiationNextAction from "@/components/negotiation/NegotiationNextAction";
+import EmptyState from "@/components/shared/EmptyState";
+import Loading from "@/components/shared/Loading";
 import EscrowStagePanel from "@/components/negotiation/EscrowStagePanel";
 import NegotiationOfferChain from "@/components/negotiation/NegotiationOfferChain";
 import { useNegotiationPoll } from "@/components/negotiation/useNegotiationPoll";
@@ -50,7 +52,7 @@ const ASSIGNMENT_MODULE = {
    Single-column layout (founder UX redesign): Hearing Summary → Counsel
    Information (compact strip, not a tall sidebar — a sidebar would put it
    last in DOM order on mobile, breaking the requested 1-6 reading order) →
-   Fee Negotiation (PRIMARY) → Discussion Chat (SECONDARY) → Next Action →
+   Fee Negotiation (PRIMARY) → Recent Activity feed (SECONDARY) → Next Action →
    Timeline. No backend/business-logic change — every action here still
    calls the exact same endpoints as before this redesign. */
 export default function NegotiationModule() {
@@ -107,6 +109,28 @@ export default function NegotiationModule() {
   const currentOffer = negotiation?.offers?.find((o) => o.offer_id === negotiation.current_offer_id) || null;
   const isProposer = currentOffer?.proposed_by_user_id === user?.user_id;
   const negotiationStage = agreed ? "agreed" : currentOffer ? (isProposer ? "waiting" : "action_required") : "no_offer";
+
+  // Activity History — the hearing's humanized event log, promoted out of the
+  // Assignment Discussion dialog (and out of the Timeline card's collapsed
+  // "Full activity log") to a first-class, always-visible card on the page.
+  // Rendered once here and placed below Recent Activity in the sidebar, or in
+  // the main column for terminal hearings (which have no sidebar).
+  const activityHistoryCard = (
+    <Card className="dashboard-card border-none" data-testid="activity-history-card">
+      <CardContent className="p-5">
+        <div className="flex items-center gap-1.5 cb-overline text-accent mb-3">
+          <History className="w-3.5 h-3.5" /> Activity History
+        </div>
+        {hearing?.timeline?.length ? (
+          <div className="max-h-96 overflow-y-auto cb-scroll pr-1">
+            <HearingTimeline timeline={hearing.timeline} hearing={hearing} />
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">No activity yet.</p>
+        )}
+      </CardContent>
+    </Card>
+  );
 
   useEffect(() => {
     // Only the customer views the targeted counsel's card here (the
@@ -234,12 +258,10 @@ export default function NegotiationModule() {
         </Card>
       ) : (
         <>
-          {loading && <div className="text-center text-muted-foreground py-10 mt-6">Loading…</div>}
+          {loading && <Loading className="mt-6" />}
 
           {!loading && !hearing && (
-            <Card className="border-dashed border-2 mt-6 max-w-xl mx-auto">
-              <CardContent className="p-10 text-center text-sm text-muted-foreground">This request could not be found.</CardContent>
-            </Card>
+            <EmptyState className="mt-6 max-w-xl mx-auto" description="This request could not be found." />
           )}
 
           {!loading && hearing && (
@@ -307,13 +329,13 @@ export default function NegotiationModule() {
               </Card>
 
               {isTerminal ? (
-                <Card className="border-dashed border-2">
-                  <CardContent className="p-8 text-center">
-                    <Ban className="w-8 h-8 mx-auto text-red-500 mb-2" strokeWidth={1.5} />
-                    <p className="text-sm font-semibold">This request was {hearing.status}.</p>
-                    <p className="text-xs text-muted-foreground mt-1">Negotiation is closed — start a new request to try again.</p>
-                  </CardContent>
-                </Card>
+                <EmptyState
+                  size="sm"
+                  icon={Ban}
+                  iconClassName="text-red-500"
+                  title={`This request was ${hearing.status}.`}
+                  description="Negotiation is closed — start a new request to try again."
+                />
               ) : (
                 <>
                   {/* ③ Fee Negotiation — PRIMARY */}
@@ -358,18 +380,15 @@ export default function NegotiationModule() {
                   <div className="cb-overline text-accent">Timeline</div>
                   <NegotiationOfferChain negotiation={negotiation} />
                   {!isTerminal && <HearingProgressStepper status={hearing.status} negotiationAgreed={agreed} targeted={negotiationRequired} />}
-                  {hearing.timeline?.length ? (
-                    <details>
-                      <summary className="text-xs font-bold uppercase tracking-wide text-muted-foreground cursor-pointer flex items-center gap-1.5">
-                        <History className="w-3.5 h-3.5" /> Full activity log
-                      </summary>
-                      <div className="mt-2"><HearingTimeline timeline={hearing.timeline} hearing={hearing} /></div>
-                    </details>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">No activity yet.</p>
-                  )}
+                  {/* Full event log moved out to its own always-visible
+                      "Activity History" card (see activityHistoryCard) — this
+                      card now stays focused on the deal: offer chain + progress. */}
                 </CardContent>
               </Card>
+
+              {/* Terminal hearings have no right sidebar, so the Activity
+                  History lives inline in the main column here instead. */}
+              {isTerminal && activityHistoryCard}
 
               {!isTerminal && (
                 <Card
@@ -396,13 +415,16 @@ export default function NegotiationModule() {
               )}
             </div>
 
-            {/* Right sidebar — Discussion Chat, sticky so new messages stay
-                visible while scrolling the rest of the page, instead of
-                being buried inline where they only surface after scrolling
-                all the way down (the earlier single-column placement). */}
+            {/* Right sidebar — read-only Recent Activity feed, sticky so new
+                messages/offers stay visible while scrolling the rest of the
+                page, instead of being buried inline where they only surface
+                after scrolling all the way down (the earlier single-column
+                placement). Replies + document sharing happen in the Assignment
+                Discussion & Document Sharing dialog, not here. */}
             {!isTerminal && (
-              <div className="mt-5 lg:mt-0 lg:sticky lg:top-20">
-                <NegotiationChat hearingId={hearingId} timeline={negotiation?.timeline} negotiationStatus={negotiation?.status} hearing={hearing} />
+              <div className="mt-5 lg:mt-0 lg:sticky lg:top-20 space-y-5">
+                <NegotiationChat hearingId={hearingId} timeline={negotiation?.timeline} negotiationStatus={negotiation?.status} hearing={hearing} onViewAll={() => setDetailOpen(true)} />
+                {activityHistoryCard}
               </div>
             )}
             </div>
@@ -410,7 +432,7 @@ export default function NegotiationModule() {
         </>
       )}
 
-      <HearingDetailDialog hearingId={hearingId} open={detailOpen} onOpenChange={setDetailOpen} onChanged={loadHearing} />
+      <HearingDetailDialog hearingId={hearingId} open={detailOpen} onOpenChange={setDetailOpen} onChanged={loadHearing} showActivityHistory={false} />
     </PageContainer>
   );
 }

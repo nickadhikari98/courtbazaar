@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { api, formatINR } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -7,8 +6,9 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Truck, MapPin, Package, CheckCircle2, Bike, Navigation } from "lucide-react";
+import { Truck, MapPin, CheckCircle2, Navigation } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import EmptyState from "@/components/shared/EmptyState";
 
 export default function DeliveryHub() {
   const [orders, setOrders] = useState([]);
@@ -68,9 +68,7 @@ export default function DeliveryHub() {
       </div>
 
       <div className="space-y-3">
-        {orders.length === 0 && (
-          <Card className="border-dashed border-2"><CardContent className="p-10 text-center"><Truck className="w-10 h-10 mx-auto text-muted-foreground mb-3" /><div className="font-display font-bold">No deliveries in queue</div></CardContent></Card>
-        )}
+        {orders.length === 0 && <EmptyState icon={Truck} title="No deliveries in queue" />}
         {orders.map(o => (
           <Card key={o.order_id} className="dashboard-card border-none" data-testid={`delivery-order-${o.order_id}`}>
             <CardContent className="p-5">

@@ -29,3 +29,30 @@ export async function getAvailableAdvocates(context) {
   const { data } = await api.get("/recommendations/advocates", { params });
   return { source: data.source, metadata: data.metadata, advocates: data.advocates || [] };
 }
+
+/* Public, unauthenticated counterpart to getAvailableAdvocates — backs the
+   counsel browse grid on HireProxyCounsel.jsx, which the founder wants
+   visible with no login wall (see server.py's /public/proxy-counsels).
+   Returns the same shape, just trimmed server-side to card-level fields. */
+export async function getPublicProxyCounsels(context) {
+  const params = {
+    court_id: context?.court_id || undefined,
+    state_id: context?.state_id || undefined,
+    district: context?.district || undefined,
+    // Backend defaults to 20 (a reasonable AI-recommendation batch size),
+    // which silently truncated the browse grid — this page wants "show all
+    // verified counsels for these filters", not a top-20 pick, so it always
+    // asks for the backend's actual ceiling.
+    limit: context?.limit || 100,
+  };
+  const { data } = await api.get("/public/proxy-counsels", { params });
+  return { metadata: data.metadata, advocates: data.advocates || [] };
+}
+
+/* Full profile detail for the "View Profile" dialog — only ever called once
+   a user is logged in (see HireProxyCounsel.jsx's requireLogin gate); the
+   backend route itself requires auth too, this isn't just a UI-level gate. */
+export async function getAdvocateProfile(advocateId) {
+  const { data } = await api.get(`/advocates/${advocateId}/profile`);
+  return data;
+}

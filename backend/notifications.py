@@ -166,7 +166,25 @@ def send_whatsapp(phone: str, body: str, template_vars: Optional[dict] = None) -
         return {"channel": "whatsapp", "to": to, "status": "failed", "error": str(e)}
 
 
-def _send_email_brevo(to_email: str, subject: str, html_body: str, text_body: Optional[str]) -> dict:
+def _email_thread_headers(message_id: Optional[str], in_reply_to: Optional[str], references: Optional[str]) -> dict:
+    """Raw RFC 5322 headers, shared by all three providers' `headers` dict —
+    this is the actual threading mechanism (Message-ID / In-Reply-To /
+    References is how Gmail/Outlook/Apple Mail build a "conversation"; it
+    isn't subject-line matching). Only ever set for hearing-lifecycle emails
+    (see get_hearing_email_thread) — every other template sends None/None/None
+    and this returns {}, unchanged from before threading existed."""
+    headers = {}
+    if message_id:
+        headers["Message-ID"] = message_id
+    if in_reply_to:
+        headers["In-Reply-To"] = in_reply_to
+    if references:
+        headers["References"] = references
+    return headers
+
+
+def _send_email_brevo(to_email: str, subject: str, html_body: str, text_body: Optional[str],
+                       message_id: Optional[str] = None, in_reply_to: Optional[str] = None, references: Optional[str] = None) -> dict:
     payload = {
         "sender": {"name": EMAIL_FROM_NAME, "email": EMAIL_FROM},
         "to": [{"email": to_email}],
@@ -175,6 +193,9 @@ def _send_email_brevo(to_email: str, subject: str, html_body: str, text_body: Op
     }
     if text_body:
         payload["textContent"] = text_body
+    headers = _email_thread_headers(message_id, in_reply_to, references)
+    if headers:
+        payload["headers"] = headers
     resp = requests.post(
         "https://api.brevo.com/v3/smtp/email",
         headers={"api-key": BREVO_API_KEY, "Content-Type": "application/json", "Accept": "application/json"},
@@ -185,10 +206,14 @@ def _send_email_brevo(to_email: str, subject: str, html_body: str, text_body: Op
     return {"code": resp.status_code}
 
 
-def _send_email_resend(to_email: str, subject: str, html_body: str, text_body: Optional[str]) -> dict:
+def _send_email_resend(to_email: str, subject: str, html_body: str, text_body: Optional[str],
+                        message_id: Optional[str] = None, in_reply_to: Optional[str] = None, references: Optional[str] = None) -> dict:
     payload = {"from": f"{EMAIL_FROM_NAME} <{EMAIL_FROM}>", "to": [to_email], "subject": subject, "html": html_body}
     if text_body:
         payload["text"] = text_body
+    headers = _email_thread_headers(message_id, in_reply_to, references)
+    if headers:
+        payload["headers"] = headers
     resp = requests.post(
         "https://api.resend.com/emails",
         headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
@@ -199,19 +224,26 @@ def _send_email_resend(to_email: str, subject: str, html_body: str, text_body: O
     return {"code": resp.status_code}
 
 
-def _send_email_sendgrid(to_email: str, subject: str, html_body: str, text_body: Optional[str]) -> dict:
+def _send_email_sendgrid(to_email: str, subject: str, html_body: str, text_body: Optional[str],
+                          message_id: Optional[str] = None, in_reply_to: Optional[str] = None, references: Optional[str] = None) -> dict:
     from sendgrid import SendGridAPIClient
-    from sendgrid.helpers.mail import Mail, From
+    from sendgrid.helpers.mail import Mail, From, Header
     msg = Mail(
         from_email=From(EMAIL_FROM, EMAIL_FROM_NAME),
         to_emails=to_email, subject=subject,
         html_content=html_body, plain_text_content=text_body or "",
     )
+    # SendGrid's own Message-ID is provider-assigned and not overridable via
+    # this header mechanism — In-Reply-To/References (the two that actually
+    # drive threading in the recipient's client) still pass through fine.
+    for key, value in _email_thread_headers(None, in_reply_to, references).items():
+        msg.add_header(Header(key, value))
     resp = SendGridAPIClient(SENDGRID_KEY).send(msg)
     return {"code": resp.status_code}
 
 
-def send_email(to_email: str, subject: str, html_body: str, text_body: Optional[str] = None) -> dict:
+def send_email(to_email: str, subject: str, html_body: str, text_body: Optional[str] = None,
+                message_id: Optional[str] = None, in_reply_to: Optional[str] = None, references: Optional[str] = None) -> dict:
     if not is_email_enabled():
         logger.info(f"[MOCK Email via {EMAIL_PROVIDER}] to={to_email} subject={subject}")
         return {"channel": "email", "to": to_email, "status": "mocked", "subject": subject}
@@ -219,11 +251,56 @@ def send_email(to_email: str, subject: str, html_body: str, text_body: Optional[
         sender = {"brevo": _send_email_brevo, "resend": _send_email_resend, "sendgrid": _send_email_sendgrid}.get(EMAIL_PROVIDER)
         if not sender:
             raise RuntimeError(f"Unknown EMAIL_PROVIDER: {EMAIL_PROVIDER}")
-        result = sender(to_email, subject, html_body, text_body)
+        result = sender(to_email, subject, html_body, text_body, message_id=message_id, in_reply_to=in_reply_to, references=references)
         return {"channel": "email", "to": to_email, "status": "sent", **result}
     except Exception as e:
         logger.error(f"Email send failed ({EMAIL_PROVIDER}): {e}")
         return {"channel": "email", "to": to_email, "status": "failed", "error": str(e)}
+
+
+def _new_message_id() -> str:
+    domain = (EMAIL_FROM or "courtbazaar.com").split("@")[-1] or "courtbazaar.com"
+    return f"<{uuid.uuid4().hex}@{domain}>"
+
+
+async def ensure_indexes(db) -> None:
+    await db.email_threads.create_index([("hearing_id", 1), ("recipient_email", 1)], name="hearing_recipient", unique=True)
+
+
+async def get_hearing_email_thread(db, hearing_id: str, recipient_email: str, subject: str) -> dict:
+    """One email thread per (hearing, recipient) — the founder's ask was that
+    a hearing's whole lifecycle (request sent -> accepted -> payment locked
+    -> ...) reads as one growing email conversation instead of a separate,
+    unrelated-looking email per event. Returns the Message-ID/In-Reply-To/
+    References headers for the NEXT email to this recipient about this
+    hearing: the first call mints the thread (no In-Reply-To yet); every
+    later call links back to everything already sent. `subject` is only
+    used the first time — see tmpl_hearing_event, which keeps it identical
+    on every email in the thread rather than varying per event, since a
+    stable subject is what makes threading reliable even in clients that
+    don't fully honor References/In-Reply-To."""
+    new_id = _new_message_id()
+    prior = await db.email_threads.find_one_and_update(
+        {"hearing_id": hearing_id, "recipient_email": recipient_email},
+        {"$push": {"message_ids": new_id}},
+    )
+    if prior is None:
+        try:
+            await db.email_threads.insert_one({
+                "hearing_id": hearing_id, "recipient_email": recipient_email,
+                "subject": subject, "message_ids": [new_id],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            pass  # Lost a first-email race to a concurrent event — non-fatal, this email just isn't threaded.
+        return {"subject": subject, "message_id": new_id, "in_reply_to": None, "references": None}
+    prior_ids = prior.get("message_ids") or []
+    return {
+        "subject": prior.get("subject") or subject,
+        "message_id": new_id,
+        "in_reply_to": prior_ids[-1] if prior_ids else None,
+        "references": " ".join(prior_ids) if prior_ids else None,
+    }
 
 
 # Templates --------------------------------------------------------------------
@@ -242,15 +319,32 @@ def tmpl_order_status(user, order, status):
 
 def tmpl_otp(otp):
     base = f"Your CourtBazaar OTP is {otp}. Valid for 5 minutes. Do not share."
-    return {"sms": base, "whatsapp": base}
+    return {
+        "sms": base, "whatsapp": base,
+        "email_subject": "Your CourtBazaar OTP",
+        "email_html": f"<p>Your CourtBazaar OTP is <b>{otp}</b>.</p><p>Valid for 5 minutes. Do not share this code with anyone.</p>",
+    }
 
 
-def tmpl_hearing_event(title, body):
+def tmpl_hearing_event(title, body, thread=None):
     """One generic template for every Hire Proxy Counsel lifecycle event
     (new request, accept/reject, payment held, verified, payout released) —
     proportionate to how internal/status-update these are, matching the
-    founder's "Notifications Triggered" panel without a template per event."""
-    return {"sms": f"CourtBazaar: {body}", "whatsapp": f"CourtBazaar: {body}",
+    founder's "Notifications Triggered" panel without a template per event.
+
+    `thread` (from notifications.get_hearing_email_thread, when the caller
+    has a hearing_id) keeps the email subject IDENTICAL across every event
+    for the same hearing+recipient — the event-specific `title` moves into
+    the body instead — so the whole lifecycle threads as one conversation in
+    the recipient's inbox rather than looking like separate emails. Without
+    a thread (SMS/WhatsApp-only callers, or hearing_id not available) this
+    falls back to the original per-event subject, unchanged."""
+    sms_wa = f"CourtBazaar: {body}"
+    if thread:
+        return {"sms": sms_wa, "whatsapp": sms_wa,
+                "email_subject": thread["subject"], "email_html": f"<p><b>{title}</b></p><p>{body}</p>",
+                "email_message_id": thread["message_id"], "email_in_reply_to": thread["in_reply_to"], "email_references": thread["references"]}
+    return {"sms": sms_wa, "whatsapp": sms_wa,
             "email_subject": f"CourtBazaar — {title}", "email_html": f"<p>{body}</p>"}
 
 
@@ -402,7 +496,10 @@ def notify(user: dict, event: str, ctx: dict = None) -> list:
     elif event == "otp":
         tmpl = tmpl_otp(ctx["otp"])
     elif event == "hearing_event":
-        tmpl = tmpl_hearing_event(ctx["title"], ctx["body"])
+        # ctx["hearing_thread"] — see get_hearing_email_thread — is optional:
+        # a caller without a hearing_id in scope just gets the old
+        # per-event-subject behavior (thread=None branch of tmpl_hearing_event).
+        tmpl = tmpl_hearing_event(ctx["title"], ctx["body"], ctx.get("hearing_thread"))
     else:
         return results
 
@@ -411,7 +508,10 @@ def notify(user: dict, event: str, ctx: dict = None) -> list:
     if phone and prefs.get("whatsapp", True):
         results.append(send_whatsapp(phone, tmpl["whatsapp"]))
     if email and prefs.get("email", True) and tmpl.get("email_subject"):
-        results.append(send_email(email, tmpl["email_subject"], tmpl["email_html"]))
+        results.append(send_email(
+            email, tmpl["email_subject"], tmpl["email_html"],
+            message_id=tmpl.get("email_message_id"), in_reply_to=tmpl.get("email_in_reply_to"), references=tmpl.get("email_references"),
+        ))
     return results
 
 

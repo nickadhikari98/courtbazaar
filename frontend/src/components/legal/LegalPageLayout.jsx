@@ -54,7 +54,6 @@ export default function LegalPageLayout({ doc }) {
   const [query, setQuery] = useState("");
   const [mobileTocOpen, setMobileTocOpen] = useState(false);
   const [activeSection, setActiveSection] = useState(doc.sections[0]?.id);
-  const sectionRefs = useRef({});
   const tocScrollRef = useRef(null);
 
   usePageSEO({

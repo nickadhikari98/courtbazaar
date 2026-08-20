@@ -13,7 +13,7 @@ import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import {
   Upload, Check, ChevronRight, ChevronLeft, FileText, X, Loader2, MapPin,
-  Truck, Home, Building2, Cloud, Zap, ShieldCheck, Sparkles, AlertCircle, AlertTriangle, Lock
+  Home, Building2, Cloud, Zap, ShieldCheck, Sparkles, AlertCircle, AlertTriangle, Lock
 } from "lucide-react";
 import * as Icons from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
@@ -69,7 +69,7 @@ export default function OrderWizard() {
       });
       setDocReport(data.report);
       toast.success("AI analysis complete");
-    } catch (e) { toast.error("AI analysis failed"); }
+    } catch { toast.error("AI analysis failed"); }
     finally { setAnalyzing(false); }
   };
 
@@ -85,7 +85,7 @@ export default function OrderWizard() {
         setFiles((prev) => [...prev, data]);
       }
       toast.success(`Uploaded ${fileList.length} file(s)`);
-    } catch (err) {
+    } catch {
       toast.error("Upload failed");
     } finally { setUploading(false); }
   };
@@ -121,7 +121,7 @@ export default function OrderWizard() {
         delivery_option: delivery, urgent, file_ids: files.map(f => f.file_id),
       });
       setPricing(data);
-    } catch (e) { /* ignore */ }
+    } catch { /* ignore */ }
   };
 
   useEffect(() => {
@@ -148,7 +148,7 @@ export default function OrderWizard() {
     if (step === 0) return files.length > 0 || totalSelectedItems > 0; // allow skip files for some flows
     if (step === 1) return totalSelectedItems > 0;
     if (step === 2) return !!courtId;
-    if (step === 3) return delivery !== "chamber" || deliveryAddress.length > 5 || delivery !== "chamber";
+    if (step === 3) return delivery !== "chamber" || deliveryAddress.length > 5;
     return true;
   };
 

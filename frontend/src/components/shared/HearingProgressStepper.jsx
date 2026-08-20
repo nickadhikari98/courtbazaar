@@ -92,7 +92,7 @@ export default function HearingProgressStepper({ status, compact = false, negoti
   }
 
   return (
-    <div className="w-full overflow-x-auto" data-testid="hearing-stepper">
+    <div className="w-full overflow-x-auto cb-scroll" data-testid="hearing-stepper">
       <div className="flex items-center min-w-max">
         {stages.map((stage, i) => {
           const done = i < currentIndex;

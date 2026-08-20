@@ -3,11 +3,11 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Loader2, ShieldCheck } from "lucide-react";
 import { SERVICE_WORK_TYPES } from "@/config/serviceWorkTypes";
-import { PRIORITY_OPTIONS } from "@/config/serviceRequestFields";
+import { toggleInArray } from "@/lib/utils";
+import WorkRequiredField from "@/components/shared/WorkRequiredField";
+import PriorityField from "@/components/shared/PriorityField";
 
 const WORK_TYPE_OPTIONS = SERVICE_WORK_TYPES.proxy_counsel;
 
@@ -26,10 +26,7 @@ export default function ProxyCounselCaseDetailsForm({ onSubmit, submitting }) {
   const [errors, setErrors] = useState({});
   const set = (patch) => setFields((f) => ({ ...f, ...patch }));
 
-  const toggleWorkType = (option) => {
-    const has = fields.work_required.includes(option);
-    set({ work_required: has ? fields.work_required.filter((w) => w !== option) : [...fields.work_required, option] });
-  };
+  const toggleWorkType = (option) => set({ work_required: toggleInArray(fields.work_required, option) });
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -83,36 +80,19 @@ export default function ProxyCounselCaseDetailsForm({ onSubmit, submitting }) {
         </div>
       </div>
 
-      <div>
-        <div className="font-display font-bold text-sm mb-2">Work Required *</div>
-        <div className="grid sm:grid-cols-2 gap-2">
-          {WORK_TYPE_OPTIONS.map((option) => (
-            <label key={option} className="flex items-center gap-2 text-sm font-medium">
-              <Checkbox checked={fields.work_required.includes(option)} onCheckedChange={() => toggleWorkType(option)} data-testid={`case-details-work-${option.toLowerCase().replace(/\s+/g, "-")}`} />
-              {option}
-            </label>
-          ))}
-        </div>
-        {errors.work_required && <p className="text-xs text-destructive mt-1">{errors.work_required}</p>}
-        {fields.work_required.includes("Other") && (
-          <div className="mt-2">
-            <Label>Describe the other work required</Label>
-            <Input value={fields.work_required_notes} onChange={(e) => set({ work_required_notes: e.target.value })} />
-            {errors.work_required_notes && <p className="text-xs text-destructive mt-1">{errors.work_required_notes}</p>}
-          </div>
-        )}
-      </div>
+      <WorkRequiredField
+        options={WORK_TYPE_OPTIONS}
+        value={fields.work_required}
+        onToggle={toggleWorkType}
+        notes={fields.work_required_notes}
+        onNotesChange={(v) => set({ work_required_notes: v })}
+        error={errors.work_required}
+        notesError={errors.work_required_notes}
+        testIdPrefix="case-details-work"
+        compact
+      />
 
-      <div>
-        <div className="font-display font-bold text-sm mb-2">Priority</div>
-        <RadioGroup value={fields.priority} onValueChange={(v) => set({ priority: v })} className="flex flex-wrap gap-4">
-          {PRIORITY_OPTIONS.map((p) => (
-            <label key={p} className="flex items-center gap-2 text-sm font-medium">
-              <RadioGroupItem value={p} /> {p}
-            </label>
-          ))}
-        </RadioGroup>
-      </div>
+      <PriorityField value={fields.priority} onChange={(v) => set({ priority: v })} compact />
 
       <div>
         <Label>Instructions *</Label>

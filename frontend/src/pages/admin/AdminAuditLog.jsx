@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty } from "@/components/ui/table";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
-import { Shield, User, Activity, Globe, ShieldCheck } from "lucide-react";
+import { Shield, User, Activity, ShieldCheck } from "lucide-react";
 
 export default function AdminAuditLog() {
   const [data, setData] = useState({ entries: [], actions: [] });

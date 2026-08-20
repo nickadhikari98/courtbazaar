@@ -11,7 +11,6 @@ export default function CourtDirectory() {
   const [activeState, setActiveState] = useState(null);
   const [courts, setCourts] = useState([]);
   const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api.get("/states").then(r => {
@@ -20,7 +19,6 @@ export default function CourtDirectory() {
       const delhi = r.data.find(s => s.state_id === "state_delhi");
       if (delhi) setActiveState(delhi.state_id);
       else if (r.data.length) setActiveState(r.data[0].state_id);
-      setLoading(false);
     });
   }, []);
 

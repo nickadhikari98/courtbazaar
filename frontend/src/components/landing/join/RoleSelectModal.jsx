@@ -27,7 +27,7 @@ export default function RoleSelectModal({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="w-[calc(100%-1.5rem)] sm:w-full sm:max-w-2xl max-h-[85dvh] overflow-y-auto">
+      <DialogContent className="w-[calc(100%-1.5rem)] sm:w-full sm:max-w-2xl max-h-[85dvh] overflow-y-auto cb-scroll">
         {!selected ? (
           <>
             <DialogHeader>

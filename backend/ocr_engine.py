@@ -2,6 +2,7 @@
 Feeds extracted text into the Doc Intelligence engine for accurate scoring."""
 import io
 import logging
+import re
 from typing import Tuple, Optional
 
 logger = logging.getLogger(__name__)
@@ -83,7 +84,6 @@ def analyze_document(data: bytes, content_type: str, filename: str = "") -> dict
 
     char_count = len(text)
     # Heuristic: detect page numbers (look for "Page X", "X of Y", or standalone numbers)
-    import re
     page_num_hits = len(re.findall(r"(?:Page\s+\d+|^\s*\d+\s*$|\d+\s*of\s*\d+)", text, re.IGNORECASE | re.MULTILINE))
 
     return {

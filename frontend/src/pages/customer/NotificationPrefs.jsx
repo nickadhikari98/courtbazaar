@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Bell, Mail, MessageSquare, Phone, ShieldCheck, AlertCircle } from "lucide-react";
+import { Mail, MessageSquare, Phone, ShieldCheck, AlertCircle } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 
 /* Extracted from the page wrapper below so the new Notification Center

@@ -3,7 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Star, MapPin, BadgeCheck, Loader2 } from "lucide-react";
+import { Star, MapPin, BadgeCheck, Loader2, Clock } from "lucide-react";
 import { formatINR } from "@/lib/api";
 
 export const initialsOf = (name) => (name || "?").split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase();
@@ -13,7 +13,7 @@ export const initialsOf = (name) => (name || "?").split(" ").map((s) => s[0]).sl
    fallback), so the card looks identical regardless of which path the
    customer took to reach it. `counsel` is one entry from
    lib/advocateRecommendationsApi.js's getAvailableAdvocates. */
-export default function CounselCard({ counsel, onViewProfile, onSelect, selecting, disabled }) {
+export default function CounselCard({ counsel, onViewProfile, onSelect, selecting, disabled, showUrgentFee, urgentFee }) {
   return (
     <Card className="bento-card border-none" data-testid={`counsel-card-${counsel.advocate_id}`}>
       <CardContent className="p-4">
@@ -29,8 +29,12 @@ export default function CounselCard({ counsel, onViewProfile, onSelect, selectin
             </div>
             <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
               <Star className="w-3 h-3 fill-amber-400 text-amber-400 flex-shrink-0" /> {counsel.rating}
-              <span className="mx-1">·</span>
-              {counsel.experience_years} yrs experience
+              {(counsel.experience_bracket_label || counsel.experience_years != null) && (
+                <>
+                  <span className="mx-1">·</span>
+                  {counsel.experience_bracket_label || `${counsel.experience_years} yrs experience`}
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -48,11 +52,18 @@ export default function CounselCard({ counsel, onViewProfile, onSelect, selectin
           )}
         </div>
 
-        <div className="mt-2 text-sm font-bold">
-          {counsel.proposed_fee != null
-            ? <>{formatINR(counsel.proposed_fee)} <span className="text-xs font-medium text-muted-foreground">reference fee</span></>
-            : <span className="text-xs font-medium text-muted-foreground">Fee to be discussed</span>}
-        </div>
+        {showUrgentFee ? (
+          <div className="mt-2 flex items-center gap-1.5 text-sm font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 w-fit" data-testid={`urgent-fee-${counsel.advocate_id}`}>
+            <Clock className="w-3.5 h-3.5 flex-shrink-0" />
+            {urgentFee != null ? <>Urgent Fee: {formatINR(urgentFee)}</> : "Urgent fee not set by this counsel"}
+          </div>
+        ) : (
+          <div className="mt-2 text-sm font-bold">
+            {counsel.proposed_fee != null
+              ? <>{formatINR(counsel.proposed_fee)} <span className="text-xs font-medium text-muted-foreground">starting from</span></>
+              : <span className="text-xs font-medium text-muted-foreground">Fee to be discussed</span>}
+          </div>
+        )}
 
         <div className="mt-3 flex gap-2">
           <Button type="button" size="sm" variant="outline" className="flex-1" disabled={!!disabled} onClick={() => onViewProfile?.(counsel)} data-testid={`view-profile-${counsel.advocate_id}`}>

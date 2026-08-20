@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty } from "@/components/ui/table";
 import { toast } from "sonner";
 import { Wallet, CheckCircle2, Clock, XCircle, Banknote, Receipt } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
@@ -32,7 +33,7 @@ export default function VendorSettlements() {
       try {
         const { data } = await api.get("/vendors/me/settlements");
         if (alive) setData(data);
-      } catch (e) {
+      } catch {
         toast.error("Could not load settlements");
       } finally {
         if (alive) setLoading(false);
@@ -125,54 +126,52 @@ export default function VendorSettlements() {
               <Skeleton className="h-12 w-full" />
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-secondary text-xs cb-overline text-left">
-                  <tr>
-                    <th className="px-4 py-3">Settlement ID</th>
-                    <th className="px-4 py-3">Cycle date</th>
-                    <th className="px-4 py-3 text-right">Orders</th>
-                    <th className="px-4 py-3 text-right">Amount</th>
-                    <th className="px-4 py-3">Mode</th>
-                    <th className="px-4 py-3">UTR / Status</th>
-                    <th className="px-4 py-3">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {filtered.map(s => {
-                    const SI = statusIcon[s.status] || Clock;
-                    return (
-                      <tr key={s.settlement_id} className="hover:bg-secondary/40" data-testid={`vendor-settle-row-${s.settlement_id}`}>
-                        <td className="px-4 py-3 font-mono text-xs font-bold">{s.settlement_id}</td>
-                        <td className="px-4 py-3 text-xs font-mono">{s.cycle_date}</td>
-                        <td className="px-4 py-3 text-right font-bold">{s.order_count}</td>
-                        <td className="px-4 py-3 text-right font-display font-black text-base">{formatINR(s.amount)}</td>
-                        <td className="px-4 py-3">
-                          <Badge variant="outline" className="font-bold uppercase text-2xs">
-                            <Banknote className="w-3 h-3 mr-1" />{s.payment_mode}
-                          </Badge>
-                          <div className="text-2xs font-mono text-muted-foreground mt-0.5">{s.bank_account ? `••${s.bank_account.slice(-4)}` : "UPI"}</div>
-                        </td>
-                        <td className="px-4 py-3 text-xs font-mono">
-                          {s.utr || s.failure_reason || "—"}
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge className={`${statusColor[s.status]} border font-bold uppercase text-2xs`}>
-                            <SI className="w-3 h-3 mr-1" />{s.status}
-                          </Badge>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {filtered.length === 0 && (
-                    <tr><td colSpan={7} className="px-4 py-12 text-center text-muted-foreground">
-                      <div className="font-display font-bold text-base mb-1">No settlements yet</div>
-                      <div className="text-sm">Complete an order — your payout will appear in the next T+1 cycle.</div>
-                    </td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Settlement ID</TableHead>
+                  <TableHead>Cycle date</TableHead>
+                  <TableHead className="text-right">Orders</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead>Mode</TableHead>
+                  <TableHead>UTR / Status</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.map(s => {
+                  const SI = statusIcon[s.status] || Clock;
+                  return (
+                    <TableRow key={s.settlement_id} data-testid={`vendor-settle-row-${s.settlement_id}`}>
+                      <TableCell className="font-mono text-xs font-bold">{s.settlement_id}</TableCell>
+                      <TableCell className="text-xs font-mono">{s.cycle_date}</TableCell>
+                      <TableCell className="text-right font-bold">{s.order_count}</TableCell>
+                      <TableCell className="text-right font-display font-black text-base">{formatINR(s.amount)}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="font-bold uppercase text-2xs">
+                          <Banknote className="w-3 h-3 mr-1" />{s.payment_mode}
+                        </Badge>
+                        <div className="text-2xs font-mono text-muted-foreground mt-0.5">{s.bank_account ? `••${s.bank_account.slice(-4)}` : "UPI"}</div>
+                      </TableCell>
+                      <TableCell className="text-xs font-mono">
+                        {s.utr || s.failure_reason || "—"}
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={`${statusColor[s.status]} border font-bold uppercase text-2xs`}>
+                          <SI className="w-3 h-3 mr-1" />{s.status}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+                {filtered.length === 0 && (
+                  <TableEmpty colSpan={7}>
+                    <div className="font-display font-bold text-base mb-1">No settlements yet</div>
+                    <div className="text-sm">Complete an order — your payout will appear in the next T+1 cycle.</div>
+                  </TableEmpty>
+                )}
+              </TableBody>
+            </Table>
           )}
         </CardContent>
       </Card>

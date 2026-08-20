@@ -94,7 +94,7 @@ export default function WriteReviewModal({ open, onOpenChange }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100%-1.5rem)] sm:w-full sm:max-w-md max-h-[90dvh] overflow-y-auto">
+      <DialogContent className="w-[calc(100%-1.5rem)] sm:w-full sm:max-w-md max-h-[90dvh] overflow-y-auto cb-scroll">
         <DialogHeader>
           <DialogTitle className="font-display text-xl">Write a Review</DialogTitle>
           <DialogDescription>Share your experience with CourtBazaar™.</DialogDescription>

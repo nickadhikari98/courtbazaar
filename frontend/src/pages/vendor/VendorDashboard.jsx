@@ -1,16 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, formatINR } from "@/lib/api";
-import { useAuth } from "@/context/AuthContext";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Store, Package, TrendingUp, ShieldCheck, ArrowRight, Star, AlertCircle, Crown, Rocket, Trophy, Clock } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import EmptyState from "@/components/shared/EmptyState";
+import Loading from "@/components/shared/Loading";
 
 export default function VendorDashboard() {
-  const { user } = useAuth();
   const [vendor, setVendor] = useState(null);
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -35,7 +35,7 @@ export default function VendorDashboard() {
     } catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
   };
 
-  if (loading) return <div className="p-10">Loading…</div>;
+  if (loading) return <Loading />;
 
   if (!vendor?.onboarded) {
     return (
@@ -161,9 +161,7 @@ export default function VendorDashboard() {
 
       <h2 className="font-display font-bold text-2xl tracking-tight mb-3">Order queue</h2>
       <div className="space-y-3">
-        {pending.length === 0 && active.length === 0 && (
-          <Card className="border-dashed border-2"><CardContent className="p-10 text-center"><Package className="w-10 h-10 mx-auto text-muted-foreground mb-3" /><div className="font-display font-bold">No active orders</div></CardContent></Card>
-        )}
+        {pending.length === 0 && active.length === 0 && <EmptyState icon={Package} title="No active orders" />}
         {[...pending, ...active].map(o => (
           <Link to={`/orders/${o.order_id}`} key={o.order_id} data-testid={`vendor-order-${o.order_id}`}>
             <Card className="dashboard-card border-none hover:shadow-md transition-all">

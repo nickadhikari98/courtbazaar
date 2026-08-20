@@ -71,6 +71,7 @@ const proxyCounselService = {
   name: "Counsel / Proxy Counsel",
   description: "Find and connect with verified proxy counsels across India — briefed, reliable, and ready to appear on your behalf.",
   cta: "Book Now",
+  ctaLink: "/hire-proxy-counsel",
   startingPrice: "₹Starting from 499/appearance",
 };
 

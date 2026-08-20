@@ -21,16 +21,22 @@ import {
   addAvailabilitySlot, removeAvailabilitySlot, getPracticePerformance,
 } from "@/lib/practiceApi";
 import { listHearingRequests } from "@/lib/hearingRequestsApi";
+import { getCourt, searchCourts } from "@/lib/referenceDataApi";
 import { formatINR } from "@/lib/api";
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import HearingActivityPreview from "@/components/shared/HearingActivityPreview";
 import CapabilitiesCard from "@/components/shared/CapabilitiesCard";
 import StatGrid from "@/components/shared/StatGrid";
+import Loading from "@/components/shared/Loading";
 import { useAuth } from "@/context/AuthContext";
 import {
   HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole,
   isHearingActive, COMPLETED_HEARING_STATUSES, CLOSED_HEARING_STATUSES,
 } from "@/lib/hearingLifecycle";
+import {
+  PRICING_SLOTS, PRICING_SLOT_LABELS, PRICING_COURT_TYPES, PRICING_COURT_TYPE_LABELS,
+  PRICING_MINIMUMS, EXPERIENCE_BRACKETS,
+} from "@/config/proxyCounselPricing";
 
 const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
 
@@ -74,25 +80,128 @@ function TagInput({ label, value, onChange, placeholder }) {
   );
 }
 
+/* Bug fix: "Courts" used to be a free-text TagInput — a counsel could type
+   "Gujarat High Court" and it would display fine everywhere (it's just
+   shown as typed), but list_and_recommend/public_proxy_counsels filter
+   proxy_counsel_profiles.courts by real court_id ($in a set of ids looked
+   up from the courts collection), so free text never matched and the
+   counsel silently never showed up when someone searched/selected that
+   court. This picks real courts by name (searchCourts, same /courts?q=
+   endpoint the public Court Directory uses) and stores court_id — display
+   names for already-saved ids are resolved lazily below, so legacy
+   free-text rows (pre-fix) still render as a removable chip instead of a
+   raw id, they just won't match search until re-picked from here. */
+function CourtPicker({ label, value, onChange }) {
+  const [nameById, setNameById] = useState({});
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const missing = value.filter((id) => !(id in nameById));
+    if (!missing.length) return;
+    let cancelled = false;
+    Promise.all(missing.map((id) => getCourt(id).then((c) => [id, c.name]).catch(() => [id, id])))
+      .then((pairs) => { if (!cancelled) setNameById((prev) => ({ ...prev, ...Object.fromEntries(pairs) })); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when `value` gains an id we haven't resolved yet
+  }, [value]);
+
+  useEffect(() => {
+    if (query.trim().length < 2) { setResults([]); return undefined; }
+    const t = setTimeout(() => {
+      searchCourts(query.trim()).then((list) => setResults(list.slice(0, 20))).catch(() => setResults([]));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const add = (court) => {
+    if (!value.includes(court.court_id)) {
+      setNameById((prev) => ({ ...prev, [court.court_id]: court.name }));
+      onChange([...value, court.court_id]);
+    }
+    setQuery("");
+    setResults([]);
+    setOpen(false);
+  };
+  const remove = (id) => onChange(value.filter((v) => v !== id));
+
+  return (
+    <div>
+      <Label>{label}</Label>
+      <div className="flex flex-wrap gap-1.5 mb-2 mt-1.5">
+        {value.map((id) => (
+          <Badge key={id} variant="outline" className="gap-1 font-semibold">
+            {nameById[id] || id}
+            <button type="button" onClick={() => remove(id)}>
+              <X className="w-3 h-3" />
+            </button>
+          </Badge>
+        ))}
+      </div>
+      <div className="relative">
+        <Input
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          placeholder="Search a court by name, e.g. Gujarat High Court"
+          data-testid="courts-picker-search"
+        />
+        {open && results.length > 0 && (
+          <div className="absolute z-20 mt-1 w-full bg-white border border-border rounded-lg shadow-lg max-h-56 overflow-y-auto cb-scroll">
+            {results.map((c) => (
+              <button
+                key={c.court_id} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => add(c)}
+                className="w-full text-left px-3 py-2 text-sm hover:bg-secondary flex items-center justify-between gap-2"
+              >
+                <span className="truncate">{c.name}</span>
+                <span className="text-2xs text-muted-foreground uppercase flex-shrink-0">{c.type?.replace("_", " ")}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <p className="text-2xs text-muted-foreground mt-1">Pick real courts from search — these are what a Counsel's court filter actually matches against.</p>
+    </div>
+  );
+}
+
 function ProfileTab({ profile, onSaved }) {
   const { user } = useAuth();
   const [form, setForm] = useState(profile);
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const setPricing = (courtType, slot, value) => {
+    setForm((f) => ({
+      ...f,
+      pricing: { ...f.pricing, [courtType]: { ...(f.pricing?.[courtType] || {}), [slot]: value === "" ? undefined : Number(value) } },
+    }));
+  };
 
   const save = async () => {
+    for (const courtType of PRICING_COURT_TYPES) {
+      for (const slot of PRICING_SLOTS) {
+        const amount = form.pricing?.[courtType]?.[slot];
+        const minimum = PRICING_MINIMUMS[courtType][slot];
+        if (amount != null && amount < minimum) {
+          toast.error(`${PRICING_COURT_TYPE_LABELS[courtType]} / ${PRICING_SLOT_LABELS[slot]} must be at least ₹${minimum}`);
+          return;
+        }
+      }
+    }
     setSaving(true);
     try {
       const updated = await updatePracticeProfile({
         practice_areas: form.practice_areas, courts: form.courts, languages: form.languages,
-        experience_years: form.experience_years, education: form.education, bio: form.bio,
-        office_address: form.office_address, fee_structure: form.fee_structure,
+        experience_bracket: form.experience_bracket, education: form.education, bio: form.bio,
+        office_address: form.office_address, fee_structure: form.fee_structure, pricing: form.pricing,
         availability_mode: form.availability_mode, instant_booking: form.instant_booking,
       });
       onSaved(updated);
       toast.success("Profile saved");
-    } catch {
-      toast.error("Could not save profile");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not save profile");
     } finally {
       setSaving(false);
     }
@@ -130,8 +239,13 @@ function ProfileTab({ profile, onSaved }) {
           </div>
           <div className="grid sm:grid-cols-2 gap-4">
             <div>
-              <Label>Years of experience</Label>
-              <Input type="number" value={form.experience_years || ""} onChange={(e) => set("experience_years", Number(e.target.value))} />
+              <Label>Total Years of Practice</Label>
+              <Select value={form.experience_bracket || undefined} onValueChange={(v) => set("experience_bracket", v)}>
+                <SelectTrigger data-testid="experience-bracket"><SelectValue placeholder="Select range" /></SelectTrigger>
+                <SelectContent>
+                  {EXPERIENCE_BRACKETS.map((b) => <SelectItem key={b.key} value={b.key}>{b.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <Label>Education</Label>
@@ -151,8 +265,42 @@ function ProfileTab({ profile, onSaved }) {
             <Textarea rows={2} value={form.fee_structure || ""} onChange={(e) => set("fee_structure", e.target.value)} placeholder="e.g. ₹2,000 per appearance" />
           </div>
           <TagInput label="Practice areas" value={form.practice_areas || []} onChange={(v) => set("practice_areas", v)} placeholder="e.g. Civil, Criminal" />
-          <TagInput label="Courts" value={form.courts || []} onChange={(v) => set("courts", v)} placeholder="e.g. Delhi High Court" />
+          <CourtPicker label="Courts" value={form.courts || []} onChange={(v) => set("courts", v)} />
           <TagInput label="Languages" value={form.languages || []} onChange={(v) => set("languages", v)} placeholder="e.g. Hindi, English" />
+          <Button type="button" onClick={save} disabled={saving} className="bg-accent hover:bg-accent/90 font-bold">Save profile</Button>
+        </CardContent>
+      </Card>
+
+      <Card className="dashboard-card border-none">
+        <CardContent className="p-5 space-y-4">
+          <div>
+            <div className="font-display font-bold">Availability & Pricing</div>
+            <p className="text-xs text-muted-foreground mt-0.5">Set your own price per slot — never below the platform minimum shown under each field. Leave a slot blank if you don't take that kind of work.</p>
+          </div>
+          {PRICING_COURT_TYPES.map((courtType) => (
+            <div key={courtType}>
+              <div className="text-sm font-bold mb-2">{PRICING_COURT_TYPE_LABELS[courtType]}</div>
+              <div className="grid sm:grid-cols-3 gap-3">
+                {PRICING_SLOTS.map((slot) => {
+                  const minimum = PRICING_MINIMUMS[courtType][slot];
+                  return (
+                    <div key={slot}>
+                      <Label>{PRICING_SLOT_LABELS[slot]}</Label>
+                      <Input
+                        type="number" min={minimum}
+                        value={form.pricing?.[courtType]?.[slot] ?? ""}
+                        onChange={(e) => setPricing(courtType, slot, e.target.value)}
+                        placeholder={`Min ₹${minimum}`}
+                        onWheel={(e) => e.target.blur()}
+                        data-testid={`pricing-${courtType}-${slot}`}
+                      />
+                      <p className="text-2xs text-muted-foreground mt-0.5">Min ₹{minimum}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
           <Button type="button" onClick={save} disabled={saving} className="bg-accent hover:bg-accent/90 font-bold">Save profile</Button>
         </CardContent>
       </Card>
@@ -283,7 +431,7 @@ function AvailabilityTab() {
 function PerformanceTab() {
   const [perf, setPerf] = useState(null);
   useEffect(() => { getPracticePerformance().then(setPerf); }, []);
-  if (!perf) return <div className="text-center text-muted-foreground py-10">Loading…</div>;
+  if (!perf) return <Loading />;
 
   const stats = [
     { label: "Rating", value: perf.rating || "—", icon: Star, color: "bg-amber-100 text-amber-700" },
@@ -374,13 +522,13 @@ function HearingsTab() {
       )}
       <div>
         <div className="font-display font-bold mb-2">Open Requests</div>
-        {hearings === null && <div className="text-center text-muted-foreground py-6 text-sm">Loading…</div>}
+        {hearings === null && <Loading size="sm" />}
         {hearings && open.length === 0 && <p className="text-sm text-muted-foreground">No open requests right now.</p>}
         <div className="space-y-2">{open.map((h) => renderCard(h, () => setActiveId(h.hearing_id)))}</div>
       </div>
       <div>
         <div className="font-display font-bold mb-2">My Hearings</div>
-        {hearings === null && <div className="text-center text-muted-foreground py-6 text-sm">Loading…</div>}
+        {hearings === null && <Loading size="sm" />}
         {hearings && mine.length === 0 && <p className="text-sm text-muted-foreground">Nothing accepted yet.</p>}
         {hearings && mine.length > 0 && (
           <Tabs defaultValue="active">
@@ -422,7 +570,7 @@ export default function Practice() {
           <TabsTrigger value="performance">Performance</TabsTrigger>
         </TabsList>
         <TabsContent value="profile" className="mt-4">
-          {profile ? <ProfileTab profile={profile} onSaved={setProfile} /> : <div className="text-center text-muted-foreground py-10">Loading…</div>}
+          {profile ? <ProfileTab profile={profile} onSaved={setProfile} /> : <Loading />}
         </TabsContent>
         <TabsContent value="availability" className="mt-4">
           <AvailabilityTab />

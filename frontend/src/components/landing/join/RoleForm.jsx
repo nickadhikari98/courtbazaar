@@ -153,7 +153,7 @@ export default function RoleForm({ roleLabel, roleKey, sections = [], onDone }) 
     try {
       await saveDraft();
       toast.success("Draft saved. You can resume this application anytime.");
-    } catch (err) {
+    } catch {
       toast.error("Your progress is saved on this device, but we couldn't back it up online. Check your connection and try again.");
     }
   };

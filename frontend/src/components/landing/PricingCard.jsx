@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Check, ChevronDown, ArrowRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { formatINR } from "@/lib/pricingData";
+import { formatINRWhole } from "@/lib/pricingData";
 import ComingSoonBadge from "@/components/shared/ComingSoonBadge";
 
 /**
@@ -54,7 +54,7 @@ export default function PricingCard({ pkg, variant = "teaser", isExpanded, onTog
 
         <div className="landing-pricing-hero-savings-row">
           {maxTierSavings !== undefined && (
-            <span className="landing-pricing-hero-savings-chip">Save up to {formatINR(maxTierSavings)}</span>
+            <span className="landing-pricing-hero-savings-chip">Save up to {formatINRWhole(maxTierSavings)}</span>
           )}
           <span className="landing-pricing-hero-savings-chip landing-pricing-hero-savings-chip--pct">
             {pkg.savings} off

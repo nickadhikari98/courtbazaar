@@ -14,6 +14,7 @@ import {
   Search, Star, CheckCircle2, XCircle, Trash2, Pin, PinOff, ArrowUp, ArrowDown, Save,
 } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import StatCard from "@/components/shared/StatCard";
 import {
   adminListReviews, adminGetReview, adminUpdateReview, adminChangeReviewStatus,
   adminDeleteReview, adminBulkReviewAction, adminReorderReviews, adminGetReviewStats,
@@ -31,15 +32,6 @@ const STATUS_BADGE = {
   approved: "bg-emerald-100 text-emerald-700",
   rejected: "bg-red-100 text-red-700",
 };
-
-function StatCard({ label, value }) {
-  return (
-    <div className="rounded-lg border bg-white px-4 py-3">
-      <div className="text-2xl font-display font-black tracking-tight">{value}</div>
-      <div className="text-xs text-muted-foreground font-semibold uppercase tracking-wide mt-0.5">{label}</div>
-    </div>
-  );
-}
 
 function ReviewDetailDialog({ reviewId, open, onOpenChange, onChanged }) {
   const [review, setReview] = useState(null);
@@ -124,7 +116,7 @@ function ReviewDetailDialog({ reviewId, open, onOpenChange, onChanged }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto cb-scroll">
         <DialogHeader>
           <DialogTitle className="font-display text-xl flex items-center gap-2">
             {review.name}

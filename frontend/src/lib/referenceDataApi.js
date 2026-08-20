@@ -16,6 +16,21 @@ export async function getCourtsByState(stateId) {
   return data; // [{ court_id, name, type, ... }]
 }
 
+// Name search across every state — used by the Proxy Counsel profile's
+// Courts picker (Practice.jsx) so a counsel can find e.g. "Gujarat High
+// Court" without first picking a state, and so what gets saved is always a
+// real court_id (the id the search/matching filters actually key on), never
+// free text.
+export async function searchCourts(q) {
+  const { data } = await api.get("/courts", { params: { q } });
+  return data; // [{ court_id, name, type, ... }]
+}
+
+export async function getCourt(courtId) {
+  const { data } = await api.get(`/courts/${courtId}`);
+  return data; // { court_id, name, type, ... }
+}
+
 /* Serviceable courts with geocoded coordinates — used by the landing page's
    coverage map. The map is a pure consumer of this master dataset; no
    marker coordinates are ever hardcoded on the frontend (see
