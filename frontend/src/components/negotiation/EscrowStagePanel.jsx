@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from "@/components/ui/dialog";
+import DocumentPreviewDialog from "@/components/shared/DocumentPreviewDialog";
 import { Lock, Upload, FileText, CheckCircle2, ShieldAlert, Loader2 } from "lucide-react";
 import {
   uploadHearingDocument, getHearingDocumentUrl, verifyAndReleaseHearingPayout, raiseHearingDispute,
@@ -40,6 +41,7 @@ export default function EscrowStagePanel({
   const [busy, setBusy] = useState(false);
   const [disputeOpen, setDisputeOpen] = useState(false);
   const [remark, setRemark] = useState("");
+  const [preview, setPreview] = useState(null); // { url, filename } — in-page order sheet preview
   const fileInputRef = useRef(null);
 
   if (!OWNED_STATUSES.includes(hearing.status)) return null;
@@ -69,10 +71,10 @@ export default function EscrowStagePanel({
   const viewOrderSheet = async () => {
     if (!hearing.order_sheet_doc_id) return;
     try {
-      // inline: true — opens in-tab (browser's native PDF/image viewer) so
-      // it can be checked right there, no download required.
-      const { url } = await getHearingDocumentUrl(hearingId, hearing.order_sheet_doc_id, { inline: true });
-      window.open(url, "_blank", "noopener,noreferrer");
+      // inline: true — renders in the DocumentPreviewDialog below so it can
+      // be checked right there on the same page, no download or new tab.
+      const { url, filename } = await getHearingDocumentUrl(hearingId, hearing.order_sheet_doc_id, { inline: true });
+      setPreview({ url, filename });
     } catch {
       toast.error("Could not open the order sheet");
     }
@@ -183,6 +185,7 @@ export default function EscrowStagePanel({
 
   if (hearing.status === "verification_pending") {
     return (
+      <>
       <Card className="border-l-4 border-l-orange-400 shadow-md" data-testid="escrow-stage-panel">
         <CardContent className="p-6">
           {viewerRole === "customer" ? (
@@ -231,26 +234,55 @@ export default function EscrowStagePanel({
               </div>
             </>
           ) : (
-            <p className="text-sm font-semibold">
-              Order sheet submitted — waiting for the {otherRoleLabel} to verify. {amount} is securely held in Escrow,
-              and auto-releases to you in {AUTO_RELEASE_DAYS} days if the {otherRoleLabel} takes no action.
-            </p>
+            <>
+              <p className="text-sm font-semibold mb-3">
+                Order sheet submitted — waiting for the {otherRoleLabel} to verify. {amount} is securely held in Escrow,
+                and auto-releases to you in {AUTO_RELEASE_DAYS} days if the {otherRoleLabel} takes no action.
+              </p>
+              {hearing.order_sheet_doc_id && (
+                <button type="button" onClick={viewOrderSheet} className="flex items-center gap-2 text-sm border rounded-md px-2.5 py-1.5 hover:bg-slate-50" data-testid="view-order-sheet">
+                  <FileText className="w-4 h-4 text-accent flex-shrink-0" /> Preview Court Order Sheet
+                </button>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
+      <DocumentPreviewDialog
+        open={!!preview}
+        onOpenChange={(v) => { if (!v) setPreview(null); }}
+        url={preview?.url}
+        filename={preview?.filename}
+      />
+      </>
     );
   }
 
   if (hearing.status === "disputed") {
     return (
+      <>
       <Card className="border-none bg-red-50 shadow-none" data-testid="escrow-stage-panel">
-        <CardContent className="p-4 flex items-center gap-2 text-sm font-semibold text-red-800">
-          <ShieldAlert className="w-4 h-4 flex-shrink-0" />
-          {viewerRole === "customer"
-            ? "Your dispute is under review by CourtBazaar admin. Escrow remains held until it's resolved."
-            : "Your submission was disputed and is under review by CourtBazaar admin. Escrow remains held until it's resolved."}
+        <CardContent className="p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-red-800">
+            <ShieldAlert className="w-4 h-4 flex-shrink-0" />
+            {viewerRole === "customer"
+              ? "Your dispute is under review by CourtBazaar admin. Escrow remains held until it's resolved."
+              : "Your submission was disputed and is under review by CourtBazaar admin. Escrow remains held until it's resolved."}
+          </div>
+          {hearing.order_sheet_doc_id && (
+            <button type="button" onClick={viewOrderSheet} className="flex items-center gap-2 text-sm border rounded-md px-2.5 py-1.5 hover:bg-white bg-white/60 mt-3" data-testid="view-order-sheet">
+              <FileText className="w-4 h-4 text-accent flex-shrink-0" /> Preview Court Order Sheet
+            </button>
+          )}
         </CardContent>
       </Card>
+      <DocumentPreviewDialog
+        open={!!preview}
+        onOpenChange={(v) => { if (!v) setPreview(null); }}
+        url={preview?.url}
+        filename={preview?.filename}
+      />
+      </>
     );
   }
 
