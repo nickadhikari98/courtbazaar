@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { jsPDF } from "jspdf";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { formatINR } from "@/lib/api";
@@ -20,6 +21,7 @@ import {
 import { payForHearing as payForHearingShared } from "@/lib/hearingPayment";
 import HearingTimeline from "@/components/shared/HearingTimeline";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
+import DocumentPreviewDialog from "@/components/shared/DocumentPreviewDialog";
 import EscrowStagePanel from "@/components/negotiation/EscrowStagePanel";
 import ProxyCounselCaseDetailsForm from "@/components/proxyCounsel/ProxyCounselCaseDetailsForm";
 import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions } from "@/lib/hearingLifecycle";
@@ -46,6 +48,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   const [busy, setBusy] = useState(false);
   const [paying, setPaying] = useState(false);
   const [submittingDetails, setSubmittingDetails] = useState(false);
+  const [preview, setPreview] = useState(null); // { url, filename } — in-page document preview
   const fileInputRef = useRef(null);
 
   const load = () => {
@@ -151,12 +154,13 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
     fileInputRef.current.value = "";
   };
 
-  const openDocument = async (docId) => {
+  const openDocument = async (docId, filename) => {
     try {
-      // inline: true — opens in-tab (browser's native PDF/image viewer)
-      // instead of forcing a download, so it can be checked right there.
+      // inline: true — renders in the DocumentPreviewDialog below instead of
+      // forcing a download or hopping to a new tab, so it can be checked
+      // right there on the same page.
       const { url } = await getHearingDocumentUrl(hearingId, docId, { inline: true });
-      window.open(url, "_blank", "noopener,noreferrer");
+      setPreview({ url, filename });
     } catch {
       toast.error("Could not open this document");
     }
@@ -164,13 +168,12 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
 
   // Case details/instructions are plain text baked into the hearing record,
   // not a stored file — no backend export endpoint exists (or is needed)
-  // for this, so the download is built client-side from the same fields
-  // already rendered above and handed to the browser as a .txt Blob.
+  // for this, so the PDF is built client-side (jsPDF) from the same fields
+  // already rendered above.
   const downloadCaseDetails = () => {
     const c = hearing.request_details?.common || {};
     const s = hearing.request_details?.service_specific || {};
     const lines = [
-      `Case Details — ${hearing.court_id}`,
       c.case_title ? `Case Title: ${c.case_title}` : null,
       c.case_number ? `Case Number: ${c.case_number}` : null,
       c.case_type ? `Case Type: ${c.case_type}` : null,
@@ -178,20 +181,45 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
       `Hearing Date: ${hearing.hearing_date}${c.hearing_time ? ` at ${c.hearing_time}` : ""}`,
       c.priority ? `Priority: ${c.priority}` : null,
       s.work_required?.length ? `Work Required: ${s.work_required.join(", ")}${s.work_required_notes ? ` — ${s.work_required_notes}` : ""}` : null,
-      "",
-      "Instructions:",
-      hearing.case_details || "",
     ].filter((l) => l !== null);
-    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `case-details-${hearing.hearing_id}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const marginX = 48;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const wrapWidth = pageWidth - marginX * 2;
+    let y = 56;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.text(`Case Details — ${hearing.court_id}`, marginX, y);
+    y += 28;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    lines.forEach((line) => {
+      doc.splitTextToSize(line, wrapWidth).forEach((row) => {
+        if (y > doc.internal.pageSize.getHeight() - 48) { doc.addPage(); y = 56; }
+        doc.text(row, marginX, y);
+        y += 16;
+      });
+    });
+
+    y += 8;
+    doc.setFont("helvetica", "bold");
+    doc.text("Instructions", marginX, y);
+    y += 18;
+    doc.setFont("helvetica", "normal");
+    doc.splitTextToSize(hearing.case_details || "", wrapWidth).forEach((row) => {
+      if (y > doc.internal.pageSize.getHeight() - 48) { doc.addPage(); y = 56; }
+      doc.text(row, marginX, y);
+      y += 16;
+    });
+
+    doc.save(`case-details-${hearing.hearing_id}.pdf`);
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto cb-scroll">
         <DialogHeader>
@@ -318,7 +346,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           </div>
           <div className="space-y-1.5 mb-2">
             {documents.map((d) => (
-              <button key={d.doc_id} type="button" onClick={() => openDocument(d.doc_id)}
+              <button key={d.doc_id} type="button" onClick={() => openDocument(d.doc_id, d.original_filename)}
                       className="w-full flex items-center gap-2 text-sm border rounded-md px-2.5 py-1.5 hover:bg-slate-50 text-left">
                 <FileText className="w-4 h-4 text-accent flex-shrink-0" />
                 <span className="truncate flex-1">{d.original_filename}</span>
@@ -443,5 +471,12 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
         </div>
       </DialogContent>
     </Dialog>
+    <DocumentPreviewDialog
+      open={!!preview}
+      onOpenChange={(v) => { if (!v) setPreview(null); }}
+      url={preview?.url}
+      filename={preview?.filename}
+    />
+    </>
   );
 }
