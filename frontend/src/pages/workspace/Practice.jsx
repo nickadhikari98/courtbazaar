@@ -171,6 +171,8 @@ function ProfileTab({ profile, onSaved }) {
   const { user } = useAuth();
   const [form, setForm] = useState(profile);
   const [saving, setSaving] = useState(false);
+  const [savingAvailability, setSavingAvailability] = useState(false);
+  const [savingInstant, setSavingInstant] = useState(false);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const setPricing = (courtType, slot, value) => {
     setForm((f) => ({
@@ -178,6 +180,11 @@ function ProfileTab({ profile, onSaved }) {
       pricing: { ...f.pricing, [courtType]: { ...(f.pricing?.[courtType] || {}), [slot]: value === "" ? undefined : Number(value) } },
     }));
   };
+
+  const hasInvalidPricing = () => PRICING_COURT_TYPES.some((courtType) => PRICING_SLOTS.some((slot) => {
+    const amount = form.pricing?.[courtType]?.[slot];
+    return amount != null && amount < PRICING_MINIMUMS[courtType][slot];
+  }));
 
   const save = async () => {
     for (const courtType of PRICING_COURT_TYPES) {
@@ -207,6 +214,25 @@ function ProfileTab({ profile, onSaved }) {
     }
   };
 
+  // Toggle switches save on their own, immediately, via the inline "Save"
+  // button beside them — not the big "Save profile" button below, which is
+  // easy to miss after just flipping a switch and can be a scroll away.
+  // Sends only the one field (the PUT is a partial update, exclude_unset on
+  // the backend) so it can't accidentally persist unrelated in-progress edits
+  // sitting elsewhere in the form.
+  const saveToggle = async (key, setBusy) => {
+    setBusy(true);
+    try {
+      const updated = await updatePracticeProfile({ [key]: form[key] });
+      onSaved(updated);
+      toast.success(key === "availability_mode" ? "Availability updated" : "Instant booking updated");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not save");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <CapabilitiesCard user={user} />
@@ -216,7 +242,18 @@ function ProfileTab({ profile, onSaved }) {
             <div className="font-display font-bold">Available for hearings</div>
             <p className="text-xs text-muted-foreground">Turn off if you're not taking new requests right now.</p>
           </div>
-          <Switch checked={!!form.availability_mode} onCheckedChange={(v) => set("availability_mode", v)} />
+          <div className="flex items-center gap-3">
+            <Switch checked={!!form.availability_mode} onCheckedChange={(v) => set("availability_mode", v)} />
+            <Button
+              type="button" size="sm" onClick={() => saveToggle("availability_mode", setSavingAvailability)}
+              disabled={savingAvailability}
+              className={form.availability_mode
+                ? "bg-accent hover:bg-accent/90 font-bold"
+                : "bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold"}
+            >
+              Save
+            </Button>
+          </div>
         </CardContent>
       </Card>
       <Card className="dashboard-card border-none">
@@ -225,7 +262,18 @@ function ProfileTab({ profile, onSaved }) {
             <div className="font-display font-bold">Instant booking</div>
             <p className="text-xs text-muted-foreground">Skip manual accept for requests that match your availability.</p>
           </div>
-          <Switch checked={!!form.instant_booking} onCheckedChange={(v) => set("instant_booking", v)} />
+          <div className="flex items-center gap-3">
+            <Switch checked={!!form.instant_booking} onCheckedChange={(v) => set("instant_booking", v)} />
+            <Button
+              type="button" size="sm" onClick={() => saveToggle("instant_booking", setSavingInstant)}
+              disabled={savingInstant}
+              className={form.instant_booking
+                ? "bg-accent hover:bg-accent/90 font-bold"
+                : "bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold"}
+            >
+              Save
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -283,25 +331,33 @@ function ProfileTab({ profile, onSaved }) {
               <div className="grid sm:grid-cols-3 gap-3">
                 {PRICING_SLOTS.map((slot) => {
                   const minimum = PRICING_MINIMUMS[courtType][slot];
+                  const amount = form.pricing?.[courtType]?.[slot];
+                  const belowMin = amount != null && amount < minimum;
                   return (
                     <div key={slot}>
                       <Label>{PRICING_SLOT_LABELS[slot]}</Label>
                       <Input
                         type="number" min={minimum}
-                        value={form.pricing?.[courtType]?.[slot] ?? ""}
+                        value={amount ?? ""}
                         onChange={(e) => setPricing(courtType, slot, e.target.value)}
                         placeholder={`Min ₹${minimum}`}
                         onWheel={(e) => e.target.blur()}
+                        className={belowMin ? "border-red-500 focus-visible:ring-red-500" : undefined}
+                        aria-invalid={belowMin || undefined}
                         data-testid={`pricing-${courtType}-${slot}`}
                       />
-                      <p className="text-2xs text-muted-foreground mt-0.5">Min ₹{minimum}</p>
+                      {belowMin ? (
+                        <p className="text-2xs text-red-600 mt-0.5">Must be at least ₹{minimum}</p>
+                      ) : (
+                        <p className="text-2xs text-muted-foreground mt-0.5">Min ₹{minimum}</p>
+                      )}
                     </div>
                   );
                 })}
               </div>
             </div>
           ))}
-          <Button type="button" onClick={save} disabled={saving} className="bg-accent hover:bg-accent/90 font-bold">Save profile</Button>
+          <Button type="button" onClick={save} disabled={saving || hasInvalidPricing()} className="bg-accent hover:bg-accent/90 font-bold">Save profile</Button>
         </CardContent>
       </Card>
     </div>
