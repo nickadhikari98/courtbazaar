@@ -81,7 +81,7 @@ export default function OrderWizard() {
       for (const f of fileList) {
         const fd = new FormData();
         fd.append("file", f);
-        const { data } = await api.post("/files/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+        const { data } = await api.post("/files/upload", fd);
         setFiles((prev) => [...prev, data]);
       }
       toast.success(`Uploaded ${fileList.length} file(s)`);
