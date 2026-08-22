@@ -6,13 +6,19 @@ const AuthContext = createContext(null);
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  // Whether the server has Google OAuth configured at all (GOOGLE_OAUTH_ENABLED)
-  // — starts false so "Continue with Google" doesn't flash on then off in
-  // environments where it isn't set, e.g. local dev.
+  // Whether the server has Google OAuth configured at all (GOOGLE_OAUTH_ENABLED
+  // + a real GOOGLE_CLIENT_ID) — starts false so "Continue with Google"
+  // doesn't flash on then off in environments where it isn't set, e.g. local
+  // dev. googleClientId feeds GoogleAuthButton's own Google Identity
+  // Services init directly — see server.py's /config/public.
   const [googleOAuthEnabled, setGoogleOAuthEnabled] = useState(false);
+  const [googleClientId, setGoogleClientId] = useState(null);
 
   useEffect(() => {
-    api.get("/config/public").then(({ data }) => setGoogleOAuthEnabled(!!data.google_oauth_enabled)).catch(() => {});
+    api.get("/config/public").then(({ data }) => {
+      setGoogleOAuthEnabled(!!data.google_oauth_enabled);
+      setGoogleClientId(data.google_client_id || null);
+    }).catch(() => {});
   }, []);
 
   const checkAuth = useCallback(async () => {
@@ -32,15 +38,7 @@ export const AuthProvider = ({ children }) => {
     }
   }, []);
 
-  useEffect(() => {
-    // If returning from OAuth callback, skip the /me check
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    if (window.location.hash?.includes("session_id=")) {
-      setLoading(false);
-      return;
-    }
-    checkAuth();
-  }, [checkAuth]);
+  useEffect(() => { checkAuth(); }, [checkAuth]);
 
   const login = async (email, password) => {
     const { data } = await api.post("/auth/login", { email, password });
@@ -68,17 +66,17 @@ export const AuthProvider = ({ children }) => {
     return data.user;
   };
 
-  const googleLogin = (role = "advocate") => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    const redirectUrl = window.location.origin + `/auth/callback?role=${role}`;
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-  };
-
-  const exchangeGoogleSession = async (sessionId, role) => {
-    const { data } = await api.post("/auth/google/session", { session_id: sessionId, role });
-    setToken(data.token);
-    setUser(data.user);
-    return data.user;
+  // GoogleAuthButton's redirect-mode flow lands the browser back on
+  // /auth/google/complete with a ready-made session token in the URL
+  // fragment — server.py's /auth/google/callback already verified the
+  // credential against Google and issued this before redirecting, so this
+  // is just "adopt the token", the same shape as login()/register() above
+  // minus the network round-trip to get it.
+  const completeGoogleLogin = async (token) => {
+    setToken(token);
+    const { data } = await api.get("/auth/me");
+    setUser(data);
+    return data;
   };
 
   const logout = async () => {
@@ -103,8 +101,8 @@ export const AuthProvider = ({ children }) => {
 
   return (
     <AuthContext.Provider value={{
-      user, loading, login, register, otpRequest, otpVerify, googleLogin,
-      exchangeGoogleSession, logout, refresh, checkAuth, hasRole, hasCapability, googleOAuthEnabled,
+      user, loading, login, register, otpRequest, otpVerify, completeGoogleLogin,
+      logout, refresh, checkAuth, hasRole, hasCapability, googleOAuthEnabled, googleClientId,
     }}>
       {children}
     </AuthContext.Provider>

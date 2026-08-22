@@ -49,10 +49,12 @@ export async function getPublicProxyCounsels(context) {
   return { metadata: data.metadata, advocates: data.advocates || [] };
 }
 
-/* Full profile detail for the "View Profile" dialog — only ever called once
-   a user is logged in (see HireProxyCounsel.jsx's requireLogin gate); the
-   backend route itself requires auth too, this isn't just a UI-level gate. */
+/* Full profile detail for the "View Profile" dialog — viewable by anyone,
+   logged in or not (see HireProxyCounsel.jsx: only "Select Counsel" gates on
+   login, not viewing a profile). Backed by the same unauthenticated route
+   /public/proxy-counsels/{id}/profile uses whether or not a session exists,
+   so there's no login/logout flicker on the profile dialog itself. */
 export async function getAdvocateProfile(advocateId) {
-  const { data } = await api.get(`/advocates/${advocateId}/profile`);
+  const { data } = await api.get(`/public/proxy-counsels/${advocateId}/profile`);
   return data;
 }

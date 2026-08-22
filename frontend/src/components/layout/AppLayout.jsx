@@ -3,7 +3,7 @@ import { NavLink, Outlet, Link, useNavigate, useLocation } from "react-router-do
 import { useAuth } from "@/context/AuthContext";
 import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
-  User, LogOut, Menu, X, Scale, Bell, ChevronDown, Shield, Users, Truck,
+  User, LogOut, Menu, Scale, Bell, ChevronDown, Shield, Users, Truck,
   Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic, Banknote,
   UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel, ArrowLeft,
 } from "lucide-react";
@@ -186,12 +186,13 @@ export default function AppLayout({ children }) {
     navigate("/");
   };
 
-  // Toggling (hamburger / the sidebar's own X) is a deliberate "I want it
-  // this way" choice — persisted. Auto-closing after a mobile nav click, or
-  // tapping the mobile overlay to dismiss, is transient drawer behavior, not
-  // a stated preference — neither persists, and neither fires on desktop
-  // (there's no overlay there, and a nav click shouldn't collapse the
-  // sidebar out from under a desktop user who never touched the toggle).
+  // Toggling the sidebar's own hamburger button is a deliberate "I want it
+  // this way" choice — persisted. Auto-collapsing (to the icon rail) after a
+  // mobile nav click, or tapping the mobile overlay to dismiss, is transient
+  // drawer behavior, not a stated preference — neither persists, and neither
+  // fires on desktop (there's no overlay there, and a nav click shouldn't
+  // collapse the sidebar out from under a desktop user who never touched the
+  // toggle).
   const toggleSidebar = () => {
     setSidebarOpen((prev) => {
       const next = !prev;
@@ -205,34 +206,45 @@ export default function AppLayout({ children }) {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Sidebar — fixed at every breakpoint now (not lg:sticky-in-flow) so
-          collapsing it on desktop doesn't require a second reflow transition;
-          the main column's lg:ml-72/lg:ml-0 below does the reflow instead. */}
-      <aside className={`fixed top-0 left-0 z-40 w-72 h-screen bg-white border-r border-border transform transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} flex flex-col`}>
-        <div className="px-6 py-5 border-b border-border flex items-center justify-between">
-          <Logo to="/dashboard" size="sm" data-testid="sidebar-logo" />
-          <button onClick={toggleSidebar} data-testid="close-sidebar-btn">
-            <X className="w-5 h-5" />
+      {/* Sidebar — fixed at every breakpoint, never off-canvas: "collapsed"
+          shrinks it to a narrow icon rail (w-16) rather than hiding it
+          entirely, so its own hamburger toggle is always reachable and
+          nothing else needs a second toggle button (see the topbar below,
+          which no longer has one). The main column's ml-16/lg:ml-72 below
+          tracks this same width. */}
+      <aside className={`fixed top-0 left-0 z-40 h-screen bg-white border-r border-border transition-[width] duration-200 flex flex-col ${sidebarOpen ? 'w-72' : 'w-16'}`}>
+        <div className={`py-5 border-b border-border flex items-center ${sidebarOpen ? 'px-6 justify-between' : 'px-0 justify-center'}`}>
+          {sidebarOpen && <Logo to="/dashboard" size="sm" data-testid="sidebar-logo" />}
+          <button
+            onClick={toggleSidebar}
+            data-testid="toggle-sidebar-btn"
+            aria-label="Toggle sidebar"
+            className="p-1.5 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground"
+          >
+            <Menu className="w-5 h-5" />
           </button>
         </div>
 
-        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto cb-scroll">
+        <nav className={`flex-1 py-4 space-y-1 overflow-y-auto cb-scroll ${sidebarOpen ? 'px-3' : 'px-2'}`}>
           {items.map((item) => (
             item.section ? (
-              <div
-                key={`section-${item.section}`}
-                className="px-3 pt-4 pb-1 first:pt-0 text-2xs font-bold uppercase tracking-wide text-muted-foreground/70"
-              >
-                {item.section}
-              </div>
+              sidebarOpen && (
+                <div
+                  key={`section-${item.section}`}
+                  className="px-3 pt-4 pb-1 first:pt-0 text-2xs font-bold uppercase tracking-wide text-muted-foreground/70"
+                >
+                  {item.section}
+                </div>
+              )
             ) : (
             <NavLink
               key={item.to}
               to={item.to}
               ref={(el) => { navRefs.current[item.to] = el; }}
               data-testid={`nav-${item.label.toLowerCase().replace(/\s+/g, '-')}`}
+              title={sidebarOpen ? undefined : item.label}
               className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+                `flex items-center gap-3 py-2.5 rounded-lg text-sm font-semibold transition-all ${sidebarOpen ? 'px-3' : 'px-0 justify-center'} ${
                   isActive
                     ? "bg-primary text-primary-foreground"
                     : item.highlight
@@ -243,9 +255,9 @@ export default function AppLayout({ children }) {
               end={item.to === "/dashboard"}
               onClick={closeSidebarOnMobileNav}
             >
-              <item.icon className="w-[18px] h-[18px]" strokeWidth={2} />
-              <span>{item.label}</span>
-              {item.highlight && (
+              <item.icon className="w-[18px] h-[18px] flex-shrink-0" strokeWidth={2} />
+              {sidebarOpen && <span>{item.label}</span>}
+              {sidebarOpen && item.highlight && (
                 <Badge variant="secondary" className="ml-auto bg-accent text-white border-0 text-2xs h-5 px-1.5">FAST</Badge>
               )}
             </NavLink>
@@ -253,21 +265,43 @@ export default function AppLayout({ children }) {
           ))}
         </nav>
 
-        <div className="px-3 py-3 border-t border-border">
-          <div className="rounded-xl bg-gradient-to-br from-primary to-slate-800 p-4 text-white">
-            <div className="cb-overline text-white/60 mb-1">Subscription</div>
-            <div className="font-display font-bold text-lg capitalize">{user?.subscription?.replace("_", " ") || "Free"}</div>
-            <Link to="/subscription" className="text-xs text-accent font-semibold mt-2 inline-block" data-testid="upgrade-link">
-              Upgrade plan →
+        <div className={`py-3 border-t border-border space-y-2 ${sidebarOpen ? 'px-3' : 'px-2'}`}>
+          {sidebarOpen ? (
+            <div className="rounded-xl bg-gradient-to-br from-primary to-slate-800 p-4 text-white">
+              <div className="cb-overline text-white/60 mb-1">Subscription</div>
+              <div className="font-display font-bold text-lg capitalize">{user?.subscription?.replace("_", " ") || "Free"}</div>
+              <Link to="/subscription" className="text-xs text-accent font-semibold mt-2 inline-block" data-testid="upgrade-link">
+                Upgrade plan →
+              </Link>
+            </div>
+          ) : (
+            <Link
+              to="/subscription"
+              title="Subscription — Upgrade plan"
+              data-testid="upgrade-link"
+              className="flex items-center justify-center py-2 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground"
+            >
+              <CreditCard className="w-[18px] h-[18px]" strokeWidth={2} />
             </Link>
-          </div>
+          )}
+          <button
+            type="button"
+            onClick={handleLogout}
+            data-testid="sidebar-logout-btn"
+            title={sidebarOpen ? undefined : "Logout"}
+            className={`w-full flex items-center gap-3 py-2.5 rounded-lg text-sm font-semibold text-destructive hover:bg-destructive/10 transition-all ${sidebarOpen ? 'px-3' : 'px-0 justify-center'}`}
+          >
+            <LogOut className="w-[18px] h-[18px] flex-shrink-0" strokeWidth={2} />
+            {sidebarOpen && <span>Logout</span>}
+          </button>
         </div>
       </aside>
 
-      {/* Main — margin-left tracks the sidebar's own width/visibility so
-          collapsing it (desktop) reflows content instead of leaving a gap;
-          below lg the sidebar is always an overlay, so no margin there. */}
-      <div className={`flex flex-col min-h-screen transition-[margin] duration-200 ${sidebarOpen ? 'lg:ml-72' : 'lg:ml-0'}`}>
+      {/* Main — margin-left tracks the sidebar's own width at every
+          breakpoint, since the sidebar is never fully off-canvas anymore
+          (see above); expanding it further on mobile still overlays instead
+          of reflowing (ml-16 stays put below lg, only lg:ml-72 changes). */}
+      <div className={`flex flex-col min-h-screen transition-[margin] duration-200 ml-16 ${sidebarOpen ? 'lg:ml-72' : 'lg:ml-16'}`}>
         {/* Topbar */}
         <header className="h-16 bg-white border-b border-border flex items-center justify-between px-4 sm:px-8 sticky top-0 z-30">
           <div className="flex items-center gap-3">
@@ -281,9 +315,6 @@ export default function AppLayout({ children }) {
                 <ArrowLeft className="w-5 h-5" />
               </button>
             )}
-            <button onClick={toggleSidebar} data-testid="open-sidebar-btn" aria-label="Toggle sidebar">
-              <Menu className="w-5 h-5" />
-            </button>
             <div className="hidden sm:flex items-center gap-2 text-sm">
               <span className="cb-overline">Welcome back,</span>
               <span className="font-semibold">{user?.name?.split(" ")[0] || "User"}</span>

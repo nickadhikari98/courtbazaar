@@ -3,7 +3,7 @@ CourtBazaar - Legal Operations & Court Services Marketplace
 Main FastAPI application
 """
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Header, Query, Request, Response
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -18,7 +18,6 @@ import secrets
 import asyncio
 import jwt
 import bcrypt
-import requests
 from datetime import datetime, timezone, timedelta
 
 ROOT_DIR = Path(__file__).parent
@@ -39,7 +38,14 @@ if not JWT_SECRET:
     )
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 APP_NAME = os.environ.get('APP_NAME', 'courtbazaar')
-GOOGLE_OAUTH_ENABLED = os.environ.get('GOOGLE_OAUTH_ENABLED', 'false').lower() == 'true'
+# Google Identity Services — the frontend runs the real Google sign-in button
+# with this Client ID and hands us back a signed ID token, verified below in
+# /auth/google/session. No third-party broker sits in between, so the only
+# domain a user ever sees on Google's own "Choose an account" screen is
+# whatever app name/domain this Client ID's OAuth consent screen is
+# configured with in Google Cloud Console — never a domain of ours.
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
+GOOGLE_OAUTH_ENABLED = os.environ.get('GOOGLE_OAUTH_ENABLED', 'false').lower() == 'true' and bool(GOOGLE_CLIENT_ID)
 CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',')
 MAX_UPLOAD_SIZE_BYTES = int(os.environ.get('MAX_UPLOAD_SIZE_BYTES', str(10 * 1024 * 1024)))  # 10MB default
 ALLOWED_UPLOAD_EXTENSIONS = {'pdf', 'jpg', 'jpeg', 'png'}
@@ -181,7 +187,10 @@ def _enrich_user_with_roles_and_capabilities(user: dict) -> dict:
 async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ", 1)[1]
-        # Try Emergent google session token
+        # Legacy session-store token (pre-dates the direct Google Identity
+        # Services integration below, which now just issues a JWT like every
+        # other login path) — kept only so sessions issued before that
+        # switch don't get force-logged-out; nothing writes new rows here.
         sess = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
         if sess:
             exp = sess.get("expires_at")
@@ -504,7 +513,10 @@ async def root():
 # 501 wherever GOOGLE_OAUTH_ENABLED isn't set (e.g. local dev).
 @api_router.get("/config/public")
 async def public_config():
-    return {"google_oauth_enabled": GOOGLE_OAUTH_ENABLED}
+    return {
+        "google_oauth_enabled": GOOGLE_OAUTH_ENABLED,
+        "google_client_id": GOOGLE_CLIENT_ID if GOOGLE_OAUTH_ENABLED else None,
+    }
 
 # ---------- AUTH ----------
 # Roles that must never be created by any self-service signup path
@@ -677,58 +689,87 @@ async def otp_verify(req: OtpVerify):
     user.pop("_id", None)
     return {"token": token, "user": _enrich_user_with_roles_and_capabilities(user)}
 
-@api_router.post("/auth/google/session")
-async def google_session(payload: dict, response: Response):
+def _frontend_base_url() -> str:
+    """Same convention leads.py's set-password emails use — first configured
+    CORS origin, falling back to the production domain."""
+    return (os.environ.get("CORS_ORIGINS", "").split(",")[0] or "").strip() or "https://courtbazaar.com"
+
+
+@api_router.post("/auth/google/callback")
+async def google_callback(
+    request: Request,
+    credential: str = Form(...),
+    g_csrf_token: Optional[str] = Form(None),
+    role: str = "advocate",
+):
+    """Google Identity Services posts the credential straight here as a real
+    top-level browser navigation (ux_mode: 'redirect' in GoogleAuthButton.jsx)
+    rather than via window.open — GIS's default popup mode turned out to get
+    silently blocked by Chrome's popup blocker on a real click (confirmed via
+    its own console error, "Failed to open popup window ... Maybe blocked by
+    the browser"), which is a known reliability issue with that mode. Redirect
+    mode has no popup to block: straight client-to-Google-to-us, still no
+    third-party broker, so the only branding a user ever sees on Google's own
+    consent screen is this Client ID's own OAuth consent screen.
+
+    `role` rides along as a query param on login_uri itself (GIS preserves it
+    verbatim since it's just part of the URL it POSTs to) — the only way to
+    thread Register.jsx's role picker through a flow that's now a real page
+    navigation instead of a JS callback.
+
+    CSRF: GIS also sets a same-site `g_csrf_token` cookie on the page that
+    rendered the button and repeats it as a form field here — checked below
+    when both are present. It's only present when login_uri shares an exact
+    domain with the frontend (true in production, where /api is reverse-
+    proxied under the same domain — see nginx.conf); in local dev, frontend
+    and backend are different origins/ports so the cookie never arrives, and
+    the check is skipped rather than hard-failing dev. Either way, credential
+    forgery itself is already ruled out by verify_oauth2_token below — this
+    is defense-in-depth against a real page tricking a signed-in browser into
+    replaying someone else's credential, not the primary trust boundary."""
+    frontend_base = _frontend_base_url()
     if not GOOGLE_OAUTH_ENABLED:
-        raise HTTPException(501, "Google login is not configured on this server")
-    session_id = payload.get("session_id")
-    if not session_id:
-        raise HTTPException(400, "session_id required")
+        return RedirectResponse(f"{frontend_base}/login?error=google_auth_unavailable", status_code=302)
+    cookie_csrf = request.cookies.get("g_csrf_token")
+    if cookie_csrf and g_csrf_token and cookie_csrf != g_csrf_token:
+        return RedirectResponse(f"{frontend_base}/login?error=google_auth_failed", status_code=302)
     try:
-        r = requests.get(
-            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-            headers={"X-Session-ID": session_id}, timeout=15,
-        )
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        raise HTTPException(401, f"OAuth session invalid: {e}")
-    email = data["email"]
+        from google.oauth2 import id_token as google_id_token
+        from google.auth.transport import requests as google_auth_requests
+        idinfo = google_id_token.verify_oauth2_token(credential, google_auth_requests.Request(), GOOGLE_CLIENT_ID)
+        email = idinfo["email"]
+    except Exception:
+        return RedirectResponse(f"{frontend_base}/login?error=google_auth_failed", status_code=302)
+    name = idinfo.get("name")
+    picture = idinfo.get("picture")
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
         user_id = existing["user_id"]
         await db.users.update_one(
             {"user_id": user_id},
-            {"$set": {"name": data.get("name", existing["name"]), "avatar_url": data.get("picture")}},
+            {"$set": {"name": name or existing["name"], "avatar_url": picture}},
         )
+        account_role = existing["role"]
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
+        account_role = role
         await db.users.insert_one({
             "user_id": user_id,
             "email": email,
-            "name": data.get("name", email.split("@")[0]),
-            "avatar_url": data.get("picture"),
-            "role": payload.get("role", "advocate"),
+            "name": name or email.split("@")[0],
+            "avatar_url": picture,
+            "role": account_role,
             "verified": True,
             "wallet_balance": 0.0,
             "subscription": "free",
-            "professional_profile_types": [payload.get("role", "advocate")],
+            "professional_profile_types": [account_role],
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-    session_token = data["session_token"]
-    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-    await db.user_sessions.insert_one({
-        "user_id": user_id,
-        "session_token": session_token,
-        "expires_at": expires_at.isoformat(),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-    response.set_cookie(
-        key="session_token", value=session_token, httponly=True,
-        secure=True, samesite="none", path="/", max_age=7 * 24 * 3600,
-    )
-    user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
-    return {"token": session_token, "user": _enrich_user_with_roles_and_capabilities(user)}
+    token = make_jwt(user_id, account_role)
+    # Fragment, not a query param — never sent to any server on the follow-up
+    # navigation (the browser strips it before the request line), so the JWT
+    # never lands in this redirect's own access logs or Referer headers.
+    return RedirectResponse(f"{frontend_base}/auth/google/complete#token={token}", status_code=302)
 
 @api_router.post("/auth/set-password")
 async def set_password(req: SetPasswordRequest):
@@ -2347,13 +2388,9 @@ async def public_proxy_counsels(
     }
 
 
-@api_router.get("/advocates/{advocate_id}/profile")
-async def get_advocate_profile(advocate_id: str, user=Depends(get_current_user)):
-    """Full profile detail for the "View Profile" dialog — gated behind
-    login (see /public/proxy-counsels for the anonymous card-level browse
-    endpoint this complements). Only ever returns a verified_counsel_query()
-    match, same trust gate as the list."""
-    _require_capability(user, "can_hire_proxy_counsel")
+async def _advocate_profile_or_404(advocate_id: str) -> dict:
+    """Shared lookup for the full profile-detail shape — only ever returns a
+    verified_counsel_query() match, same trust gate as the browse list."""
     import counsel_matching
     profile = await db.proxy_counsel_profiles.find_one(
         {"user_id": advocate_id, **counsel_matching.verified_counsel_query()}, {"_id": 0},
@@ -2367,6 +2404,28 @@ async def get_advocate_profile(advocate_id: str, user=Depends(get_current_user))
         for c in (await db.courts.find({"court_id": {"$in": court_ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(court_ids)) if court_ids else [])
     }
     return counsel_matching.build_advocate_card(profile, name_doc.get("name") if name_doc else None, court_names_by_id)
+
+
+@api_router.get("/public/proxy-counsels/{advocate_id}/profile")
+async def get_public_advocate_profile(advocate_id: str, request: Request):
+    """Anonymous counterpart to /advocates/{id}/profile — founder direction
+    (2026-08) is that a full counsel profile is viewable by anyone, logged in
+    or not; only booking (POST /hearing-requests) needs an account. Same
+    per-IP ceiling as /public/proxy-counsels, since this is reachable with no
+    login either."""
+    import counsel_matching
+    client_ip = request.client.host if request.client else "unknown"
+    counsel_matching.check_public_list_rate_limit(client_ip)
+    return await _advocate_profile_or_404(advocate_id)
+
+
+@api_router.get("/advocates/{advocate_id}/profile")
+async def get_advocate_profile(advocate_id: str, user=Depends(get_current_user)):
+    """Authenticated profile lookup — kept for any logged-in caller with
+    can_hire_proxy_counsel; anonymous visitors use /public/proxy-counsels/
+    {id}/profile above instead, which returns the same shape."""
+    _require_capability(user, "can_hire_proxy_counsel")
+    return await _advocate_profile_or_404(advocate_id)
 
 
 # ============================================================================

@@ -39,9 +39,10 @@ const serviceConfig = SERVICE_CONFIGS.proxy_counsel;
 const TODAY = resolveDateBound("today");
 
 /* Proxy Counsel browse page — founder direction (2026-08): the counsel grid
-   itself is public (no login wall, filters narrow the same grid in place,
-   no separate step/page to "unlock" it); only viewing a full profile or
-   booking a counsel requires an account (see requireLogin below). Replaces
+   and full profile view are both public (no login wall, filters narrow the
+   same grid in place, no separate step/page to "unlock" it); only booking a
+   counsel ("Select Counsel") requires an account (see requireLogin below).
+   Replaces
    the earlier BlaBlaCar-style "fill a form, then reveal recommendations"
    flow — that flow's now-orphaned pieces (ProxyCounselLocationForm,
    CounselDiscoveryPanel, ManualCounselSearch) were removed rather than left
@@ -85,14 +86,17 @@ export default function HireProxyCounsel() {
     setStatus("loading");
     getPublicProxyCounsels({ court_id: filters.court_id, state_id: filters.state_id, district: filters.district })
       .then(({ advocates: list }) => {
-        const filtered = excludeAdvocateId ? list.filter((a) => a.advocate_id !== excludeAdvocateId) : list;
+        // A logged-in customer who is also a verified proxy counsel
+        // themselves shouldn't see their own card in the grid they're
+        // browsing to hire someone else.
+        const filtered = list.filter((a) => a.advocate_id !== excludeAdvocateId && a.advocate_id !== user?.user_id);
         setAdvocates(filtered);
         setStatus(filtered.length ? "ready" : "empty");
       })
       .catch(() => setStatus("error"));
   };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- re-fetch only on the location filters that the backend actually filters by
-  useEffect(() => { fetchAdvocates(); }, [filters.court_id, filters.state_id, filters.district, excludeAdvocateId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- re-fetch on the location filters the backend filters by, plus whichever account is viewing (so self-exclusion re-applies across login/logout)
+  useEffect(() => { fetchAdvocates(); }, [filters.court_id, filters.state_id, filters.district, excludeAdvocateId, user?.user_id]);
 
   // Client-side sort over the already-fetched page (the backend's own order
   // is its AI match ranking — "match" keeps that as-is; the other two just
@@ -140,7 +144,6 @@ export default function HireProxyCounsel() {
   const requireLogin = () => navigate("/login", { state: { from: "/hire-proxy-counsel" } });
 
   const handleViewProfile = async (counsel) => {
-    if (!user) { requireLogin(); return; }
     try {
       const full = await getAdvocateProfile(counsel.advocate_id);
       setProfileCounsel(full);
