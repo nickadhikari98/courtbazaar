@@ -23,7 +23,7 @@ export default function BulkImport() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const { data } = await api.post("/firms/bulk-import", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      const { data } = await api.post("/firms/bulk-import", fd);
       setResult(data);
       toast.success(`${data.success.length} order(s) created · ${data.errors.length} error(s)`);
     } catch (e) { toast.error(e?.response?.data?.detail || "Upload failed"); }
