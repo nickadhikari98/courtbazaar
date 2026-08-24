@@ -26,6 +26,7 @@ import EmptyState from "@/components/shared/EmptyState";
 import Loading from "@/components/shared/Loading";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { SERVICE_CONFIGS } from "@/config/serviceRequestFields";
+import { PRICING_SLOTS, PRICING_SLOT_LABELS, EXPERIENCE_BRACKETS } from "@/config/proxyCounselPricing";
 import { resolveDateBound } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -60,6 +61,11 @@ export default function HireProxyCounsel() {
   const [filters, setFilters] = useState({
     state_id: "", state_name: "", district: "", court_id: "", court_name: "", court_type: "", hearing_date: "",
   });
+  // Browse-grid filters (founder follow-up, 2026-08) — "" means "any", same
+  // convention as filters.court_type above. Narrow the same grid in place,
+  // same as the location filters — no separate step/page for these either.
+  const [timeSlot, setTimeSlot] = useState("");
+  const [experienceBracket, setExperienceBracket] = useState("");
   const [status, setStatus] = useState("loading"); // loading | ready | empty | error
   const [advocates, setAdvocates] = useState([]);
   const [selectingId, setSelectingId] = useState(null);
@@ -84,7 +90,10 @@ export default function HireProxyCounsel() {
 
   const fetchAdvocates = () => {
     setStatus("loading");
-    getPublicProxyCounsels({ court_id: filters.court_id, state_id: filters.state_id, district: filters.district })
+    getPublicProxyCounsels({
+      court_id: filters.court_id, state_id: filters.state_id, district: filters.district,
+      time_slot: timeSlot, experience_bracket: experienceBracket,
+    })
       .then(({ advocates: list }) => {
         // A logged-in customer who is also a verified proxy counsel
         // themselves shouldn't see their own card in the grid they're
@@ -95,8 +104,8 @@ export default function HireProxyCounsel() {
       })
       .catch(() => setStatus("error"));
   };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- re-fetch on the location filters the backend filters by, plus whichever account is viewing (so self-exclusion re-applies across login/logout)
-  useEffect(() => { fetchAdvocates(); }, [filters.court_id, filters.state_id, filters.district, excludeAdvocateId, user?.user_id]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- re-fetch on the location + time-slot/experience filters the backend filters by, plus whichever account is viewing (so self-exclusion re-applies across login/logout)
+  useEffect(() => { fetchAdvocates(); }, [filters.court_id, filters.state_id, filters.district, timeSlot, experienceBracket, excludeAdvocateId, user?.user_id]);
 
   // Client-side sort over the already-fetched page (the backend's own order
   // is its AI match ranking — "match" keeps that as-is; the other two just
@@ -242,6 +251,30 @@ export default function HireProxyCounsel() {
                 }}
                 data-testid="proxy-counsel-hearing-date"
               />
+            </div>
+            <div className="max-w-[200px]">
+              <Label>Time slot</Label>
+              <Select value={timeSlot || "any"} onValueChange={(v) => setTimeSlot(v === "any" ? "" : v)}>
+                <SelectTrigger data-testid="proxy-counsel-time-slot"><SelectValue placeholder="Any time slot" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="any">Any time slot</SelectItem>
+                  {PRICING_SLOTS.map((slot) => (
+                    <SelectItem key={slot} value={slot}>{PRICING_SLOT_LABELS[slot]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="max-w-[200px]">
+              <Label>Experience</Label>
+              <Select value={experienceBracket || "any"} onValueChange={(v) => setExperienceBracket(v === "any" ? "" : v)}>
+                <SelectTrigger data-testid="proxy-counsel-experience"><SelectValue placeholder="Any experience" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="any">Any experience</SelectItem>
+                  {EXPERIENCE_BRACKETS.map((b) => (
+                    <SelectItem key={b.key} value={b.key}>{b.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="flex items-center gap-2 pb-1.5">
               <Switch checked={isUrgent} onCheckedChange={setIsUrgent} data-testid="urgent-toggle" />

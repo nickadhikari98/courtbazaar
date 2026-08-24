@@ -2337,7 +2337,9 @@ async def _advocate_cards_for(ranked: list) -> list:
 async def recommendations_advocates(
     court_id: Optional[str] = None, state_id: Optional[str] = None, district: Optional[str] = None,
     specialization: Optional[str] = None, min_experience_years: Optional[float] = None,
+    experience_bracket: Optional[str] = None,
     min_rating: Optional[float] = None, fee_min: Optional[float] = None, fee_max: Optional[float] = None,
+    time_slot: Optional[str] = None,
     available_only: bool = False, limit: int = 20,
     user=Depends(get_current_user),
 ):
@@ -2345,7 +2347,8 @@ async def recommendations_advocates(
     import counsel_matching
     ranked, total = await counsel_matching.list_and_recommend(
         db, court_id=court_id, state_id=state_id, district=district, specialization=specialization,
-        min_experience_years=min_experience_years, min_rating=min_rating, fee_min=fee_min, fee_max=fee_max,
+        min_experience_years=min_experience_years, experience_bracket=experience_bracket,
+        min_rating=min_rating, fee_min=fee_min, fee_max=fee_max, time_slot=time_slot,
         available_only=available_only, limit=limit,
     )
     generated_at = datetime.now(timezone.utc).isoformat()
@@ -2362,7 +2365,9 @@ async def public_proxy_counsels(
     request: Request,
     court_id: Optional[str] = None, state_id: Optional[str] = None, district: Optional[str] = None,
     specialization: Optional[str] = None, min_experience_years: Optional[float] = None,
+    experience_bracket: Optional[str] = None,
     min_rating: Optional[float] = None, fee_min: Optional[float] = None, fee_max: Optional[float] = None,
+    time_slot: Optional[str] = None,
     available_only: bool = False, limit: int = 20,
 ):
     """Public, unauthenticated counterpart to /recommendations/advocates —
@@ -2370,13 +2375,18 @@ async def public_proxy_counsels(
     public (no login wall), only viewing a full profile or booking one
     requires an account (see /advocates/{id}/profile and
     POST /hearing-requests). Returns counsel_matching.public_advocate_card's
-    trimmed shape only — never bio/education/languages/full court list."""
+    trimmed shape only — never bio/education/languages/full court list.
+
+    time_slot/experience_bracket back the browse page's own filters (founder
+    follow-up, 2026-08) — see counsel_matching.list_and_recommend for what
+    each one matches against."""
     import counsel_matching
     client_ip = request.client.host if request.client else "unknown"
     counsel_matching.check_public_list_rate_limit(client_ip)
     ranked, total = await counsel_matching.list_and_recommend(
         db, court_id=court_id, state_id=state_id, district=district, specialization=specialization,
-        min_experience_years=min_experience_years, min_rating=min_rating, fee_min=fee_min, fee_max=fee_max,
+        min_experience_years=min_experience_years, experience_bracket=experience_bracket,
+        min_rating=min_rating, fee_min=fee_min, fee_max=fee_max, time_slot=time_slot,
         available_only=available_only, limit=limit,
     )
     generated_at = datetime.now(timezone.utc).isoformat()

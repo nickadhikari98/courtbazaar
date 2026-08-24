@@ -367,9 +367,11 @@ async def list_and_recommend(
     district: Optional[str] = None,
     specialization: Optional[str] = None,
     min_experience_years: Optional[float] = None,
+    experience_bracket: Optional[str] = None,
     min_rating: Optional[float] = None,
     fee_min: Optional[float] = None,
     fee_max: Optional[float] = None,
+    time_slot: Optional[str] = None,
     available_only: bool = False,
     limit: int = 20,
 ) -> Tuple[List[dict], int]:
@@ -387,16 +389,40 @@ async def list_and_recommend(
     different state/district than the one selected correctly matches
     nothing rather than silently ignoring the location. court_id given
     alone (no location) still works as a plain equality filter, unchanged
-    from before, for callers that only ever had a specific court in mind."""
+    from before, for callers that only ever had a specific court in mind.
+
+    experience_bracket filters to an exact bracket (practice.EXPERIENCE_BRACKETS'
+    keys, e.g. "0-3"/"3-5"/"5-7"/"10+") - the same buckets a counsel picks on
+    their own profile - separate from min_experience_years' open-ended
+    "at least N years" numeric filter, since the browse page's filter is
+    bucket-shaped, not a number input.
+
+    time_slot filters to counsels who've priced that slot in either court
+    type's pricing grid (practice.PRICING_SLOTS, e.g. "morning"/"afternoon").
+    A counsel who hasn't priced a slot at all hasn't said they take that kind
+    of work, so an unpriced slot is excluded rather than treated as a match."""
+    import practice
     query: Dict[str, Any] = verified_counsel_query()
     if specialization:
         query["practice_areas"] = {"$elemMatch": {"$regex": re.escape(specialization), "$options": "i"}}
     if min_experience_years is not None:
         query["experience_years"] = {"$gte": min_experience_years}
+    if experience_bracket is not None:
+        valid_brackets = {b["key"] for b in practice.EXPERIENCE_BRACKETS}
+        if experience_bracket not in valid_brackets:
+            raise HTTPException(400, f"Invalid experience bracket. Allowed: {', '.join(sorted(valid_brackets))}")
+        query["experience_bracket"] = experience_bracket
     if min_rating is not None:
         query["rating"] = {"$gte": min_rating}
     if available_only:
         query["availability_mode"] = True
+    if time_slot is not None:
+        if time_slot not in practice.PRICING_SLOTS:
+            raise HTTPException(400, f"Invalid time slot. Allowed: {', '.join(practice.PRICING_SLOTS)}")
+        query["$or"] = [
+            {f"pricing.district.{time_slot}": {"$exists": True}},
+            {f"pricing.high_court.{time_slot}": {"$exists": True}},
+        ]
 
     if state_id or district:
         court_filter: Dict[str, Any] = {}

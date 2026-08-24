@@ -169,6 +169,75 @@ def test_list_and_recommend_fee_range_filter():
     asyncio.run(body())
 
 
+def test_list_and_recommend_experience_bracket_filter():
+    """Founder follow-up (2026-08): the browse page filters by exact bracket
+    ("0-3"/"3-5"/"5-7"/"10+"), not an open-ended "at least N years" number —
+    a "5-7" filter must exclude a "10+" counsel, not just anyone below 5."""
+    async def body():
+        db = _db()
+        junior = f"test_counsel_{uuid.uuid4().hex[:8]}"
+        mid = f"test_counsel_{uuid.uuid4().hex[:8]}"
+        senior = f"test_counsel_{uuid.uuid4().hex[:8]}"
+        try:
+            await db.proxy_counsel_profiles.insert_one(_profile(junior, experience_bracket="0-3"))
+            await db.proxy_counsel_profiles.insert_one(_profile(mid, experience_bracket="5-7"))
+            await db.proxy_counsel_profiles.insert_one(_profile(senior, experience_bracket="10+"))
+            ranked, _ = await counsel_matching.list_and_recommend(db, experience_bracket="5-7")
+            ids = {c["user_id"] for c in ranked}
+            assert mid in ids
+            assert junior not in ids
+            assert senior not in ids
+        finally:
+            await _cleanup(db, [junior, mid, senior])
+    asyncio.run(body())
+
+
+def test_list_and_recommend_experience_bracket_rejects_invalid_value():
+    async def body():
+        db = _db()
+        try:
+            await counsel_matching.list_and_recommend(db, experience_bracket="not-a-bracket")
+            assert False, "expected HTTPException for an invalid bracket"
+        except Exception as e:
+            assert getattr(e, "status_code", None) == 400
+    asyncio.run(body())
+
+
+def test_list_and_recommend_time_slot_filter():
+    """A counsel who hasn't priced the "morning" slot at all hasn't said
+    they take that kind of work — filtering by time_slot="morning" must
+    exclude them, matching only counsels with that slot priced under either
+    court type."""
+    async def body():
+        db = _db()
+        morning_only = f"test_counsel_{uuid.uuid4().hex[:8]}"
+        afternoon_only = f"test_counsel_{uuid.uuid4().hex[:8]}"
+        high_court_morning = f"test_counsel_{uuid.uuid4().hex[:8]}"
+        try:
+            await db.proxy_counsel_profiles.insert_one(_profile(morning_only, pricing={"district": {"morning": 500}}))
+            await db.proxy_counsel_profiles.insert_one(_profile(afternoon_only, pricing={"district": {"afternoon": 500}}))
+            await db.proxy_counsel_profiles.insert_one(_profile(high_court_morning, pricing={"high_court": {"morning": 1000}}))
+            ranked, _ = await counsel_matching.list_and_recommend(db, time_slot="morning")
+            ids = {c["user_id"] for c in ranked}
+            assert morning_only in ids
+            assert high_court_morning in ids
+            assert afternoon_only not in ids
+        finally:
+            await _cleanup(db, [morning_only, afternoon_only, high_court_morning])
+    asyncio.run(body())
+
+
+def test_list_and_recommend_time_slot_rejects_invalid_value():
+    async def body():
+        db = _db()
+        try:
+            await counsel_matching.list_and_recommend(db, time_slot="not-a-slot")
+            assert False, "expected HTTPException for an invalid time slot"
+        except Exception as e:
+            assert getattr(e, "status_code", None) == 400
+    asyncio.run(body())
+
+
 def test_list_and_recommend_court_id_filter():
     async def body():
         db = _db()

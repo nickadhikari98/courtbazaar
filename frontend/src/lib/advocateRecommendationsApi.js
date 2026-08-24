@@ -39,6 +39,13 @@ export async function getPublicProxyCounsels(context) {
     court_id: context?.court_id || undefined,
     state_id: context?.state_id || undefined,
     district: context?.district || undefined,
+    // Browse-page filters (founder follow-up, 2026-08) — time_slot matches
+    // counsel_matching.PRICING_SLOTS keys ("morning"/"afternoon"/...),
+    // experience_bracket matches practice.EXPERIENCE_BRACKETS keys
+    // ("0-3"/"3-5"/"5-7"/"10+"). Both optional, undefined when unset so an
+    // empty filter never gets sent as a literal "" query param.
+    time_slot: context?.time_slot || undefined,
+    experience_bracket: context?.experience_bracket || undefined,
     // Backend defaults to 20 (a reasonable AI-recommendation batch size),
     // which silently truncated the browse grid — this page wants "show all
     // verified counsels for these filters", not a top-20 pick, so it always
