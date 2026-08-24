@@ -24,8 +24,8 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [phone, setPhone] = useState("");
-  const [otp, setOtp] = useState("");
+  // const [phone, setPhone] = useState("");
+  // const [otp, setOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
@@ -67,31 +67,31 @@ export default function Login() {
     } finally { setLoading(false); }
   };
 
-  const handleOtpSend = async () => {
-    if (!phone.match(/^\d{10}$/)) {
-      toast.error("Enter a valid 10-digit phone number");
-      return;
-    }
-    setLoading(true);
-    try {
-      await otpRequest(phone);
-      setOtpSent(true);
-      toast.success("OTP sent");
-    } catch {
-      toast.error("Could not send OTP");
-    } finally { setLoading(false); }
-  };
+  // const handleOtpSend = async () => {
+  //   if (!phone.match(/^\d{10}$/)) {
+  //     toast.error("Enter a valid 10-digit phone number");
+  //     return;
+  //   }
+  //   setLoading(true);
+  //   try {
+  //     await otpRequest(phone);
+  //     setOtpSent(true);
+  //     toast.success("OTP sent");
+  //   } catch {
+  //     toast.error("Could not send OTP");
+  //   } finally { setLoading(false); }
+  // };
 
-  const handleOtpVerify = async () => {
-    setLoading(true);
-    try {
-      const u = await otpVerify(phone, otp);
-      toast.success(`Welcome, ${u.name}`);
-      navigate(returnTo || "/dashboard");
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Invalid OTP");
-    } finally { setLoading(false); }
-  };
+  // const handleOtpVerify = async () => {
+  //   setLoading(true);
+  //   try {
+  //     const u = await otpVerify(phone, otp);
+  //     toast.success(`Welcome, ${u.name}`);
+  //     navigate(returnTo || "/dashboard");
+  //   } catch (e) {
+  //     toast.error(e?.response?.data?.detail || "Invalid OTP");
+  //   } finally { setLoading(false); }
+  // };
 
   return (
     <div className="min-h-screen bg-background grid grid-cols-1 lg:grid-cols-2">
@@ -134,10 +134,10 @@ export default function Login() {
             </div>
 
             <Tabs defaultValue="email">
-              <TabsList className="grid w-full grid-cols-2 mb-6" data-testid="login-tabs">
+              {/* <TabsList className="grid w-full grid-cols-2 mb-6" data-testid="login-tabs">
                 <TabsTrigger value="email" data-testid="login-tab-email"><Mail className="w-4 h-4 mr-2" /> Email</TabsTrigger>
                 <TabsTrigger value="phone" data-testid="login-tab-phone"><Phone className="w-4 h-4 mr-2" /> Phone OTP</TabsTrigger>
-              </TabsList>
+              </TabsList> */}
 
               <TabsContent value="email">
                 <form onSubmit={handleLogin} className="space-y-4">
@@ -174,7 +174,7 @@ export default function Login() {
                 </form>
               </TabsContent>
 
-              <TabsContent value="phone">
+              {/* <TabsContent value="phone">
                 {!otpSent ? (
                   <div className="space-y-4">
                     <div>
@@ -205,7 +205,7 @@ export default function Login() {
                     </Button>
                   </div>
                 )}
-              </TabsContent>
+              </TabsContent> */}
             </Tabs>
 
             {googleOAuthEnabled && (
