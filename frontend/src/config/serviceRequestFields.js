@@ -1,4 +1,4 @@
-import { Gavel } from "lucide-react";
+import { Gavel, Scale } from "lucide-react";
 import { SERVICE_WORK_TYPES } from "@/config/serviceWorkTypes";
 
 export const PRIORITY_OPTIONS = ["Normal", "Urgent", "Extremely Urgent"];
@@ -17,6 +17,10 @@ export const SERVICE_CONFIGS = {
     title: "Hire Proxy Counsel",
     description: "Request an available proxy counsel to appear on your behalf.",
     heroIcon: Gavel,
+    // Browse-grid result count label ("{n} {unitLabel}(s)") — see
+    // CounselHiringPage.jsx, the component both this and `counsel` below
+    // configure rather than duplicate.
+    unitLabel: "proxy counsel",
     helperText: "Fill in your request below — AI recommendations for the best-matched proxy counsels appear automatically once you continue.",
     submitLabel: "Find Proxy Counsel",
     reviewTitle: "Review your request",
@@ -60,5 +64,23 @@ export const SERVICE_CONFIGS = {
       return errors;
     },
   },
-  // counsel: {...} added when Hire Counsel's request form goes live — same shape
+  // Hire Counsel (founder direction, 2026-08): full-matter representation,
+  // as opposed to proxy_counsel's single-appearance engagements — but the
+  // same browse/select/negotiate/pay flow (CounselHiringPage.jsx) and the
+  // same verified counsel pool, since there's no separate "full
+  // representation" professional profile in the schema yet. Only the
+  // presentation differs; validate/workTypeOptions/etc. below are unused by
+  // that flow today (same as on proxy_counsel), kept out rather than filled
+  // in speculatively.
+  counsel: {
+    serviceType: "counsel",
+    title: "Hire Counsel",
+    description: "Engage an advocate for full legal representation on your matter.",
+    heroIcon: Scale,
+    unitLabel: "counsel",
+    emptyStateCopy: {
+      title: "No requests yet",
+      body: "Send your first request above — any available Counsel can accept it.",
+    },
+  },
 };

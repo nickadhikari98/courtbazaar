@@ -113,9 +113,7 @@ export async function uploadHearingDocument(hearingId, kind, file) {
   const form = new FormData();
   form.append("kind", kind);
   form.append("file", file);
-  const { data } = await api.post(`/hearing-requests/${hearingId}/documents`, form, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
+  const { data } = await api.post(`/hearing-requests/${hearingId}/documents`, form);
   return data;
 }
 

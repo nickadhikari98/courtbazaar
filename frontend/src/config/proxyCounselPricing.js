@@ -12,7 +12,6 @@ export const PRICING_SLOT_LABELS = {
   afternoon: "2 PM – 5 PM",
   full_day: "Full Day",
   weekend: "Weekends",
-  urgent: "Urgent (same-day)",
 };
 
 export const PRICING_COURT_TYPES = ["district", "high_court"];

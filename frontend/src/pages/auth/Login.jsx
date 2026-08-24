@@ -16,16 +16,16 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   // Set by a page a visitor was bounced off of for needing an account (e.g.
-  // HireProxyCounsel.jsx's "View Profile"/"Select Counsel" on the public
-  // browse grid) — returns them to where they actually were instead of the
-  // generic role-based landing page below.
+  // HireProxyCounsel.jsx's "Select Counsel" on the public browse grid —
+  // viewing a profile itself never requires login) — returns them to where
+  // they actually were instead of the generic role-based landing page below.
   const returnTo = location.state?.from;
-  const { login, otpRequest, otpVerify, googleLogin, googleOAuthEnabled } = useAuth();
+  const { login, otpRequest, otpVerify, googleOAuthEnabled, googleClientId } = useAuth();
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [phone, setPhone] = useState("");
-  const [otp, setOtp] = useState("");
+  // const [phone, setPhone] = useState("");
+  // const [otp, setOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
@@ -37,7 +37,23 @@ export default function Login() {
       sessionStorage.removeItem("cb_auth_message");
       toast.error(msg);
     }
+    // Set by server.py's /auth/google/callback redirecting back here on a
+    // failed/misconfigured Google sign-in (it's a real page navigation by
+    // that point, not something a JS catch block can report directly).
+    if (new URLSearchParams(location.search).get("error") === "google_auth_failed") {
+      toast.error("Google sign-in failed");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, off whatever query string this landing navigation carried
   }, []);
+
+  // Google sign-in leaves the SPA entirely for the redirect round trip (see
+  // GoogleAuthButton.jsx), so router state like returnTo can't just ride
+  // along in memory the way it does for email/OTP login below — stashed here
+  // so App.js's GoogleAuthComplete can pick it back up once the browser
+  // returns.
+  useEffect(() => {
+    if (returnTo) sessionStorage.setItem("cb_google_return_to", returnTo);
+  }, [returnTo]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -51,31 +67,31 @@ export default function Login() {
     } finally { setLoading(false); }
   };
 
-  const handleOtpSend = async () => {
-    if (!phone.match(/^\d{10}$/)) {
-      toast.error("Enter a valid 10-digit phone number");
-      return;
-    }
-    setLoading(true);
-    try {
-      await otpRequest(phone);
-      setOtpSent(true);
-      toast.success("OTP sent");
-    } catch {
-      toast.error("Could not send OTP");
-    } finally { setLoading(false); }
-  };
+  // const handleOtpSend = async () => {
+  //   if (!phone.match(/^\d{10}$/)) {
+  //     toast.error("Enter a valid 10-digit phone number");
+  //     return;
+  //   }
+  //   setLoading(true);
+  //   try {
+  //     await otpRequest(phone);
+  //     setOtpSent(true);
+  //     toast.success("OTP sent");
+  //   } catch {
+  //     toast.error("Could not send OTP");
+  //   } finally { setLoading(false); }
+  // };
 
-  const handleOtpVerify = async () => {
-    setLoading(true);
-    try {
-      const u = await otpVerify(phone, otp);
-      toast.success(`Welcome, ${u.name}`);
-      navigate(returnTo || "/dashboard");
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Invalid OTP");
-    } finally { setLoading(false); }
-  };
+  // const handleOtpVerify = async () => {
+  //   setLoading(true);
+  //   try {
+  //     const u = await otpVerify(phone, otp);
+  //     toast.success(`Welcome, ${u.name}`);
+  //     navigate(returnTo || "/dashboard");
+  //   } catch (e) {
+  //     toast.error(e?.response?.data?.detail || "Invalid OTP");
+  //   } finally { setLoading(false); }
+  // };
 
   return (
     <div className="min-h-screen bg-background grid grid-cols-1 lg:grid-cols-2">
@@ -118,10 +134,10 @@ export default function Login() {
             </div>
 
             <Tabs defaultValue="email">
-              <TabsList className="grid w-full grid-cols-2 mb-6" data-testid="login-tabs">
+              {/* <TabsList className="grid w-full grid-cols-2 mb-6" data-testid="login-tabs">
                 <TabsTrigger value="email" data-testid="login-tab-email"><Mail className="w-4 h-4 mr-2" /> Email</TabsTrigger>
                 <TabsTrigger value="phone" data-testid="login-tab-phone"><Phone className="w-4 h-4 mr-2" /> Phone OTP</TabsTrigger>
-              </TabsList>
+              </TabsList> */}
 
               <TabsContent value="email">
                 <form onSubmit={handleLogin} className="space-y-4">
@@ -158,7 +174,7 @@ export default function Login() {
                 </form>
               </TabsContent>
 
-              <TabsContent value="phone">
+              {/* <TabsContent value="phone">
                 {!otpSent ? (
                   <div className="space-y-4">
                     <div>
@@ -189,7 +205,7 @@ export default function Login() {
                     </Button>
                   </div>
                 )}
-              </TabsContent>
+              </TabsContent> */}
             </Tabs>
 
             {googleOAuthEnabled && (
@@ -199,7 +215,7 @@ export default function Login() {
                   <span className="text-2xs uppercase tracking-wide font-bold text-muted-foreground">Or continue with</span>
                   <div className="h-px flex-1 bg-border" />
                 </div>
-                <GoogleAuthButton onClick={() => googleLogin()} label="Continue with Google" />
+                <GoogleAuthButton clientId={googleClientId} />
               </>
             )}
           </CardContent>

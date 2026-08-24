@@ -1,6 +1,6 @@
-import React, { useEffect, Suspense, lazy } from "react";
+import React, { Suspense, lazy, useEffect, useRef } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import ScrollToTop from "@/components/ScrollToTop";
@@ -71,8 +71,8 @@ const DeliveryHub = lazy(() => import("@/pages/delivery/DeliveryHub"));
 const StenographerBooking = lazy(() => import("@/pages/special/StenographerBooking"));
 
 /** Route-transition fallback — same spinner treatment already used by
- * ProtectedRoute's auth-loading state and AuthCallback below, so a lazy
- * chunk loading doesn't introduce a new visual pattern. */
+ * ProtectedRoute's auth-loading state, so a lazy chunk loading doesn't
+ * introduce a new visual pattern. */
 function RouteLoadingFallback() {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-background">
@@ -82,25 +82,29 @@ function RouteLoadingFallback() {
   );
 }
 
-function AuthCallback() {
+/** Landing spot for GoogleAuthButton.jsx's redirect-mode sign-in — server.py's
+ * /auth/google/callback already verified the credential and issued a session
+ * token by the time the browser lands here, in the URL fragment (never sent
+ * to any server, unlike a query param). Login.jsx's "Select Counsel" bounce
+ * (see returnTo there) survives the round trip via sessionStorage, since
+ * router state can't ride along across a real page navigation to Google and
+ * back. */
+function GoogleAuthComplete() {
   const navigate = useNavigate();
-  const { exchangeGoogleSession } = useAuth();
-  const processed = React.useRef(false);
+  const { completeGoogleLogin } = useAuth();
+  const processed = useRef(false);
 
   useEffect(() => {
     if (processed.current) return;
     processed.current = true;
-    const hash = window.location.hash;
-    const sessionId = hash.match(/session_id=([^&]+)/)?.[1];
-    const role = new URLSearchParams(window.location.search).get("role") || "advocate";
-    if (!sessionId) {
-      navigate("/login");
-      return;
-    }
-    exchangeGoogleSession(sessionId, role)
-      .then(() => navigate("/dashboard", { replace: true }))
+    const token = window.location.hash.match(/token=([^&]+)/)?.[1];
+    if (!token) { navigate("/login"); return; }
+    const returnTo = sessionStorage.getItem("cb_google_return_to");
+    sessionStorage.removeItem("cb_google_return_to");
+    completeGoogleLogin(decodeURIComponent(token))
+      .then((u) => navigate(returnTo || (u.role === "admin" ? "/admin" : u.role === "vendor" ? "/vendor" : "/dashboard"), { replace: true }))
       .catch(() => navigate("/login"));
-  }, [exchangeGoogleSession, navigate]);
+  }, [completeGoogleLogin, navigate]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">
@@ -125,6 +129,24 @@ function HireProxyCounselRoute() {
     return <Navigate to="/dashboard" replace />;
   }
   return <HireProxyCounsel />;
+}
+
+// HireCounsel.jsx renders the same shared CounselHiringPage component as
+// HireProxyCounsel above, which manages its own AppLayout shell internally
+// (see that component) — so like HireProxyCounselRoute, this can't sit
+// inside the <ProtectedRoute><AppLayout/></ProtectedRoute> group below
+// without double-wrapping the shell. Unlike Hire Proxy Counsel this route is
+// login-gated (no anonymous browsing for full-representation engagements),
+// so this is ProtectedRoute's login+capability check reimplemented here
+// rather than reused, purely because of the layout constraint.
+function HireCounselRoute() {
+  const { user, loading } = useAuth();
+  if (loading) return <RouteLoadingFallback />;
+  if (!user) return <Navigate to="/login" state={{ from: "/hire-counsel" }} replace />;
+  if (!user.capabilities?.includes("can_hire_proxy_counsel")) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <HireCounsel />;
 }
 
 function ProtectedRoute({ children, roles, capabilities }) {
@@ -152,10 +174,6 @@ function ProtectedRoute({ children, roles, capabilities }) {
 }
 
 function AppRouter() {
-  const location = useLocation();
-  if (location.hash?.includes("session_id=")) {
-    return <AuthCallback />;
-  }
   return (
     <>
     <ScrollToTop />
@@ -166,7 +184,7 @@ function AppRouter() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/auth/set-password" element={<SetPassword />} />
-      <Route path="/auth/callback" element={<AuthCallback />} />
+      <Route path="/auth/google/complete" element={<GoogleAuthComplete />} />
       <Route path="/vendor-signup" element={<VendorOnboarding />} />
       <Route path="/about" element={<About />} />
       <Route path="/contact" element={<Contact />} />
@@ -176,6 +194,8 @@ function AppRouter() {
       <Route path="/legal/:slug" element={<LegalDocument />} />
       {/* Public: browsable without login, see HireProxyCounselRoute above */}
       <Route path="/hire-proxy-counsel" element={<HireProxyCounselRoute />} />
+      {/* Login-gated but still outside the AppLayout-wrapping group below — see HireCounselRoute above */}
+      <Route path="/hire-counsel" element={<HireCounselRoute />} />
 
       <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route path="/dashboard" element={<Dashboard />} />
@@ -200,7 +220,6 @@ function AppRouter() {
             server.py) — a plain advocate/customer account never sees these. */}
         <Route path="/practice" element={<ProtectedRoute capabilities={["can_practice_proxy_counsel", "can_manage_shop"]}><Practice /></ProtectedRoute>} />
         <Route path="/hearing-requests/:hearingId/negotiate" element={<ProtectedRoute capabilities={["can_hire_proxy_counsel", "can_practice_proxy_counsel"]}><NegotiationModule /></ProtectedRoute>} />
-        <Route path="/hire-counsel" element={<ProtectedRoute capabilities={["can_hire_proxy_counsel"]}><HireCounsel /></ProtectedRoute>} />
         <Route path="/earnings" element={<ProtectedRoute capabilities={["can_earn"]}><Earnings /></ProtectedRoute>} />
         <Route path="/delivery" element={<ProtectedRoute roles={["delivery_partner", "admin"]}><DeliveryHub /></ProtectedRoute>} />
 

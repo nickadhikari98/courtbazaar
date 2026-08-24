@@ -27,7 +27,7 @@ const VENDOR_JOIN_FORMS = {
 
 export default function Register() {
   const navigate = useNavigate();
-  const { register, googleLogin, googleOAuthEnabled } = useAuth();
+  const { register, googleOAuthEnabled, googleClientId } = useAuth();
   const [loading, setLoading] = useState(false);
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", phone: "", password: "", role: "advocate" });
@@ -186,7 +186,7 @@ export default function Register() {
                   <span className="text-2xs uppercase tracking-wide font-bold text-muted-foreground">Or continue with</span>
                   <div className="h-px flex-1 bg-border" />
                 </div>
-                <GoogleAuthButton onClick={() => googleLogin(form.role)} label="Continue with Google" />
+                <GoogleAuthButton clientId={googleClientId} role={form.role} />
               </>
             )}
           </CardContent>

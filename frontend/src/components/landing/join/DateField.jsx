@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { format, parseISO, isValid } from "date-fns";
+import { format, parseISO, isValid, subYears } from "date-fns";
 import { CalendarIcon } from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
@@ -31,6 +31,14 @@ export default function DateField({ label, required, value, onChange, min, max }
   if (resolvedMin) disabledMatchers.push({ before: parseISO(resolvedMin) });
   if (resolvedMax) disabledMatchers.push({ after: parseISO(resolvedMax) });
 
+  // Bounds for the month/year dropdowns below — without these
+  // react-day-picker falls back to a huge default range. A field with no
+  // explicit min (e.g. Date of Birth) still needs a sane floor so the year
+  // dropdown isn't scrolling back a thousand years.
+  const today = new Date();
+  const navStart = resolvedMin ? parseISO(resolvedMin) : subYears(today, 120);
+  const navEnd = resolvedMax ? parseISO(resolvedMax) : today;
+
   return (
     <div>
       <FieldLabel label={label} required={required} />
@@ -50,8 +58,11 @@ export default function DateField({ label, required, value, onChange, min, max }
         <PopoverContent align="start" className="w-auto p-0">
           <Calendar
             mode="single"
+            captionLayout="dropdown"
+            startMonth={navStart}
+            endMonth={navEnd}
             selected={selected}
-            defaultMonth={selected}
+            defaultMonth={selected || navEnd}
             disabled={disabledMatchers.length ? disabledMatchers : undefined}
             onSelect={(date) => {
               if (!date) return;

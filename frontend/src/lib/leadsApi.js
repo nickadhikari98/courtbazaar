@@ -37,9 +37,11 @@ export async function uploadLeadDocument(leadId, draftToken, fieldKey, file) {
   form.append("draft_token", draftToken);
   form.append("field_key", fieldKey);
   form.append("file", file);
-  const { data } = await api.post(`/leads/${leadId}/documents`, form, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
+  // Content-Type is deliberately left unset — axios/the browser must generate
+  // it themselves for a FormData body so it includes the multipart boundary.
+  // A hardcoded "multipart/form-data" here strips that boundary, which makes
+  // the server unable to parse the body at all (400 Bad Request).
+  const { data } = await api.post(`/leads/${leadId}/documents`, form);
   return data; // { doc_id, original_filename, size, content_type, ... }
 }
 

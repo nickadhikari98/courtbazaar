@@ -12,9 +12,7 @@ export async function submitReview({ name, designation, organization, rating, re
   if (designation) form.append("designation", designation);
   if (organization) form.append("organization", organization);
   if (photo) form.append("photo", photo);
-  const { data } = await api.post("/reviews", form, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
+  const { data } = await api.post("/reviews", form);
   return data; // { review_id, status, message }
 }
 

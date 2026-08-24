@@ -1,6 +1,6 @@
 import * as React from "react";
 import { DayPicker } from "react-day-picker";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { buttonVariants } from "@/components/ui/button";
@@ -24,6 +24,9 @@ function Calendar({ className, classNames, showOutsideDays = true, ...props }) {
           buttonVariants({ variant: "outline" }),
           "h-7 w-7 bg-transparent p-0 text-muted-foreground hover:text-foreground"
         ),
+        dropdowns: "flex items-center justify-center gap-1.5",
+        dropdown_root: "relative inline-flex items-center rounded-md border border-input bg-white px-2 py-1 hover:bg-slate-50 transition-colors",
+        dropdown: "absolute inset-0 opacity-0 cursor-pointer",
         month_grid: "w-full border-collapse mt-2",
         weekdays: "flex",
         weekday: "text-muted-foreground rounded-md w-8 font-normal text-[0.8rem] flex-1 text-center",
@@ -44,12 +47,11 @@ function Calendar({ className, classNames, showOutsideDays = true, ...props }) {
         ...classNames,
       }}
       components={{
-        Chevron: ({ orientation, ...chevronProps }) =>
-          orientation === "left" ? (
-            <ChevronLeft className="h-4 w-4" {...chevronProps} />
-          ) : (
-            <ChevronRight className="h-4 w-4" {...chevronProps} />
-          ),
+        Chevron: ({ orientation, ...chevronProps }) => {
+          if (orientation === "left") return <ChevronLeft className="h-4 w-4" {...chevronProps} />;
+          if (orientation === "down") return <ChevronDown className="h-4 w-4 ml-1 opacity-60" {...chevronProps} />;
+          return <ChevronRight className="h-4 w-4" {...chevronProps} />;
+        },
       }}
       {...props}
     />
