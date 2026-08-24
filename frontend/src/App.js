@@ -131,6 +131,24 @@ function HireProxyCounselRoute() {
   return <HireProxyCounsel />;
 }
 
+// HireCounsel.jsx renders the same shared CounselHiringPage component as
+// HireProxyCounsel above, which manages its own AppLayout shell internally
+// (see that component) — so like HireProxyCounselRoute, this can't sit
+// inside the <ProtectedRoute><AppLayout/></ProtectedRoute> group below
+// without double-wrapping the shell. Unlike Hire Proxy Counsel this route is
+// login-gated (no anonymous browsing for full-representation engagements),
+// so this is ProtectedRoute's login+capability check reimplemented here
+// rather than reused, purely because of the layout constraint.
+function HireCounselRoute() {
+  const { user, loading } = useAuth();
+  if (loading) return <RouteLoadingFallback />;
+  if (!user) return <Navigate to="/login" state={{ from: "/hire-counsel" }} replace />;
+  if (!user.capabilities?.includes("can_hire_proxy_counsel")) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <HireCounsel />;
+}
+
 function ProtectedRoute({ children, roles, capabilities }) {
   const { user, loading } = useAuth();
   if (loading) {
@@ -176,6 +194,8 @@ function AppRouter() {
       <Route path="/legal/:slug" element={<LegalDocument />} />
       {/* Public: browsable without login, see HireProxyCounselRoute above */}
       <Route path="/hire-proxy-counsel" element={<HireProxyCounselRoute />} />
+      {/* Login-gated but still outside the AppLayout-wrapping group below — see HireCounselRoute above */}
+      <Route path="/hire-counsel" element={<HireCounselRoute />} />
 
       <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route path="/dashboard" element={<Dashboard />} />
@@ -200,7 +220,6 @@ function AppRouter() {
             server.py) — a plain advocate/customer account never sees these. */}
         <Route path="/practice" element={<ProtectedRoute capabilities={["can_practice_proxy_counsel", "can_manage_shop"]}><Practice /></ProtectedRoute>} />
         <Route path="/hearing-requests/:hearingId/negotiate" element={<ProtectedRoute capabilities={["can_hire_proxy_counsel", "can_practice_proxy_counsel"]}><NegotiationModule /></ProtectedRoute>} />
-        <Route path="/hire-counsel" element={<ProtectedRoute capabilities={["can_hire_proxy_counsel"]}><HireCounsel /></ProtectedRoute>} />
         <Route path="/earnings" element={<ProtectedRoute capabilities={["can_earn"]}><Earnings /></ProtectedRoute>} />
         <Route path="/delivery" element={<ProtectedRoute roles={["delivery_partner", "admin"]}><DeliveryHub /></ProtectedRoute>} />
 

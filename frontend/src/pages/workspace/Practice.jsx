@@ -225,11 +225,41 @@ function ProfileTab({ profile, onSaved }) {
     try {
       const updated = await updatePracticeProfile({ [key]: form[key] });
       onSaved(updated);
-      toast.success(key === "availability_mode" ? "Availability updated" : "Instant booking updated");
+      toast.success("Availability updated");
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Could not save");
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Instant booking's own save — founder direction (2026-08): with the
+  // toggle on, the Urgent fee inputs surface right in this card (see below)
+  // so a counsel doesn't have to scroll down to Availability & Pricing to
+  // set it. This button saves instant_booking together with the full
+  // pricing object (not just the urgent slot) — same "always resend the
+  // whole grid" convention save() below already uses, since the backend
+  // replaces pricing wholesale rather than merging it field-by-field.
+  const saveInstantBooking = async () => {
+    if (form.instant_booking) {
+      for (const courtType of PRICING_COURT_TYPES) {
+        const amount = form.pricing?.[courtType]?.urgent;
+        const minimum = PRICING_MINIMUMS[courtType].urgent;
+        if (amount != null && amount < minimum) {
+          toast.error(`${PRICING_COURT_TYPE_LABELS[courtType]} Urgent fee must be at least ₹${minimum}`);
+          return;
+        }
+      }
+    }
+    setSavingInstant(true);
+    try {
+      const updated = await updatePracticeProfile({ instant_booking: form.instant_booking, pricing: form.pricing });
+      onSaved(updated);
+      toast.success("Instant booking updated");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not save");
+    } finally {
+      setSavingInstant(false);
     }
   };
 
@@ -257,23 +287,66 @@ function ProfileTab({ profile, onSaved }) {
         </CardContent>
       </Card>
       <Card className="dashboard-card border-none">
-        <CardContent className="p-5 flex items-center justify-between gap-4">
-          <div>
-            <div className="font-display font-bold">Instant booking</div>
-            <p className="text-xs text-muted-foreground">Skip manual accept for requests that match your availability.</p>
+        <CardContent className="p-5 space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="font-display font-bold">Instant booking</div>
+              <p className="text-xs text-muted-foreground">Skip manual accept for requests that match your availability.</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <Switch checked={!!form.instant_booking} onCheckedChange={(v) => set("instant_booking", v)} data-testid="instant-booking-toggle" />
+              <Button
+                type="button" size="sm" onClick={saveInstantBooking}
+                disabled={savingInstant}
+                className={form.instant_booking
+                  ? "bg-accent hover:bg-accent/90 font-bold"
+                  : "bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold"}
+              >
+                Save
+              </Button>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
-            <Switch checked={!!form.instant_booking} onCheckedChange={(v) => set("instant_booking", v)} />
-            <Button
-              type="button" size="sm" onClick={() => saveToggle("instant_booking", setSavingInstant)}
-              disabled={savingInstant}
-              className={form.instant_booking
-                ? "bg-accent hover:bg-accent/90 font-bold"
-                : "bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold"}
-            >
-              Save
-            </Button>
-          </div>
+          {/* Founder direction (2026-08): with instant booking on, a counsel
+              may not scroll down to Availability & Pricing to set the Urgent
+              fee at all — surface just that one field right here instead of
+              the full 2-court-type x 5-slot pricing grid below. */}
+          {form.instant_booking && (
+            <div className="pt-4 border-t">
+              <div className="flex items-center gap-1.5 text-sm font-bold mb-1">
+                <Clock className="w-3.5 h-3.5 text-amber-600" /> Urgent (same-day) fee
+              </div>
+              <p className="text-xs text-muted-foreground mb-3">
+                Instant booking can hand you urgent requests right away — set your urgent fee so it's ready.
+              </p>
+              <div className="grid sm:grid-cols-2 gap-3">
+                {PRICING_COURT_TYPES.map((courtType) => {
+                  const minimum = PRICING_MINIMUMS[courtType].urgent;
+                  const amount = form.pricing?.[courtType]?.urgent;
+                  const belowMin = amount != null && amount < minimum;
+                  return (
+                    <div key={courtType}>
+                      <Label>{PRICING_COURT_TYPE_LABELS[courtType]}</Label>
+                      <Input
+                        type="number" min={minimum}
+                        value={amount ?? ""}
+                        onChange={(e) => setPricing(courtType, "urgent", e.target.value)}
+                        placeholder={`Min ₹${minimum}`}
+                        onWheel={(e) => e.target.blur()}
+                        className={belowMin ? "border-red-500 focus-visible:ring-red-500" : undefined}
+                        aria-invalid={belowMin || undefined}
+                        data-testid={`instant-urgent-fee-${courtType}`}
+                      />
+                      {belowMin ? (
+                        <p className="text-2xs text-red-600 mt-0.5">Must be at least ₹{minimum}</p>
+                      ) : (
+                        <p className="text-2xs text-muted-foreground mt-0.5">Min ₹{minimum}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

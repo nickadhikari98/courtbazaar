@@ -26,11 +26,21 @@ export const FEATURE_FLAGS = {
     aiAssistant: true,
   },
   services: {
-    // Hire Counsel is a placeholder page today (no matching/escrow workflow
-    // built yet) but is meant to be visible and clearly differentiated from
-    // Hire Proxy Counsel in nav — this flag exists for later toggling, not
-    // to hide it now.
+    // Hire Counsel shares Hire Proxy Counsel's full browse/matching/escrow
+    // workflow (see CounselHiringPage.jsx) but is its own distinct nav entry
+    // — this flag exists for later toggling, not to hide it now.
     hireCounsel: true,
+    // Founder direction (2026-08): only Hire Counsel/Hire Proxy Counsel are
+    // the live, promoted services for now — the broader printing/scanning/
+    // e-filing/notary/stenographer catalog is real and functional (routes/
+    // APIs untouched, see this file's top note) but off nav/Dashboard/hero
+    // so a new user isn't shown services alongside the 2 the founder wants
+    // front and center. Flip these back on to re-promote that catalog, no
+    // other changes needed — see AppLayout.jsx and Dashboard.jsx.
+    marketplace: false,
+    newOrder: false,
+    stenographer: false,
+    packages: false,
   },
   hearing: {
     aiAssistant: false, // reserved — no AI-in-hearing UI exists yet

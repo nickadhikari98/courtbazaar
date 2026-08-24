@@ -29,7 +29,7 @@ const buildWorkspaceNav = (user) => {
   const capabilities = user?.capabilities || [];
 
   const services = [
-    { to: "/order/new", icon: Plus, label: "New Order", highlight: true },
+    { to: "/order/new", icon: Plus, label: "New Order", highlight: true, flag: "services.newOrder" },
     ...(capabilities.includes("can_hire_proxy_counsel")
       ? [
           { to: "/hire-counsel", icon: Scale, label: "Hire Counsel", flag: "services.hireCounsel" },
@@ -37,10 +37,10 @@ const buildWorkspaceNav = (user) => {
         ]
       : []),
     { to: "/orders", icon: Package, label: "My Orders" },
-    { to: "/marketplace", icon: Store, label: "Marketplace" },
-    { to: "/stenographer", icon: Mic, label: "Stenographer" },
+    { to: "/marketplace", icon: Store, label: "Marketplace", flag: "services.marketplace" },
+    { to: "/stenographer", icon: Mic, label: "Stenographer", flag: "services.stenographer" },
     { to: "/courts", icon: Building2, label: "Courts" },
-    { to: "/subscription", icon: CreditCard, label: "Packages" },
+    { to: "/subscription", icon: CreditCard, label: "Packages", flag: "services.packages" },
   ];
 
   const workspace = [
