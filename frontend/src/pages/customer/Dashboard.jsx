@@ -211,7 +211,10 @@ export default function Dashboard() {
     if (walletHeld > 0 && canPracticeProxyCounsel) {
       return { label: "Withdraw Earnings", detail: `${formatINR(walletHeld)} held — check your payout status.`, to: "/earnings", icon: Banknote };
     }
-    return { label: "Explore Marketplace", detail: "Browse services you can order in under 30 seconds.", to: "/marketplace", icon: Store };
+    // Fallback (nothing more specific pending): points at the 2 live
+    // services rather than the deprioritized marketplace catalog — see
+    // config/featureFlags.js's services.marketplace.
+    return { label: "Hire Proxy Counsel", detail: "Send a request and any available Proxy Counsel can accept it.", to: "/hire-proxy-counsel", icon: Gavel };
   }, [canPracticeProxyCounsel, practiceProfile, availabilitySlots, myDocumentHearings, walletHeld, user]);
 
   // Notification Center — merges two sources into one {group, icon, title,
@@ -378,18 +381,7 @@ export default function Dashboard() {
           unreadNotifications.length > 0 && `${unreadNotifications.length} unread notification${unreadNotifications.length > 1 ? "s" : ""}`,
         ].filter(Boolean) : []}
         actions={(
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <div className="text-sm font-bold text-white/70 mb-2">Need legal services today?</div>
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={() => navigate("/marketplace")} className="bg-white/15 hover:bg-white/25 text-white font-bold border border-white/20" data-testid="hero-cta-marketplace">
-                  <Store className="w-4 h-4 mr-1.5" /> Marketplace
-                </Button>
-                <Button onClick={() => navigate("/order/new")} className="bg-accent hover:bg-accent/90 font-bold" data-testid="hero-cta-new-order">
-                  <Plus className="w-4 h-4 mr-1.5" /> New Order
-                </Button>
-              </div>
-            </div>
+          <div className="grid grid-cols-1 gap-4">
             <div>
               <div className="text-sm font-bold text-white/70 mb-2">Want to earn today?</div>
               <div className="flex flex-wrap gap-2">
@@ -565,45 +557,52 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Quick Actions */}
-      <div className="mb-8">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <div className="cb-overline text-accent">Quick Actions</div>
-            <h2 className="font-display font-bold text-2xl mt-1 tracking-tight">Tap to start</h2>
+      {/* Quick Actions — the broader printing/scanning/e-filing/notary
+          catalog, off Dashboard for now alongside the rest of
+          services.marketplace (see config/featureFlags.js) so only the 2
+          founder-promoted services (Hire Counsel/Hire Proxy Counsel) are
+          front and center; still a real, working catalog, just not
+          promoted here today. */}
+      {isFeatureEnabled("services.marketplace") && (
+        <div className="mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <div className="cb-overline text-accent">Quick Actions</div>
+              <h2 className="font-display font-bold text-2xl mt-1 tracking-tight">Tap to start</h2>
+            </div>
+            <Link to="/marketplace" className="text-sm font-bold text-accent hover:underline" data-testid="dash-view-all-services">View all services →</Link>
           </div>
-          <Link to="/marketplace" className="text-sm font-bold text-accent hover:underline" data-testid="dash-view-all-services">View all services →</Link>
+          <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+            {quickServices.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => navigate(`/order/new?service=${s.id}`)}
+                className="bento-card p-4 text-left group"
+                data-testid={`quick-service-${s.id}`}
+              >
+                <div className={`w-11 h-11 rounded-xl ${s.color} flex items-center justify-center mb-3 group-hover:scale-105 transition-transform`}>
+                  <s.icon className={`w-5 h-5 ${s.iconColor}`} strokeWidth={2} />
+                </div>
+                <div className="font-display font-bold text-sm leading-tight">{s.label}</div>
+                <div className="text-xs text-muted-foreground font-semibold mt-1">{s.price}</div>
+              </button>
+            ))}
+            {isFeatureEnabled("quickActions.aiAssistant") && (
+              <button
+                onClick={() => navigate("/ai")}
+                className="bento-card p-4 text-left group"
+                data-testid="quick-service-ai-assistant"
+              >
+                <div className={`w-11 h-11 rounded-xl ${aiQuickAction.color} flex items-center justify-center mb-3 group-hover:scale-105 transition-transform`}>
+                  <aiQuickAction.icon className={`w-5 h-5 ${aiQuickAction.iconColor}`} strokeWidth={2} />
+                </div>
+                <div className="font-display font-bold text-sm leading-tight">{aiQuickAction.label}</div>
+                <div className="text-xs text-muted-foreground font-semibold mt-1">{aiQuickAction.price}</div>
+              </button>
+            )}
+          </div>
         </div>
-        <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-3">
-          {quickServices.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => navigate(`/order/new?service=${s.id}`)}
-              className="bento-card p-4 text-left group"
-              data-testid={`quick-service-${s.id}`}
-            >
-              <div className={`w-11 h-11 rounded-xl ${s.color} flex items-center justify-center mb-3 group-hover:scale-105 transition-transform`}>
-                <s.icon className={`w-5 h-5 ${s.iconColor}`} strokeWidth={2} />
-              </div>
-              <div className="font-display font-bold text-sm leading-tight">{s.label}</div>
-              <div className="text-xs text-muted-foreground font-semibold mt-1">{s.price}</div>
-            </button>
-          ))}
-          {isFeatureEnabled("quickActions.aiAssistant") && (
-            <button
-              onClick={() => navigate("/ai")}
-              className="bento-card p-4 text-left group"
-              data-testid="quick-service-ai-assistant"
-            >
-              <div className={`w-11 h-11 rounded-xl ${aiQuickAction.color} flex items-center justify-center mb-3 group-hover:scale-105 transition-transform`}>
-                <aiQuickAction.icon className={`w-5 h-5 ${aiQuickAction.iconColor}`} strokeWidth={2} />
-              </div>
-              <div className="font-display font-bold text-sm leading-tight">{aiQuickAction.label}</div>
-              <div className="text-xs text-muted-foreground font-semibold mt-1">{aiQuickAction.price}</div>
-            </button>
-          )}
-        </div>
-      </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
         {/* Get Work Done / Grow Your Practice */}
@@ -611,20 +610,31 @@ export default function Dashboard() {
           <div>
             <h2 className="font-display font-bold text-xl tracking-tight mb-3">Get Work Done</h2>
             <div className="space-y-2">
-              <Link to="/marketplace" className="bento-card p-3.5 flex items-center gap-2.5" data-testid="workdone-marketplace">
-                <Store className="w-4 h-4 text-accent flex-shrink-0" /> <span className="text-sm font-semibold">Marketplace</span>
-              </Link>
-              <Link to="/order/new" className="bento-card p-3.5 flex items-center gap-2.5" data-testid="workdone-new-order">
-                <Plus className="w-4 h-4 text-accent flex-shrink-0" /> <span className="text-sm font-semibold">New Order (Printing, Scanning, E-Filing)</span>
-              </Link>
               {canHireProxyCounsel && (
-                <Link to="/hire-proxy-counsel" className="bento-card p-3.5 flex items-center gap-2.5" data-testid="workdone-hire-proxy-counsel">
-                  <Gavel className="w-4 h-4 text-accent flex-shrink-0" /> <span className="text-sm font-semibold">Hire Proxy Counsel</span>
+                <>
+                  <Link to="/hire-counsel" className="bento-card p-3.5 flex items-center gap-2.5" data-testid="workdone-hire-counsel">
+                    <Scale className="w-4 h-4 text-accent flex-shrink-0" /> <span className="text-sm font-semibold">Hire Counsel</span>
+                  </Link>
+                  <Link to="/hire-proxy-counsel" className="bento-card p-3.5 flex items-center gap-2.5" data-testid="workdone-hire-proxy-counsel">
+                    <Gavel className="w-4 h-4 text-accent flex-shrink-0" /> <span className="text-sm font-semibold">Hire Proxy Counsel</span>
+                  </Link>
+                </>
+              )}
+              {isFeatureEnabled("services.marketplace") && (
+                <Link to="/marketplace" className="bento-card p-3.5 flex items-center gap-2.5" data-testid="workdone-marketplace">
+                  <Store className="w-4 h-4 text-accent flex-shrink-0" /> <span className="text-sm font-semibold">Marketplace</span>
                 </Link>
               )}
-              <Link to="/stenographer" className="bento-card p-3.5 flex items-center gap-2.5" data-testid="workdone-stenographer">
-                <Mic className="w-4 h-4 text-accent flex-shrink-0" /> <span className="text-sm font-semibold">Stenographer</span>
-              </Link>
+              {isFeatureEnabled("services.newOrder") && (
+                <Link to="/order/new" className="bento-card p-3.5 flex items-center gap-2.5" data-testid="workdone-new-order">
+                  <Plus className="w-4 h-4 text-accent flex-shrink-0" /> <span className="text-sm font-semibold">New Order (Printing, Scanning, E-Filing)</span>
+                </Link>
+              )}
+              {isFeatureEnabled("services.stenographer") && (
+                <Link to="/stenographer" className="bento-card p-3.5 flex items-center gap-2.5" data-testid="workdone-stenographer">
+                  <Mic className="w-4 h-4 text-accent flex-shrink-0" /> <span className="text-sm font-semibold">Stenographer</span>
+                </Link>
+              )}
             </div>
           </div>
           <div>
@@ -644,17 +654,6 @@ export default function Dashboard() {
                   <Link to="/practice" className="bento-card p-3.5 flex items-center gap-2.5" data-testid="grow-ratings">
                     <Star className="w-4 h-4 text-accent flex-shrink-0" /> <span className="text-sm font-semibold">Ratings &amp; Visibility</span>
                   </Link>
-                  {/* Not real backend capabilities today (server.py's ROLE_CAPABILITIES)
-                      — shown disabled so the founder's intended shape is visible without
-                      faking functionality. See plan §2. */}
-                  <div className="bento-card p-3.5 flex items-center gap-2.5 opacity-50 cursor-not-allowed" data-testid="grow-efiling-work">
-                    <FileText className="w-4 h-4 text-muted-foreground flex-shrink-0" /> <span className="text-sm font-semibold flex-1">E-Filing Work</span>
-                    <Badge variant="outline" className="text-2xs">Coming soon</Badge>
-                  </div>
-                  <div className="bento-card p-3.5 flex items-center gap-2.5 opacity-50 cursor-not-allowed" data-testid="grow-stenographer-assignments">
-                    <Mic className="w-4 h-4 text-muted-foreground flex-shrink-0" /> <span className="text-sm font-semibold flex-1">Stenographer Assignments</span>
-                    <Badge variant="outline" className="text-2xs">Coming soon</Badge>
-                  </div>
                 </div>
                 {advocateOwnedHearings === 0 && (
                   <p className="text-xs text-muted-foreground mt-2">Start accepting proxy counsel requests to earn.</p>
@@ -706,15 +705,15 @@ export default function Dashboard() {
         ) : recentActivity.length === 0 ? (
           <EmptyState
             size="lg"
-            icon={Package}
+            icon={Gavel}
             testId="empty-recent-activity"
-            title="Need legal services today?"
-            description="Place your first order — it takes 30 seconds."
-            action={(
-              <Button onClick={() => navigate("/marketplace")} className="bg-accent hover:bg-accent/90 font-bold" data-testid="dash-empty-activity-marketplace">
-                <Store className="w-4 h-4 mr-2" /> Marketplace
+            title="No activity yet"
+            description="Hire a Proxy Counsel or Counsel to get your first request moving."
+            action={canHireProxyCounsel ? (
+              <Button onClick={() => navigate("/hire-proxy-counsel")} className="bg-accent hover:bg-accent/90 font-bold" data-testid="dash-empty-activity-hire-proxy-counsel">
+                <Gavel className="w-4 h-4 mr-2" /> Hire Proxy Counsel
               </Button>
-            )}
+            ) : undefined}
           />
         ) : (
           <div className="space-y-1">
