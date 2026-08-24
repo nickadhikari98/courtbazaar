@@ -16,7 +16,7 @@ import { isFeatureEnabled } from "@/config/featureFlags";
 // still belong on Marketplace per the founder's visible-service list.
 const PROFESSIONAL_SERVICES = [
   { to: "/hire-proxy-counsel", icon: Gavel, label: "Hire Proxy Counsel", detail: "Request an advocate to appear on your behalf", capability: "can_hire_proxy_counsel" },
-  { to: "/hire-counsel", icon: Scale, label: "Hire Counsel", detail: "Full legal representation — onboarding in progress", capability: "can_hire_proxy_counsel", flag: "services.hireCounsel" },
+  { to: "/hire-counsel", icon: Scale, label: "Hire Counsel", detail: "Full legal representation for your matter", capability: "can_hire_proxy_counsel", flag: "services.hireCounsel" },
   { to: "/subscription", icon: CreditCard, label: "Packages", detail: "Subscription bundles for frequent filers" },
   { to: "/courts", icon: Building2, label: "Court Directory", detail: "Browse every court CourtBazaar covers" },
 ];
