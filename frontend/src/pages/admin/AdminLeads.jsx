@@ -38,6 +38,18 @@ const ROLE_LABELS = {
   agent: "Agent",
 };
 
+// Uploaded-file fields store an array of {name, size, type, doc_id} in
+// form_data (see FieldKit.jsx's FileField) — those are rendered in the
+// Documents list below instead, so the generic key/value list should skip
+// them rather than stringify the objects into "[object Object]".
+const isFileFieldValue = (v) => Array.isArray(v) && v.length > 0 && v.every((item) => item && typeof item === "object" && "doc_id" in item);
+
+// A document's field_key is derived the same way as its form_data key
+// (`${section}__${label}`, both slugified — see formValidation.js's
+// fieldKey()), so it can be turned back into a human-readable label the
+// same way the key/value list already formats its keys.
+const formatFieldLabel = (key) => (key || "").split("__").pop().replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
 const STATUS_BADGE = {
   draft: "bg-slate-100 text-slate-700",
   submitted: "bg-amber-100 text-amber-700",
@@ -268,12 +280,14 @@ function LeadDetailDialog({ leadId, open, onOpenChange, onChanged, onDeleteReque
         </DialogHeader>
 
         <div className="space-y-1 text-sm border rounded-lg p-3 max-h-56 overflow-y-auto cb-scroll">
-          {Object.entries(lead.form_data || {}).map(([k, v]) => (
-            <div key={k} className="flex gap-2">
-              <span className="text-muted-foreground min-w-[40%] flex-shrink-0">{k.split("__").pop().replace(/_/g, " ")}</span>
-              <span className="font-medium break-words">{Array.isArray(v) ? v.join(", ") : String(v ?? "—")}</span>
-            </div>
-          ))}
+          {Object.entries(lead.form_data || {})
+            .filter(([, v]) => !isFileFieldValue(v))
+            .map(([k, v]) => (
+              <div key={k} className="flex gap-2">
+                <span className="text-muted-foreground min-w-[40%] flex-shrink-0">{k.split("__").pop().replace(/_/g, " ")}</span>
+                <span className="font-medium break-words">{Array.isArray(v) ? v.join(", ") : String(v ?? "—")}</span>
+              </div>
+            ))}
         </div>
 
         <div>
@@ -289,7 +303,10 @@ function LeadDetailDialog({ leadId, open, onOpenChange, onChanged, onDeleteReque
                 className="w-full flex items-center gap-2 text-sm border rounded-md px-2.5 py-1.5 hover:bg-slate-50 text-left"
               >
                 <FileText className="w-4 h-4 text-accent flex-shrink-0" />
-                <span className="truncate flex-1">{d.original_filename}</span>
+                <span className="truncate flex-1 min-w-0">
+                  <span className="block truncate">{formatFieldLabel(d.field_key) || "Document"}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{d.original_filename}</span>
+                </span>
                 <Download className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
               </button>
             ))}
