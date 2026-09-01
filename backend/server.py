@@ -358,6 +358,8 @@ class MatterUpdate(BaseModel):
 MATTER_STATUSES = ("open", "closed", "archived")
 
 class ProxyCounselProfileUpdate(BaseModel):
+    state_bar_council: Optional[str] = None
+    bar_council_number: Optional[str] = None
     practice_areas: Optional[List[str]] = None
     courts: Optional[List[str]] = None
     languages: Optional[List[str]] = None
@@ -371,6 +373,12 @@ class ProxyCounselProfileUpdate(BaseModel):
     # those two appeared to have been "cleared".
     experience_bracket: Optional[str] = None
     pricing: Optional[Dict[str, Dict[str, float]]] = None
+    # Every field below must stay in lockstep with practice.PROFILE_EDITABLE_FIELDS
+    # — see the bug fix above, same silent-drop failure mode.
+    professional_status: Optional[str] = None
+    max_travel_distance: Optional[str] = None
+    schedule_type: Optional[str] = None
+    matters_handled: Optional[int] = None
     education: Optional[str] = None
     bio: Optional[str] = None
     office_address: Optional[str] = None

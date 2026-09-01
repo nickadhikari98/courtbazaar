@@ -687,6 +687,15 @@ async def notify_tier(db, hearing: dict, ranked: List[dict], tier: int, tier_siz
     claim_filter = {"hearing_id": hearing_id, "status": "broadcast"}
     if tier > 1:
         claim_filter["match_tier"] = tier - 1
+    else:
+        # Tier 1 needs the same "not already claimed" guard tier 2/3 get from
+        # their match_tier==tier-1 condition — without excluding a hearing
+        # that already has match_tier set, two run_matching calls racing on
+        # the same hearing (currently can't happen via mark_payment_confirmed's
+        # own CAS-guarded status transition, but this function has no such
+        # protection of its own if a second call site is ever added) would
+        # both pass this filter and re-dispatch tier 1 to the same candidates.
+        claim_filter["match_tier"] = {"$exists": False}
     claim_result = await db.hearing_requests.update_one(
         claim_filter,
         {"$set": {

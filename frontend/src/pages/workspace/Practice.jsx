@@ -40,6 +40,15 @@ import {
 
 const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
 
+// Mirrors roleFormData.js's "Maximum Distance You Are Willing to Travel for
+// Appearance" / "Availability" radio options exactly — same duplicated-config
+// tradeoff already accepted for EXPERIENCE_BRACKETS/PRICING_MINIMUMS (see
+// config/proxyCounselPricing.js), so a lead approved through leads.py's
+// _derive_practice_profile_patch always lands on a value this Select
+// actually has an option for.
+const MAX_TRAVEL_DISTANCE_OPTIONS = ["Up to 10 KM", "Up to 25 KM", "Up to 50 KM", "Up to 100 KM", "Any Distance"];
+const SCHEDULE_TYPE_OPTIONS = ["Full Time", "Part Time", "Weekdays Only", "Weekends Only"];
+
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const KINDS = [
   { value: "recurring_weekly", label: "Weekly recurring" },
@@ -200,8 +209,11 @@ function ProfileTab({ profile, onSaved }) {
     setSaving(true);
     try {
       const updated = await updatePracticeProfile({
+        state_bar_council: form.state_bar_council, bar_council_number: form.bar_council_number,
         practice_areas: form.practice_areas, courts: form.courts, languages: form.languages,
         experience_bracket: form.experience_bracket, education: form.education, bio: form.bio,
+        professional_status: form.professional_status, max_travel_distance: form.max_travel_distance,
+        schedule_type: form.schedule_type, matters_handled: form.matters_handled,
         office_address: form.office_address, fee_structure: form.fee_structure, pricing: form.pricing,
         availability_mode: form.availability_mode, instant_booking: form.instant_booking,
       });
@@ -371,6 +383,44 @@ function ProfileTab({ profile, onSaved }) {
             <div>
               <Label>Education</Label>
               <Input value={form.education || ""} onChange={(e) => set("education", e.target.value)} />
+            </div>
+            <div>
+              <Label>State Bar Council</Label>
+              <Input value={form.state_bar_council || ""} onChange={(e) => set("state_bar_council", e.target.value)} />
+            </div>
+            <div>
+              <Label>Bar Council Enrollment Number</Label>
+              <Input value={form.bar_council_number || ""} onChange={(e) => set("bar_council_number", e.target.value)} />
+            </div>
+            <div>
+              <Label>Current Professional Status</Label>
+              <Input value={form.professional_status || ""} onChange={(e) => set("professional_status", e.target.value)} />
+            </div>
+            <div>
+              <Label>Maximum Distance Willing to Travel</Label>
+              <Select value={form.max_travel_distance || undefined} onValueChange={(v) => set("max_travel_distance", v)}>
+                <SelectTrigger><SelectValue placeholder="Select distance" /></SelectTrigger>
+                <SelectContent>
+                  {MAX_TRAVEL_DISTANCE_OPTIONS.map((o) => <SelectItem key={o} value={o}>{o}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Availability Schedule</Label>
+              <Select value={form.schedule_type || undefined} onValueChange={(v) => set("schedule_type", v)}>
+                <SelectTrigger><SelectValue placeholder="Select schedule" /></SelectTrigger>
+                <SelectContent>
+                  {SCHEDULE_TYPE_OPTIONS.map((o) => <SelectItem key={o} value={o}>{o}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Approximate Number of Matters Handled</Label>
+              <Input
+                type="number" min={0} value={form.matters_handled ?? ""}
+                onChange={(e) => set("matters_handled", e.target.value === "" ? undefined : Number(e.target.value))}
+                onWheel={(e) => e.target.blur()}
+              />
             </div>
           </div>
           <div>
