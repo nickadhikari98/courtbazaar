@@ -15,8 +15,9 @@ from fastapi import HTTPException
 AVAILABILITY_KINDS = ("recurring_weekly", "custom_date", "holiday_block", "emergency_unavailable")
 
 PROFILE_EDITABLE_FIELDS = (
-    "practice_areas", "courts", "languages", "experience_years", "experience_bracket", "education",
-    "bio", "office_address", "fee_structure", "pricing", "availability_mode", "instant_booking",
+    "state_bar_council", "bar_council_number", "practice_areas", "courts", "languages", "experience_years",
+    "experience_bracket", "professional_status", "max_travel_distance", "schedule_type", "matters_handled",
+    "education", "bio", "office_address", "fee_structure", "pricing", "availability_mode", "instant_booking",
 )
 
 # Founder-set rate card (2026-08): a proxy counsel names their own price per
@@ -50,6 +51,7 @@ EXPERIENCE_BRACKETS = [
     {"key": "0-3", "label": "0–3 yrs", "min_years": 0},
     {"key": "3-5", "label": "3–5 yrs", "min_years": 3},
     {"key": "5-7", "label": "5–7 yrs", "min_years": 5},
+    {"key": "7-10", "label": "7–10 yrs", "min_years": 7},
     {"key": "10+", "label": "10+ yrs", "min_years": 10},
 ]
 _EXPERIENCE_BRACKET_YEARS = {b["key"]: b["min_years"] for b in EXPERIENCE_BRACKETS}
@@ -97,12 +99,17 @@ async def get_or_create_profile(db, user_id: str) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     profile = {
         "user_id": user_id,
+        "state_bar_council": None,
         "bar_council_number": None,
         "practice_areas": [],
         "courts": [],
         "languages": [],
         "experience_years": None,
         "experience_bracket": None,
+        "professional_status": None,
+        "max_travel_distance": None,
+        "schedule_type": None,
+        "matters_handled": None,
         "education": None,
         "bio": None,
         "office_address": None,

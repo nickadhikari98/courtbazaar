@@ -38,6 +38,17 @@ const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled
 
 const TODAY = resolveDateBound("today");
 
+// UX fix: "Select Counsel" while anonymous sends the visitor to /login with
+// only the return *path* in router state (see requireLogin below) — every
+// filter they'd picked (location, date, time slot, experience, urgent) and
+// which counsel they clicked lived in plain useState, so it was gone the
+// instant they landed back here after signing in. sessionStorage survives
+// that round trip (and a full page reload during login) without touching
+// Login.jsx's redirect plumbing at all. One-shot: consumed (removed) the
+// moment it's read back, same "a later refresh/back must not replay it"
+// principle the resumeRequest router-state handoff below already follows.
+const PENDING_SELECTION_KEY = "courtbazaar_pending_counsel_selection";
+
 /* Counsel browse-and-hire flow — shared by HireProxyCounsel.jsx
    (serviceType="proxy_counsel") and HireCounsel.jsx (serviceType="counsel").
    Founder direction (2026-08): requesting Counsel (full representation)
@@ -94,6 +105,11 @@ export default function CounselHiringPage({ serviceType }) {
   const [isUrgent, setIsUrgent] = useState(false);
   const [sortBy, setSortBy] = useState("match"); // match | experience | rating
   const [urgentConfirmTarget, setUrgentConfirmTarget] = useState(null); // counsel awaiting the urgent-fee confirm
+  // Counsel the visitor picked before being sent to log in — restored (with
+  // their filters) from PENDING_SELECTION_KEY once `user` resolves, so they
+  // land back on an explicit "still want to send this?" checkpoint instead
+  // of having to find the same card again and re-click it.
+  const [resumedConfirmTarget, setResumedConfirmTarget] = useState(null);
 
   const [hearings, setHearings] = useState(null);
   const [activeId, setActiveId] = useState(null);
@@ -162,7 +178,43 @@ export default function CounselHiringPage({ serviceType }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, off the location state present on mount only
   }, []);
 
-  const requireLogin = () => navigate("/login", { state: { from: location.pathname } });
+  // Post-login resume: restores the filters + counsel a visitor picked
+  // right before requireLogin sent them away (see PENDING_SELECTION_KEY
+  // above). Fires once `user` becomes truthy — either a fresh login, or
+  // this page remounting already-authenticated after the redirect back.
+  useEffect(() => {
+    if (!user) return;
+    let raw;
+    try { raw = sessionStorage.getItem(PENDING_SELECTION_KEY); } catch { raw = null; }
+    if (!raw) return;
+    try { sessionStorage.removeItem(PENDING_SELECTION_KEY); } catch {} // one-shot regardless of what's below
+    let pending;
+    try { pending = JSON.parse(raw); } catch { return; }
+    if (!pending || pending.serviceType !== serviceType) return;
+    const restoredFilters = { ...filters, ...pending.filters };
+    setFilters(restoredFilters);
+    setTimeSlot(pending.timeSlot || "");
+    setExperienceBracket(pending.experienceBracket || "");
+    setIsUrgent(!!pending.isUrgent);
+    // Same validity bar handleSelectCounsel enforces before ever sending —
+    // if time passed between picking and finishing login and the date's now
+    // stale, don't surface a confirm step that would just fail; the visitor
+    // still gets their filters back and can pick a fresh date manually.
+    if (!restoredFilters.court_id || !restoredFilters.hearing_date || restoredFilters.hearing_date < TODAY) return;
+    getAdvocateProfile(pending.advocateId)
+      .then(setResumedConfirmTarget)
+      .catch(() => toast.error("That counsel is no longer available — please pick again."));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per login transition, off sessionStorage present on mount only
+  }, [user]);
+
+  const requireLogin = (counsel) => {
+    try {
+      sessionStorage.setItem(PENDING_SELECTION_KEY, JSON.stringify({
+        serviceType, advocateId: counsel.advocate_id, filters, timeSlot, experienceBracket, isUrgent,
+      }));
+    } catch {}
+    navigate("/login", { state: { from: location.pathname } });
+  };
 
   const handleViewProfile = async (counsel) => {
     try {

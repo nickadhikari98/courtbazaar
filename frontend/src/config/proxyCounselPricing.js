@@ -30,6 +30,7 @@ export const EXPERIENCE_BRACKETS = [
   { key: "0-3", label: "0–3 yrs" },
   { key: "3-5", label: "3–5 yrs" },
   { key: "5-7", label: "5–7 yrs" },
+  { key: "7-10", label: "7–10 yrs" },
   { key: "10+", label: "10+ yrs" },
 ];
 

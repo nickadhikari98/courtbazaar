@@ -72,7 +72,7 @@ export const proxyCounselSections = [
   {
     title: "Professional Details",
     fields: [
-      { label: "Total Years of Practice", required: true, type: "radio", options: ["Less than 1 Year", "1-3 Years", "3-5 Years", "5-10 Years", "More than 10 Years"], span: 2 },
+      { label: "Total Years of Practice", required: true, type: "radio", options: ["Less than 1 Year", "1-3 Years", "3-5 Years", "5-7 Years", "7-10 Years", "More than 10 Years"], span: 2 },
       {
         label: "Primary Area of Practice", required: true, type: "checkboxes", span: 2,
         options: ["Civil Matters", "Criminal Matters", "Family Matters", "Consumer Matters", "Commercial Matters", "Arbitration Matters", "Labour Matters", "Property Matters", "Motor Accident Claims"],
@@ -146,7 +146,7 @@ export const counselSections = [
   {
     title: "Professional Details",
     fields: [
-      { label: "Total Years of Practice", required: true, type: "radio", options: ["Less than 1 Year", "1-3 Years", "3-5 Years", "5-10 Years", "More than 10 Years"], span: 2 },
+      { label: "Total Years of Practice", required: true, type: "radio", options: ["Less than 1 Year", "1-3 Years", "3-5 Years", "5-7 Years", "7-10 Years", "More than 10 Years"], span: 2 },
       {
         label: "Primary Area of Practice", required: true, type: "checkboxes", span: 2,
         options: ["Civil Matters", "Criminal Matters", "Family Matters", "Consumer Matters", "Commercial Matters", "Arbitration Matters", "Labour Matters", "Property Matters", "Motor Accident Claims"],
@@ -154,7 +154,7 @@ export const counselSections = [
       },
       { label: "Upload Order Sheets (Minimum 5)", type: "file", multiple: true, hint: "PDF/JPG/PNG, Max 10MB each", span: 2 },
       { label: "Language", required: true, type: "radio", options: languageOptions, otherTriggerValues: languageOtherTriggerValues, span: 2 },
-      { label: "Approximate Number of Matters Handled", type: "number" },
+      { label: "Approximate Number of Matters Handled", type: "number", min: 0 },
       { label: "Current Professional Status", required: true, type: "radio", options: ["Independent Practitioner", "Chamber Associate", "Law Firm Associate", "Senior Advocate Chamber"], other: true, span: 2 },
       { label: "Primary Court of Practice", required: true, type: "courtOfPractice" },
       { label: "Maximum Distance You Are Willing to Travel for Appearance", required: true, type: "radio", options: ["Up to 10 KM", "Up to 25 KM", "Up to 50 KM", "Up to 100 KM", "Any Distance"], span: 2 },
@@ -279,7 +279,7 @@ export const partnerSections = [
       { label: "Date of Enrollment", required: true, type: "date" },
       { label: "Upload Bar Council Enrollment Certificate", required: true, type: "file", hint: "PDF/JPG/PNG, Max 5MB" },
       { label: "Upload Advocate ID Card", required: true, type: "file", hint: "PDF/JPG/PNG, Max 5MB" },
-      { label: "Total Years of Practice", required: true, type: "select", options: ["1-3 Years", "3-5 Years", "5-10 Years", "More than 10 Years"] },
+      { label: "Total Years of Practice", required: true, type: "select", options: ["1-3 Years", "3-5 Years", "5-7 Years", "7-10 Years", "More than 10 Years"] },
       {
         label: "Primary Area of Practice", required: true, type: "checkboxes", span: 2,
         options: ["Civil Matters", "Criminal Matters", "Family Matters", "Commercial Matters", "Arbitration Matters"],
