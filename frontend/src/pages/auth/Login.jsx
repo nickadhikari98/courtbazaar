@@ -11,6 +11,7 @@ import { ArrowRight, Phone, Mail, Loader2, Eye, EyeOff } from "lucide-react";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import Logo from "@/components/shared/Logo";
 import GoogleAuthButton from "@/components/shared/GoogleAuthButton";
+import { getErrorMessage } from "@/lib/api";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -63,7 +64,7 @@ export default function Login() {
       toast.success(`Welcome back, ${u.name}`);
       navigate(returnTo || (u.role === "admin" ? "/admin" : u.role === "vendor" ? "/vendor" : "/dashboard"));
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Login failed");
+      toast.error(getErrorMessage(e, "Login failed"));
     } finally { setLoading(false); }
   };
 
@@ -215,7 +216,13 @@ export default function Login() {
                   <span className="text-2xs uppercase tracking-wide font-bold text-muted-foreground">Or continue with</span>
                   <div className="h-px flex-1 bg-border" />
                 </div>
-                <GoogleAuthButton clientId={googleClientId} />
+                {/* Bug fix: this used to omit `role` entirely, so a brand-new
+                    account created here fell through to the backend's own
+                    default — which was "advocate", mislabeling anyone who
+                    just wants to hire a proxy counsel or order a print job
+                    as a lawyer. Explicit "client" now, matching the actual
+                    default a plain sign-in should get. */}
+                <GoogleAuthButton clientId={googleClientId} role="client" />
               </>
             )}
           </CardContent>

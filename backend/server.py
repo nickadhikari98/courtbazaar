@@ -166,6 +166,18 @@ ROLE_CAPABILITIES: Dict[str, List[str]] = {
     "law_firm": ["can_manage_firm", "can_hire_proxy_counsel"],
     "proxy_counsel": ["can_earn", "can_practice_proxy_counsel", "can_hire_proxy_counsel"],
     "advocate": ["can_hire_proxy_counsel"],
+    # Bug fix: every plain sign-up (email/password, Google, OTP) used to
+    # default straight to "advocate" — a non-lawyer just hiring a proxy
+    # counsel or ordering a print job ended up with their account, profile
+    # badge, and "I am a..." label literally reading "Advocate". "client" is
+    # the correct default for anyone who hasn't gone through an actual
+    # professional application (Join as Counsel/Proxy Counsel/Vendor/... —
+    # see leads.py's LEAD_ROLE_TO_ACCOUNT_ROLE and _activate_professional).
+    # Same capability as "advocate" since that's the one real thing a plain
+    # requester needs — nothing here was ever advocate-specific to begin
+    # with (bar_council fields etc. are just a frontend Profile.jsx display
+    # gate on role=="advocate", never enforced as a capability).
+    "client": ["can_hire_proxy_counsel"],
     "admin": ["is_admin"],
 }
 
@@ -219,14 +231,18 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     raise HTTPException(401, "Not authenticated")
 
 # ===== Models =====
-ROLES = ["advocate", "law_firm", "vendor", "efiling_agent", "legal_typist", "notary", "stamp_vendor", "delivery_partner", "franchise", "admin"]
+# "client" is the generic default for anyone signing up without going
+# through a professional application (see ROLE_CAPABILITIES above) — kept
+# in this list (not just used as a bare default value) so RegisterRequest's
+# `role not in ROLES` check and admin user-listing filters both recognize it.
+ROLES = ["client", "advocate", "law_firm", "vendor", "efiling_agent", "legal_typist", "notary", "stamp_vendor", "delivery_partner", "franchise", "admin"]
 
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
     name: str
     phone: Optional[str] = None
-    role: str = "advocate"
+    role: str = "client"
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -239,7 +255,7 @@ class OtpVerify(BaseModel):
     phone: str
     otp: str
     name: Optional[str] = None
-    role: str = "advocate"
+    role: str = "client"
 
 class SetPasswordRequest(BaseModel):
     token: str
@@ -708,7 +724,7 @@ async def google_callback(
     request: Request,
     credential: str = Form(...),
     g_csrf_token: Optional[str] = Form(None),
-    role: str = "advocate",
+    role: str = "client",
 ):
     """Google Identity Services posts the credential straight here as a real
     top-level browser navigation (ux_mode: 'redirect' in GoogleAuthButton.jsx)
@@ -760,7 +776,16 @@ async def google_callback(
         account_role = existing["role"]
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
-        account_role = role
+        # Security fix: `role` is a bare query param on a public redirect
+        # URL — unlike /auth/register's `req.role not in ROLES` 400 and
+        # _reject_self_register_blocked_role guard, this path never
+        # validated it at all, so anyone could complete a real Google
+        # sign-in against ?role=admin (or "vendor", already gated behind
+        # admin-only lead approval everywhere else) and mint themselves
+        # that account type outright on first login. Same validation as
+        # self-register, just falling back to "client" instead of a JSON
+        # 400 — this is a redirect flow with no request body to reject.
+        account_role = role if role in ROLES and role not in SELF_REGISTER_BLOCKED_ROLES else "client"
         await db.users.insert_one({
             "user_id": user_id,
             "email": email,

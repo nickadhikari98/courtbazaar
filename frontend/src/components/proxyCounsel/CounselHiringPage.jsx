@@ -226,7 +226,7 @@ export default function CounselHiringPage({ serviceType }) {
   };
 
   const handleSelectCounsel = (counsel) => {
-    if (!user) { requireLogin(); return; }
+    if (!user) { requireLogin(counsel); return; }
     if (!filters.court_id || !filters.hearing_date) {
       toast.error("Pick a court and hearing date above first");
       return;
@@ -420,6 +420,27 @@ export default function CounselHiringPage({ serviceType }) {
         confirmLabel="Send Request"
         confirmVariant="default"
         onConfirm={() => urgentConfirmTarget && sendRequestTo(urgentConfirmTarget)}
+      />
+
+      <ConfirmDialog
+        open={!!resumedConfirmTarget}
+        onOpenChange={(v) => !v && setResumedConfirmTarget(null)}
+        busy={selectingId === resumedConfirmTarget?.advocate_id}
+        title="Continue with this counsel?"
+        description={(
+          <>
+            You were signing in to send a request to{" "}
+            <b className="text-foreground">{resumedConfirmTarget?.name}</b> — your filters have been restored.
+            Send the request now, or cancel and keep browsing.
+          </>
+        )}
+        confirmLabel="Send Request"
+        confirmVariant="default"
+        onConfirm={() => {
+          const counsel = resumedConfirmTarget;
+          setResumedConfirmTarget(null);
+          if (counsel) handleSelectCounsel(counsel);
+        }}
       />
 
       <CounselProfileDialog counsel={profileCounsel} onOpenChange={(v) => !v && setProfileCounsel(null)} />
