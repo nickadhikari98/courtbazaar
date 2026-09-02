@@ -209,7 +209,42 @@ async def verify_bar_council(db, user_id: str) -> dict:
     return await db.proxy_counsel_profiles.find_one({"user_id": user_id}, {"_id": 0})
 
 
-def _validate_slot(kind: str, day_of_week: Optional[int], date: Optional[str]) -> None:
+def is_available_on_date(slots: List[dict], date_str: str) -> bool:
+    """Whether a counsel's own availability_slots say they're free on
+    `date_str` ("YYYY-MM-DD") — the actual check the browse page's Hearing
+    Date filter needs (founder direction, 2026-09): a client who's already
+    picked a date shouldn't be shown counsels who can't actually take it.
+
+    No slots configured at all -> permissive default (True). Most counsels
+    today have never touched the granular Availability tab at all; treating
+    "no schedule" as "unavailable everywhere" would empty out every
+    date-filtered search instead of just narrowing it, so this only ever
+    excludes on actual evidence of unavailability:
+      - an explicit holiday_block/emergency_unavailable for this exact date
+        always wins, regardless of anything else, or
+      - once a counsel HAS opted into recurring_weekly/custom_date
+        scheduling at all, this date has to be one of the ones they
+        actually picked (a counsel who only ever set up Mondays is exactly
+        who a Wednesday search should exclude)."""
+    if not slots:
+        return True
+    try:
+        weekday = datetime.fromisoformat(date_str).weekday()  # 0=Monday..6=Sunday, matches day_of_week's own convention
+    except (TypeError, ValueError):
+        return True  # unparseable date filter shouldn't hide every counsel
+    if any(s.get("kind") in ("holiday_block", "emergency_unavailable") and s.get("date") == date_str for s in slots):
+        return False
+    positive = [s for s in slots if s.get("kind") in ("recurring_weekly", "custom_date")]
+    if not positive:
+        return True
+    return any(
+        (s["kind"] == "custom_date" and s.get("date") == date_str)
+        or (s["kind"] == "recurring_weekly" and s.get("day_of_week") == weekday)
+        for s in positive
+    )
+
+
+def _validate_slot(kind: str, day_of_week: Optional[int], date: Optional[str], start_time: Optional[str]) -> None:
     if kind not in AVAILABILITY_KINDS:
         raise HTTPException(400, f"Invalid availability kind. Allowed: {', '.join(AVAILABILITY_KINDS)}")
     if kind == "recurring_weekly":
@@ -217,11 +252,18 @@ def _validate_slot(kind: str, day_of_week: Optional[int], date: Optional[str]) -
             raise HTTPException(400, "day_of_week (0=Monday..6=Sunday) is required for a recurring weekly slot")
     elif not date:
         raise HTTPException(400, "date is required for this availability kind")
+    # Founder direction (2026-09): Practice.jsx's "Time Slot" field is no
+    # longer optional-with-a-silent-full-day-default — a counsel must pick
+    # one of TIME_OF_DAY_OPTIONS explicitly (Court stays the one genuinely
+    # optional field). Enforced here too, not just in the form, so a direct
+    # API call can't slip a slotless row in any more than the UI can.
+    if not start_time:
+        raise HTTPException(400, "A time slot is required")
 
 
 async def add_slot(db, user_id: str, kind: str, day_of_week: Optional[int], date: Optional[str],
                     court_id: Optional[str], start_time: Optional[str], end_time: Optional[str]) -> dict:
-    _validate_slot(kind, day_of_week, date)
+    _validate_slot(kind, day_of_week, date, start_time)
     slot = {
         "slot_id": f"slot_{uuid.uuid4().hex[:12]}",
         "user_id": user_id,

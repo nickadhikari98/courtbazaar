@@ -46,6 +46,13 @@ export async function getPublicProxyCounsels(context) {
     // empty filter never gets sent as a literal "" query param.
     time_slot: context?.time_slot || undefined,
     experience_bracket: context?.experience_bracket || undefined,
+    // Bug fix (founder direction, 2026-09): Hearing Date was collected
+    // (required to book at all) but never actually narrowed who's shown —
+    // a client could pick a counsel who'd already blocked that exact day.
+    // Now cross-checked against each candidate's own availability_slots
+    // server-side (see counsel_matching.list_and_recommend/
+    // practice.is_available_on_date).
+    hearing_date: context?.hearing_date || undefined,
     // Backend defaults to 20 (a reasonable AI-recommendation batch size),
     // which silently truncated the browse grid — this page wants "show all
     // verified counsels for these filters", not a top-20 pick, so it always
