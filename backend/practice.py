@@ -56,18 +56,40 @@ EXPERIENCE_BRACKETS = [
 ]
 _EXPERIENCE_BRACKET_YEARS = {b["key"]: b["min_years"] for b in EXPERIENCE_BRACKETS}
 _EXPERIENCE_BRACKET_LABELS = {b["key"]: b["label"] for b in EXPERIENCE_BRACKETS}
+_EXPERIENCE_BRACKET_INDEX = {b["key"]: i for i, b in enumerate(EXPERIENCE_BRACKETS)}
+
+# Founder direction (2026-09): the rate-card floor scales with experience —
+# "0-3" pays the base PRICING_MINIMUMS rate unchanged; each bracket step
+# above that adds another flat ₹100 to every slot's floor ("3-5" is +100,
+# "5-7" is +200, "7-10" is +300, "10+" is +400), same surcharge amount at
+# every step rather than a per-bracket table, so a new bracket added to
+# EXPERIENCE_BRACKETS automatically gets the next ₹100 step for free.
+# Unset/unrecognized bracket (a counsel who hasn't picked one yet) falls
+# back to bracket index 0 — i.e. the unmodified base rate, never a penalty.
+EXPERIENCE_PRICING_SURCHARGE = 100
 
 
 def experience_bracket_label(bracket: Optional[str]) -> Optional[str]:
     return _EXPERIENCE_BRACKET_LABELS.get(bracket)
 
 
-def validate_pricing(pricing: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+def pricing_minimum(court_type: str, slot: str, experience_bracket: Optional[str] = None) -> float:
+    """The actual floor for one (court_type, slot), after the experience
+    surcharge — the one place this math happens, so validate_pricing and
+    anything that needs to display "Min ₹X" (Practice.jsx's own mirrored
+    copy in config/proxyCounselPricing.js) can't drift apart."""
+    base = PRICING_MINIMUMS[court_type][slot]
+    bracket_index = _EXPERIENCE_BRACKET_INDEX.get(experience_bracket, 0)
+    return base + EXPERIENCE_PRICING_SURCHARGE * bracket_index
+
+
+def validate_pricing(pricing: Dict[str, Any], experience_bracket: Optional[str] = None) -> Dict[str, Dict[str, float]]:
     """Clamps to only known court-type/slot keys and rejects anything below
     the platform floor — the one place this is enforced, so a direct API
     call can't slip a below-minimum rate in any more than the form can.
     Slots an advocate leaves out (still deciding on high-court work, say)
-    simply aren't in the result — this is additive, not "fill every cell."""
+    simply aren't in the result — this is additive, not "fill every cell."
+    `experience_bracket` shifts the floor itself — see pricing_minimum."""
     cleaned: Dict[str, Dict[str, float]] = {}
     for court_type, slots in (pricing or {}).items():
         if court_type not in PRICING_COURT_TYPES or not isinstance(slots, dict):
@@ -80,7 +102,7 @@ def validate_pricing(pricing: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
                 amount = float(amount)
             except (TypeError, ValueError):
                 raise HTTPException(400, f"Invalid price for {PRICING_COURT_TYPE_LABELS[court_type]} / {PRICING_SLOT_LABELS[slot]}")
-            minimum = PRICING_MINIMUMS[court_type][slot]
+            minimum = pricing_minimum(court_type, slot, experience_bracket)
             if amount < minimum:
                 raise HTTPException(
                     400,
@@ -131,9 +153,11 @@ async def get_or_create_profile(db, user_id: str) -> dict:
 
 
 async def update_profile(db, user_id: str, patch: Dict[str, Any]) -> dict:
+    # Also ensures a row exists before the upsert-style update below, and is
+    # the source of the experience_bracket pricing validates against when
+    # this same call isn't also changing the bracket.
+    current = await get_or_create_profile(db, user_id)
     update = {k: v for k, v in patch.items() if k in PROFILE_EDITABLE_FIELDS and v is not None}
-    if "pricing" in update:
-        update["pricing"] = validate_pricing(update["pricing"])
     if "experience_bracket" in update:
         bracket = update["experience_bracket"]
         if bracket not in _EXPERIENCE_BRACKET_YEARS:
@@ -143,8 +167,16 @@ async def update_profile(db, user_id: str, patch: Dict[str, Any]) -> dict:
         # reads experience_years as a number (min_experience_years filtering,
         # sort-by-experience) needs to know brackets exist.
         update["experience_years"] = _EXPERIENCE_BRACKET_YEARS[bracket]
+    if "pricing" in update:
+        # The bracket this same save is also setting, if any — otherwise
+        # whatever's already on the profile. Practice.jsx's save() always
+        # sends both together, but a direct API call touching only
+        # `pricing` must still be checked against the advocate's actual
+        # bracket on file, not silently treated as the unmodified "0-3"
+        # floor — the surcharge follows the advocate, not the request.
+        effective_bracket = update.get("experience_bracket", current.get("experience_bracket"))
+        update["pricing"] = validate_pricing(update["pricing"], effective_bracket)
     update["updated_at"] = datetime.now(timezone.utc).isoformat()
-    await get_or_create_profile(db, user_id)  # ensure a row exists before the upsert-style update
     await db.proxy_counsel_profiles.update_one({"user_id": user_id}, {"$set": update})
     return await get_or_create_profile(db, user_id)
 

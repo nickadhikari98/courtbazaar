@@ -22,7 +22,7 @@ import {
 } from "@/lib/practiceApi";
 import { listHearingRequests } from "@/lib/hearingRequestsApi";
 import { getCourt, searchCourts } from "@/lib/referenceDataApi";
-import { formatINR } from "@/lib/api";
+import { formatINR, getErrorMessage } from "@/lib/api";
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import HearingActivityPreview from "@/components/shared/HearingActivityPreview";
 import CapabilitiesCard from "@/components/shared/CapabilitiesCard";
@@ -35,7 +35,7 @@ import {
 } from "@/lib/hearingLifecycle";
 import {
   PRICING_SLOTS, PRICING_SLOT_LABELS, PRICING_COURT_TYPES, PRICING_COURT_TYPE_LABELS,
-  PRICING_MINIMUMS, EXPERIENCE_BRACKETS,
+  EXPERIENCE_BRACKETS, pricingMinimum,
 } from "@/config/proxyCounselPricing";
 
 const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
@@ -192,14 +192,14 @@ function ProfileTab({ profile, onSaved }) {
 
   const hasInvalidPricing = () => PRICING_COURT_TYPES.some((courtType) => PRICING_SLOTS.some((slot) => {
     const amount = form.pricing?.[courtType]?.[slot];
-    return amount != null && amount < PRICING_MINIMUMS[courtType][slot];
+    return amount != null && amount < pricingMinimum(courtType, slot, form.experience_bracket);
   }));
 
   const save = async () => {
     for (const courtType of PRICING_COURT_TYPES) {
       for (const slot of PRICING_SLOTS) {
         const amount = form.pricing?.[courtType]?.[slot];
-        const minimum = PRICING_MINIMUMS[courtType][slot];
+        const minimum = pricingMinimum(courtType, slot, form.experience_bracket);
         if (amount != null && amount < minimum) {
           toast.error(`${PRICING_COURT_TYPE_LABELS[courtType]} / ${PRICING_SLOT_LABELS[slot]} must be at least ₹${minimum}`);
           return;
@@ -220,7 +220,7 @@ function ProfileTab({ profile, onSaved }) {
       onSaved(updated);
       toast.success("Profile saved");
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Could not save profile");
+      toast.error(getErrorMessage(err, "Could not save profile"));
     } finally {
       setSaving(false);
     }
@@ -239,28 +239,25 @@ function ProfileTab({ profile, onSaved }) {
       onSaved(updated);
       toast.success("Availability updated");
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Could not save");
+      toast.error(getErrorMessage(err, "Could not save"));
     } finally {
       setBusy(false);
     }
   };
 
-  // Instant booking's own save — founder direction (2026-08): with the
-  // toggle on, the Urgent fee inputs surface right in this card (see below)
-  // so a counsel doesn't have to scroll down to Availability & Pricing to
-  // set it. This button saves instant_booking together with the full
-  // pricing object (not just the urgent slot) — same "always resend the
-  // whole grid" convention save() below already uses, since the backend
-  // replaces pricing wholesale rather than merging it field-by-field.
+  // Instant booking's own save — the Urgent fee inputs live in this same
+  // card (see below), always shown regardless of the toggle, so this
+  // button saves instant_booking together with the full pricing object
+  // (not just the urgent slot) — same "always resend the whole grid"
+  // convention save() below already uses, since the backend replaces
+  // pricing wholesale rather than merging it field-by-field.
   const saveInstantBooking = async () => {
-    if (form.instant_booking) {
-      for (const courtType of PRICING_COURT_TYPES) {
-        const amount = form.pricing?.[courtType]?.urgent;
-        const minimum = PRICING_MINIMUMS[courtType].urgent;
-        if (amount != null && amount < minimum) {
-          toast.error(`${PRICING_COURT_TYPE_LABELS[courtType]} Urgent fee must be at least ₹${minimum}`);
-          return;
-        }
+    for (const courtType of PRICING_COURT_TYPES) {
+      const amount = form.pricing?.[courtType]?.urgent;
+      const minimum = pricingMinimum(courtType, "urgent", form.experience_bracket);
+      if (amount != null && amount < minimum) {
+        toast.error(`${PRICING_COURT_TYPE_LABELS[courtType]} Urgent fee must be at least ₹${minimum}`);
+        return;
       }
     }
     setSavingInstant(true);
@@ -269,7 +266,7 @@ function ProfileTab({ profile, onSaved }) {
       onSaved(updated);
       toast.success("Instant booking updated");
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Could not save");
+      toast.error(getErrorMessage(err, "Could not save"));
     } finally {
       setSavingInstant(false);
     }
@@ -318,47 +315,49 @@ function ProfileTab({ profile, onSaved }) {
               </Button>
             </div>
           </div>
-          {/* Founder direction (2026-08): with instant booking on, a counsel
-              may not scroll down to Availability & Pricing to set the Urgent
-              fee at all — surface just that one field right here instead of
-              the full 2-court-type x 5-slot pricing grid below. */}
-          {form.instant_booking && (
-            <div className="pt-4 border-t">
-              <div className="flex items-center gap-1.5 text-sm font-bold mb-1">
-                <Clock className="w-3.5 h-3.5 text-amber-600" /> Urgent (same-day) fee
-              </div>
-              <p className="text-xs text-muted-foreground mb-3">
-                Instant booking can hand you urgent requests right away — set your urgent fee so it's ready.
-              </p>
-              <div className="grid sm:grid-cols-2 gap-3">
-                {PRICING_COURT_TYPES.map((courtType) => {
-                  const minimum = PRICING_MINIMUMS[courtType].urgent;
-                  const amount = form.pricing?.[courtType]?.urgent;
-                  const belowMin = amount != null && amount < minimum;
-                  return (
-                    <div key={courtType}>
-                      <Label>{PRICING_COURT_TYPE_LABELS[courtType]}</Label>
-                      <Input
-                        type="number" min={minimum}
-                        value={amount ?? ""}
-                        onChange={(e) => setPricing(courtType, "urgent", e.target.value)}
-                        placeholder={`Min ₹${minimum}`}
-                        onWheel={(e) => e.target.blur()}
-                        className={belowMin ? "border-red-500 focus-visible:ring-red-500" : undefined}
-                        aria-invalid={belowMin || undefined}
-                        data-testid={`instant-urgent-fee-${courtType}`}
-                      />
-                      {belowMin ? (
-                        <p className="text-2xs text-red-600 mt-0.5">Must be at least ₹{minimum}</p>
-                      ) : (
-                        <p className="text-2xs text-muted-foreground mt-0.5">Min ₹{minimum}</p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+          {/* This is now the single place to set the Urgent fee — always
+              shown here, not just while instant booking is on (a counsel
+              can price urgent work without opting into auto-accept), and
+              removed from the Availability & Pricing grid below, which
+              used to render it a second time (see PRICING_SLOTS.filter
+              there). Founder direction (2026-08) was originally to surface
+              it here only when instant booking is on so a counsel wouldn't
+              have to scroll down for it; now it just lives here full stop. */}
+          <div className="pt-4 border-t">
+            <div className="flex items-center gap-1.5 text-sm font-bold mb-1">
+              <Clock className="w-3.5 h-3.5 text-amber-600" /> Urgent (same-day) fee
             </div>
-          )}
+            <p className="text-xs text-muted-foreground mb-3">
+              Shown to clients making an urgent request, whether or not instant booking is on.
+            </p>
+            <div className="grid sm:grid-cols-2 gap-3">
+              {PRICING_COURT_TYPES.map((courtType) => {
+                const minimum = pricingMinimum(courtType, "urgent", form.experience_bracket);
+                const amount = form.pricing?.[courtType]?.urgent;
+                const belowMin = amount != null && amount < minimum;
+                return (
+                  <div key={courtType}>
+                    <Label>{PRICING_COURT_TYPE_LABELS[courtType]}</Label>
+                    <Input
+                      type="number" min={minimum}
+                      value={amount ?? ""}
+                      onChange={(e) => setPricing(courtType, "urgent", e.target.value)}
+                      placeholder={`Min ₹${minimum}`}
+                      onWheel={(e) => e.target.blur()}
+                      className={belowMin ? "border-red-500 focus-visible:ring-red-500" : undefined}
+                      aria-invalid={belowMin || undefined}
+                      data-testid={`instant-urgent-fee-${courtType}`}
+                    />
+                    {belowMin ? (
+                      <p className="text-2xs text-red-600 mt-0.5">Must be at least ₹{minimum}</p>
+                    ) : (
+                      <p className="text-2xs text-muted-foreground mt-0.5">Min ₹{minimum}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -451,9 +450,11 @@ function ProfileTab({ profile, onSaved }) {
           {PRICING_COURT_TYPES.map((courtType) => (
             <div key={courtType}>
               <div className="text-sm font-bold mb-2">{PRICING_COURT_TYPE_LABELS[courtType]}</div>
+              {/* "urgent" excluded here — it's set once, above, in the
+                  Instant Booking card, not duplicated in this grid too. */}
               <div className="grid sm:grid-cols-3 gap-3">
-                {PRICING_SLOTS.map((slot) => {
-                  const minimum = PRICING_MINIMUMS[courtType][slot];
+                {PRICING_SLOTS.filter((slot) => slot !== "urgent").map((slot) => {
+                  const minimum = pricingMinimum(courtType, slot, form.experience_bracket);
                   const amount = form.pricing?.[courtType]?.[slot];
                   const belowMin = amount != null && amount < minimum;
                   return (
@@ -512,7 +513,7 @@ function AvailabilityTab() {
       toast.success("Availability added");
       load();
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Could not add slot");
+      toast.error(getErrorMessage(err, "Could not add slot"));
     }
   };
 

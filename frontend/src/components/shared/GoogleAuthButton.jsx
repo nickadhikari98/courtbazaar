@@ -36,8 +36,20 @@ function loadGsiScript() {
    to block, still no broker in between.
 
    `role` rides along as a query param on login_uri itself, since redirect
-   mode is a real page navigation with no JS callback left to hand a role to
-   (Register.jsx's role picker needs this for brand-new accounts).
+   mode is a real page navigation with no JS callback left to hand a role to.
+
+   Bug (found 2026-09): Google's redirect_uri validation for this flow
+   requires an EXACT match — query string included — against a fixed list
+   registered in Cloud Console's "Authorized redirect URIs". A `role` value
+   nothing has pre-registered there (Register.jsx used to send whatever the
+   "I am a..." dropdown held) makes Google itself reject the sign-in with
+   Error 400: redirect_uri_mismatch, before the request ever reaches this
+   app's backend — no amount of frontend/backend code fixes that, only
+   registering the exact string in Console does. Both current callers
+   (Login.jsx, Register.jsx) now omit `role` entirely for this reason — a
+   Google sign-up always lands on server.py's own default ("client"). Only
+   pass `role` here for a value you have actually added, verbatim including
+   the leading "?role=", to Authorized redirect URIs in Console first.
 
    Renders nothing when the backend hasn't got a Client ID configured (see
    AuthContext's googleClientId, fetched from /config/public). */

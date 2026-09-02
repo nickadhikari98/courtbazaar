@@ -203,7 +203,22 @@ export default function Register() {
                   <span className="text-2xs uppercase tracking-wide font-bold text-muted-foreground">Or continue with</span>
                   <div className="h-px flex-1 bg-border" />
                 </div>
-                <GoogleAuthButton clientId={googleClientId} role={form.role} />
+                {/* Bug fix: this used to pass form.role straight through as
+                    a query param on the OAuth redirect URL — Google requires
+                    an EXACT match (query string included) against a fixed
+                    list registered in Cloud Console, so every dropdown
+                    choice (advocate/vendor/delivery_partner) needed its own
+                    separately-registered redirect URI, and none of them
+                    were — this is what broke "Continue with Google" outright
+                    (redirect_uri_mismatch) the moment the default changed
+                    from "advocate" to "client". No `role` prop now: a Google
+                    sign-up here always becomes a "client" account regardless
+                    of the dropdown above, matching what's actually
+                    registered. Someone who wants Advocate/Vendor/Delivery
+                    Partner specifically uses the password form instead,
+                    which sends role in the request body — no URL, no Google
+                    allow-list to maintain. */}
+                <GoogleAuthButton clientId={googleClientId} />
               </>
             )}
           </CardContent>
