@@ -15,6 +15,14 @@ export const PRICING_SLOT_LABELS = {
   urgent: "Urgent (same-day)",
 };
 
+// Founder direction (2026-09): every plain "what time" picker in the app
+// (My Practice availability, hearing time, stenographer start time, e-filing
+// turnaround) should offer this same short list instead of a literal clock
+// input — a user picks a slot, not a minute. Reuses PRICING_SLOT_LABELS
+// (minus "urgent", which isn't a time-of-day choice) so there's exactly one
+// place these four options are spelled out.
+export const TIME_OF_DAY_OPTIONS = PRICING_SLOTS.filter((s) => s !== "urgent").map((s) => PRICING_SLOT_LABELS[s]);
+
 export const PRICING_COURT_TYPES = ["district", "high_court"];
 
 export const PRICING_COURT_TYPE_LABELS = {

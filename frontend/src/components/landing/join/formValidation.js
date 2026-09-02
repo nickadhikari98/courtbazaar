@@ -94,7 +94,12 @@ export function getFieldError(field, key, values) {
     if (value > today) return "Date cannot be in the future.";
   }
   if (field.type === "turnaroundTime" && value === "Custom Time") {
-    if (!values[`${key}__from`] || !values[`${key}__to`]) return "Please provide both a From and To time.";
+    // Bug fix: this used to also require `${key}__to`, back when the reveal
+    // was a literal From/To clock-time pair — TurnaroundTimeField now
+    // offers a single time-of-day slot (see TIME_OF_DAY_OPTIONS), so only
+    // `__from` is ever set; the old check made "Custom Time" impossible to
+    // submit once the second input was removed.
+    if (!values[`${key}__from`]) return "Please select a time slot.";
   }
   if (field.other || field.otherTriggerValues) {
     const isOtherSelected = field.otherTriggerValues

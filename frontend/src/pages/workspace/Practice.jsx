@@ -15,7 +15,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty, TableLoading,
 } from "@/components/ui/table";
-import { Briefcase, X, Plus, Trash2, Star, CheckCircle2, Clock, ArrowRight } from "lucide-react";
+import { Briefcase, X, Plus, Trash2, Star, CheckCircle2, Clock, ArrowRight, Loader2 } from "lucide-react";
 import {
   getPracticeProfile, updatePracticeProfile, listAvailabilitySlots,
   addAvailabilitySlot, removeAvailabilitySlot, getPracticePerformance,
@@ -35,7 +35,7 @@ import {
 } from "@/lib/hearingLifecycle";
 import {
   PRICING_SLOTS, PRICING_SLOT_LABELS, PRICING_COURT_TYPES, PRICING_COURT_TYPE_LABELS,
-  EXPERIENCE_BRACKETS, pricingMinimum,
+  EXPERIENCE_BRACKETS, pricingMinimum, TIME_OF_DAY_OPTIONS,
 } from "@/config/proxyCounselPricing";
 
 const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
@@ -83,7 +83,17 @@ function TagInput({ label, value, onChange, placeholder }) {
       <div className="flex gap-2">
         <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={placeholder}
                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }} />
-        <Button type="button" variant="outline" onClick={add}><Plus className="w-4 h-4" /></Button>
+        {/* Same fade/bright "ready to submit" signal as the Availability
+            tab's Add button — faded while there's nothing typed to add yet,
+            bright the moment there is. */}
+        <Button
+          type="button" onClick={add}
+          className={draft.trim()
+            ? "bg-accent hover:bg-accent/90 font-bold"
+            : "bg-accent/50 hover:bg-accent/60 font-bold"}
+        >
+          <Plus className="w-4 h-4" />
+        </Button>
       </div>
     </div>
   );
@@ -494,26 +504,46 @@ function AvailabilityTab() {
   const [dayOfWeek, setDayOfWeek] = useState(0);
   const [date, setDate] = useState("");
   const [courtId, setCourtId] = useState("");
-  const [startTime, setStartTime] = useState("");
-  const [endTime, setEndTime] = useState("");
+  // Bug fix: was two literal clock-time inputs (From/To) — switched to the
+  // same short time-of-day picker every such field in the app now uses (see
+  // TIME_OF_DAY_OPTIONS). A single slot string now, not a start/end pair.
+  const [timeSlot, setTimeSlot] = useState("");
+  const [addingSlot, setAddingSlot] = useState(false);
 
   const load = () => listAvailabilitySlots().then(setSlots);
   useEffect(() => { load(); }, []);
 
+  // UX fix: required fields are Kind (always has a value — the Select has
+  // no blank state), Day of week or Date depending on Kind, and Time Slot
+  // (no longer silently optional — see the label below and practice.py's
+  // matching _validate_slot check). Court stays the one genuinely optional
+  // field. This also drives the Add button's fade/bright state directly —
+  // faded while the form is still incomplete (nothing real to add yet, the
+  // "0 availability" case), bright the moment it's actually ready to submit.
+  const dayOrDateFilled = kind === "recurring_weekly" ? dayOfWeek != null : !!date;
+  const isFormReady = dayOrDateFilled && !!timeSlot;
+
   const add = async () => {
+    if (!isFormReady) {
+      toast.error(dayOrDateFilled ? "Select a time slot" : "Pick a day or date first");
+      return;
+    }
+    setAddingSlot(true);
     try {
       await addAvailabilitySlot({
         kind,
         day_of_week: kind === "recurring_weekly" ? dayOfWeek : undefined,
         date: kind !== "recurring_weekly" ? date : undefined,
         court_id: courtId || undefined,
-        start_time: startTime || undefined,
-        end_time: endTime || undefined,
+        start_time: timeSlot,
       });
       toast.success("Availability added");
+      setTimeSlot(""); // force a fresh, explicit pick for the next slot rather than resubmitting the same one
       load();
     } catch (err) {
       toast.error(getErrorMessage(err, "Could not add slot"));
+    } finally {
+      setAddingSlot(false);
     }
   };
 
@@ -529,7 +559,7 @@ function AvailabilityTab() {
           <div className="font-display font-bold mb-3">Add availability</div>
           <div className="grid sm:grid-cols-2 gap-3 mb-3">
             <div>
-              <Label>Kind</Label>
+              <Label>Kind *</Label>
               <Select value={kind} onValueChange={setKind}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -539,7 +569,7 @@ function AvailabilityTab() {
             </div>
             {kind === "recurring_weekly" ? (
               <div>
-                <Label>Day of week</Label>
+                <Label>Day of week *</Label>
                 <Select value={String(dayOfWeek)} onValueChange={(v) => setDayOfWeek(Number(v))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -549,27 +579,32 @@ function AvailabilityTab() {
               </div>
             ) : (
               <div>
-                <Label>Date</Label>
+                <Label>Date *</Label>
                 <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
               </div>
             )}
             <div>
-              <Label>Court (optional — blank = any court)</Label>
+              <Label>Court (optional)</Label>
               <Input value={courtId} onChange={(e) => setCourtId(e.target.value)} placeholder="e.g. Delhi High Court" />
             </div>
-            <div className="flex gap-2">
-              <div className="flex-1">
-                <Label>From</Label>
-                <Input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
-              </div>
-              <div className="flex-1">
-                <Label>To</Label>
-                <Input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
-              </div>
+            <div>
+              <Label>Time Slot *</Label>
+              <Select value={timeSlot || undefined} onValueChange={setTimeSlot}>
+                <SelectTrigger><SelectValue placeholder="Select a time slot" /></SelectTrigger>
+                <SelectContent>
+                  {TIME_OF_DAY_OPTIONS.map((opt) => <SelectItem key={opt} value={opt}>{opt}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
           </div>
-          <Button type="button" onClick={add} className="bg-accent hover:bg-accent/90 font-bold">
-            <Plus className="w-4 h-4 mr-1.5" /> Add
+          <Button
+            type="button" onClick={add} disabled={addingSlot}
+            className={isFormReady
+              ? "bg-accent hover:bg-accent/90 font-bold"
+              : "bg-accent/50 hover:bg-accent/60 font-bold"}
+          >
+            {addingSlot ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Plus className="w-4 h-4 mr-1.5" />}
+            Add
           </Button>
         </CardContent>
       </Card>
@@ -593,7 +628,7 @@ function AvailabilityTab() {
                 <TableCell><Badge variant="outline" className="text-2xs uppercase">{s.kind.replace(/_/g, " ")}</Badge></TableCell>
                 <TableCell>{s.kind === "recurring_weekly" ? DAYS[s.day_of_week] : s.date}</TableCell>
                 <TableCell>{s.court_id || "Any"}</TableCell>
-                <TableCell>{s.start_time && s.end_time ? `${s.start_time}–${s.end_time}` : "Full day"}</TableCell>
+                <TableCell>{s.start_time || "Full day"}</TableCell>
                 <TableCell>
                   <button type="button" onClick={() => remove(s.slot_id)} className="text-muted-foreground hover:text-red-600">
                     <Trash2 className="w-4 h-4" />

@@ -373,6 +373,7 @@ async def list_and_recommend(
     fee_max: Optional[float] = None,
     time_slot: Optional[str] = None,
     available_only: bool = False,
+    hearing_date: Optional[str] = None,
     limit: int = 20,
 ) -> Tuple[List[dict], int]:
     """Filters proxy_counsel_profiles down to the verified counsels matching
@@ -404,7 +405,15 @@ async def list_and_recommend(
     time_slot filters to counsels who've priced that slot in either court
     type's pricing grid (practice.PRICING_SLOTS, e.g. "morning"/"afternoon").
     A counsel who hasn't priced a slot at all hasn't said they take that kind
-    of work, so an unpriced slot is excluded rather than treated as a match."""
+    of work, so an unpriced slot is excluded rather than treated as a match.
+
+    hearing_date (founder direction, 2026-09): the browse page's Hearing
+    Date field is required to book, but used to only ever get sent along
+    with the eventual hearing-request creation — never used to actually
+    narrow who's shown. Now cross-checked against each candidate's own
+    availability_slots (see practice.is_available_on_date) so a client who's
+    already picked a date isn't shown, and can't select, someone who
+    actually can't take it that day."""
     import practice
     query: Dict[str, Any] = verified_counsel_query()
     if specialization:
@@ -450,6 +459,18 @@ async def list_and_recommend(
         query["courts"] = court_id
 
     candidates = await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500)
+
+    if hearing_date is not None and candidates:
+        slot_docs = await db.availability_slots.find(
+            {"user_id": {"$in": [c["user_id"] for c in candidates]}}, {"_id": 0},
+        ).to_list(5000)
+        slots_by_user: Dict[str, List[dict]] = {}
+        for s in slot_docs:
+            slots_by_user.setdefault(s["user_id"], []).append(s)
+        candidates = [
+            c for c in candidates
+            if practice.is_available_on_date(slots_by_user.get(c["user_id"], []), hearing_date)
+        ]
 
     if fee_min is not None or fee_max is not None:
         def _fee_in_range(counsel: dict) -> bool:

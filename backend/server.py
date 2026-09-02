@@ -2412,7 +2412,7 @@ async def public_proxy_counsels(
     experience_bracket: Optional[str] = None,
     min_rating: Optional[float] = None, fee_min: Optional[float] = None, fee_max: Optional[float] = None,
     time_slot: Optional[str] = None,
-    available_only: bool = False, limit: int = 20,
+    available_only: bool = False, hearing_date: Optional[str] = None, limit: int = 20,
 ):
     """Public, unauthenticated counterpart to /recommendations/advocates —
     the founder's direction is that the counsel browse grid itself is
@@ -2431,7 +2431,7 @@ async def public_proxy_counsels(
         db, court_id=court_id, state_id=state_id, district=district, specialization=specialization,
         min_experience_years=min_experience_years, experience_bracket=experience_bracket,
         min_rating=min_rating, fee_min=fee_min, fee_max=fee_max, time_slot=time_slot,
-        available_only=available_only, limit=limit,
+        available_only=available_only, hearing_date=hearing_date, limit=limit,
     )
     generated_at = datetime.now(timezone.utc).isoformat()
     cards = await _advocate_cards_for(ranked)

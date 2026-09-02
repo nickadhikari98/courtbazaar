@@ -120,7 +120,7 @@ export default function CounselHiringPage({ serviceType }) {
     setStatus("loading");
     getPublicProxyCounsels({
       court_id: filters.court_id, state_id: filters.state_id, district: filters.district,
-      time_slot: timeSlot, experience_bracket: experienceBracket,
+      time_slot: timeSlot, experience_bracket: experienceBracket, hearing_date: filters.hearing_date,
     })
       .then(({ advocates: list }) => {
         // A logged-in customer who is also a verified proxy counsel
@@ -132,8 +132,8 @@ export default function CounselHiringPage({ serviceType }) {
       })
       .catch(() => setStatus("error"));
   };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- re-fetch on the location + time-slot/experience filters the backend filters by, plus whichever account is viewing (so self-exclusion re-applies across login/logout)
-  useEffect(() => { fetchAdvocates(); }, [filters.court_id, filters.state_id, filters.district, timeSlot, experienceBracket, excludeAdvocateId, user?.user_id]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- re-fetch on the location + time-slot/experience/date filters the backend filters by, plus whichever account is viewing (so self-exclusion re-applies across login/logout)
+  useEffect(() => { fetchAdvocates(); }, [filters.court_id, filters.state_id, filters.district, filters.hearing_date, timeSlot, experienceBracket, excludeAdvocateId, user?.user_id]);
 
   // Client-side sort over the already-fetched page (the backend's own order
   // is its AI match ranking — "match" keeps that as-is; the other two just
@@ -368,7 +368,13 @@ export default function CounselHiringPage({ serviceType }) {
           />
         )}
         {status === "empty" && (
-          <EmptyState icon={Users} title="No counsels match these filters" description="Try widening or clearing the location filters above." />
+          <EmptyState
+            icon={Users}
+            title="No counsels match these filters"
+            description={filters.hearing_date
+              ? "No one available on this date matches your other filters — try a different date, or widen the location filters above."
+              : "Try widening or clearing the location filters above."}
+          />
         )}
         {status === "ready" && (
           <>
