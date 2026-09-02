@@ -47,12 +47,12 @@ def test_pricing_and_experience_bracket_survive_a_second_load():
             # First "edit": what Practice.jsx's save() actually sends —
             # through the same Pydantic model server.py's endpoint uses.
             payload = ProxyCounselProfileUpdate(
-                pricing={"district": {"urgent": 2500}, "high_court": {"full_day": 1700}},
+                pricing={"district": {"urgent": 2500}, "high_court": {"full_day": 1900}},
                 experience_bracket="5-7",
                 bio="Handles urgent matters",
             )
             updated = await practice.update_profile(db, user_id, payload.model_dump(exclude_unset=True))
-            assert updated["pricing"] == {"district": {"urgent": 2500}, "high_court": {"full_day": 1700}}
+            assert updated["pricing"] == {"district": {"urgent": 2500}, "high_court": {"full_day": 1900}}
             assert updated["experience_bracket"] == "5-7"
 
             # Second "edit": simulates the page being reopened — a fresh
@@ -60,7 +60,7 @@ def test_pricing_and_experience_bracket_survive_a_second_load():
             # freshly loaded from GET /practice/profile), then only the bio
             # is changed, same as a user editing one field.
             reloaded = await practice.get_or_create_profile(db, user_id)
-            assert reloaded["pricing"] == {"district": {"urgent": 2500}, "high_court": {"full_day": 1700}}
+            assert reloaded["pricing"] == {"district": {"urgent": 2500}, "high_court": {"full_day": 1900}}
             assert reloaded["experience_bracket"] == "5-7"
 
             payload2 = ProxyCounselProfileUpdate(
@@ -68,7 +68,7 @@ def test_pricing_and_experience_bracket_survive_a_second_load():
                 bio="Updated bio only",
             )
             updated2 = await practice.update_profile(db, user_id, payload2.model_dump(exclude_unset=True))
-            assert updated2["pricing"] == {"district": {"urgent": 2500}, "high_court": {"full_day": 1700}}
+            assert updated2["pricing"] == {"district": {"urgent": 2500}, "high_court": {"full_day": 1900}}
             assert updated2["experience_bracket"] == "5-7"
             assert updated2["bio"] == "Updated bio only"
         finally:

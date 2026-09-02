@@ -37,15 +37,17 @@ export const EXPERIENCE_BRACKETS = [
 export const experienceBracketLabel = (key) => EXPERIENCE_BRACKETS.find((b) => b.key === key)?.label || null;
 
 // Mirrors practice.py's EXPERIENCE_PRICING_SURCHARGE/pricing_minimum exactly
-// (founder direction, 2026-09) — the rate-card floor scales with experience:
-// "0-3" is the unmodified PRICING_MINIMUMS rate, each bracket step above
-// that adds another flat ₹100 to every slot's floor. Purely for the "Min
-// ₹X" hints/validation this page shows live as someone types — the backend
-// is still what actually enforces it (see practice.validate_pricing).
-export const EXPERIENCE_PRICING_SURCHARGE = 100;
+// (founder direction, 2026-09, revised) — the rate-card floor scales with
+// experience: "0-3" is the unmodified PRICING_MINIMUMS rate, each bracket
+// step above that adds another flat surcharge to every slot's floor — the
+// step size differs by court type, ₹100/step for district, ₹200/step for
+// high_court. Purely for the "Min ₹X" hints/validation this page shows live
+// as someone types — the backend is still what actually enforces it (see
+// practice.validate_pricing).
+export const EXPERIENCE_PRICING_SURCHARGE = { district: 100, high_court: 200 };
 
 export const pricingMinimum = (courtType, slot, experienceBracket) => {
   const base = PRICING_MINIMUMS[courtType][slot];
   const bracketIndex = Math.max(0, EXPERIENCE_BRACKETS.findIndex((b) => b.key === experienceBracket));
-  return base + EXPERIENCE_PRICING_SURCHARGE * bracketIndex;
+  return base + EXPERIENCE_PRICING_SURCHARGE[courtType] * bracketIndex;
 };
