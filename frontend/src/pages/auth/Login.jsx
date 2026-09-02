@@ -216,13 +216,18 @@ export default function Login() {
                   <span className="text-2xs uppercase tracking-wide font-bold text-muted-foreground">Or continue with</span>
                   <div className="h-px flex-1 bg-border" />
                 </div>
-                {/* Bug fix: this used to omit `role` entirely, so a brand-new
-                    account created here fell through to the backend's own
-                    default — which was "advocate", mislabeling anyone who
-                    just wants to hire a proxy counsel or order a print job
-                    as a lawyer. Explicit "client" now, matching the actual
-                    default a plain sign-in should get. */}
-                <GoogleAuthButton clientId={googleClientId} role="client" />
+                {/* No `role` prop, deliberately — see GoogleAuthButton.jsx's
+                    docstring for why passing one at all is fragile (Google
+                    requires an exact match, query string included, against
+                    a fixed allow-list configured in Cloud Console; adding
+                    "client" here once already broke sign-in until that
+                    exact string was registered). Omitting it sends the
+                    plain callback URL, which is what's actually registered
+                    — the backend's own default (server.py's google_callback,
+                    role: str = "client") already gives a brand-new account
+                    here the correct role without the frontend needing to
+                    say so over an unreliable channel. */}
+                <GoogleAuthButton clientId={googleClientId} />
               </>
             )}
           </CardContent>
