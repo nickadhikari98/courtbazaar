@@ -496,6 +496,7 @@ async def seed_initial_data():
     import counsel_matching as counsel_matching_svc
     import negotiation as negotiation_svc
     import notifications as notifications_svc
+    import order_agent_tools
     await leads_svc.ensure_indexes(db)
     await reviews_svc.ensure_indexes(db)
     await hearings_svc.ensure_indexes(db)
@@ -503,6 +504,7 @@ async def seed_initial_data():
     await counsel_matching_svc.ensure_indexes(db)
     await negotiation_svc.ensure_indexes(db)
     await notifications_svc.ensure_indexes(db)
+    await order_agent_tools.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -667,7 +669,14 @@ async def otp_request(req: OtpRequest):
         "created_at": now.isoformat(),
     })
     from notifications import notify
-    notify({"phone": req.phone, "notif_prefs": {"sms": True, "whatsapp": True, "email": False}}, "otp", {"otp": code})
+    existing = await db.users.find_one(
+        {"$or": [{"phone": req.phone}, {"alt_phones": req.phone}]}, {"_id": 0, "email": 1}
+    )
+    notify(
+        {"phone": req.phone, "email": existing.get("email") if existing else None,
+         "notif_prefs": {"sms": True, "whatsapp": True, "email": True}},
+        "otp", {"otp": code},
+    )
     return {"ok": True, "message": "OTP sent", "phone": req.phone}
 
 @api_router.post("/auth/otp/verify")
@@ -684,7 +693,9 @@ async def otp_verify(req: OtpVerify):
         await db.otp_codes.update_one({"_id": rec["_id"]}, {"$inc": {"attempts": 1}})
         raise HTTPException(400, "Invalid OTP")
     await db.otp_codes.update_one({"_id": rec["_id"]}, {"$set": {"used": True}})
-    user = await db.users.find_one({"phone": req.phone}, {"_id": 0})
+    user = await db.users.find_one(
+        {"$or": [{"phone": req.phone}, {"alt_phones": req.phone}]}, {"_id": 0}
+    )
     # Same guard login() already applies — without it, a deactivated account
     # (password_hash cleared, `deleted: True`) could still get back in
     # through phone OTP, silently bypassing the deactivation entirely.
@@ -2929,6 +2940,29 @@ async def release_hearing_payout(hearing_id: str, user=Depends(get_current_user)
                                  f"Escrow for your hearing at {hearing['court_id']} has been released to the Proxy Counsel. This request is now complete.",
                                  hearing_id)
     return result
+
+
+# ----------------------------------------------------------------------
+# Order Management Agent — read-first, human-in-the-loop summary layer.
+# Both routes are read-only: they never call a state-changing hearings.py/
+# escrow.py/counsel_matching.py function, and the agent's only write path
+# (flag_for_admin_review) lands in the new agent_review_flags collection,
+# never in hearing_requests/escrow_transactions/counsel_matching_log. See
+# order_management_agent.py's module docstring.
+# ----------------------------------------------------------------------
+@api_router.get("/admin/order-agent/summary")
+async def admin_order_agent_summary(user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    import order_management_agent
+    return await order_management_agent.summarize_all(db)
+
+@api_router.get("/admin/order-agent/hearings/{hearing_id}/summary")
+async def admin_order_agent_hearing_summary(hearing_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    import order_management_agent
+    return await order_management_agent.summarize_hearing(db, hearing_id)
 
 
 # ============================================================================

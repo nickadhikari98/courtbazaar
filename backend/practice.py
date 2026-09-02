@@ -47,6 +47,11 @@ PRICING_MINIMUMS = {
 # so counsel_matching.list_and_recommend's min_experience_years filter and
 # any sort-by-experience keep working unchanged) — the bracket's lower bound,
 # so "at least 5 years" correctly includes both the "5-7" and "10+" brackets.
+# `max_years` (None for the open-ended "10+") is the bracket's inclusive
+# upper bound, used by list_and_recommend to fall back to a numeric
+# experience_years range for profiles that have experience_years but no
+# self-selected experience_bracket (e.g. backfilled from a lead's "total
+# years of practice" bucket — see leads._derive_practice_profile_patch).
 EXPERIENCE_BRACKETS = [
     {"key": "0-3", "label": "0–3 yrs", "min_years": 0},
     {"key": "3-5", "label": "3–5 yrs", "min_years": 3},
@@ -55,6 +60,7 @@ EXPERIENCE_BRACKETS = [
     {"key": "10+", "label": "10+ yrs", "min_years": 10},
 ]
 _EXPERIENCE_BRACKET_YEARS = {b["key"]: b["min_years"] for b in EXPERIENCE_BRACKETS}
+_EXPERIENCE_BRACKET_MAX_YEARS = {b["key"]: b["max_years"] for b in EXPERIENCE_BRACKETS}
 _EXPERIENCE_BRACKET_LABELS = {b["key"]: b["label"] for b in EXPERIENCE_BRACKETS}
 
 

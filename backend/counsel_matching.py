@@ -395,7 +395,11 @@ async def list_and_recommend(
     keys, e.g. "0-3"/"3-5"/"5-7"/"10+") - the same buckets a counsel picks on
     their own profile - separate from min_experience_years' open-ended
     "at least N years" numeric filter, since the browse page's filter is
-    bucket-shaped, not a number input.
+    bucket-shaped, not a number input. A profile without a self-selected
+    experience_bracket (e.g. backfilled from a lead's years-of-practice
+    bucket, which only ever set experience_years) still matches by falling
+    back to the bracket's inclusive experience_years range, so a 5-year
+    profile shows up under "5-7" even though it never picked a bracket.
 
     time_slot filters to counsels who've priced that slot in either court
     type's pricing grid (practice.PRICING_SLOTS, e.g. "morning"/"afternoon").
@@ -411,7 +415,14 @@ async def list_and_recommend(
         valid_brackets = {b["key"] for b in practice.EXPERIENCE_BRACKETS}
         if experience_bracket not in valid_brackets:
             raise HTTPException(400, f"Invalid experience bracket. Allowed: {', '.join(sorted(valid_brackets))}")
-        query["experience_bracket"] = experience_bracket
+        years_range: Dict[str, Any] = {"$gte": practice._EXPERIENCE_BRACKET_YEARS[experience_bracket]}
+        bracket_max = practice._EXPERIENCE_BRACKET_MAX_YEARS[experience_bracket]
+        if bracket_max is not None:
+            years_range["$lte"] = bracket_max
+        query.setdefault("$and", []).append({"$or": [
+            {"experience_bracket": experience_bracket},
+            {"experience_bracket": {"$in": [None]}, "experience_years": years_range},
+        ]})
     if min_rating is not None:
         query["rating"] = {"$gte": min_rating}
     if available_only:
