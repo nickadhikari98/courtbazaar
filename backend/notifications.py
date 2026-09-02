@@ -319,7 +319,11 @@ def tmpl_order_status(user, order, status):
 
 def tmpl_otp(otp):
     base = f"Your CourtBazaar OTP is {otp}. Valid for 5 minutes. Do not share."
-    return {"sms": base, "whatsapp": base}
+    return {
+        "sms": base, "whatsapp": base,
+        "email_subject": "Your CourtBazaar OTP",
+        "email_html": f"<p>Your CourtBazaar OTP is <b>{otp}</b>.</p><p>Valid for 5 minutes. Do not share this code with anyone.</p>",
+    }
 
 
 def tmpl_hearing_event(title, body, thread=None):

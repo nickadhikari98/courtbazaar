@@ -341,7 +341,11 @@ export default function CounselHiringPage({ serviceType }) {
               </Select>
             </div>
             <div className="flex items-center gap-2 pb-1.5">
-              <Switch checked={isUrgent} onCheckedChange={setIsUrgent} data-testid="urgent-toggle" />
+              <Switch
+                checked={isUrgent}
+                onCheckedChange={(v) => (v ? setUrgentToggleConfirmOpen(true) : setIsUrgent(false))}
+                data-testid="urgent-toggle"
+              />
               <div className="flex items-center gap-1 text-sm font-semibold">
                 <Clock className="w-3.5 h-3.5 text-amber-600" /> Urgent / Same-day request
               </div>
@@ -370,17 +374,6 @@ export default function CounselHiringPage({ serviceType }) {
           <>
           <div className="flex items-center justify-between mb-3">
             <p className="text-xs text-muted-foreground">{advocates.length} {serviceConfig.unitLabel}{advocates.length === 1 ? "" : "s"}</p>
-            <div className="flex items-center gap-2">
-              <Label className="text-xs text-muted-foreground">Sort by</Label>
-              <Select value={sortBy} onValueChange={setSortBy}>
-                <SelectTrigger className="w-40 h-8 text-xs" data-testid="counsel-sort-by"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="match">Best Match</SelectItem>
-                  <SelectItem value="experience">Experience</SelectItem>
-                  <SelectItem value="rating">Rating</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
           </div>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {sortedAdvocates.map((a) => (
@@ -395,6 +388,16 @@ export default function CounselHiringPage({ serviceType }) {
           </>
         )}
       </div>
+
+      <ConfirmDialog
+        open={urgentToggleConfirmOpen}
+        onOpenChange={(v) => !v && setUrgentToggleConfirmOpen(false)}
+        title="Switch to urgent / same-day?"
+        description="Every counsel below will switch to showing their own saved Urgent (same-day) fee instead of their regular starting rate, and you'll confirm that counsel's exact fee again before the request is sent."
+        confirmLabel="Continue"
+        confirmVariant="default"
+        onConfirm={() => { setIsUrgent(true); setUrgentToggleConfirmOpen(false); }}
+      />
 
       <ConfirmDialog
         open={!!urgentConfirmTarget}
