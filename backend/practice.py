@@ -53,26 +53,28 @@ PRICING_MINIMUMS = {
 # self-selected experience_bracket (e.g. backfilled from a lead's "total
 # years of practice" bucket — see leads._derive_practice_profile_patch).
 EXPERIENCE_BRACKETS = [
-    {"key": "0-3", "label": "0–3 yrs", "min_years": 0},
-    {"key": "3-5", "label": "3–5 yrs", "min_years": 3},
-    {"key": "5-7", "label": "5–7 yrs", "min_years": 5},
-    {"key": "7-10", "label": "7–10 yrs", "min_years": 7},
-    {"key": "10+", "label": "10+ yrs", "min_years": 10},
+    {"key": "0-3", "label": "0–3 yrs", "min_years": 0, "max_years": 3},
+    {"key": "3-5", "label": "3–5 yrs", "min_years": 3, "max_years": 5},
+    {"key": "5-7", "label": "5–7 yrs", "min_years": 5, "max_years": 7},
+    {"key": "7-10", "label": "7–10 yrs", "min_years": 7, "max_years": 10},
+    {"key": "10+", "label": "10+ yrs", "min_years": 10, "max_years": None},
 ]
 _EXPERIENCE_BRACKET_YEARS = {b["key"]: b["min_years"] for b in EXPERIENCE_BRACKETS}
 _EXPERIENCE_BRACKET_MAX_YEARS = {b["key"]: b["max_years"] for b in EXPERIENCE_BRACKETS}
 _EXPERIENCE_BRACKET_LABELS = {b["key"]: b["label"] for b in EXPERIENCE_BRACKETS}
 _EXPERIENCE_BRACKET_INDEX = {b["key"]: i for i, b in enumerate(EXPERIENCE_BRACKETS)}
 
-# Founder direction (2026-09): the rate-card floor scales with experience —
-# "0-3" pays the base PRICING_MINIMUMS rate unchanged; each bracket step
-# above that adds another flat ₹100 to every slot's floor ("3-5" is +100,
-# "5-7" is +200, "7-10" is +300, "10+" is +400), same surcharge amount at
-# every step rather than a per-bracket table, so a new bracket added to
-# EXPERIENCE_BRACKETS automatically gets the next ₹100 step for free.
-# Unset/unrecognized bracket (a counsel who hasn't picked one yet) falls
-# back to bracket index 0 — i.e. the unmodified base rate, never a penalty.
-EXPERIENCE_PRICING_SURCHARGE = 100
+# Founder direction (2026-09, revised): the rate-card floor scales with
+# experience — "0-3" pays the base PRICING_MINIMUMS rate unchanged; each
+# bracket step above that adds another flat surcharge to every slot's floor,
+# same surcharge amount at every step (so "high_court" 3-5/5-7/7-10/10+ are
+# +200/+400/+600/+800), but the step size itself differs by court type —
+# ₹100/step for district, ₹200/step for high_court, per the founder's
+# correction that the original single ₹100-for-both was wrong for high
+# courts specifically. Unset/unrecognized bracket (a counsel who hasn't
+# picked one yet) falls back to bracket index 0 — i.e. the unmodified base
+# rate, never a penalty.
+EXPERIENCE_PRICING_SURCHARGE = {"district": 100, "high_court": 200}
 
 
 def experience_bracket_label(bracket: Optional[str]) -> Optional[str]:
@@ -86,7 +88,7 @@ def pricing_minimum(court_type: str, slot: str, experience_bracket: Optional[str
     copy in config/proxyCounselPricing.js) can't drift apart."""
     base = PRICING_MINIMUMS[court_type][slot]
     bracket_index = _EXPERIENCE_BRACKET_INDEX.get(experience_bracket, 0)
-    return base + EXPERIENCE_PRICING_SURCHARGE * bracket_index
+    return base + EXPERIENCE_PRICING_SURCHARGE[court_type] * bracket_index
 
 
 def validate_pricing(pricing: Dict[str, Any], experience_bracket: Optional[str] = None) -> Dict[str, Dict[str, float]]:
