@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useSearchParams, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
-  Clock, Network, Activity, Shield, BadgeCheck, ShieldCheck, Mic,
+  Clock, Network, Activity, Shield, BadgeCheck, ShieldCheck, Mic, Scale,
 } from "lucide-react";
 
 import MarketingLayout from "@/components/layout/MarketingLayout";
@@ -68,10 +68,24 @@ const serviceCardVariants = {
 
 const proxyCounselService = {
   image: "/images/illustrations/proxy-counsel-badge.png",
-  name: "Counsel / Proxy Counsel",
+  name: "Proxy Counsel",
   description: "Find and connect with verified proxy counsels across India — briefed, reliable, and ready to appear on your behalf.",
   cta: "Book Now",
   ctaLink: "/hire-proxy-counsel",
+  startingPrice: "₹Starting from 499/appearance",
+};
+
+// Distinct nav entry from Proxy Counsel (see config/featureFlags.js's
+// services.hireCounsel comment) — same underlying browse/matching/escrow
+// workflow, but for full legal representation on a matter rather than a
+// single hearing appearance, so it gets its own featured card here too
+// instead of being folded into the Proxy Counsel one.
+const hireCounselService = {
+  icon: Scale,
+  name: "Hire Counsel",
+  description: "Engage a verified advocate for full legal representation on your matter — not just a single hearing appearance.",
+  cta: "Hire Now",
+  ctaLink: "/hire-counsel",
   startingPrice: "₹Starting from 499/appearance",
 };
 
@@ -205,8 +219,9 @@ export default function Landing() {
                 </motion.div>
               ))}
             </div>
-            <motion.div variants={serviceCardVariants} style={{ transformPerspective: 800 }} className="h-full mt-7 lg:mt-0">
-              <FeaturedServiceCard {...proxyCounselService} vertical className="h-full" />
+            <motion.div variants={serviceCardVariants} style={{ transformPerspective: 800 }} className="mt-7 lg:mt-0 flex flex-col gap-7">
+              <FeaturedServiceCard {...proxyCounselService} vertical />
+              <FeaturedServiceCard {...hireCounselService} vertical />
             </motion.div>
           </motion.div>
         </div>

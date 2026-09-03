@@ -61,12 +61,11 @@ const PENDING_SELECTION_KEY = "courtbazaar_pending_counsel_selection";
    SERVICE_CONFIGS[serviceType] (see config/serviceRequestFields.js) — this
    component itself has no service-specific literals.
 
-   The counsel grid and full profile view are both public on the
-   proxy_counsel route (no login wall, filters narrow the same grid in
-   place, no separate step/page to "unlock" it); the counsel route is
-   login-gated at the router level instead (see App.js) — either way, only
-   booking a counsel ("Select Counsel") requires an account (see
-   requireLogin below). Replaces the earlier BlaBlaCar-style "fill a form,
+   The counsel grid and full profile view are both public on either route —
+   proxy_counsel and counsel alike (no login wall, filters narrow the same
+   grid in place, no separate step/page to "unlock" it); only booking a
+   counsel ("Select Counsel") requires an account (see requireLogin below).
+   Replaces the earlier BlaBlaCar-style "fill a form,
    then reveal recommendations" flow — that flow's now-orphaned pieces
    (ProxyCounselLocationForm, CounselDiscoveryPanel, ManualCounselSearch)
    were removed rather than left unused; CounselCard/CounselProfileDialog are
@@ -103,6 +102,10 @@ export default function CounselHiringPage({ serviceType }) {
   // slot fee instead of the generic "starting from" figure, and selecting
   // a counsel confirms that fee before the request is sent.
   const [isUrgent, setIsUrgent] = useState(false);
+  // Confirm-before-switching-on step for the Urgent toggle itself (separate
+  // from urgentConfirmTarget below, which confirms one specific counsel's
+  // fee once a request is actually about to be sent).
+  const [urgentToggleConfirmOpen, setUrgentToggleConfirmOpen] = useState(false);
   const [sortBy, setSortBy] = useState("match"); // match | experience | rating
   const [urgentConfirmTarget, setUrgentConfirmTarget] = useState(null); // counsel awaiting the urgent-fee confirm
   // Counsel the visitor picked before being sent to log in — restored (with
