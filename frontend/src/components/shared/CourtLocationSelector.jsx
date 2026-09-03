@@ -27,7 +27,7 @@ export default function CourtLocationSelector({ value, onChange }) {
   const { state_id, district, court_id } = value || {};
   const [states, setStates] = useState([]);
   const [courts, setCourts] = useState([]);
-  const [courtType, setCourtType] = useState("district"); // "district" | "high_court"
+  const [courtType, setCourtType] = useState("district"); // "district" | "high_court" | "arbitration"
 
   useEffect(() => { getStates().then(setStates).catch(() => setStates([])); }, []);
 
@@ -46,6 +46,7 @@ export default function CourtLocationSelector({ value, onChange }) {
     [districtCourts, district],
   );
   const highCourts = useMemo(() => courts.filter((c) => c.type === "high_court"), [courts]);
+  const arbitrationCentres = useMemo(() => courts.filter((c) => c.type === "arbitration"), [courts]);
 
   const selectState = (v) => {
     onChange({ state_id: v, state_name: states.find((s) => s.state_id === v)?.name, district: "", court_id: "", court_name: "", court_type: courtType });
@@ -60,7 +61,7 @@ export default function CourtLocationSelector({ value, onChange }) {
   return (
     <div className="space-y-3">
       <div className="inline-flex rounded-lg border border-border p-0.5 bg-secondary/40">
-        {[["district", "District Court"], ["high_court", "High Court"]].map(([key, label]) => (
+        {[["district", "District Court"], ["high_court", "High Court"], ["arbitration", "Arbitration Centre"]].map(([key, label]) => (
           <button
             key={key} type="button" onClick={() => switchCourtType(key)}
             className={`px-3 py-1.5 text-xs font-bold rounded-md transition-colors ${
@@ -125,7 +126,7 @@ export default function CourtLocationSelector({ value, onChange }) {
               </Select>
             </div>
           </>
-        ) : (
+        ) : courtType === "high_court" ? (
           <div>
             <Label>High Court *</Label>
             <Select
@@ -149,6 +150,28 @@ export default function CourtLocationSelector({ value, onChange }) {
               </SelectTrigger>
               <SelectContent>
                 {highCourts.map((c) => <SelectItem key={c.court_id} value={c.court_id}>{c.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+        ) : (
+          <div>
+            <Label>Arbitration Centre *</Label>
+            <Select
+              value={court_id || undefined}
+              // Same reasoning as the High Court branch above: no `district`
+              // on an arbitration-centre selection.
+              onValueChange={(v) => onChange({
+                state_id, state_name: value?.state_name, district: "",
+                court_id: v, court_name: arbitrationCentres.find((c) => c.court_id === v)?.name,
+                court_type: "arbitration",
+              })}
+              disabled={!state_id}
+            >
+              <SelectTrigger data-testid="location-arbitration">
+                <SelectValue placeholder={state_id ? (arbitrationCentres.length ? "Select Arbitration Centre" : "No arbitration centre seated in this state") : "Select a state first"} />
+              </SelectTrigger>
+              <SelectContent>
+                {arbitrationCentres.map((c) => <SelectItem key={c.court_id} value={c.court_id}>{c.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>

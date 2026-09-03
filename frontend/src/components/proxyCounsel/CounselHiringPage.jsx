@@ -61,12 +61,11 @@ const PENDING_SELECTION_KEY = "courtbazaar_pending_counsel_selection";
    SERVICE_CONFIGS[serviceType] (see config/serviceRequestFields.js) — this
    component itself has no service-specific literals.
 
-   The counsel grid and full profile view are both public on the
-   proxy_counsel route (no login wall, filters narrow the same grid in
-   place, no separate step/page to "unlock" it); the counsel route is
-   login-gated at the router level instead (see App.js) — either way, only
-   booking a counsel ("Select Counsel") requires an account (see
-   requireLogin below). Replaces the earlier BlaBlaCar-style "fill a form,
+   The counsel grid and full profile view are both public on either route —
+   proxy_counsel and counsel alike (no login wall, filters narrow the same
+   grid in place, no separate step/page to "unlock" it); only booking a
+   counsel ("Select Counsel") requires an account (see requireLogin below).
+   Replaces the earlier BlaBlaCar-style "fill a form,
    then reveal recommendations" flow — that flow's now-orphaned pieces
    (ProxyCounselLocationForm, CounselDiscoveryPanel, ManualCounselSearch)
    were removed rather than left unused; CounselCard/CounselProfileDialog are
@@ -103,6 +102,10 @@ export default function CounselHiringPage({ serviceType }) {
   // slot fee instead of the generic "starting from" figure, and selecting
   // a counsel confirms that fee before the request is sent.
   const [isUrgent, setIsUrgent] = useState(false);
+  // Confirm-before-switching-on step for the Urgent toggle itself (separate
+  // from urgentConfirmTarget below, which confirms one specific counsel's
+  // fee once a request is actually about to be sent).
+  const [urgentToggleConfirmOpen, setUrgentToggleConfirmOpen] = useState(false);
   const [sortBy, setSortBy] = useState("match"); // match | experience | rating
   const [urgentConfirmTarget, setUrgentConfirmTarget] = useState(null); // counsel awaiting the urgent-fee confirm
   // Counsel the visitor picked before being sent to log in — restored (with
@@ -380,6 +383,17 @@ export default function CounselHiringPage({ serviceType }) {
           <>
           <div className="flex items-center justify-between mb-3">
             <p className="text-xs text-muted-foreground">{advocates.length} {serviceConfig.unitLabel}{advocates.length === 1 ? "" : "s"}</p>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs text-muted-foreground">Sort by</Label>
+              <Select value={sortBy} onValueChange={setSortBy}>
+                <SelectTrigger className="w-40 h-8 text-xs" data-testid="counsel-sort-by"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="match">Best Match</SelectItem>
+                  <SelectItem value="experience">Experience</SelectItem>
+                  <SelectItem value="rating">Rating</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {sortedAdvocates.map((a) => (
