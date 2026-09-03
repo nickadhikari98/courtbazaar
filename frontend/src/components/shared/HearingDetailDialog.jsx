@@ -22,6 +22,7 @@ import { payForHearing as payForHearingShared } from "@/lib/hearingPayment";
 import HearingTimeline from "@/components/shared/HearingTimeline";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
 import DocumentPreviewDialog from "@/components/shared/DocumentPreviewDialog";
+import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import EscrowStagePanel from "@/components/negotiation/EscrowStagePanel";
 import ProxyCounselCaseDetailsForm from "@/components/proxyCounsel/ProxyCounselCaseDetailsForm";
 import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions } from "@/lib/hearingLifecycle";
@@ -50,6 +51,11 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   const [submittingDetails, setSubmittingDetails] = useState(false);
   const [preview, setPreview] = useState(null); // { url, filename } — in-page document preview
   const fileInputRef = useRef(null);
+  // Which of the three irreversible exits (decline/reject/cancel) is
+  // currently up for confirmation — same "never fire a destructive action
+  // on a single click" rule the hearing-list Cancel Request flow already
+  // follows (see CounselHiringPage.jsx). At most one is ever open at a time.
+  const [pendingAction, setPendingAction] = useState(null); // null | "decline" | "reject" | "cancel"
 
   const load = () => {
     if (!hearingId) return;
@@ -449,12 +455,12 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
             </Button>
           )}
           {canDecline && (
-            <Button type="button" disabled={busy} variant="outline" onClick={() => run(() => declineHearingRequest(hearingId))} className="font-bold">
+            <Button type="button" disabled={busy} variant="outline" onClick={() => setPendingAction("decline")} className="font-bold">
               <X className="w-4 h-4 mr-1.5" /> Decline
             </Button>
           )}
           {canReject && (
-            <Button type="button" disabled={busy} variant="outline" onClick={() => run(() => rejectHearingRequest(hearingId))} className="font-bold text-red-600 border-red-200 hover:bg-red-50">
+            <Button type="button" disabled={busy} variant="outline" onClick={() => setPendingAction("reject")} className="font-bold text-red-600 border-red-200 hover:bg-red-50">
               <X className="w-4 h-4 mr-1.5" /> Reject
             </Button>
           )}
@@ -464,7 +470,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
             </Button>
           )}
           {canCancel && (
-            <Button type="button" disabled={busy} variant="outline" onClick={() => run(() => cancelHearingRequest(hearingId))} className="font-bold text-red-600 border-red-200 hover:bg-red-50 ml-auto">
+            <Button type="button" disabled={busy} variant="outline" onClick={() => setPendingAction("cancel")} className="font-bold text-red-600 border-red-200 hover:bg-red-50 ml-auto">
               <Ban className="w-4 h-4 mr-1.5" /> Cancel Request
             </Button>
           )}
@@ -476,6 +482,34 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
       onOpenChange={(v) => { if (!v) setPreview(null); }}
       url={preview?.url}
       filename={preview?.filename}
+    />
+    <ConfirmDialog
+      open={pendingAction === "decline"}
+      onOpenChange={(v) => !v && setPendingAction(null)}
+      busy={busy}
+      title="Decline this request?"
+      description="This hides the request from your own open-requests list — it stays visible and biddable to every other eligible proxy counsel. This can't be undone."
+      confirmLabel="Decline"
+      onConfirm={() => run(() => declineHearingRequest(hearingId)).then(() => setPendingAction(null))}
+    />
+    <ConfirmDialog
+      open={pendingAction === "reject"}
+      onOpenChange={(v) => !v && setPendingAction(null)}
+      busy={busy}
+      title="Reject this request?"
+      description="The client will be notified and this request closes for good — it can't be reopened. If they picked you directly, we'll automatically send it on to the next 5 best-matched proxy counsels."
+      confirmLabel="Reject"
+      onConfirm={() => run(() => rejectHearingRequest(hearingId)).then(() => setPendingAction(null))}
+    />
+    <ConfirmDialog
+      open={pendingAction === "cancel"}
+      onOpenChange={(v) => !v && setPendingAction(null)}
+      busy={busy}
+      title="Cancel this request?"
+      description="This permanently cancels the request. If payment has already been held, it will be refunded automatically. This can't be undone."
+      confirmLabel="Cancel Request"
+      confirmIcon={Ban}
+      onConfirm={() => run(() => cancelHearingRequest(hearingId)).then(() => setPendingAction(null))}
     />
     </>
   );

@@ -108,6 +108,7 @@ export default function CounselHiringPage({ serviceType }) {
   const [urgentToggleConfirmOpen, setUrgentToggleConfirmOpen] = useState(false);
   const [sortBy, setSortBy] = useState("match"); // match | experience | rating
   const [urgentConfirmTarget, setUrgentConfirmTarget] = useState(null); // counsel awaiting the urgent-fee confirm
+  const [selectConfirmTarget, setSelectConfirmTarget] = useState(null); // counsel awaiting the plain (non-urgent) select confirm
   // Counsel the visitor picked before being sent to log in — restored (with
   // their filters) from PENDING_SELECTION_KEY once `user` resolves, so they
   // land back on an explicit "still want to send this?" checkpoint instead
@@ -239,12 +240,14 @@ export default function CounselHiringPage({ serviceType }) {
       return;
     }
     if (selectingId) return;
-    // Urgent requests stop for an explicit confirm so the Counsel sees this
-    // counsel's own saved Urgent Fee before the request goes out — see
-    // urgentConfirmTarget's ConfirmDialog below. A non-urgent pick sends
-    // immediately, unchanged from before.
+    // Every pick stops for an explicit confirm before actually sending —
+    // same "irreversible action never fires on a single click" rule the
+    // Cancel Request flow below already follows. Urgent picks get their own
+    // richer confirm (see urgentConfirmTarget's ConfirmDialog) since there's
+    // a specific fee to surface first; a non-urgent pick gets the plain
+    // selectConfirmTarget one right below it.
     if (isUrgent) { setUrgentConfirmTarget(counsel); return; }
-    sendRequestTo(counsel);
+    setSelectConfirmTarget(counsel);
   };
 
   const sendRequestTo = async (counsel) => {
@@ -256,6 +259,12 @@ export default function CounselHiringPage({ serviceType }) {
         request_details: {
           common: {
             state_id: filters.state_id, state_name: filters.state_name, district: filters.district, court_name: filters.court_name,
+            // Persisted (not just used live) so the auto top-5 fallback — if
+            // this counsel rejects — can re-run this exact same browse-grid
+            // search rather than whatever filters happen to be live on the
+            // page whenever that fallback actually fires (see backend
+            // counsel_matching.top_fallback_candidates).
+            time_slot: timeSlot || null, experience_bracket: experienceBracket || null,
             ...(isUrgent ? { priority: "Urgent" } : {}),
           },
           service_specific: {},
@@ -359,6 +368,9 @@ export default function CounselHiringPage({ serviceType }) {
               Each counsel below now shows their own saved Urgent Fee — you'll see it again to confirm before the request is sent.
             </p>
           )}
+          <p className="text-xs text-muted-foreground mt-2">
+            * If the counsel you select rejects your request, we'll automatically send it to the next 5 best-matched proxy counsels using these same filters.
+          </p>
         </CardContent>
       </Card>
 
@@ -442,7 +454,27 @@ export default function CounselHiringPage({ serviceType }) {
         )}
         confirmLabel="Send Request"
         confirmVariant="default"
+        confirmClassName="bg-accent hover:bg-accent/80 text-white"
         onConfirm={() => urgentConfirmTarget && sendRequestTo(urgentConfirmTarget)}
+      />
+
+      <ConfirmDialog
+        open={!!selectConfirmTarget}
+        onOpenChange={(v) => !v && setSelectConfirmTarget(null)}
+        busy={selectingId === selectConfirmTarget?.advocate_id}
+        title="Send this request?"
+        description={(
+          <>
+            Send a hearing request to <b className="text-foreground">{selectConfirmTarget?.name}</b> for{" "}
+            <b className="text-foreground">{filters.court_name}</b> on{" "}
+            <b className="text-foreground">{filters.hearing_date}</b>? If they reject it, we'll automatically
+            send it to the next 5 best-matched proxy counsels using the same filters.
+          </>
+        )}
+        confirmLabel="Send Request"
+        confirmVariant="default"
+        confirmClassName="bg-accent hover:bg-accent/80 text-white"
+        onConfirm={() => selectConfirmTarget && sendRequestTo(selectConfirmTarget)}
       />
 
       <ConfirmDialog
@@ -459,6 +491,7 @@ export default function CounselHiringPage({ serviceType }) {
         )}
         confirmLabel="Send Request"
         confirmVariant="default"
+        confirmClassName="bg-accent hover:bg-accent/80 text-white"
         onConfirm={() => {
           const counsel = resumedConfirmTarget;
           setResumedConfirmTarget(null);
