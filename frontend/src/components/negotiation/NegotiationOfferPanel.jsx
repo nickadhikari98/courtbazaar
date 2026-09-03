@@ -48,6 +48,7 @@ export default function NegotiationOfferPanel({
   const [note, setNote] = useState("");
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [endNegotiationDialogOpen, setEndNegotiationDialogOpen] = useState(false);
 
   if (!negotiation) {
     return (
@@ -138,6 +139,7 @@ export default function NegotiationOfferPanel({
     setBusy(true);
     try {
       await endNegotiation(hearingId);
+      setEndNegotiationDialogOpen(false);
       onNegotiationEnded?.();
     } catch (err) {
       toast.error(getErrorMessage(err, "Could not end this negotiation"));
@@ -385,9 +387,27 @@ export default function NegotiationOfferPanel({
         {stage !== "no_offer" && (
           <div className="mt-5 pt-3 border-t flex flex-wrap gap-2">
             {stage === "waiting" && (
-              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={submitEndNegotiation} className="font-semibold" data-testid="end-negotiation">
-                {busy && <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />} End Negotiation — Choose Another Counsel
-              </Button>
+              <Dialog open={endNegotiationDialogOpen} onOpenChange={setEndNegotiationDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button type="button" variant="ghost" size="sm" disabled={busy} className="font-semibold" data-testid="end-negotiation">
+                    End Negotiation — Choose Another Counsel
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>End negotiation with this counsel?</DialogTitle>
+                    <DialogDescription>
+                      This closes the request with this counsel so you can pick someone else. This can't be undone.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter>
+                    <Button type="button" variant="outline" onClick={() => setEndNegotiationDialogOpen(false)} disabled={busy}>Keep Negotiating</Button>
+                    <Button type="button" onClick={submitEndNegotiation} disabled={busy} className="bg-red-600 hover:bg-red-700 text-white font-bold" data-testid="confirm-end-negotiation">
+                      {busy && <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />} Yes, End Negotiation
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             )}
             <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
               <DialogTrigger asChild>

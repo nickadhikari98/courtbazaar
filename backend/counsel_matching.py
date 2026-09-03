@@ -507,6 +507,38 @@ def select_top_candidates(hearing: dict, scored_candidates: List[dict], batch_si
     return scored_candidates[:size]
 
 
+async def top_fallback_candidates(db, hearing: dict, exclude_user_ids: set) -> List[dict]:
+    """Auto top-5 fallback (founder direction, 2026-09) — see
+    hearings._create_fallback_requests, the only caller. When a customer's
+    manually Selected Counsel rejects a targeted request, this re-runs the
+    exact same AI-ranked search list_and_recommend already powers on the
+    public browse grid, using the *original* filters the customer actually
+    picked — read back off the rejected hearing's own court_id/hearing_date/
+    request_details.common, never whatever filters happen to be live on the
+    browse page at the moment this runs — then returns the next
+    TOP_CANDIDATE_BATCH_SIZE candidates after excluding exclude_user_ids
+    (the counsel who just rejected, plus the requester themselves if they
+    also happen to be a verified counsel — same self-exclusion the browse
+    grid already applies client-side).
+
+    Over-fetches by len(exclude_user_ids) + a small buffer before filtering
+    and truncating, so excluding those ids doesn't shrink the batch below
+    TOP_CANDIDATE_BATCH_SIZE whenever more candidates exist."""
+    common = (hearing.get("request_details") or {}).get("common") or {}
+    ranked, _total = await list_and_recommend(
+        db,
+        court_id=hearing.get("court_id"),
+        state_id=common.get("state_id") or None,
+        district=common.get("district") or None,
+        time_slot=common.get("time_slot") or None,
+        experience_bracket=common.get("experience_bracket") or None,
+        hearing_date=hearing.get("hearing_date"),
+        limit=TOP_CANDIDATE_BATCH_SIZE + len(exclude_user_ids) + 5,
+    )
+    filtered = [c for c in ranked if c.get("user_id") not in exclude_user_ids]
+    return filtered[:TOP_CANDIDATE_BATCH_SIZE]
+
+
 # ---------------------------------------------------------------------------
 # Notification Batch Preparation (roadmap M8)
 #
