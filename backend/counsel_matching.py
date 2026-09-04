@@ -410,9 +410,12 @@ async def list_and_recommend(
     Date field is required to book, but used to only ever get sent along
     with the eventual hearing-request creation — never used to actually
     narrow who's shown. Now cross-checked against each candidate's own
-    availability_slots (see practice.is_available_on_date) so a client who's
-    already picked a date isn't shown, and can't select, someone who
-    actually can't take it that day."""
+    availability_slots (see practice.is_available_on_date), time_slot passed
+    through too (bug fix, 2026-09) so a holiday_block/custom_date/etc.
+    scoped to one time-of-day only excludes a search for that same
+    time-of-day, not the whole date — so a client who's already picked a
+    date (and, if set, a time slot) isn't shown, and can't select, someone
+    who actually can't take it then."""
     import practice
     query: Dict[str, Any] = verified_counsel_query()
     if specialization:
@@ -461,7 +464,7 @@ async def list_and_recommend(
             slots_by_user.setdefault(s["user_id"], []).append(s)
         candidates = [
             c for c in candidates
-            if practice.is_available_on_date(slots_by_user.get(c["user_id"], []), hearing_date)
+            if practice.is_available_on_date(slots_by_user.get(c["user_id"], []), hearing_date, time_slot)
         ]
 
     if fee_min is not None or fee_max is not None:

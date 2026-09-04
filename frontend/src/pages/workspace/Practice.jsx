@@ -480,7 +480,7 @@ function ProfileTab({ profile, onSaved }) {
       <Card className="dashboard-card border-none">
         <CardContent className="p-5 space-y-4">
           <div>
-            <div className="font-display font-bold">Availability & Pricing</div>
+            <div className="font-display font-bold">Pricing</div>
             <p className="text-xs text-muted-foreground mt-0.5">Set your own price per slot — never below the platform minimum shown under each field. Leave a slot blank if you don't take that kind of work.</p>
           </div>
           {PRICING_COURT_TYPES.map((courtType) => (

@@ -218,11 +218,33 @@ async def verify_bar_council(db, user_id: str) -> dict:
     return await db.proxy_counsel_profiles.find_one({"user_id": user_id}, {"_id": 0})
 
 
-def is_available_on_date(slots: List[dict], date_str: str) -> bool:
+def _slot_overlaps_time(slot_label: Optional[str], wanted_label: Optional[str]) -> bool:
+    """Bug fix (2026-09): is_available_on_date used to only compare
+    kind+date, completely ignoring each availability_slots row's own
+    start_time (one of PRICING_SLOT_LABELS' four non-urgent labels — see
+    Practice.jsx's Availability tab) — so a holiday_block scoped to just
+    "2 PM – 5 PM" was excluding a counsel from every search on that date,
+    including an unrelated 10 AM – 1 PM one. "Full Day" on either side
+    always overlaps (it covers/needs the whole day); a missing label on
+    either side (a legacy row with no start_time, or a browse search with
+    no time_slot filter — "Any time slot") stays permissive/conservative,
+    matching this function's behavior before time-of-day was considered at
+    all — only an explicit, differing time-of-day pair is now distinguished."""
+    if not slot_label or not wanted_label:
+        return True
+    if slot_label == "Full Day" or wanted_label == "Full Day":
+        return True
+    return slot_label == wanted_label
+
+
+def is_available_on_date(slots: List[dict], date_str: str, time_slot: Optional[str] = None) -> bool:
     """Whether a counsel's own availability_slots say they're free on
-    `date_str` ("YYYY-MM-DD") — the actual check the browse page's Hearing
-    Date filter needs (founder direction, 2026-09): a client who's already
-    picked a date shouldn't be shown counsels who can't actually take it.
+    `date_str` ("YYYY-MM-DD"), optionally narrowed to the browse page's own
+    Time Slot filter (`time_slot`, one of practice.PRICING_SLOTS minus
+    "urgent" — see _slot_overlaps_time) — the actual check the browse
+    page's Hearing Date filter needs (founder direction, 2026-09): a client
+    who's already picked a date shouldn't be shown counsels who can't
+    actually take it.
 
     No slots configured at all -> permissive default (True). Most counsels
     today have never touched the granular Availability tab at all; treating
@@ -230,25 +252,34 @@ def is_available_on_date(slots: List[dict], date_str: str) -> bool:
     date-filtered search instead of just narrowing it, so this only ever
     excludes on actual evidence of unavailability:
       - an explicit holiday_block/emergency_unavailable for this exact date
-        always wins, regardless of anything else, or
+        AND whose own time-of-day actually overlaps `time_slot` wins,
+        regardless of anything else, or
       - once a counsel HAS opted into recurring_weekly/custom_date
         scheduling at all, this date has to be one of the ones they
-        actually picked (a counsel who only ever set up Mondays is exactly
-        who a Wednesday search should exclude)."""
+        actually picked, with an overlapping time-of-day too (a counsel who
+        only ever set up Mondays is exactly who a Wednesday search should
+        exclude; one who only opened up mornings is exactly who an
+        afternoon search should exclude)."""
     if not slots:
         return True
     try:
         weekday = datetime.fromisoformat(date_str).weekday()  # 0=Monday..6=Sunday, matches day_of_week's own convention
     except (TypeError, ValueError):
         return True  # unparseable date filter shouldn't hide every counsel
-    if any(s.get("kind") in ("holiday_block", "emergency_unavailable") and s.get("date") == date_str for s in slots):
+    wanted_label = PRICING_SLOT_LABELS.get(time_slot) if time_slot else None
+    if any(
+        s.get("kind") in ("holiday_block", "emergency_unavailable") and s.get("date") == date_str
+        and _slot_overlaps_time(s.get("start_time"), wanted_label)
+        for s in slots
+    ):
         return False
     positive = [s for s in slots if s.get("kind") in ("recurring_weekly", "custom_date")]
     if not positive:
         return True
     return any(
-        (s["kind"] == "custom_date" and s.get("date") == date_str)
-        or (s["kind"] == "recurring_weekly" and s.get("day_of_week") == weekday)
+        ((s["kind"] == "custom_date" and s.get("date") == date_str)
+         or (s["kind"] == "recurring_weekly" and s.get("day_of_week") == weekday))
+        and _slot_overlaps_time(s.get("start_time"), wanted_label)
         for s in positive
     )
 
