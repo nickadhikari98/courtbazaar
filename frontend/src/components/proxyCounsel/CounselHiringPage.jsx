@@ -270,12 +270,23 @@ export default function CounselHiringPage({ serviceType }) {
           service_specific: {},
         },
       });
-      toast.success(`Request sent to ${counsel.name} — continue in the Negotiation Module`);
       setSelectingId(null);
       setExcludeAdvocateId(null);
       setUrgentConfirmTarget(null);
       if (user) listHearingRequests().then(setHearings);
-      navigate(`/hearing-requests/${hearing.hearing_id}/negotiate`, { state: { counsel, hearing } });
+      // Fee negotiation toggle (founder direction, 2026-09): a counsel with
+      // negotiation switched off never has anything to negotiate — sending
+      // them straight to the Negotiation Module would just bounce them
+      // back out (see NegotiationModule.jsx's own canNegotiate guard).
+      // hearing.negotiation_enabled is this counsel's own snapshot from
+      // request-creation time (see hearings.create_hearing_request).
+      if (hearing.negotiation_enabled) {
+        toast.success(`Request sent to ${counsel.name} — continue in the Negotiation Module`);
+        navigate(`/hearing-requests/${hearing.hearing_id}/negotiate`, { state: { counsel, hearing } });
+      } else {
+        toast.success(`Request sent to ${counsel.name} — waiting for them to accept`);
+        navigate("/dashboard");
+      }
     } catch (err) {
       toast.error(getErrorMessage(err, "Could not send the request"));
       setSelectingId(null);

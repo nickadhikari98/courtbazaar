@@ -192,6 +192,7 @@ function ProfileTab({ profile, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [savingAvailability, setSavingAvailability] = useState(false);
   const [savingInstant, setSavingInstant] = useState(false);
+  const [savingNegotiation, setSavingNegotiation] = useState(false);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const setPricing = (courtType, slot, value) => {
     setForm((f) => ({
@@ -226,6 +227,7 @@ function ProfileTab({ profile, onSaved }) {
         schedule_type: form.schedule_type, matters_handled: form.matters_handled,
         office_address: form.office_address, fee_structure: form.fee_structure, pricing: form.pricing,
         availability_mode: form.availability_mode, instant_booking: form.instant_booking,
+        negotiation_enabled: form.negotiation_enabled,
       });
       onSaved(updated);
       toast.success("Profile saved");
@@ -242,12 +244,12 @@ function ProfileTab({ profile, onSaved }) {
   // Sends only the one field (the PUT is a partial update, exclude_unset on
   // the backend) so it can't accidentally persist unrelated in-progress edits
   // sitting elsewhere in the form.
-  const saveToggle = async (key, setBusy) => {
+  const saveToggle = async (key, setBusy, successLabel = "Availability updated") => {
     setBusy(true);
     try {
       const updated = await updatePracticeProfile({ [key]: form[key] });
       onSaved(updated);
-      toast.success("Availability updated");
+      toast.success(successLabel);
     } catch (err) {
       toast.error(getErrorMessage(err, "Could not save"));
     } finally {
@@ -367,6 +369,30 @@ function ProfileTab({ profile, onSaved }) {
                 );
               })}
             </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="dashboard-card border-none">
+        <CardContent className="p-5 flex items-center justify-between gap-4">
+          <div>
+            <div className="font-display font-bold">Fee negotiation</div>
+            <p className="text-xs text-muted-foreground">
+              Turn this on to also see a
+              Negotiate option and respond to counter offers.
+            </p>
+          </div>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <Switch checked={!!form.negotiation_enabled} onCheckedChange={(v) => set("negotiation_enabled", v)} data-testid="negotiation-enabled-toggle" />
+            <Button
+              type="button" size="sm" onClick={() => saveToggle("negotiation_enabled", setSavingNegotiation, "Fee negotiation updated")}
+              disabled={savingNegotiation}
+              className={form.negotiation_enabled
+                ? "bg-accent hover:bg-accent/90 font-bold"
+                : "bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold"}
+            >
+              Save
+            </Button>
           </div>
         </CardContent>
       </Card>

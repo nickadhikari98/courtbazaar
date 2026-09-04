@@ -14,7 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Star, FileText, Send, Upload, Download, CheckCircle2, X, Ban, Loader2, Gavel } from "lucide-react";
 import {
   getHearingRequest, acceptHearingRequest, declineHearingRequest, rejectHearingRequest, cancelHearingRequest,
-  markHearingConducted, rateHearingRequest, addHearingNote, listHearingMessages,
+  acceptHearingAtListedRate, markHearingConducted, rateHearingRequest, addHearingNote, listHearingMessages,
   postHearingMessage, listHearingDocuments, uploadHearingDocument, getHearingDocumentUrl,
   submitHearingCaseDetails,
 } from "@/lib/hearingRequestsApi";
@@ -51,11 +51,12 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   const [submittingDetails, setSubmittingDetails] = useState(false);
   const [preview, setPreview] = useState(null); // { url, filename } — in-page document preview
   const fileInputRef = useRef(null);
-  // Which of the three irreversible exits (decline/reject/cancel) is
-  // currently up for confirmation — same "never fire a destructive action
-  // on a single click" rule the hearing-list Cancel Request flow already
-  // follows (see CounselHiringPage.jsx). At most one is ever open at a time.
-  const [pendingAction, setPendingAction] = useState(null); // null | "decline" | "reject" | "cancel"
+  // Which of the four irreversible/committing exits (decline/reject/cancel/
+  // accept-listed-rate) is currently up for confirmation — same "never fire
+  // a destructive action on a single click" rule the hearing-list Cancel
+  // Request flow already follows (see CounselHiringPage.jsx). At most one
+  // is ever open at a time.
+  const [pendingAction, setPendingAction] = useState(null); // null | "decline" | "reject" | "cancel" | "accept-listed-rate"
 
   const load = () => {
     if (!hearingId) return;
@@ -83,9 +84,9 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   // that NegotiationModule.jsx also calls — this dialog no longer maintains
   // its own copy that could drift out of sync with the Negotiation page.
   const {
-    isRequester, isAssignedProxyCounsel, canAccept, canDecline, canReject,
-    negotiationRequired, negotiationAgreed, negotiationPending, canPay, canCancel, canMarkConducted, canRate,
-    isEscrowParticipant, viewerRole,
+    isRequester, isAssignedProxyCounsel, canAccept, canDecline, canReject, canAcceptListedRate,
+    negotiationRequired, canNegotiate, negotiationAgreed, negotiationPending, fixedPricePending,
+    canPay, canCancel, canMarkConducted, canRate, isEscrowParticipant, viewerRole,
   } = getHearingPermissions(hearing, user);
 
   const run = async (fn) => {
@@ -320,13 +321,15 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           </div>
         )}
 
+        {/* Requester-only — the advocate's own Accept/Reject/Negotiate trio
+            (bottom action bar below) is their entry point instead, so this
+            banner would just duplicate it for them. */}
         {negotiationPending && (
           <div className="border rounded-lg p-4 bg-amber-50 border-amber-200 space-y-2">
             <div className="font-display font-bold text-sm">Fee negotiation isn't agreed yet</div>
             <p className="text-xs text-muted-foreground">
-              {isRequester
-                ? "Payment unlocks once you and the counsel agree on a final amount. Head to the Negotiation page to propose or respond to an offer."
-                : "This request has an active commercial offer waiting on you. Head to the Negotiation page to accept it, send a counter offer, or decline."}
+              Payment unlocks once you and the counsel agree on a final amount. Head to the Negotiation page to
+              propose or respond to an offer.
             </p>
             <Button
               type="button"
@@ -335,6 +338,19 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
             >
               <Gavel className="w-4 h-4 mr-1.5" /> Go to Negotiation
             </Button>
+          </div>
+        )}
+
+        {/* Fee negotiation toggle (founder direction, 2026-09): this
+            counsel doesn't negotiate — a fixed price applies once they
+            Accept, no Negotiation page to send the requester to. */}
+        {fixedPricePending && (
+          <div className="border rounded-lg p-4 bg-amber-50 border-amber-200">
+            <div className="font-display font-bold text-sm">Waiting for the counsel to respond</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              This counsel doesn't negotiate fees — once they Accept, the listed rate is locked in
+              (you'll be prompted to pay next) or decline it.
+            </p>
           </div>
         )}
 
@@ -383,7 +399,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
               </div>
               {isAssignedProxyCounsel && (
                 <p className="text-2xs text-muted-foreground">
-                  Uploading the <span className="font-semibold text-foreground">Court Order Sheet</span>? That's done from the <span className="font-semibold text-foreground">Escrow panel above</span>, once the hearing is marked conducted — not here.
+                  Uploading the <span className="font-semibold text-foreground">Court Order Sheet</span>? That's done from the <span className="font-semibold text-foreground">Payment panel above</span>, once the hearing is marked conducted — not here.
                 </p>
               )}
             </div>
@@ -454,6 +470,17 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
               <CheckCircle2 className="w-4 h-4 mr-1.5" /> Accept
             </Button>
           )}
+          {/* Fee negotiation toggle (founder direction, 2026-09): the
+              targeted advocate's own three options before any fee is
+              locked — Accept (this counsel's own listed rate, no
+              negotiation), Reject, and — only when this advocate actually
+              negotiates fees — Negotiate. Same window as canReject, so
+              these two/three always appear or disappear together. */}
+          {canAcceptListedRate && (
+            <Button type="button" disabled={busy} onClick={() => setPendingAction("accept-listed-rate")} className="bg-emerald-600 hover:bg-emerald-700 font-bold" data-testid="accept-listed-rate">
+              <CheckCircle2 className="w-4 h-4 mr-1.5" /> Accept
+            </Button>
+          )}
           {canDecline && (
             <Button type="button" disabled={busy} variant="outline" onClick={() => setPendingAction("decline")} className="font-bold">
               <X className="w-4 h-4 mr-1.5" /> Decline
@@ -462,6 +489,14 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           {canReject && (
             <Button type="button" disabled={busy} variant="outline" onClick={() => setPendingAction("reject")} className="font-bold text-red-600 border-red-200 hover:bg-red-50">
               <X className="w-4 h-4 mr-1.5" /> Reject
+            </Button>
+          )}
+          {canAcceptListedRate && canNegotiate && (
+            <Button
+              type="button" disabled={busy} variant="outline" className="font-bold" data-testid="negotiate-fee"
+              onClick={() => { onOpenChange(false); navigate(`/hearing-requests/${hearingId}/negotiate`); }}
+            >
+              <Gavel className="w-4 h-4 mr-1.5" /> Negotiate
             </Button>
           )}
           {canMarkConducted && (
@@ -482,6 +517,18 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
       onOpenChange={(v) => { if (!v) setPreview(null); }}
       url={preview?.url}
       filename={preview?.filename}
+    />
+    <ConfirmDialog
+      open={pendingAction === "accept-listed-rate"}
+      onOpenChange={(v) => !v && setPendingAction(null)}
+      busy={busy}
+      title="Accept at your listed rate?"
+      description="This agrees to your own listed rate for this court type — no negotiation. The client will be prompted to pay next, and this locks the fee in for good."
+      confirmLabel="Accept"
+      confirmIcon={CheckCircle2}
+      confirmVariant="default"
+      confirmClassName="bg-emerald-600 hover:bg-emerald-700 text-white"
+      onConfirm={() => run(() => acceptHearingAtListedRate(hearingId)).then(() => setPendingAction(null))}
     />
     <ConfirmDialog
       open={pendingAction === "decline"}
