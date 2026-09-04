@@ -84,7 +84,7 @@ export default function EscrowStagePanel({
     setBusy(true);
     try {
       await verifyAndReleaseHearingPayout(hearingId);
-      toast.success("Hearing verified — escrow released to the Proxy Counsel.");
+      toast.success("Hearing verified — payment released to the Proxy Counsel.");
       await onChanged?.();
     } catch (err) {
       toast.error(getErrorMessage(err, "Could not verify this hearing"));
@@ -122,8 +122,8 @@ export default function EscrowStagePanel({
         <CardContent className="p-4 flex items-center gap-2 text-sm font-semibold">
           <Lock className="w-4 h-4 text-accent flex-shrink-0" />
           {viewerRole === "customer"
-            ? `${amount} is securely held in Escrow — released once the hearing is completed and verified.`
-            : `${amount} is securely held in Escrow. Nothing needed from you yet — the hearing is being prepared.`}
+            ? `${amount} is securely held by CourtBazaar — released once the hearing is completed and verified.`
+            : `${amount} is securely held by CourtBazaar. Nothing needed from you yet — the hearing is being prepared.`}
         </CardContent>
       </Card>
     );
@@ -142,8 +142,8 @@ export default function EscrowStagePanel({
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Lock className="w-4 h-4 text-accent flex-shrink-0" />
             {viewerRole === "customer"
-              ? `${amount} is securely held in Escrow — waiting for the ${otherRoleLabel} to mark the hearing conducted.`
-              : `${amount} is securely held in Escrow. Once the hearing takes place, mark it conducted to unlock Order Sheet upload.`}
+              ? `${amount} is securely held by CourtBazaar — waiting for the ${otherRoleLabel} to mark the hearing conducted.`
+              : `${amount} is securely held by CourtBazaar. Once the hearing takes place, mark it conducted to unlock Order Sheet upload.`}
           </div>
           {canMarkConducted && (
             <Button type="button" onClick={onMarkConducted} disabled={markingConducted} className="bg-accent hover:bg-accent/90 font-bold" data-testid="mark-hearing-conducted">
@@ -160,12 +160,12 @@ export default function EscrowStagePanel({
       <Card className="border-l-4 border-l-orange-400 shadow-md" data-testid="escrow-stage-panel">
         <CardContent className="p-6">
           <div className="flex items-center gap-1.5 text-2xs font-bold uppercase tracking-wide text-orange-700 bg-orange-100 rounded-full px-2.5 py-1 w-fit mb-3">
-            <Lock className="w-3.5 h-3.5" /> Escrow Held
+            <Lock className="w-3.5 h-3.5" /> Payment Secured
           </div>
           {viewerRole === "counsel" ? (
             <>
               <p className="text-sm font-semibold mb-3">
-                {amount} is securely held in Escrow. Payment will only be released after you upload the Court Order
+                {amount} is securely held by CourtBazaar. Payment will only be released after you upload the Court Order
                 Sheet and the {otherRoleLabel} verifies the hearing.
               </p>
               <input ref={fileInputRef} type="file" className="text-xs mb-2 w-full" />
@@ -175,7 +175,7 @@ export default function EscrowStagePanel({
             </>
           ) : (
             <p className="text-sm font-semibold">
-              {amount} is securely held in Escrow — waiting for the Proxy Counsel to upload the Court Order Sheet.
+              {amount} is securely held by CourtBazaar — waiting for the Proxy Counsel to upload the Court Order Sheet.
             </p>
           )}
         </CardContent>
@@ -192,8 +192,8 @@ export default function EscrowStagePanel({
             <>
               <div className="cb-overline text-accent mb-2">Review Submission</div>
               <p className="text-sm text-muted-foreground mb-3">
-                The Proxy Counsel uploaded the Court Order Sheet for {amount} held in Escrow. Review it, then verify
-                the hearing to release payment, or raise a dispute if something's wrong.
+                The Proxy Counsel uploaded the Court Order Sheet for {amount} held securely by CourtBazaar. Review it,
+                then verify the hearing to release payment, or raise a dispute if something's wrong.
               </p>
               {hearing.order_sheet_doc_id && (
                 <button type="button" onClick={viewOrderSheet} className="flex items-center gap-2 text-sm border rounded-md px-2.5 py-1.5 hover:bg-slate-50 mb-3" data-testid="view-order-sheet">
@@ -236,7 +236,7 @@ export default function EscrowStagePanel({
           ) : (
             <>
               <p className="text-sm font-semibold mb-3">
-                Order sheet submitted — waiting for the {otherRoleLabel} to verify. {amount} is securely held in Escrow,
+                Order sheet submitted — waiting for the {otherRoleLabel} to verify. {amount} is securely held by CourtBazaar,
                 and auto-releases to you in {AUTO_RELEASE_DAYS} days if the {otherRoleLabel} takes no action.
               </p>
               {hearing.order_sheet_doc_id && (
@@ -266,8 +266,8 @@ export default function EscrowStagePanel({
           <div className="flex items-center gap-2 text-sm font-semibold text-red-800">
             <ShieldAlert className="w-4 h-4 flex-shrink-0" />
             {viewerRole === "customer"
-              ? "Your dispute is under review by CourtBazaar admin. Escrow remains held until it's resolved."
-              : "Your submission was disputed and is under review by CourtBazaar admin. Escrow remains held until it's resolved."}
+              ? "Your dispute is under review by CourtBazaar admin. Payment remains held until it's resolved."
+              : "Your submission was disputed and is under review by CourtBazaar admin. Payment remains held until it's resolved."}
           </div>
           {hearing.order_sheet_doc_id && (
             <button type="button" onClick={viewOrderSheet} className="flex items-center gap-2 text-sm border rounded-md px-2.5 py-1.5 hover:bg-white bg-white/60 mt-3" data-testid="view-order-sheet">
@@ -302,8 +302,8 @@ export default function EscrowStagePanel({
       <CardContent className="p-4 flex items-center gap-2 text-sm font-semibold text-emerald-800">
         <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
         {viewerRole === "customer"
-          ? `Escrow released — ${amount} paid to the ${otherRoleLabel}.`
-          : `Escrow released — ${amount} has been paid to your wallet.`}
+          ? `Payment released — ${amount} paid to the ${otherRoleLabel}.`
+          : `Payment released — ${amount} has been paid to your wallet.`}
       </CardContent>
     </Card>
   );

@@ -155,6 +155,29 @@ async def _load_hearing_for_negotiation(db, hearing_id: str, user: dict) -> dict
 
 async def propose_offer(db, hearing_id: str, user: dict, amount: float, note: Optional[str]) -> dict:
     hearing = await _load_hearing_for_negotiation(db, hearing_id, user)
+    # Fee negotiation toggle (founder direction, 2026-09): a targeted hearing
+    # whose counsel had negotiation switched off at request time carries a
+    # fixed price only — see hearing.negotiation_enabled's docstring in
+    # hearings.create_hearing_request. Neither side gets to propose/counter
+    # here; the only ways forward are hearings.accept_at_listed_rate
+    # ("Accept") or reject_hearing_request ("Reject"). Backend-enforced, not
+    # just a hidden frontend button — the same "never trust the client
+    # alone" rule initiate_payment's commercially_locked check follows.
+    if hearing.get("target_advocate_id") and not hearing.get("negotiation_enabled", True):
+        raise HTTPException(400, "This counsel doesn't negotiate fees for this request — Accept at their listed rate, or Reject.")
+    # CourtBazaar's own platform floor (practice.PRICING_MINIMUMS, the
+    # lowest-priced slot for this hearing's court type — district or
+    # high_court/arbitration/tribunal/quasi/supreme, see
+    # hearings.pricing_court_type_for_hearing) — deliberately NOT the
+    # counsel's own listed rate, which negotiation exists precisely to move
+    # away from; only the platform's own below-cost-work floor is enforced
+    # here (founder direction, 2026-09).
+    import practice
+    import hearings
+    court_type = await hearings.pricing_court_type_for_hearing(db, hearing)
+    floor = min(practice.PRICING_MINIMUMS[court_type].values())
+    if amount < floor:
+        raise HTTPException(400, f"Offers for this court type can't be below CourtBazaar's minimum of ₹{floor:g}")
     negotiation = await get_or_create_negotiation(db, hearing_id)
     if negotiation["status"] != "open":
         raise HTTPException(400, "This negotiation is already agreed — no further offers are allowed")

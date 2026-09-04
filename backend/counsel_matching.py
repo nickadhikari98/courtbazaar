@@ -267,12 +267,15 @@ def extract_fee_amount(fee_structure: Optional[str]) -> Optional[float]:
         return None
 
 
-def _cheapest_priced_slot(pricing: Optional[Dict[str, Dict[str, float]]]) -> Optional[float]:
+def cheapest_priced_slot(pricing: Optional[Dict[str, Dict[str, float]]]) -> Optional[float]:
     """The lowest amount an advocate has actually priced across every
     slot/court-type they've filled in — used as the one-number "starting
     from" figure everywhere the old single proposed_fee already showed
     (CounselCard, sort/filter) so those call sites don't need to know the
-    full grid exists."""
+    full grid exists. Public (no leading underscore) — hearings.py's
+    _listed_rate_for_hearing also calls this, matching the exact
+    "starting from" figure the customer already saw on the card before
+    picking this counsel, for its no-negotiation Accept shortcut."""
     amounts = [amt for slots in (pricing or {}).values() for amt in (slots or {}).values()]
     return min(amounts) if amounts else None
 
@@ -285,7 +288,7 @@ def build_advocate_card(candidate: dict, name: Optional[str], court_names_by_id:
     instead of two dicts drifting apart."""
     import practice
     pricing = candidate.get("pricing") or {}
-    cheapest = _cheapest_priced_slot(pricing)
+    cheapest = cheapest_priced_slot(pricing)
     experience_bracket = candidate.get("experience_bracket")
     return {
         "advocate_id": candidate["user_id"],

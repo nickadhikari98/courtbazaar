@@ -18,6 +18,7 @@ PROFILE_EDITABLE_FIELDS = (
     "state_bar_council", "bar_council_number", "practice_areas", "courts", "languages", "experience_years",
     "experience_bracket", "professional_status", "max_travel_distance", "schedule_type", "matters_handled",
     "education", "bio", "office_address", "fee_structure", "pricing", "availability_mode", "instant_booking",
+    "negotiation_enabled",
 )
 
 # Founder-set rate card (2026-08): a proxy counsel names their own price per
@@ -149,6 +150,14 @@ async def get_or_create_profile(db, user_id: str) -> dict:
         "bar_council_verified": False,  # admin-verified, not self-settable — see PROFILE_EDITABLE_FIELDS
         "availability_mode": False,
         "instant_booking": False,
+        # Fee negotiation toggle (founder direction, 2026-09): default OFF —
+        # a hearing request created against this counsel then carries a
+        # fixed price (this counsel's own listed rate for the court type/
+        # urgency, same number CounselCard already shows before selection)
+        # instead of opening the Negotiation Module at all. See
+        # hearings.create_hearing_request's snapshot of this field onto the
+        # hearing itself, and negotiation.propose_offer's gate.
+        "negotiation_enabled": False,
         "rating": 0,
         "cases_completed": 0,
         "success_rate": None,

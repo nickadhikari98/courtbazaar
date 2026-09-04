@@ -401,6 +401,7 @@ class ProxyCounselProfileUpdate(BaseModel):
     fee_structure: Optional[str] = None
     availability_mode: Optional[bool] = None
     instant_booking: Optional[bool] = None
+    negotiation_enabled: Optional[bool] = None
 
 class AvailabilitySlotCreate(BaseModel):
     kind: str
@@ -2578,6 +2579,22 @@ async def reject_hearing_request(hearing_id: str, user=Depends(get_current_user)
                                  hearing_id)
     return result
 
+@api_router.put("/hearing-requests/{hearing_id}/accept-listed-rate")
+async def accept_hearing_at_listed_rate(hearing_id: str, user=Depends(get_current_user)):
+    """Fee negotiation toggle (founder direction, 2026-09) — the targeted
+    advocate's one-click "Accept" that skips the Negotiation Module entirely
+    and locks in their own listed rate for this hearing. Always available,
+    whether or not this advocate has negotiation switched on (see
+    hearings.accept_at_listed_rate's docstring); "Negotiate" is the part
+    that toggle actually gates."""
+    _require_capability(user, "can_practice_proxy_counsel")
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    result = await hearings_svc.accept_at_listed_rate(db, hearing_id, user)
+    await _notify_hearing_event(hearing["requesting_user_id"], "Fee agreed",
+                                 f"Your counsel accepted your request for {hearing['court_id']} at their listed rate of ₹{result['fee']:g}. You can now proceed to payment.",
+                                 hearing_id)
+    return result
+
 @api_router.put("/hearing-requests/{hearing_id}/cancel")
 async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)):
     # Notification audit (production readiness pass): the counter-party
@@ -2595,7 +2612,7 @@ async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)
         await _notify_hearing_event(
             recipient_id, "Hearing cancelled",
             f"The hearing at {hearing['court_id']} was cancelled by the requester."
-            + (" Any escrow held has been refunded." if refunded else ""),
+            + (" Any payment held has been refunded." if refunded else ""),
             hearing_id,
         )
     return result
@@ -2658,13 +2675,13 @@ async def verify_hearing_payment(hearing_id: str, payload: dict, user=Depends(ge
     # before) — that's the Counsel Matching Agent's job (M11, not built yet).
     if hearing.get("target_advocate_id"):
         await _notify_hearing_event(hearing["target_advocate_id"], "Payment received",
-                                     f"Payment for your hearing at {hearing['court_id']} is confirmed and held in escrow.",
+                                     f"Payment for your hearing at {hearing['court_id']} is confirmed and held securely by CourtBazaar.",
                                      hearing_id)
     # Notification audit (production readiness pass): the requester who just
     # paid previously got nothing durable — only an ephemeral client-side
     # toast, lost on refresh/different device. They get their own receipt too.
     await _notify_hearing_event(user["user_id"], "Payment successful",
-                                 f"Your payment for the hearing at {hearing['court_id']} is confirmed and held securely in escrow.",
+                                 f"Your payment for the hearing at {hearing['court_id']} is confirmed and held securely by CourtBazaar.",
                                  hearing_id)
     return {"ok": True, "payment_id": rzp_payment_id, "status": "broadcast"}
 
@@ -2878,8 +2895,8 @@ async def verify_and_release_hearing_payout(hearing_id: str, user=Depends(get_cu
     # the requester's own action, same reasoning as "Payment successful"
     # above — they know they just clicked Verify, but nothing durable
     # confirmed the escrow actually released until now.
-    await _notify_hearing_event(hearing["requesting_user_id"], "Escrow released",
-                                 f"You verified the hearing at {hearing['court_id']} and escrow has been released to the Proxy Counsel.",
+    await _notify_hearing_event(hearing["requesting_user_id"], "Payment released",
+                                 f"You verified the hearing at {hearing['court_id']} and your payment has been released to the Proxy Counsel.",
                                  hearing_id)
     return result
 
@@ -2920,7 +2937,7 @@ async def resolve_hearing_dispute(hearing_id: str, payload: HearingDisputeResolv
                                      + (f" Note: {payload.remark}" if payload.remark else ""),
                                      hearing_id)
         await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Dispute resolved — no payout",
-                                     f"The dispute for the hearing at {hearing['court_id']} was resolved in the requester's favor; the escrowed amount was refunded to them.",
+                                     f"The dispute for the hearing at {hearing['court_id']} was resolved in the requester's favor; the amount was refunded to them.",
                                      hearing_id)
     return result
 
@@ -2936,8 +2953,8 @@ async def release_hearing_payout(hearing_id: str, user=Depends(get_current_user)
     # Notification audit (production readiness pass): the requester's hearing
     # is now fully complete — they get their own closing confirmation too,
     # same as the requester-triggered verify-and-release path already does.
-    await _notify_hearing_event(hearing["requesting_user_id"], "Escrow released",
-                                 f"Escrow for your hearing at {hearing['court_id']} has been released to the Proxy Counsel. This request is now complete.",
+    await _notify_hearing_event(hearing["requesting_user_id"], "Payment released",
+                                 f"Payment for your hearing at {hearing['court_id']} has been released to the Proxy Counsel. This request is now complete.",
                                  hearing_id)
     return result
 
