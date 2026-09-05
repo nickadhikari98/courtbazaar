@@ -55,6 +55,7 @@ from fastapi import HTTPException
 from pymongo import ReturnDocument
 
 from workflow import StateMachine, IllegalTransition
+from file_meta import detect_page_count
 
 logger = logging.getLogger(__name__)
 
@@ -719,6 +720,7 @@ async def add_document(db, put_object_fn, validate_upload_fn, hearing_id: str, u
         "original_filename": filename,
         "content_type": content_type,
         "size": result.get("size", len(data)),
+        "page_count": detect_page_count(filename, content_type, data),
         "storage_path": result["path"],
         "is_deleted": False,
         "uploaded_by": user["user_id"],

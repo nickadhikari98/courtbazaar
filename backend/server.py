@@ -75,6 +75,7 @@ async def ensure_db_ready() -> bool:
 # S3-compatible (Cloudflare R2 by default, swappable to AWS S3 via env vars) —
 # see storage.py. Replaces the old Emergent-platform-specific object store.
 from storage import put_object, get_object, delete_object, presigned_download_url
+from file_meta import detect_page_count
 
 
 async def delete_order_files(order_id: str) -> dict:
@@ -1005,59 +1006,7 @@ async def upload_file(file: UploadFile = File(...), user=Depends(get_current_use
         logger.error(f"Upload failed: {e}")
         raise HTTPException(500, f"Upload failed: {e}")
 
-    # Auto-detect page count
-    page_count = 1
-    try:
-        fn = (file.filename or "").lower()
-        ct = (content_type or "").lower()
-        if "pdf" in ct or fn.endswith(".pdf"):
-            import io as _io
-            page_count = 0
-            # 1) Try PyPDF2 (works for normal PDFs with structure intact)
-            try:
-                from PyPDF2 import PdfReader
-                reader = PdfReader(_io.BytesIO(data))
-                page_count = len(reader.pages)
-            except Exception as e:
-                logger.warning(f"PyPDF2 page count failed: {e}")
-            # 2) Fallback to pdfinfo / pdf2image for scanned or malformed PDFs
-            if page_count == 0:
-                try:
-                    from pdf2image.pdf2image import pdfinfo_from_bytes
-                    info = pdfinfo_from_bytes(data, userpw=None)
-                    page_count = int(info.get("Pages", 0))
-                except Exception as e:
-                    logger.warning(f"pdfinfo fallback failed: {e}")
-            # 3) Last-resort: count "/Type /Page" markers in raw bytes
-            if page_count == 0:
-                try:
-                    page_count = max(1, data.count(b"/Type /Page") - data.count(b"/Type /Pages"))
-                except Exception:
-                    page_count = 1
-            page_count = max(1, page_count)
-        elif "tiff" in ct or fn.endswith((".tif", ".tiff")):
-            # Multi-page TIFF support
-            try:
-                from PIL import Image
-                import io as _io
-                img = Image.open(_io.BytesIO(data))
-                page_count = getattr(img, "n_frames", 1) or 1
-            except Exception:
-                page_count = 1
-        elif "image" in ct or any(fn.endswith(e) for e in [".jpg", ".jpeg", ".png", ".bmp", ".webp", ".heic", ".heif"]):
-            page_count = 1
-        elif "officedocument" in ct or fn.endswith((".docx", ".doc")):
-            try:
-                from docx import Document
-                import io as _io
-                doc = Document(_io.BytesIO(data))
-                total_chars = sum(len(p.text) for p in doc.paragraphs)
-                page_count = max(1, total_chars // 3000)
-            except Exception:
-                page_count = max(1, len(data) // 50000)
-    except Exception as e:
-        logger.error(f"Page count detection failed: {e}")
-        page_count = 1
+    page_count = detect_page_count(file.filename, content_type, data)
 
     record = {
         "file_id": file_id,
@@ -1076,7 +1025,7 @@ async def upload_file(file: UploadFile = File(...), user=Depends(get_current_use
     return record
 
 @api_router.get("/files/{file_id}/download")
-async def download_file(file_id: str, user=Depends(get_current_user)):
+async def download_file(file_id: str, inline: bool = False, user=Depends(get_current_user)):
     rec = await db.files.find_one({"file_id": file_id, "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(404, "File not found")
@@ -1087,12 +1036,65 @@ async def download_file(file_id: str, user=Depends(get_current_user)):
         is_assigned_vendor = await db.orders.find_one({"vendor_id": user["user_id"], "file_ids": file_id}) is not None
     if not (is_owner or is_admin or is_assigned_vendor):
         raise HTTPException(403, "Forbidden")
-    url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"))
+    # inline=true (Documents page preview modal): browser renders the file in-tab
+    # instead of prompting a download — same convention as the hearing-document
+    # download-url route.
+    url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"), inline=inline)
     return {"url": url, "filename": rec.get("original_filename")}
+
+async def _hearing_doc_page_count(d: dict) -> Optional[int]:
+    """hearing_documents predates page-count tracking (add_document now sets
+    it going forward — see file_meta.detect_page_count), so older records
+    have no stored value. An image is deterministically 1 page, same
+    convention as db.files. A PDF's real count isn't knowable without
+    opening the file, so it's detected once here from the actual stored
+    bytes (never fabricated) and cached back onto the record so this only
+    happens once per legacy document, not on every page load."""
+    if "page_count" in d and d["page_count"]:
+        return d["page_count"]
+    ct = (d.get("content_type") or "").lower()
+    if "image" in ct:
+        return 1
+    if "pdf" not in ct:
+        return None
+    try:
+        data, _ = get_object(d["storage_path"])
+        page_count = detect_page_count(d.get("original_filename"), d.get("content_type"), data)
+    except Exception as e:
+        logger.warning(f"Lazy page count detection failed for hearing doc {d.get('doc_id')}: {e}")
+        return None
+    await db.hearing_documents.update_one({"doc_id": d["doc_id"]}, {"$set": {"page_count": page_count}})
+    return page_count
+
 
 @api_router.get("/files/mine")
 async def my_files(user=Depends(get_current_user)):
+    # Two disjoint upload flows feed this "all my documents" view: generic
+    # order-attachment uploads (db.files, POST /files/upload) and
+    # hearing-request uploads (db.hearing_documents, POST
+    # /hearing-requests/{id}/documents) — a proxy_counsel user's documents
+    # commonly live entirely in the latter, so both must be merged or their
+    # uploads silently disappear from this page.
     files = await db.files.find({"user_id": user["user_id"], "is_deleted": False}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    for f in files:
+        f["source"] = "order"
+
+    hearing_docs = await db.hearing_documents.find(
+        {"uploaded_by": user["user_id"], "is_deleted": False}, {"_id": 0}
+    ).sort("uploaded_at", -1).to_list(200)
+    for d in hearing_docs:
+        files.append({
+            "file_id": d["doc_id"],
+            "user_id": user["user_id"],
+            "original_filename": d["original_filename"],
+            "content_type": d.get("content_type"),
+            "page_count": await _hearing_doc_page_count(d),
+            "created_at": d["uploaded_at"],
+            "source": "hearing",
+            "hearing_id": d["hearing_id"],
+        })
+
+    files.sort(key=lambda f: f.get("created_at") or "", reverse=True)
     return files
 
 # ---------- LEADS (public: landing-page "Join as..." applications) ----------

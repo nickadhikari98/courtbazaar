@@ -21,10 +21,11 @@ import { formatINR } from "@/lib/api";
 // screen now uses (NegotiationModule/HearingDetailDialog/Dashboard/Practice/
 // HireProxyCounsel) — re-exported here so this file's existing callers
 // (Dashboard.jsx) don't need an import-path change.
-export {
+import {
   hearingNeedsMyDocument, hearingIsAcceptableByMe, hearingCommerciallyReadyForPayment, hearingNeedsMyAction,
 } from "@/lib/hearingLifecycle";
-import { hearingNeedsMyAction, hearingNeedsMyDocument } from "@/lib/hearingLifecycle";
+
+export { hearingNeedsMyDocument, hearingIsAcceptableByMe, hearingCommerciallyReadyForPayment, hearingNeedsMyAction };
 
 export const homeWidgets = [
   {
