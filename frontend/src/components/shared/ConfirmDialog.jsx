@@ -3,6 +3,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 /* Destructive-action confirm shell — this Dialog/Cancel/confirm-button chrome
    was hand-duplicated across every "delete/deactivate this?" dialog in the
@@ -19,6 +20,7 @@ export default function ConfirmDialog({
   confirmLabel = "Confirm",
   confirmIcon: ConfirmIcon,
   confirmVariant = "destructive",
+  confirmClassName,
   cancelLabel = "Cancel",
   onConfirm,
 }) {
@@ -33,7 +35,7 @@ export default function ConfirmDialog({
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
             {cancelLabel}
           </Button>
-          <Button type="button" variant={confirmVariant} className="font-bold" onClick={onConfirm} disabled={busy}>
+          <Button type="button" variant={confirmVariant} className={cn("font-bold", confirmClassName)} onClick={onConfirm} disabled={busy}>
             {ConfirmIcon && <ConfirmIcon className="w-4 h-4 mr-1.5" />} {confirmLabel}
           </Button>
         </DialogFooter>

@@ -38,6 +38,17 @@ const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled
 
 const TODAY = resolveDateBound("today");
 
+// UX fix: "Select Counsel" while anonymous sends the visitor to /login with
+// only the return *path* in router state (see requireLogin below) — every
+// filter they'd picked (location, date, time slot, experience, urgent) and
+// which counsel they clicked lived in plain useState, so it was gone the
+// instant they landed back here after signing in. sessionStorage survives
+// that round trip (and a full page reload during login) without touching
+// Login.jsx's redirect plumbing at all. One-shot: consumed (removed) the
+// moment it's read back, same "a later refresh/back must not replay it"
+// principle the resumeRequest router-state handoff below already follows.
+const PENDING_SELECTION_KEY = "courtbazaar_pending_counsel_selection";
+
 /* Counsel browse-and-hire flow — shared by HireProxyCounsel.jsx
    (serviceType="proxy_counsel") and HireCounsel.jsx (serviceType="counsel").
    Founder direction (2026-08): requesting Counsel (full representation)
@@ -50,12 +61,11 @@ const TODAY = resolveDateBound("today");
    SERVICE_CONFIGS[serviceType] (see config/serviceRequestFields.js) — this
    component itself has no service-specific literals.
 
-   The counsel grid and full profile view are both public on the
-   proxy_counsel route (no login wall, filters narrow the same grid in
-   place, no separate step/page to "unlock" it); the counsel route is
-   login-gated at the router level instead (see App.js) — either way, only
-   booking a counsel ("Select Counsel") requires an account (see
-   requireLogin below). Replaces the earlier BlaBlaCar-style "fill a form,
+   The counsel grid and full profile view are both public on either route —
+   proxy_counsel and counsel alike (no login wall, filters narrow the same
+   grid in place, no separate step/page to "unlock" it); only booking a
+   counsel ("Select Counsel") requires an account (see requireLogin below).
+   Replaces the earlier BlaBlaCar-style "fill a form,
    then reveal recommendations" flow — that flow's now-orphaned pieces
    (ProxyCounselLocationForm, CounselDiscoveryPanel, ManualCounselSearch)
    were removed rather than left unused; CounselCard/CounselProfileDialog are
@@ -92,8 +102,18 @@ export default function CounselHiringPage({ serviceType }) {
   // slot fee instead of the generic "starting from" figure, and selecting
   // a counsel confirms that fee before the request is sent.
   const [isUrgent, setIsUrgent] = useState(false);
+  // Confirm-before-switching-on step for the Urgent toggle itself (separate
+  // from urgentConfirmTarget below, which confirms one specific counsel's
+  // fee once a request is actually about to be sent).
+  const [urgentToggleConfirmOpen, setUrgentToggleConfirmOpen] = useState(false);
   const [sortBy, setSortBy] = useState("match"); // match | experience | rating
   const [urgentConfirmTarget, setUrgentConfirmTarget] = useState(null); // counsel awaiting the urgent-fee confirm
+  const [selectConfirmTarget, setSelectConfirmTarget] = useState(null); // counsel awaiting the plain (non-urgent) select confirm
+  // Counsel the visitor picked before being sent to log in — restored (with
+  // their filters) from PENDING_SELECTION_KEY once `user` resolves, so they
+  // land back on an explicit "still want to send this?" checkpoint instead
+  // of having to find the same card again and re-click it.
+  const [resumedConfirmTarget, setResumedConfirmTarget] = useState(null);
 
   const [hearings, setHearings] = useState(null);
   const [activeId, setActiveId] = useState(null);
@@ -104,7 +124,7 @@ export default function CounselHiringPage({ serviceType }) {
     setStatus("loading");
     getPublicProxyCounsels({
       court_id: filters.court_id, state_id: filters.state_id, district: filters.district,
-      time_slot: timeSlot, experience_bracket: experienceBracket,
+      time_slot: timeSlot, experience_bracket: experienceBracket, hearing_date: filters.hearing_date,
     })
       .then(({ advocates: list }) => {
         // A logged-in customer who is also a verified proxy counsel
@@ -116,8 +136,8 @@ export default function CounselHiringPage({ serviceType }) {
       })
       .catch(() => setStatus("error"));
   };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- re-fetch on the location + time-slot/experience filters the backend filters by, plus whichever account is viewing (so self-exclusion re-applies across login/logout)
-  useEffect(() => { fetchAdvocates(); }, [filters.court_id, filters.state_id, filters.district, timeSlot, experienceBracket, excludeAdvocateId, user?.user_id]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- re-fetch on the location + time-slot/experience/date filters the backend filters by, plus whichever account is viewing (so self-exclusion re-applies across login/logout)
+  useEffect(() => { fetchAdvocates(); }, [filters.court_id, filters.state_id, filters.district, filters.hearing_date, timeSlot, experienceBracket, excludeAdvocateId, user?.user_id]);
 
   // Client-side sort over the already-fetched page (the backend's own order
   // is its AI match ranking — "match" keeps that as-is; the other two just
@@ -162,7 +182,43 @@ export default function CounselHiringPage({ serviceType }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, off the location state present on mount only
   }, []);
 
-  const requireLogin = () => navigate("/login", { state: { from: location.pathname } });
+  // Post-login resume: restores the filters + counsel a visitor picked
+  // right before requireLogin sent them away (see PENDING_SELECTION_KEY
+  // above). Fires once `user` becomes truthy — either a fresh login, or
+  // this page remounting already-authenticated after the redirect back.
+  useEffect(() => {
+    if (!user) return;
+    let raw;
+    try { raw = sessionStorage.getItem(PENDING_SELECTION_KEY); } catch { raw = null; }
+    if (!raw) return;
+    try { sessionStorage.removeItem(PENDING_SELECTION_KEY); } catch {} // one-shot regardless of what's below
+    let pending;
+    try { pending = JSON.parse(raw); } catch { return; }
+    if (!pending || pending.serviceType !== serviceType) return;
+    const restoredFilters = { ...filters, ...pending.filters };
+    setFilters(restoredFilters);
+    setTimeSlot(pending.timeSlot || "");
+    setExperienceBracket(pending.experienceBracket || "");
+    setIsUrgent(!!pending.isUrgent);
+    // Same validity bar handleSelectCounsel enforces before ever sending —
+    // if time passed between picking and finishing login and the date's now
+    // stale, don't surface a confirm step that would just fail; the visitor
+    // still gets their filters back and can pick a fresh date manually.
+    if (!restoredFilters.court_id || !restoredFilters.hearing_date || restoredFilters.hearing_date < TODAY) return;
+    getAdvocateProfile(pending.advocateId)
+      .then(setResumedConfirmTarget)
+      .catch(() => toast.error("That counsel is no longer available — please pick again."));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per login transition, off sessionStorage present on mount only
+  }, [user]);
+
+  const requireLogin = (counsel) => {
+    try {
+      sessionStorage.setItem(PENDING_SELECTION_KEY, JSON.stringify({
+        serviceType, advocateId: counsel.advocate_id, filters, timeSlot, experienceBracket, isUrgent,
+      }));
+    } catch {}
+    navigate("/login", { state: { from: location.pathname } });
+  };
 
   const handleViewProfile = async (counsel) => {
     try {
@@ -174,7 +230,7 @@ export default function CounselHiringPage({ serviceType }) {
   };
 
   const handleSelectCounsel = (counsel) => {
-    if (!user) { requireLogin(); return; }
+    if (!user) { requireLogin(counsel); return; }
     if (!filters.court_id || !filters.hearing_date) {
       toast.error("Pick a court and hearing date above first");
       return;
@@ -184,12 +240,14 @@ export default function CounselHiringPage({ serviceType }) {
       return;
     }
     if (selectingId) return;
-    // Urgent requests stop for an explicit confirm so the Counsel sees this
-    // counsel's own saved Urgent Fee before the request goes out — see
-    // urgentConfirmTarget's ConfirmDialog below. A non-urgent pick sends
-    // immediately, unchanged from before.
+    // Every pick stops for an explicit confirm before actually sending —
+    // same "irreversible action never fires on a single click" rule the
+    // Cancel Request flow below already follows. Urgent picks get their own
+    // richer confirm (see urgentConfirmTarget's ConfirmDialog) since there's
+    // a specific fee to surface first; a non-urgent pick gets the plain
+    // selectConfirmTarget one right below it.
     if (isUrgent) { setUrgentConfirmTarget(counsel); return; }
-    sendRequestTo(counsel);
+    setSelectConfirmTarget(counsel);
   };
 
   const sendRequestTo = async (counsel) => {
@@ -201,17 +259,34 @@ export default function CounselHiringPage({ serviceType }) {
         request_details: {
           common: {
             state_id: filters.state_id, state_name: filters.state_name, district: filters.district, court_name: filters.court_name,
+            // Persisted (not just used live) so the auto top-5 fallback — if
+            // this counsel rejects — can re-run this exact same browse-grid
+            // search rather than whatever filters happen to be live on the
+            // page whenever that fallback actually fires (see backend
+            // counsel_matching.top_fallback_candidates).
+            time_slot: timeSlot || null, experience_bracket: experienceBracket || null,
             ...(isUrgent ? { priority: "Urgent" } : {}),
           },
           service_specific: {},
         },
       });
-      toast.success(`Request sent to ${counsel.name} — continue in the Negotiation Module`);
       setSelectingId(null);
       setExcludeAdvocateId(null);
       setUrgentConfirmTarget(null);
       if (user) listHearingRequests().then(setHearings);
-      navigate(`/hearing-requests/${hearing.hearing_id}/negotiate`, { state: { counsel, hearing } });
+      // Fee negotiation toggle (founder direction, 2026-09): a counsel with
+      // negotiation switched off never has anything to negotiate — sending
+      // them straight to the Negotiation Module would just bounce them
+      // back out (see NegotiationModule.jsx's own canNegotiate guard).
+      // hearing.negotiation_enabled is this counsel's own snapshot from
+      // request-creation time (see hearings.create_hearing_request).
+      if (hearing.negotiation_enabled) {
+        toast.success(`Request sent to ${counsel.name} — continue in the Negotiation Module`);
+        navigate(`/hearing-requests/${hearing.hearing_id}/negotiate`, { state: { counsel, hearing } });
+      } else {
+        toast.success(`Request sent to ${counsel.name} — waiting for them to accept`);
+        navigate("/dashboard");
+      }
     } catch (err) {
       toast.error(getErrorMessage(err, "Could not send the request"));
       setSelectingId(null);
@@ -300,6 +375,9 @@ export default function CounselHiringPage({ serviceType }) {
               Each counsel below now shows their own saved Urgent Fee — you'll see it again to confirm before the request is sent.
             </p>
           )}
+          <p className="text-xs text-muted-foreground mt-2">
+            * If the counsel you select rejects your request, we'll automatically send it to the next 5 best-matched proxy counsels using these same filters.
+          </p>
         </CardContent>
       </Card>
 
@@ -312,7 +390,13 @@ export default function CounselHiringPage({ serviceType }) {
           />
         )}
         {status === "empty" && (
-          <EmptyState icon={Users} title="No counsels match these filters" description="Try widening or clearing the location filters above." />
+          <EmptyState
+            icon={Users}
+            title="No counsels match these filters"
+            description={filters.hearing_date
+              ? "No one available on this date matches your other filters — try a different date, or widen the location filters above."
+              : "Try widening or clearing the location filters above."}
+          />
         )}
         {status === "ready" && (
           <>
@@ -367,7 +451,49 @@ export default function CounselHiringPage({ serviceType }) {
         )}
         confirmLabel="Send Request"
         confirmVariant="default"
+        confirmClassName="bg-accent hover:bg-accent/80 text-white"
         onConfirm={() => urgentConfirmTarget && sendRequestTo(urgentConfirmTarget)}
+      />
+
+      <ConfirmDialog
+        open={!!selectConfirmTarget}
+        onOpenChange={(v) => !v && setSelectConfirmTarget(null)}
+        busy={selectingId === selectConfirmTarget?.advocate_id}
+        title="Send this request?"
+        description={(
+          <>
+            Send a hearing request to <b className="text-foreground">{selectConfirmTarget?.name}</b> for{" "}
+            <b className="text-foreground">{filters.court_name}</b> on{" "}
+            <b className="text-foreground">{filters.hearing_date}</b>? If they reject it, we'll automatically
+            send it to the next 5 best-matched proxy counsels using the same filters.
+          </>
+        )}
+        confirmLabel="Send Request"
+        confirmVariant="default"
+        confirmClassName="bg-accent hover:bg-accent/80 text-white"
+        onConfirm={() => selectConfirmTarget && sendRequestTo(selectConfirmTarget)}
+      />
+
+      <ConfirmDialog
+        open={!!resumedConfirmTarget}
+        onOpenChange={(v) => !v && setResumedConfirmTarget(null)}
+        busy={selectingId === resumedConfirmTarget?.advocate_id}
+        title="Continue with this counsel?"
+        description={(
+          <>
+            You were signing in to send a request to{" "}
+            <b className="text-foreground">{resumedConfirmTarget?.name}</b> — your filters have been restored.
+            Send the request now, or cancel and keep browsing.
+          </>
+        )}
+        confirmLabel="Send Request"
+        confirmVariant="default"
+        confirmClassName="bg-accent hover:bg-accent/80 text-white"
+        onConfirm={() => {
+          const counsel = resumedConfirmTarget;
+          setResumedConfirmTarget(null);
+          if (counsel) handleSelectCounsel(counsel);
+        }}
       />
 
       <CounselProfileDialog counsel={profileCounsel} onOpenChange={(v) => !v && setProfileCounsel(null)} />

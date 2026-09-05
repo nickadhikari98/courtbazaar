@@ -506,15 +506,20 @@ async def get_lead_detail(db, lead_id: str) -> dict:
 
 
 # Bucketed "Total Years of Practice" radio (see frontend roleFormData.js's
-# proxy_counsel/counsel "Professional Details" section) -> a representative
-# experience_years number for proxy_counsel_profiles, which stores a plain
-# float. Midpoints of each bucket, "More than 10 Years" given a round 12.
-_YEARS_OF_PRACTICE_TO_EXPERIENCE_YEARS = {
-    "Less than 1 Year": 0.5,
-    "1-3 Years": 2,
-    "3-5 Years": 4,
-    "5-10 Years": 7,
-    "More than 10 Years": 12,
+# proxy_counsel/counsel "Professional Details" section) -> a
+# practice.EXPERIENCE_BRACKETS key. "Less than 1 Year" and "1-3 Years" both
+# collapse into "0-3" since that's the coarsest bracket the profile side
+# offers. Passing experience_bracket (not a raw number) through
+# practice.update_profile also derives experience_years from the bracket's
+# min_years automatically, so this stays the single source of truth instead
+# of a second, driftable years table.
+_YEARS_OF_PRACTICE_TO_BRACKET = {
+    "Less than 1 Year": "0-3",
+    "1-3 Years": "0-3",
+    "3-5 Years": "3-5",
+    "5-7 Years": "5-7",
+    "7-10 Years": "7-10",
+    "More than 10 Years": "10+",
 }
 
 # "Language" radio's specify-a-second-language options (see languageOptions
@@ -527,32 +532,46 @@ _LANGUAGE_OTHER_TRIGGER_BASE = {
 
 
 def _derive_practice_profile_patch(form_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Best-effort mapping from a proxy_counsel/counsel lead's form_data
-    (frontend roleFormData.js's "Professional Details" section — total years
-    of practice, primary area of practice, language, primary court of
-    practice) onto proxy_counsel_profiles fields. Called once, right after
+    """Best-effort mapping from a proxy_counsel lead's form_data (frontend
+    roleFormData.js's "Bar Council Information" and "Professional Details"
+    sections — bar council enrollment number, total years of practice,
+    primary area of practice, language, primary court of practice, current
+    professional status, max travel distance, availability schedule, matters
+    handled) onto proxy_counsel_profiles fields. Called once, right after
     lead approval creates the profile row (see _activate_professional) —
     without this, everything the applicant already typed into the lead form
     just sat unused: recommendations_advocates/CounselProfileDialog read
     straight from proxy_counsel_profiles, which get_or_create_profile always
-    seeds blank, so an approved counsel's marketplace-facing profile stayed
-    empty until they separately visited their own Practice page and re-typed
-    the same information.
+    seeds blank, so an approved counsel's marketplace-facing profile and
+    their own My Practice dashboard both stayed empty until they separately
+    re-typed the same information themselves.
 
-    bio/education have no equivalent field anywhere in the lead form —
-    intentionally left unset here (not invented) for the counsel to fill in
-    themselves later via Practice.
+    bio/education/office_address/fee_structure/pricing have no equivalent
+    field anywhere in the lead form — intentionally left unset here (not
+    invented) for the counsel to fill in themselves later via Practice.
 
     Field keys/value shapes here are load-bearing on roleFormData.js's exact
-    labels (fieldKey() slugifies "Professional Details" + the field label) —
-    a relabel there without a matching update here silently stops mapping,
-    same failure mode _extract_contact_fields above already accepts for
-    contact fields."""
+    section titles and labels (fieldKey() slugifies "<Section Title>__<field
+    label>") — a relabel there without a matching update here silently stops
+    mapping, same failure mode _extract_contact_fields above already accepts
+    for contact fields."""
     patch: Dict[str, Any] = {}
 
+    state_bar_council = form_data.get("bar_council_information__state_bar_council")
+    if isinstance(state_bar_council, str) and state_bar_council.strip():
+        if state_bar_council == "Other":
+            other_council = form_data.get("bar_council_information__state_bar_council__other")
+            state_bar_council = other_council.strip() if isinstance(other_council, str) and other_council.strip() else None
+        if state_bar_council:
+            patch["state_bar_council"] = state_bar_council
+
+    bar_council_number = form_data.get("bar_council_information__bar_council_enrollment_number")
+    if isinstance(bar_council_number, str) and bar_council_number.strip():
+        patch["bar_council_number"] = bar_council_number.strip()
+
     years_bucket = form_data.get("professional_details__total_years_of_practice")
-    if years_bucket in _YEARS_OF_PRACTICE_TO_EXPERIENCE_YEARS:
-        patch["experience_years"] = _YEARS_OF_PRACTICE_TO_EXPERIENCE_YEARS[years_bucket]
+    if years_bucket in _YEARS_OF_PRACTICE_TO_BRACKET:
+        patch["experience_bracket"] = _YEARS_OF_PRACTICE_TO_BRACKET[years_bucket]
 
     practice_areas = form_data.get("professional_details__primary_area_of_practice")
     if isinstance(practice_areas, list) and practice_areas:
@@ -585,6 +604,29 @@ def _derive_practice_profile_patch(form_data: Dict[str, Any]) -> Dict[str, Any]:
         # court that doesn't resolve, same as build_advocate_card's own
         # court_names_by_id.get(cid, cid) fallback.
         patch["courts"] = courts
+
+    professional_status = form_data.get("professional_details__current_professional_status")
+    if isinstance(professional_status, str) and professional_status.strip():
+        if professional_status == "Other":
+            other_status = form_data.get("professional_details__current_professional_status__other")
+            professional_status = other_status.strip() if isinstance(other_status, str) and other_status.strip() else None
+        if professional_status:
+            patch["professional_status"] = professional_status
+
+    max_travel_distance = form_data.get("professional_details__maximum_distance_you_are_willing_to_travel_for_appearance")
+    if isinstance(max_travel_distance, str) and max_travel_distance.strip():
+        patch["max_travel_distance"] = max_travel_distance
+
+    schedule_type = form_data.get("professional_details__availability")
+    if isinstance(schedule_type, str) and schedule_type.strip():
+        patch["schedule_type"] = schedule_type
+
+    matters_handled = form_data.get("professional_details__approximate_number_of_matters_handled")
+    if isinstance(matters_handled, (int, float)) or (isinstance(matters_handled, str) and matters_handled.strip()):
+        try:
+            patch["matters_handled"] = int(matters_handled)
+        except (TypeError, ValueError):
+            pass
 
     return patch
 

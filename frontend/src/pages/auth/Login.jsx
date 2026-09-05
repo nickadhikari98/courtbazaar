@@ -11,6 +11,7 @@ import { ArrowRight, Phone, Mail, Loader2, Eye, EyeOff } from "lucide-react";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import Logo from "@/components/shared/Logo";
 import GoogleAuthButton from "@/components/shared/GoogleAuthButton";
+import { getErrorMessage } from "@/lib/api";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -63,7 +64,7 @@ export default function Login() {
       toast.success(`Welcome back, ${u.name}`);
       navigate(returnTo || (u.role === "admin" ? "/admin" : u.role === "vendor" ? "/vendor" : "/dashboard"));
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Login failed");
+      toast.error(getErrorMessage(e, "Login failed"));
     } finally { setLoading(false); }
   };
 
@@ -215,6 +216,17 @@ export default function Login() {
                   <span className="text-2xs uppercase tracking-wide font-bold text-muted-foreground">Or continue with</span>
                   <div className="h-px flex-1 bg-border" />
                 </div>
+                {/* No `role` prop, deliberately — see GoogleAuthButton.jsx's
+                    docstring for why passing one at all is fragile (Google
+                    requires an exact match, query string included, against
+                    a fixed allow-list configured in Cloud Console; adding
+                    "client" here once already broke sign-in until that
+                    exact string was registered). Omitting it sends the
+                    plain callback URL, which is what's actually registered
+                    — the backend's own default (server.py's google_callback,
+                    role: str = "client") already gives a brand-new account
+                    here the correct role without the frontend needing to
+                    say so over an unreliable channel. */}
                 <GoogleAuthButton clientId={googleClientId} />
               </>
             )}

@@ -14,6 +14,14 @@ export const PRICING_SLOT_LABELS = {
   weekend: "Weekends",
 };
 
+// Founder direction (2026-09): every plain "what time" picker in the app
+// (My Practice availability, hearing time, stenographer start time, e-filing
+// turnaround) should offer this same short list instead of a literal clock
+// input — a user picks a slot, not a minute. Reuses PRICING_SLOT_LABELS
+// (minus "urgent", which isn't a time-of-day choice) so there's exactly one
+// place these four options are spelled out.
+export const TIME_OF_DAY_OPTIONS = PRICING_SLOTS.filter((s) => s !== "urgent").map((s) => PRICING_SLOT_LABELS[s]);
+
 export const PRICING_COURT_TYPES = ["district", "high_court"];
 
 export const PRICING_COURT_TYPE_LABELS = {
@@ -30,7 +38,24 @@ export const EXPERIENCE_BRACKETS = [
   { key: "0-3", label: "0–3 yrs" },
   { key: "3-5", label: "3–5 yrs" },
   { key: "5-7", label: "5–7 yrs" },
+  { key: "7-10", label: "7–10 yrs" },
   { key: "10+", label: "10+ yrs" },
 ];
 
 export const experienceBracketLabel = (key) => EXPERIENCE_BRACKETS.find((b) => b.key === key)?.label || null;
+
+// Mirrors practice.py's EXPERIENCE_PRICING_SURCHARGE/pricing_minimum exactly
+// (founder direction, 2026-09, revised) — the rate-card floor scales with
+// experience: "0-3" is the unmodified PRICING_MINIMUMS rate, each bracket
+// step above that adds another flat surcharge to every slot's floor — the
+// step size differs by court type, ₹100/step for district, ₹200/step for
+// high_court. Purely for the "Min ₹X" hints/validation this page shows live
+// as someone types — the backend is still what actually enforces it (see
+// practice.validate_pricing).
+export const EXPERIENCE_PRICING_SURCHARGE = { district: 100, high_court: 200 };
+
+export const pricingMinimum = (courtType, slot, experienceBracket) => {
+  const base = PRICING_MINIMUMS[courtType][slot];
+  const bracketIndex = Math.max(0, EXPERIENCE_BRACKETS.findIndex((b) => b.key === experienceBracket));
+  return base + EXPERIENCE_PRICING_SURCHARGE[courtType] * bracketIndex;
+};

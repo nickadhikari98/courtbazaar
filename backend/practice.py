@@ -15,8 +15,10 @@ from fastapi import HTTPException
 AVAILABILITY_KINDS = ("recurring_weekly", "custom_date", "holiday_block", "emergency_unavailable")
 
 PROFILE_EDITABLE_FIELDS = (
-    "practice_areas", "courts", "languages", "experience_years", "experience_bracket", "education",
-    "bio", "office_address", "fee_structure", "pricing", "availability_mode", "instant_booking",
+    "state_bar_council", "bar_council_number", "practice_areas", "courts", "languages", "experience_years",
+    "experience_bracket", "professional_status", "max_travel_distance", "schedule_type", "matters_handled",
+    "education", "bio", "office_address", "fee_structure", "pricing", "availability_mode", "instant_booking",
+    "negotiation_enabled",
 )
 
 # Founder-set rate card (2026-08): a proxy counsel names their own price per
@@ -47,25 +49,50 @@ PRICING_MINIMUMS = {
 # any sort-by-experience keep working unchanged) — the bracket's lower bound,
 # so "at least 5 years" correctly includes both the "5-7" and "10+" brackets.
 EXPERIENCE_BRACKETS = [
-    {"key": "0-3", "label": "0–3 yrs", "min_years": 0},
-    {"key": "3-5", "label": "3–5 yrs", "min_years": 3},
-    {"key": "5-7", "label": "5–7 yrs", "min_years": 5},
-    {"key": "10+", "label": "10+ yrs", "min_years": 10},
+    {"key": "0-3", "label": "0–3 yrs", "min_years": 0, "max_years": 3},
+    {"key": "3-5", "label": "3–5 yrs", "min_years": 3, "max_years": 5},
+    {"key": "5-7", "label": "5–7 yrs", "min_years": 5, "max_years": 7},
+    {"key": "7-10", "label": "7–10 yrs", "min_years": 7, "max_years": 10},
+    {"key": "10+", "label": "10+ yrs", "min_years": 10, "max_years": None},
 ]
 _EXPERIENCE_BRACKET_YEARS = {b["key"]: b["min_years"] for b in EXPERIENCE_BRACKETS}
 _EXPERIENCE_BRACKET_LABELS = {b["key"]: b["label"] for b in EXPERIENCE_BRACKETS}
+_EXPERIENCE_BRACKET_INDEX = {b["key"]: i for i, b in enumerate(EXPERIENCE_BRACKETS)}
+
+# Founder direction (2026-09, revised): the rate-card floor scales with
+# experience — "0-3" pays the base PRICING_MINIMUMS rate unchanged; each
+# bracket step above that adds another flat surcharge to every slot's floor,
+# same surcharge amount at every step (so "high_court" 3-5/5-7/7-10/10+ are
+# +200/+400/+600/+800), but the step size itself differs by court type —
+# ₹100/step for district, ₹200/step for high_court, per the founder's
+# correction that the original single ₹100-for-both was wrong for high
+# courts specifically. Unset/unrecognized bracket (a counsel who hasn't
+# picked one yet) falls back to bracket index 0 — i.e. the unmodified base
+# rate, never a penalty.
+EXPERIENCE_PRICING_SURCHARGE = {"district": 100, "high_court": 200}
 
 
 def experience_bracket_label(bracket: Optional[str]) -> Optional[str]:
     return _EXPERIENCE_BRACKET_LABELS.get(bracket)
 
 
-def validate_pricing(pricing: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+def pricing_minimum(court_type: str, slot: str, experience_bracket: Optional[str] = None) -> float:
+    """The actual floor for one (court_type, slot), after the experience
+    surcharge — the one place this math happens, so validate_pricing and
+    anything that needs to display "Min ₹X" (Practice.jsx's own mirrored
+    copy in config/proxyCounselPricing.js) can't drift apart."""
+    base = PRICING_MINIMUMS[court_type][slot]
+    bracket_index = _EXPERIENCE_BRACKET_INDEX.get(experience_bracket, 0)
+    return base + EXPERIENCE_PRICING_SURCHARGE[court_type] * bracket_index
+
+
+def validate_pricing(pricing: Dict[str, Any], experience_bracket: Optional[str] = None) -> Dict[str, Dict[str, float]]:
     """Clamps to only known court-type/slot keys and rejects anything below
     the platform floor — the one place this is enforced, so a direct API
     call can't slip a below-minimum rate in any more than the form can.
     Slots an advocate leaves out (still deciding on high-court work, say)
-    simply aren't in the result — this is additive, not "fill every cell."""
+    simply aren't in the result — this is additive, not "fill every cell."
+    `experience_bracket` shifts the floor itself — see pricing_minimum."""
     cleaned: Dict[str, Dict[str, float]] = {}
     for court_type, slots in (pricing or {}).items():
         if court_type not in PRICING_COURT_TYPES or not isinstance(slots, dict):
@@ -78,7 +105,7 @@ def validate_pricing(pricing: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
                 amount = float(amount)
             except (TypeError, ValueError):
                 raise HTTPException(400, f"Invalid price for {PRICING_COURT_TYPE_LABELS[court_type]} / {PRICING_SLOT_LABELS[slot]}")
-            minimum = PRICING_MINIMUMS[court_type][slot]
+            minimum = pricing_minimum(court_type, slot, experience_bracket)
             if amount < minimum:
                 raise HTTPException(
                     400,
@@ -97,12 +124,17 @@ async def get_or_create_profile(db, user_id: str) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     profile = {
         "user_id": user_id,
+        "state_bar_council": None,
         "bar_council_number": None,
         "practice_areas": [],
         "courts": [],
         "languages": [],
         "experience_years": None,
         "experience_bracket": None,
+        "professional_status": None,
+        "max_travel_distance": None,
+        "schedule_type": None,
+        "matters_handled": None,
         "education": None,
         "bio": None,
         "office_address": None,
@@ -112,6 +144,14 @@ async def get_or_create_profile(db, user_id: str) -> dict:
         "bar_council_verified": False,  # admin-verified, not self-settable — see PROFILE_EDITABLE_FIELDS
         "availability_mode": False,
         "instant_booking": False,
+        # Fee negotiation toggle (founder direction, 2026-09): default OFF —
+        # a hearing request created against this counsel then carries a
+        # fixed price (this counsel's own listed rate for the court type/
+        # urgency, same number CounselCard already shows before selection)
+        # instead of opening the Negotiation Module at all. See
+        # hearings.create_hearing_request's snapshot of this field onto the
+        # hearing itself, and negotiation.propose_offer's gate.
+        "negotiation_enabled": False,
         "rating": 0,
         "cases_completed": 0,
         "success_rate": None,
@@ -124,9 +164,11 @@ async def get_or_create_profile(db, user_id: str) -> dict:
 
 
 async def update_profile(db, user_id: str, patch: Dict[str, Any]) -> dict:
+    # Also ensures a row exists before the upsert-style update below, and is
+    # the source of the experience_bracket pricing validates against when
+    # this same call isn't also changing the bracket.
+    current = await get_or_create_profile(db, user_id)
     update = {k: v for k, v in patch.items() if k in PROFILE_EDITABLE_FIELDS and v is not None}
-    if "pricing" in update:
-        update["pricing"] = validate_pricing(update["pricing"])
     if "experience_bracket" in update:
         bracket = update["experience_bracket"]
         if bracket not in _EXPERIENCE_BRACKET_YEARS:
@@ -136,8 +178,16 @@ async def update_profile(db, user_id: str, patch: Dict[str, Any]) -> dict:
         # reads experience_years as a number (min_experience_years filtering,
         # sort-by-experience) needs to know brackets exist.
         update["experience_years"] = _EXPERIENCE_BRACKET_YEARS[bracket]
+    if "pricing" in update:
+        # The bracket this same save is also setting, if any — otherwise
+        # whatever's already on the profile. Practice.jsx's save() always
+        # sends both together, but a direct API call touching only
+        # `pricing` must still be checked against the advocate's actual
+        # bracket on file, not silently treated as the unmodified "0-3"
+        # floor — the surcharge follows the advocate, not the request.
+        effective_bracket = update.get("experience_bracket", current.get("experience_bracket"))
+        update["pricing"] = validate_pricing(update["pricing"], effective_bracket)
     update["updated_at"] = datetime.now(timezone.utc).isoformat()
-    await get_or_create_profile(db, user_id)  # ensure a row exists before the upsert-style update
     await db.proxy_counsel_profiles.update_one({"user_id": user_id}, {"$set": update})
     return await get_or_create_profile(db, user_id)
 
@@ -168,7 +218,73 @@ async def verify_bar_council(db, user_id: str) -> dict:
     return await db.proxy_counsel_profiles.find_one({"user_id": user_id}, {"_id": 0})
 
 
-def _validate_slot(kind: str, day_of_week: Optional[int], date: Optional[str]) -> None:
+def _slot_overlaps_time(slot_label: Optional[str], wanted_label: Optional[str]) -> bool:
+    """Bug fix (2026-09): is_available_on_date used to only compare
+    kind+date, completely ignoring each availability_slots row's own
+    start_time (one of PRICING_SLOT_LABELS' four non-urgent labels — see
+    Practice.jsx's Availability tab) — so a holiday_block scoped to just
+    "2 PM – 5 PM" was excluding a counsel from every search on that date,
+    including an unrelated 10 AM – 1 PM one. "Full Day" on either side
+    always overlaps (it covers/needs the whole day); a missing label on
+    either side (a legacy row with no start_time, or a browse search with
+    no time_slot filter — "Any time slot") stays permissive/conservative,
+    matching this function's behavior before time-of-day was considered at
+    all — only an explicit, differing time-of-day pair is now distinguished."""
+    if not slot_label or not wanted_label:
+        return True
+    if slot_label == "Full Day" or wanted_label == "Full Day":
+        return True
+    return slot_label == wanted_label
+
+
+def is_available_on_date(slots: List[dict], date_str: str, time_slot: Optional[str] = None) -> bool:
+    """Whether a counsel's own availability_slots say they're free on
+    `date_str` ("YYYY-MM-DD"), optionally narrowed to the browse page's own
+    Time Slot filter (`time_slot`, one of practice.PRICING_SLOTS minus
+    "urgent" — see _slot_overlaps_time) — the actual check the browse
+    page's Hearing Date filter needs (founder direction, 2026-09): a client
+    who's already picked a date shouldn't be shown counsels who can't
+    actually take it.
+
+    No slots configured at all -> permissive default (True). Most counsels
+    today have never touched the granular Availability tab at all; treating
+    "no schedule" as "unavailable everywhere" would empty out every
+    date-filtered search instead of just narrowing it, so this only ever
+    excludes on actual evidence of unavailability:
+      - an explicit holiday_block/emergency_unavailable for this exact date
+        AND whose own time-of-day actually overlaps `time_slot` wins,
+        regardless of anything else, or
+      - once a counsel HAS opted into recurring_weekly/custom_date
+        scheduling at all, this date has to be one of the ones they
+        actually picked, with an overlapping time-of-day too (a counsel who
+        only ever set up Mondays is exactly who a Wednesday search should
+        exclude; one who only opened up mornings is exactly who an
+        afternoon search should exclude)."""
+    if not slots:
+        return True
+    try:
+        weekday = datetime.fromisoformat(date_str).weekday()  # 0=Monday..6=Sunday, matches day_of_week's own convention
+    except (TypeError, ValueError):
+        return True  # unparseable date filter shouldn't hide every counsel
+    wanted_label = PRICING_SLOT_LABELS.get(time_slot) if time_slot else None
+    if any(
+        s.get("kind") in ("holiday_block", "emergency_unavailable") and s.get("date") == date_str
+        and _slot_overlaps_time(s.get("start_time"), wanted_label)
+        for s in slots
+    ):
+        return False
+    positive = [s for s in slots if s.get("kind") in ("recurring_weekly", "custom_date")]
+    if not positive:
+        return True
+    return any(
+        ((s["kind"] == "custom_date" and s.get("date") == date_str)
+         or (s["kind"] == "recurring_weekly" and s.get("day_of_week") == weekday))
+        and _slot_overlaps_time(s.get("start_time"), wanted_label)
+        for s in positive
+    )
+
+
+def _validate_slot(kind: str, day_of_week: Optional[int], date: Optional[str], start_time: Optional[str]) -> None:
     if kind not in AVAILABILITY_KINDS:
         raise HTTPException(400, f"Invalid availability kind. Allowed: {', '.join(AVAILABILITY_KINDS)}")
     if kind == "recurring_weekly":
@@ -176,11 +292,18 @@ def _validate_slot(kind: str, day_of_week: Optional[int], date: Optional[str]) -
             raise HTTPException(400, "day_of_week (0=Monday..6=Sunday) is required for a recurring weekly slot")
     elif not date:
         raise HTTPException(400, "date is required for this availability kind")
+    # Founder direction (2026-09): Practice.jsx's "Time Slot" field is no
+    # longer optional-with-a-silent-full-day-default — a counsel must pick
+    # one of TIME_OF_DAY_OPTIONS explicitly (Court stays the one genuinely
+    # optional field). Enforced here too, not just in the form, so a direct
+    # API call can't slip a slotless row in any more than the UI can.
+    if not start_time:
+        raise HTTPException(400, "A time slot is required")
 
 
 async def add_slot(db, user_id: str, kind: str, day_of_week: Optional[int], date: Optional[str],
                     court_id: Optional[str], start_time: Optional[str], end_time: Optional[str]) -> dict:
-    _validate_slot(kind, day_of_week, date)
+    _validate_slot(kind, day_of_week, date, start_time)
     slot = {
         "slot_id": f"slot_{uuid.uuid4().hex[:12]}",
         "user_id": user_id,

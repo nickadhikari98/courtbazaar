@@ -3,8 +3,10 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, ShieldCheck } from "lucide-react";
 import { SERVICE_WORK_TYPES } from "@/config/serviceWorkTypes";
+import { TIME_OF_DAY_OPTIONS } from "@/config/proxyCounselPricing";
 import { toggleInArray } from "@/lib/utils";
 import WorkRequiredField from "@/components/shared/WorkRequiredField";
 import PriorityField from "@/components/shared/PriorityField";
@@ -76,7 +78,12 @@ export default function ProxyCounselCaseDetailsForm({ onSubmit, submitting }) {
         </div>
         <div>
           <Label>Hearing Time (optional)</Label>
-          <Input type="time" value={fields.hearing_time} onChange={(e) => set({ hearing_time: e.target.value })} />
+          <Select value={fields.hearing_time || undefined} onValueChange={(v) => set({ hearing_time: v })}>
+            <SelectTrigger><SelectValue placeholder="Select a time slot" /></SelectTrigger>
+            <SelectContent>
+              {TIME_OF_DAY_OPTIONS.map((opt) => <SelectItem key={opt} value={opt}>{opt}</SelectItem>)}
+            </SelectContent>
+          </Select>
         </div>
       </div>
 

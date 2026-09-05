@@ -166,6 +166,18 @@ ROLE_CAPABILITIES: Dict[str, List[str]] = {
     "law_firm": ["can_manage_firm", "can_hire_proxy_counsel"],
     "proxy_counsel": ["can_earn", "can_practice_proxy_counsel", "can_hire_proxy_counsel"],
     "advocate": ["can_hire_proxy_counsel"],
+    # Bug fix: every plain sign-up (email/password, Google, OTP) used to
+    # default straight to "advocate" — a non-lawyer just hiring a proxy
+    # counsel or ordering a print job ended up with their account, profile
+    # badge, and "I am a..." label literally reading "Advocate". "client" is
+    # the correct default for anyone who hasn't gone through an actual
+    # professional application (Join as Counsel/Proxy Counsel/Vendor/... —
+    # see leads.py's LEAD_ROLE_TO_ACCOUNT_ROLE and _activate_professional).
+    # Same capability as "advocate" since that's the one real thing a plain
+    # requester needs — nothing here was ever advocate-specific to begin
+    # with (bar_council fields etc. are just a frontend Profile.jsx display
+    # gate on role=="advocate", never enforced as a capability).
+    "client": ["can_hire_proxy_counsel"],
     "admin": ["is_admin"],
 }
 
@@ -219,14 +231,18 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     raise HTTPException(401, "Not authenticated")
 
 # ===== Models =====
-ROLES = ["advocate", "law_firm", "vendor", "efiling_agent", "legal_typist", "notary", "stamp_vendor", "delivery_partner", "franchise", "admin"]
+# "client" is the generic default for anyone signing up without going
+# through a professional application (see ROLE_CAPABILITIES above) — kept
+# in this list (not just used as a bare default value) so RegisterRequest's
+# `role not in ROLES` check and admin user-listing filters both recognize it.
+ROLES = ["client", "advocate", "law_firm", "vendor", "efiling_agent", "legal_typist", "notary", "stamp_vendor", "delivery_partner", "franchise", "admin"]
 
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
     name: str
     phone: Optional[str] = None
-    role: str = "advocate"
+    role: str = "client"
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -239,7 +255,7 @@ class OtpVerify(BaseModel):
     phone: str
     otp: str
     name: Optional[str] = None
-    role: str = "advocate"
+    role: str = "client"
 
 class SetPasswordRequest(BaseModel):
     token: str
@@ -358,6 +374,8 @@ class MatterUpdate(BaseModel):
 MATTER_STATUSES = ("open", "closed", "archived")
 
 class ProxyCounselProfileUpdate(BaseModel):
+    state_bar_council: Optional[str] = None
+    bar_council_number: Optional[str] = None
     practice_areas: Optional[List[str]] = None
     courts: Optional[List[str]] = None
     languages: Optional[List[str]] = None
@@ -371,12 +389,19 @@ class ProxyCounselProfileUpdate(BaseModel):
     # those two appeared to have been "cleared".
     experience_bracket: Optional[str] = None
     pricing: Optional[Dict[str, Dict[str, float]]] = None
+    # Every field below must stay in lockstep with practice.PROFILE_EDITABLE_FIELDS
+    # — see the bug fix above, same silent-drop failure mode.
+    professional_status: Optional[str] = None
+    max_travel_distance: Optional[str] = None
+    schedule_type: Optional[str] = None
+    matters_handled: Optional[int] = None
     education: Optional[str] = None
     bio: Optional[str] = None
     office_address: Optional[str] = None
     fee_structure: Optional[str] = None
     availability_mode: Optional[bool] = None
     instant_booking: Optional[bool] = None
+    negotiation_enabled: Optional[bool] = None
 
 class AvailabilitySlotCreate(BaseModel):
     kind: str
@@ -709,7 +734,7 @@ async def google_callback(
     request: Request,
     credential: str = Form(...),
     g_csrf_token: Optional[str] = Form(None),
-    role: str = "advocate",
+    role: str = "client",
 ):
     """Google Identity Services posts the credential straight here as a real
     top-level browser navigation (ux_mode: 'redirect' in GoogleAuthButton.jsx)
@@ -761,7 +786,16 @@ async def google_callback(
         account_role = existing["role"]
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
-        account_role = role
+        # Security fix: `role` is a bare query param on a public redirect
+        # URL — unlike /auth/register's `req.role not in ROLES` 400 and
+        # _reject_self_register_blocked_role guard, this path never
+        # validated it at all, so anyone could complete a real Google
+        # sign-in against ?role=admin (or "vendor", already gated behind
+        # admin-only lead approval everywhere else) and mint themselves
+        # that account type outright on first login. Same validation as
+        # self-register, just falling back to "client" instead of a JSON
+        # 400 — this is a redirect flow with no request body to reject.
+        account_role = role if role in ROLES and role not in SELF_REGISTER_BLOCKED_ROLES else "client"
         await db.users.insert_one({
             "user_id": user_id,
             "email": email,
@@ -2377,7 +2411,7 @@ async def public_proxy_counsels(
     experience_bracket: Optional[str] = None,
     min_rating: Optional[float] = None, fee_min: Optional[float] = None, fee_max: Optional[float] = None,
     time_slot: Optional[str] = None,
-    available_only: bool = False, limit: int = 20,
+    available_only: bool = False, hearing_date: Optional[str] = None, limit: int = 20,
 ):
     """Public, unauthenticated counterpart to /recommendations/advocates —
     the founder's direction is that the counsel browse grid itself is
@@ -2396,7 +2430,7 @@ async def public_proxy_counsels(
         db, court_id=court_id, state_id=state_id, district=district, specialization=specialization,
         min_experience_years=min_experience_years, experience_bracket=experience_bracket,
         min_rating=min_rating, fee_min=fee_min, fee_max=fee_max, time_slot=time_slot,
-        available_only=available_only, limit=limit,
+        available_only=available_only, hearing_date=hearing_date, limit=limit,
     )
     generated_at = datetime.now(timezone.utc).isoformat()
     cards = await _advocate_cards_for(ranked)
@@ -2543,6 +2577,22 @@ async def reject_hearing_request(hearing_id: str, user=Depends(get_current_user)
                                  hearing_id)
     return result
 
+@api_router.put("/hearing-requests/{hearing_id}/accept-listed-rate")
+async def accept_hearing_at_listed_rate(hearing_id: str, user=Depends(get_current_user)):
+    """Fee negotiation toggle (founder direction, 2026-09) — the targeted
+    advocate's one-click "Accept" that skips the Negotiation Module entirely
+    and locks in their own listed rate for this hearing. Always available,
+    whether or not this advocate has negotiation switched on (see
+    hearings.accept_at_listed_rate's docstring); "Negotiate" is the part
+    that toggle actually gates."""
+    _require_capability(user, "can_practice_proxy_counsel")
+    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    result = await hearings_svc.accept_at_listed_rate(db, hearing_id, user)
+    await _notify_hearing_event(hearing["requesting_user_id"], "Fee agreed",
+                                 f"Your counsel accepted your request for {hearing['court_id']} at their listed rate of ₹{result['fee']:g}. You can now proceed to payment.",
+                                 hearing_id)
+    return result
+
 @api_router.put("/hearing-requests/{hearing_id}/cancel")
 async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)):
     # Notification audit (production readiness pass): the counter-party
@@ -2560,7 +2610,7 @@ async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)
         await _notify_hearing_event(
             recipient_id, "Hearing cancelled",
             f"The hearing at {hearing['court_id']} was cancelled by the requester."
-            + (" Any escrow held has been refunded." if refunded else ""),
+            + (" Any payment held has been refunded." if refunded else ""),
             hearing_id,
         )
     return result
@@ -2623,13 +2673,13 @@ async def verify_hearing_payment(hearing_id: str, payload: dict, user=Depends(ge
     # before) — that's the Counsel Matching Agent's job (M11, not built yet).
     if hearing.get("target_advocate_id"):
         await _notify_hearing_event(hearing["target_advocate_id"], "Payment received",
-                                     f"Payment for your hearing at {hearing['court_id']} is confirmed and held in escrow.",
+                                     f"Payment for your hearing at {hearing['court_id']} is confirmed and held securely by CourtBazaar.",
                                      hearing_id)
     # Notification audit (production readiness pass): the requester who just
     # paid previously got nothing durable — only an ephemeral client-side
     # toast, lost on refresh/different device. They get their own receipt too.
     await _notify_hearing_event(user["user_id"], "Payment successful",
-                                 f"Your payment for the hearing at {hearing['court_id']} is confirmed and held securely in escrow.",
+                                 f"Your payment for the hearing at {hearing['court_id']} is confirmed and held securely by CourtBazaar.",
                                  hearing_id)
     return {"ok": True, "payment_id": rzp_payment_id, "status": "broadcast"}
 
@@ -2843,8 +2893,8 @@ async def verify_and_release_hearing_payout(hearing_id: str, user=Depends(get_cu
     # the requester's own action, same reasoning as "Payment successful"
     # above — they know they just clicked Verify, but nothing durable
     # confirmed the escrow actually released until now.
-    await _notify_hearing_event(hearing["requesting_user_id"], "Escrow released",
-                                 f"You verified the hearing at {hearing['court_id']} and escrow has been released to the Proxy Counsel.",
+    await _notify_hearing_event(hearing["requesting_user_id"], "Payment released",
+                                 f"You verified the hearing at {hearing['court_id']} and your payment has been released to the Proxy Counsel.",
                                  hearing_id)
     return result
 
@@ -2885,7 +2935,7 @@ async def resolve_hearing_dispute(hearing_id: str, payload: HearingDisputeResolv
                                      + (f" Note: {payload.remark}" if payload.remark else ""),
                                      hearing_id)
         await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Dispute resolved — no payout",
-                                     f"The dispute for the hearing at {hearing['court_id']} was resolved in the requester's favor; the escrowed amount was refunded to them.",
+                                     f"The dispute for the hearing at {hearing['court_id']} was resolved in the requester's favor; the amount was refunded to them.",
                                      hearing_id)
     return result
 
@@ -2901,8 +2951,8 @@ async def release_hearing_payout(hearing_id: str, user=Depends(get_current_user)
     # Notification audit (production readiness pass): the requester's hearing
     # is now fully complete — they get their own closing confirmation too,
     # same as the requester-triggered verify-and-release path already does.
-    await _notify_hearing_event(hearing["requesting_user_id"], "Escrow released",
-                                 f"Escrow for your hearing at {hearing['court_id']} has been released to the Proxy Counsel. This request is now complete.",
+    await _notify_hearing_event(hearing["requesting_user_id"], "Payment released",
+                                 f"Payment for your hearing at {hearing['court_id']} has been released to the Proxy Counsel. This request is now complete.",
                                  hearing_id)
     return result
 

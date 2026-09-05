@@ -267,12 +267,15 @@ def extract_fee_amount(fee_structure: Optional[str]) -> Optional[float]:
         return None
 
 
-def _cheapest_priced_slot(pricing: Optional[Dict[str, Dict[str, float]]]) -> Optional[float]:
+def cheapest_priced_slot(pricing: Optional[Dict[str, Dict[str, float]]]) -> Optional[float]:
     """The lowest amount an advocate has actually priced across every
     slot/court-type they've filled in — used as the one-number "starting
     from" figure everywhere the old single proposed_fee already showed
     (CounselCard, sort/filter) so those call sites don't need to know the
-    full grid exists."""
+    full grid exists. Public (no leading underscore) — hearings.py's
+    _listed_rate_for_hearing also calls this, matching the exact
+    "starting from" figure the customer already saw on the card before
+    picking this counsel, for its no-negotiation Accept shortcut."""
     amounts = [amt for slots in (pricing or {}).values() for amt in (slots or {}).values()]
     return min(amounts) if amounts else None
 
@@ -285,7 +288,7 @@ def build_advocate_card(candidate: dict, name: Optional[str], court_names_by_id:
     instead of two dicts drifting apart."""
     import practice
     pricing = candidate.get("pricing") or {}
-    cheapest = _cheapest_priced_slot(pricing)
+    cheapest = cheapest_priced_slot(pricing)
     experience_bracket = candidate.get("experience_bracket")
     return {
         "advocate_id": candidate["user_id"],
@@ -373,6 +376,7 @@ async def list_and_recommend(
     fee_max: Optional[float] = None,
     time_slot: Optional[str] = None,
     available_only: bool = False,
+    hearing_date: Optional[str] = None,
     limit: int = 20,
 ) -> Tuple[List[dict], int]:
     """Filters proxy_counsel_profiles down to the verified counsels matching
@@ -400,7 +404,18 @@ async def list_and_recommend(
     time_slot filters to counsels who've priced that slot in either court
     type's pricing grid (practice.PRICING_SLOTS, e.g. "morning"/"afternoon").
     A counsel who hasn't priced a slot at all hasn't said they take that kind
-    of work, so an unpriced slot is excluded rather than treated as a match."""
+    of work, so an unpriced slot is excluded rather than treated as a match.
+
+    hearing_date (founder direction, 2026-09): the browse page's Hearing
+    Date field is required to book, but used to only ever get sent along
+    with the eventual hearing-request creation — never used to actually
+    narrow who's shown. Now cross-checked against each candidate's own
+    availability_slots (see practice.is_available_on_date), time_slot passed
+    through too (bug fix, 2026-09) so a holiday_block/custom_date/etc.
+    scoped to one time-of-day only excludes a search for that same
+    time-of-day, not the whole date — so a client who's already picked a
+    date (and, if set, a time slot) isn't shown, and can't select, someone
+    who actually can't take it then."""
     import practice
     query: Dict[str, Any] = verified_counsel_query()
     if specialization:
@@ -439,6 +454,18 @@ async def list_and_recommend(
         query["courts"] = court_id
 
     candidates = await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500)
+
+    if hearing_date is not None and candidates:
+        slot_docs = await db.availability_slots.find(
+            {"user_id": {"$in": [c["user_id"] for c in candidates]}}, {"_id": 0},
+        ).to_list(5000)
+        slots_by_user: Dict[str, List[dict]] = {}
+        for s in slot_docs:
+            slots_by_user.setdefault(s["user_id"], []).append(s)
+        candidates = [
+            c for c in candidates
+            if practice.is_available_on_date(slots_by_user.get(c["user_id"], []), hearing_date, time_slot)
+        ]
 
     if fee_min is not None or fee_max is not None:
         def _fee_in_range(counsel: dict) -> bool:
@@ -484,6 +511,38 @@ def select_top_candidates(hearing: dict, scored_candidates: List[dict], batch_si
     size = batch_size if batch_size is not None else TOP_CANDIDATE_BATCH_SIZE
     size = max(size, 0)  # avoid Python's negative-slice semantics (list[:-1] != "select none")
     return scored_candidates[:size]
+
+
+async def top_fallback_candidates(db, hearing: dict, exclude_user_ids: set) -> List[dict]:
+    """Auto top-5 fallback (founder direction, 2026-09) — see
+    hearings._create_fallback_requests, the only caller. When a customer's
+    manually Selected Counsel rejects a targeted request, this re-runs the
+    exact same AI-ranked search list_and_recommend already powers on the
+    public browse grid, using the *original* filters the customer actually
+    picked — read back off the rejected hearing's own court_id/hearing_date/
+    request_details.common, never whatever filters happen to be live on the
+    browse page at the moment this runs — then returns the next
+    TOP_CANDIDATE_BATCH_SIZE candidates after excluding exclude_user_ids
+    (the counsel who just rejected, plus the requester themselves if they
+    also happen to be a verified counsel — same self-exclusion the browse
+    grid already applies client-side).
+
+    Over-fetches by len(exclude_user_ids) + a small buffer before filtering
+    and truncating, so excluding those ids doesn't shrink the batch below
+    TOP_CANDIDATE_BATCH_SIZE whenever more candidates exist."""
+    common = (hearing.get("request_details") or {}).get("common") or {}
+    ranked, _total = await list_and_recommend(
+        db,
+        court_id=hearing.get("court_id"),
+        state_id=common.get("state_id") or None,
+        district=common.get("district") or None,
+        time_slot=common.get("time_slot") or None,
+        experience_bracket=common.get("experience_bracket") or None,
+        hearing_date=hearing.get("hearing_date"),
+        limit=TOP_CANDIDATE_BATCH_SIZE + len(exclude_user_ids) + 5,
+    )
+    filtered = [c for c in ranked if c.get("user_id") not in exclude_user_ids]
+    return filtered[:TOP_CANDIDATE_BATCH_SIZE]
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +746,15 @@ async def notify_tier(db, hearing: dict, ranked: List[dict], tier: int, tier_siz
     claim_filter = {"hearing_id": hearing_id, "status": "broadcast"}
     if tier > 1:
         claim_filter["match_tier"] = tier - 1
+    else:
+        # Tier 1 needs the same "not already claimed" guard tier 2/3 get from
+        # their match_tier==tier-1 condition — without excluding a hearing
+        # that already has match_tier set, two run_matching calls racing on
+        # the same hearing (currently can't happen via mark_payment_confirmed's
+        # own CAS-guarded status transition, but this function has no such
+        # protection of its own if a second call site is ever added) would
+        # both pass this filter and re-dispatch tier 1 to the same candidates.
+        claim_filter["match_tier"] = {"$exists": False}
     claim_result = await db.hearing_requests.update_one(
         claim_filter,
         {"$set": {
