@@ -35,7 +35,7 @@ export default function NegotiationNextAction({
           <div className="flex items-center gap-2 text-sm font-semibold text-amber-800">
             <ArrowRight className="w-4 h-4 flex-shrink-0" />
             {viewerRole === "customer"
-              ? "A previous payment attempt didn't complete — escrow was never funded."
+              ? "A previous payment attempt didn't complete — payment was never held."
               : "The requester's payment didn't go through yet — waiting for them to retry."}
           </div>
           {canPay && (
@@ -61,8 +61,8 @@ export default function NegotiationNextAction({
           <div className="flex items-center gap-2 text-sm font-semibold text-emerald-800">
             <ArrowRight className="w-4 h-4 flex-shrink-0" />
             {viewerRole === "customer"
-              ? "Payment completed — escrow funded. Waiting for the Proxy Counsel to accept and begin work."
-              : "Escrow funded — accept this hearing to begin."}
+              ? "Payment completed and held securely. Waiting for the Proxy Counsel to accept and begin work."
+              : "Payment secured — accept this hearing to begin."}
           </div>
           {canAccept && (
             <Button type="button" onClick={onAccept} disabled={accepting} className="bg-accent hover:bg-accent/90 font-bold" data-testid="accept-hearing">

@@ -137,6 +137,7 @@ DELHI_FULL = [
     {"court_id": "court_dcdrc_west", "name": "District Consumer Forum (West)", "type": "quasi", "district": "West", "address": "Janakpuri, Delhi", "serviceable": True},
     {"court_id": "court_lokpal_delhi", "name": "Lokpal of India", "type": "quasi", "address": "Janpath, New Delhi", "serviceable": True},
     {"court_id": "court_election_commission", "name": "Election Commission of India", "type": "quasi", "address": "Nirvachan Sadan, New Delhi", "serviceable": True},
+    {"court_id": "court_diac_delhi", "name": "Delhi International Arbitration Centre", "type": "arbitration", "address": "Delhi High Court, Sher Shah Road, New Delhi", "serviceable": True},
 ]
 
 # NCLT and DRT benches (non-Delhi)

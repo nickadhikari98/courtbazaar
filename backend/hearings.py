@@ -147,15 +147,38 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
                                   case_details: str, fee: Optional[float], matter_id: Optional[str],
                                   target_advocate_id: Optional[str] = None,
                                   service_type: str = "proxy_counsel",
-                                  request_details: Optional[dict] = None) -> dict:
+                                  request_details: Optional[dict] = None,
+                                  is_fallback: bool = False,
+                                  fallback_group_id: Optional[str] = None) -> dict:
     if not court_id or not hearing_date:
         raise HTTPException(400, "Court and hearing date are required")
+    # Fee negotiation toggle (founder direction, 2026-09): a snapshot of the
+    # target advocate's own proxy_counsel_profiles.negotiation_enabled at
+    # creation time, not a live join — a counsel flipping the toggle later
+    # must never retroactively change what an already-sent request promised.
+    # Missing on a hearing (rows created before this field existed) reads as
+    # True everywhere it's checked (negotiation.propose_offer,
+    # hearingLifecycle.js), preserving today's always-negotiable behavior for
+    # anything already in flight when this shipped.
+    negotiation_enabled = True
+    if target_advocate_id:
+        profile = await db.proxy_counsel_profiles.find_one({"user_id": target_advocate_id}, {"_id": 0, "negotiation_enabled": 1})
+        negotiation_enabled = bool(profile.get("negotiation_enabled")) if profile else False
     now = datetime.now(timezone.utc)
     doc = {
         "hearing_id": new_hearing_id(),
         "requesting_user_id": requesting_user_id,
         "proxy_counsel_user_id": None,
         "target_advocate_id": target_advocate_id,  # set -> addressed to one advocate; None -> broadcast to all
+        "negotiation_enabled": negotiation_enabled,
+        # Auto top-5 fallback (founder direction, 2026-09): fallback_group_id
+        # ties this hearing to the originally-rejected one it was fanned out
+        # from (that hearing's own hearing_id — see
+        # _create_fallback_requests); is_fallback stops it from spawning
+        # *another* round of fallbacks if it too gets rejected, so one
+        # manual "Select Counsel" ever produces at most one extra round.
+        "is_fallback": is_fallback,
+        "fallback_group_id": fallback_group_id,
         "court_id": court_id,
         "hearing_date": hearing_date,
         # BlaBlaCar-style flow (founder direction): the intake form now only
@@ -424,7 +447,58 @@ async def accept_hearing_request(db, hearing_id: str, user: dict) -> dict:
                        note="Payment already held — proceeding directly to document sharing")
     updated["status"] = "documents_shared"
     updated["match_tier_deadline_at"] = None
+    # Best-effort, same isolation as every other post-commit side effect in
+    # this module — the accept itself already succeeded and must return
+    # regardless of whether sibling cleanup does.
+    try:
+        await _auto_cancel_fallback_siblings(db, updated)
+    except Exception as e:
+        logger.error(f"fallback sibling auto-cancel failed for {hearing_id}: {e}")
     return updated
+
+
+async def _auto_cancel_fallback_siblings(db, accepted_hearing: dict) -> None:
+    """Counterpart to _create_fallback_requests: once one of the fanned-out
+    siblings is actually accepted (paid and confirmed), the other still-open
+    siblings from that same fallback round are no longer needed — auto-
+    cancel them, refunding escrow for any that had already reached payment,
+    so the customer never ends up committed to two counsels for one hearing."""
+    group_id = accepted_hearing.get("fallback_group_id")
+    if not group_id:
+        return
+    import escrow as escrow_svc
+    from notifications import notify, record_notification_event, get_hearing_email_thread
+    open_statuses = ["requested", "payment_pending", "broadcast"]
+    siblings = await db.hearing_requests.find({
+        "fallback_group_id": group_id,
+        "hearing_id": {"$ne": accepted_hearing["hearing_id"]},
+        "status": {"$in": open_statuses},
+    }, {"_id": 0}).to_list(20)
+    sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
+    for sib in siblings:
+        try:
+            await _transition(db, sm, sib, sib["status"], "cancel", None,
+                               note="Auto-cancelled — the client accepted a different counsel from the same automatic fallback")
+            if sib["status"] in CANCEL_REQUIRES_REFUND:
+                await escrow_svc.refund(db, context_type="hearing", context_id=sib["hearing_id"],
+                                         reason="Fallback sibling auto-cancelled after another counsel was accepted")
+            recipient = await db.users.find_one({"user_id": sib.get("target_advocate_id")})
+            if recipient:
+                title, body = "Request closed", "This hearing request was automatically closed — the client accepted a different counsel."
+                ctx = {"title": title, "body": body}
+                if recipient.get("email"):
+                    ctx["hearing_thread"] = await get_hearing_email_thread(
+                        db, sib["hearing_id"], recipient["email"],
+                        f"CourtBazaar — Your Proxy Counsel Hearing (Ref: {sib['hearing_id']})",
+                    )
+                notify(recipient, "hearing_event", ctx)
+                await record_notification_event(db, sib["target_advocate_id"], "hearing_event", title, body,
+                                                 "hearing", sib["hearing_id"])
+        except (IllegalTransition, HTTPException):
+            continue
+        except Exception as e:
+            logger.error(f"fallback sibling auto-cancel failed for {sib.get('hearing_id')}: {e}")
+            continue
 
 
 async def reject_hearing_request(db, hearing_id: str, user: dict) -> dict:
@@ -445,7 +519,78 @@ async def reject_hearing_request(db, hearing_id: str, user: dict) -> dict:
                            extra_guard={"commercially_locked": {"$ne": True}})
     except IllegalTransition:
         raise HTTPException(400, "This request can no longer be rejected")
+    # Best-effort, same failure-isolation pattern as decline_hearing_request's
+    # maybe_early_advance call below — the reject itself already committed,
+    # so a fallback-fanout failure must never surface as this call failing.
+    try:
+        await _create_fallback_requests(db, hearing)
+    except Exception as e:
+        logger.error(f"fallback request creation failed for {hearing_id}: {e}")
     return {"ok": True, "status": "rejected"}
+
+
+async def _create_fallback_requests(db, original_hearing: dict) -> None:
+    """Auto top-5 fallback (founder direction, 2026-09): the moment a
+    customer's manually-Selected Counsel rejects, fan out a fresh targeted
+    request — same court/hearing date/filters, same negotiate-then-pay
+    pipeline as the original "Select Counsel" action (see
+    CounselHiringPage.jsx) — to the next TOP_CANDIDATE_BATCH_SIZE AI-ranked
+    candidates, all at once. Whichever of them the customer ends up
+    negotiating, paying and getting accepted by first "wins";
+    _auto_cancel_fallback_siblings (see accept_hearing_request) closes out
+    the rest the moment that happens, refunding any of them that had
+    already reached payment.
+
+    Only ever runs off a manually-selected request — original_hearing.is_fallback
+    guards against a fallback sibling that itself gets rejected spawning yet
+    another round, so this can never cascade unboundedly."""
+    if original_hearing.get("is_fallback"):
+        return
+    import counsel_matching
+    from notifications import notify, record_notification_event, get_hearing_email_thread
+    exclude_ids = {original_hearing.get("target_advocate_id"), original_hearing.get("requesting_user_id")}
+    candidates = await counsel_matching.top_fallback_candidates(db, original_hearing, exclude_ids)
+    requester = await db.users.find_one({"user_id": original_hearing["requesting_user_id"]})
+
+    async def _notify(recipient: dict, hearing_id: str, title: str, body: str) -> None:
+        ctx = {"title": title, "body": body}
+        if recipient.get("email"):
+            ctx["hearing_thread"] = await get_hearing_email_thread(
+                db, hearing_id, recipient["email"], f"CourtBazaar — Your Proxy Counsel Hearing (Ref: {hearing_id})",
+            )
+        notify(recipient, "hearing_event", ctx)
+        await record_notification_event(db, recipient["user_id"], "hearing_event", title, body, "hearing", hearing_id)
+
+    if not candidates:
+        if requester:
+            await _notify(requester, original_hearing["hearing_id"], "No further matches found",
+                           "Your selected counsel declined this request, and we couldn't find any other "
+                           "available counsels matching your filters right now. Please try browsing again "
+                           "with different filters.")
+        return
+    group_id = original_hearing["hearing_id"]
+    created = []
+    for candidate in candidates:
+        try:
+            fallback = await create_hearing_request(
+                db, original_hearing["requesting_user_id"], original_hearing["court_id"], original_hearing["hearing_date"],
+                original_hearing.get("case_details") if original_hearing.get("details_submitted") else None,
+                original_hearing.get("fee"), original_hearing.get("matter_id"), candidate["user_id"],
+                original_hearing.get("service_type", "proxy_counsel"), original_hearing.get("request_details"),
+                is_fallback=True, fallback_group_id=group_id,
+            )
+            created.append(fallback)
+            recipient = await db.users.find_one({"user_id": candidate["user_id"]})
+            if recipient:
+                await _notify(recipient, fallback["hearing_id"], "New hearing request",
+                               f"You've been requested for a hearing at {original_hearing['court_id']}. Open Negotiation to respond.")
+        except Exception as e:
+            logger.error(f"fallback request creation failed for candidate {candidate.get('user_id')}: {e}")
+            continue
+    if requester and created:
+        await _notify(requester, original_hearing["hearing_id"], "Finding you alternative counsels",
+                       f"Your selected counsel declined the request. We've automatically sent it to "
+                       f"{len(created)} other top-matched proxy counsels using your original filters.")
 
 
 async def decline_hearing_request(db, hearing_id: str, user: dict) -> dict:
@@ -493,7 +638,7 @@ async def cancel_hearing_request(db, hearing_id: str, user: dict) -> dict:
         raise HTTPException(400, "This request can no longer be cancelled")
     if hearing["status"] in CANCEL_REQUIRES_REFUND:
         await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason="Hearing cancelled after payment was held")
-        await _push_activity(db, hearing_id, "Escrow refunded — hearing cancelled after payment was held", user["user_id"])
+        await _push_activity(db, hearing_id, "Payment refunded — hearing cancelled after payment was held", user["user_id"])
     return {"ok": True}
 
 
@@ -639,7 +784,7 @@ async def list_messages(db, hearing_id: str) -> List[dict]:
     return await db.hearing_messages.find({"hearing_id": hearing_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
 
 
-async def set_negotiated_fee(db, hearing_id: str, amount: float) -> bool:
+async def set_negotiated_fee(db, hearing_id: str, amount: float, activity_note: Optional[str] = None) -> bool:
     """The one write negotiation.py makes into hearing_requests — kept here,
     not in negotiation.py, so this module stays the only writer of its own
     collection (same cross-module convention as counsel_matching.py calling
@@ -656,7 +801,13 @@ async def set_negotiated_fee(db, hearing_id: str, amount: float) -> bool:
     abort before ever touching the negotiations collection — an "agreed"
     negotiation must never exist on a dead hearing. From lock onward,
     initiate_payment/create-order read this fee, same as they always have,
-    with no idea a negotiation happened."""
+    with no idea a negotiation happened.
+
+    `activity_note` lets accept_at_listed_rate below reuse this exact lock
+    (so cancel/reject/pay all treat its shortcut Accept identically to a
+    real negotiated agreement) without the timeline claiming a negotiation
+    happened when none did — defaults to negotiation.accept_offer's original
+    wording, unchanged for every existing caller."""
     now = datetime.now(timezone.utc).isoformat()
     result = await db.hearing_requests.update_one(
         {
@@ -668,7 +819,7 @@ async def set_negotiated_fee(db, hearing_id: str, amount: float) -> bool:
     )
     if result.modified_count != 1:
         return False
-    await _push_activity(db, hearing_id, f"Fee agreed through negotiation: Rs.{amount} — request is now commercially locked")
+    await _push_activity(db, hearing_id, activity_note or f"Fee agreed through negotiation: Rs.{amount} — request is now commercially locked")
     return True
 
 
@@ -685,6 +836,83 @@ async def unlock_commercially(db, hearing_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fee negotiation toggle (founder direction, 2026-09) — Accept at listed
+# rate, the shortcut a targeted advocate always has (whether or not their
+# own negotiation_enabled is on — see hearing.negotiation_enabled's
+# docstring in create_hearing_request) to agree to their own listed rate
+# without ever opening the Negotiation Module. "Negotiate" itself — actually
+# proposing/countering a different amount — is the part negotiation_enabled
+# gates (see negotiation.propose_offer); this shortcut never proposes a
+# below-listed amount, so it's always safe to offer regardless of the toggle.
+# ---------------------------------------------------------------------------
+async def pricing_court_type_for_hearing(db, hearing: dict) -> str:
+    """district if the hearing's own court is literally type "district";
+    every other court type (high_court, arbitration, tribunal, quasi,
+    supreme — see court_seed_expanded.py) falls back to the higher
+    "high_court" pricing tier, same fallback direction
+    CounselHiringPage.jsx's urgentFeeFor already uses when no court-type-
+    specific rate exists. Also negotiation.propose_offer's floor check."""
+    court = await db.courts.find_one({"court_id": hearing.get("court_id")}, {"_id": 0, "type": 1})
+    return "district" if court and court.get("type") == "district" else "high_court"
+
+
+async def _listed_rate_for_hearing(db, hearing: dict) -> float:
+    """The exact number CounselCard already showed this customer before they
+    selected this counsel: a plain (non-urgent) request uses proposed_fee —
+    the cheapest slot priced anywhere on the counsel's grid (see
+    counsel_matching.cheapest_priced_slot) — while a request marked Urgent
+    at selection time (request_details.common.priority) uses this hearing's
+    own court type's Urgent fee, falling back district->high_court exactly
+    like urgentFeeFor. Raises if the counsel hasn't priced anything relevant
+    yet — there's no listed rate to shortcut-accept in that case."""
+    import counsel_matching
+    profile = await db.proxy_counsel_profiles.find_one({"user_id": hearing["target_advocate_id"]}, {"_id": 0, "pricing": 1})
+    pricing = (profile or {}).get("pricing") or {}
+    is_urgent = ((hearing.get("request_details") or {}).get("common") or {}).get("priority") == "Urgent"
+    if is_urgent:
+        court_type = await pricing_court_type_for_hearing(db, hearing)
+        amount = (
+            pricing.get(court_type, {}).get("urgent")
+            or pricing.get("district", {}).get("urgent")
+            or pricing.get("high_court", {}).get("urgent")
+        )
+    else:
+        amount = counsel_matching.cheapest_priced_slot(pricing)
+    if amount is None:
+        raise HTTPException(400, "This counsel hasn't set their pricing yet — ask them to negotiate the fee instead.")
+    return amount
+
+
+async def accept_at_listed_rate(db, hearing_id: str, user: dict) -> dict:
+    """Targeted requests only, advocate-only (mirrors reject_hearing_request's
+    own participant check) — agrees to this hearing's own computed listed
+    rate (see _listed_rate_for_hearing) and locks it via the exact same
+    set_negotiated_fee call negotiation.accept_offer uses, so every
+    downstream reader (initiate_payment, cancel/reject's commercially_locked
+    guard, the Negotiation-agreed UI) treats it identically to a real
+    negotiated agreement — no separate "was this negotiated or shortcut-
+    accepted" branch anywhere else in the app. Always available regardless
+    of hearing.negotiation_enabled (see this section's module comment)."""
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    if hearing.get("target_advocate_id") != user["user_id"]:
+        raise HTTPException(403, "Only the advocate this request was sent to can accept it")
+    if hearing.get("commercially_locked"):
+        raise HTTPException(400, "A fee has already been agreed for this request.")
+    if hearing["status"] not in ("requested", "payment_pending"):
+        raise HTTPException(400, "This request can no longer be accepted this way")
+    amount = await _listed_rate_for_hearing(db, hearing)
+    locked = await set_negotiated_fee(
+        db, hearing_id, amount,
+        activity_note=f"Fee agreed — Rs.{amount:g} (counsel's listed rate, no negotiation) — request is now commercially locked",
+    )
+    if not locked:
+        raise HTTPException(409, "This request's status changed — please refresh and try again.")
+    return {"ok": True, "fee": amount}
+
+
+# ---------------------------------------------------------------------------
 # Payment — hands off to escrow.py immediately; this module never computes
 # commission/payout math itself. See server.py for the Razorpay create-order/
 # verify endpoints that call these.
@@ -697,17 +925,18 @@ async def initiate_payment(db, hearing_id: str, user: dict) -> dict:
         raise HTTPException(403, "Only the requester can pay for this hearing")
     if not hearing.get("fee"):
         raise HTTPException(400, "A fee must be set before payment can be collected")
-    # Negotiation Module: a targeted hearing must go through negotiation
-    # first — payment must always use the locked, agreed amount, never the
-    # original reference fee. Backend-enforced (not just a disabled frontend
-    # button) for the same reason target_advocate_id/fee validation are —
-    # never trust the client alone to gate a money action. Broadcast
-    # requests (target_advocate_id None) never negotiate, so they're exempt.
-    if hearing.get("target_advocate_id"):
-        import negotiation as negotiation_svc
-        negotiation = await negotiation_svc.get_negotiation(db, hearing_id)
-        if not negotiation or negotiation["status"] != "agreed":
-            raise HTTPException(400, "Negotiation must be agreed before payment can be collected")
+    # A targeted hearing's fee must be locked in first — through real
+    # negotiation (negotiation.accept_offer) or the Accept-at-listed-rate
+    # shortcut (accept_at_listed_rate above), doesn't matter which; both set
+    # commercially_locked via the exact same set_negotiated_fee call, so
+    # checking it directly (rather than separately querying the negotiations
+    # collection, which the shortcut path never even touches) covers both.
+    # Backend-enforced (not just a disabled frontend button) for the same
+    # reason target_advocate_id/fee validation are — never trust the client
+    # alone to gate a money action. Broadcast requests (target_advocate_id
+    # None) never negotiate, so they're exempt.
+    if hearing.get("target_advocate_id") and not hearing.get("commercially_locked"):
+        raise HTTPException(400, "A fee must be agreed before payment can be collected")
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
         await _transition(db, sm, hearing, hearing["status"], "initiate_payment", user)
@@ -978,7 +1207,7 @@ async def check_pending_order_sheets(db) -> int:
             if not recipient:
                 continue
             title = "Order sheet reminder"
-            body = "Your payment is waiting in Escrow. Please complete the hearing and upload the Court Order Sheet to receive payment."
+            body = "Your payment is being held securely by CourtBazaar. Please complete the hearing and upload the Court Order Sheet to receive payment."
             ctx = {"title": title, "body": body}
             if recipient.get("email"):
                 ctx["hearing_thread"] = await get_hearing_email_thread(

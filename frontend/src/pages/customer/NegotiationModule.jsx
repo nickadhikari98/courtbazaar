@@ -97,8 +97,28 @@ export default function NegotiationModule() {
   // now come from the same shared resolver HearingDetailDialog.jsx calls —
   // no more independently-derived copies that could disagree between screens.
   const {
-    viewerRole, isClosed: isTerminal, isEscrowParticipant, negotiationRequired, canPay, canAccept, canMarkConducted,
+    viewerRole, isClosed: isTerminal, isEscrowParticipant, negotiationRequired, canNegotiate, canPay, canAccept, canMarkConducted,
   } = getHearingPermissions(hearing, user);
+
+  // Fee negotiation toggle (founder direction, 2026-09): this page should
+  // never actually be reached for a hearing whose counsel has negotiation
+  // switched off (HearingDetailDialog.jsx only ever links here when
+  // canNegotiate is true) — this is just the defensive backstop for a stray
+  // link/bookmark/notification, same "never trust a route is only reached
+  // the intended way" reasoning as every capability-gated route in App.js.
+  // Unconditional on lock state (unlike a plain "still open" check) because
+  // a negotiation_enabled:false hearing's `negotiations` doc, if it exists
+  // at all, is never the source of truth for its fee — accept_at_listed_rate
+  // locks hearing.commercially_locked/fee directly and never touches that
+  // collection, so this page would otherwise show a stale/empty negotiation
+  // instead of the real agreed amount.
+  useEffect(() => {
+    if (hearing && !canNegotiate) {
+      toast.error("This counsel doesn't negotiate fees for this request.");
+      navigate(`/dashboard`, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-check whenever the hearing (re)loads
+  }, [hearing, canNegotiate]);
   // "Agreed" is read from hearing.commercially_locked (the field the backend
   // itself checks in initiate_payment/cancel_hearing_request), not from the
   // separately-polled negotiation.status — those two are supposed to always

@@ -15,14 +15,14 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty, TableLoading,
 } from "@/components/ui/table";
-import { Briefcase, X, Plus, Trash2, Star, CheckCircle2, Clock, ArrowRight } from "lucide-react";
+import { Briefcase, X, Plus, Trash2, Star, CheckCircle2, Clock, ArrowRight, Loader2 } from "lucide-react";
 import {
   getPracticeProfile, updatePracticeProfile, listAvailabilitySlots,
   addAvailabilitySlot, removeAvailabilitySlot, getPracticePerformance,
 } from "@/lib/practiceApi";
 import { listHearingRequests } from "@/lib/hearingRequestsApi";
 import { getCourt, searchCourts } from "@/lib/referenceDataApi";
-import { formatINR } from "@/lib/api";
+import { formatINR, getErrorMessage } from "@/lib/api";
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import HearingActivityPreview from "@/components/shared/HearingActivityPreview";
 import CapabilitiesCard from "@/components/shared/CapabilitiesCard";
@@ -35,10 +35,19 @@ import {
 } from "@/lib/hearingLifecycle";
 import {
   PRICING_SLOTS, PRICING_SLOT_LABELS, PRICING_COURT_TYPES, PRICING_COURT_TYPE_LABELS,
-  PRICING_MINIMUMS, EXPERIENCE_BRACKETS,
+  EXPERIENCE_BRACKETS, pricingMinimum, TIME_OF_DAY_OPTIONS,
 } from "@/config/proxyCounselPricing";
 
 const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
+
+// Mirrors roleFormData.js's "Maximum Distance You Are Willing to Travel for
+// Appearance" / "Availability" radio options exactly — same duplicated-config
+// tradeoff already accepted for EXPERIENCE_BRACKETS/PRICING_MINIMUMS (see
+// config/proxyCounselPricing.js), so a lead approved through leads.py's
+// _derive_practice_profile_patch always lands on a value this Select
+// actually has an option for.
+const MAX_TRAVEL_DISTANCE_OPTIONS = ["Up to 10 KM", "Up to 25 KM", "Up to 50 KM", "Up to 100 KM", "Any Distance"];
+const SCHEDULE_TYPE_OPTIONS = ["Full Time", "Part Time", "Weekdays Only", "Weekends Only"];
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const KINDS = [
@@ -74,7 +83,17 @@ function TagInput({ label, value, onChange, placeholder }) {
       <div className="flex gap-2">
         <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={placeholder}
                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }} />
-        <Button type="button" variant="outline" onClick={add}><Plus className="w-4 h-4" /></Button>
+        {/* Same fade/bright "ready to submit" signal as the Availability
+            tab's Add button — faded while there's nothing typed to add yet,
+            bright the moment there is. */}
+        <Button
+          type="button" onClick={add}
+          className={draft.trim()
+            ? "bg-accent hover:bg-accent/90 font-bold"
+            : "bg-accent/50 hover:bg-accent/60 font-bold"}
+        >
+          <Plus className="w-4 h-4" />
+        </Button>
       </div>
     </div>
   );
@@ -173,6 +192,7 @@ function ProfileTab({ profile, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [savingAvailability, setSavingAvailability] = useState(false);
   const [savingInstant, setSavingInstant] = useState(false);
+  const [savingNegotiation, setSavingNegotiation] = useState(false);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const setPricing = (courtType, slot, value) => {
     setForm((f) => ({
@@ -183,14 +203,14 @@ function ProfileTab({ profile, onSaved }) {
 
   const hasInvalidPricing = () => PRICING_COURT_TYPES.some((courtType) => PRICING_SLOTS.some((slot) => {
     const amount = form.pricing?.[courtType]?.[slot];
-    return amount != null && amount < PRICING_MINIMUMS[courtType][slot];
+    return amount != null && amount < pricingMinimum(courtType, slot, form.experience_bracket);
   }));
 
   const save = async () => {
     for (const courtType of PRICING_COURT_TYPES) {
       for (const slot of PRICING_SLOTS) {
         const amount = form.pricing?.[courtType]?.[slot];
-        const minimum = PRICING_MINIMUMS[courtType][slot];
+        const minimum = pricingMinimum(courtType, slot, form.experience_bracket);
         if (amount != null && amount < minimum) {
           toast.error(`${PRICING_COURT_TYPE_LABELS[courtType]} / ${PRICING_SLOT_LABELS[slot]} must be at least ₹${minimum}`);
           return;
@@ -200,15 +220,19 @@ function ProfileTab({ profile, onSaved }) {
     setSaving(true);
     try {
       const updated = await updatePracticeProfile({
+        state_bar_council: form.state_bar_council, bar_council_number: form.bar_council_number,
         practice_areas: form.practice_areas, courts: form.courts, languages: form.languages,
         experience_bracket: form.experience_bracket, education: form.education, bio: form.bio,
+        professional_status: form.professional_status, max_travel_distance: form.max_travel_distance,
+        schedule_type: form.schedule_type, matters_handled: form.matters_handled,
         office_address: form.office_address, fee_structure: form.fee_structure, pricing: form.pricing,
         availability_mode: form.availability_mode, instant_booking: form.instant_booking,
+        negotiation_enabled: form.negotiation_enabled,
       });
       onSaved(updated);
       toast.success("Profile saved");
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Could not save profile");
+      toast.error(getErrorMessage(err, "Could not save profile"));
     } finally {
       setSaving(false);
     }
@@ -220,35 +244,32 @@ function ProfileTab({ profile, onSaved }) {
   // Sends only the one field (the PUT is a partial update, exclude_unset on
   // the backend) so it can't accidentally persist unrelated in-progress edits
   // sitting elsewhere in the form.
-  const saveToggle = async (key, setBusy) => {
+  const saveToggle = async (key, setBusy, successLabel = "Availability updated") => {
     setBusy(true);
     try {
       const updated = await updatePracticeProfile({ [key]: form[key] });
       onSaved(updated);
-      toast.success("Availability updated");
+      toast.success(successLabel);
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Could not save");
+      toast.error(getErrorMessage(err, "Could not save"));
     } finally {
       setBusy(false);
     }
   };
 
-  // Instant booking's own save — founder direction (2026-08): with the
-  // toggle on, the Urgent fee inputs surface right in this card (see below)
-  // so a counsel doesn't have to scroll down to Availability & Pricing to
-  // set it. This button saves instant_booking together with the full
-  // pricing object (not just the urgent slot) — same "always resend the
-  // whole grid" convention save() below already uses, since the backend
-  // replaces pricing wholesale rather than merging it field-by-field.
+  // Instant booking's own save — the Urgent fee inputs live in this same
+  // card (see below), always shown regardless of the toggle, so this
+  // button saves instant_booking together with the full pricing object
+  // (not just the urgent slot) — same "always resend the whole grid"
+  // convention save() below already uses, since the backend replaces
+  // pricing wholesale rather than merging it field-by-field.
   const saveInstantBooking = async () => {
-    if (form.instant_booking) {
-      for (const courtType of PRICING_COURT_TYPES) {
-        const amount = form.pricing?.[courtType]?.urgent;
-        const minimum = PRICING_MINIMUMS[courtType].urgent;
-        if (amount != null && amount < minimum) {
-          toast.error(`${PRICING_COURT_TYPE_LABELS[courtType]} Urgent fee must be at least ₹${minimum}`);
-          return;
-        }
+    for (const courtType of PRICING_COURT_TYPES) {
+      const amount = form.pricing?.[courtType]?.urgent;
+      const minimum = pricingMinimum(courtType, "urgent", form.experience_bracket);
+      if (amount != null && amount < minimum) {
+        toast.error(`${PRICING_COURT_TYPE_LABELS[courtType]} Urgent fee must be at least ₹${minimum}`);
+        return;
       }
     }
     setSavingInstant(true);
@@ -257,7 +278,7 @@ function ProfileTab({ profile, onSaved }) {
       onSaved(updated);
       toast.success("Instant booking updated");
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Could not save");
+      toast.error(getErrorMessage(err, "Could not save"));
     } finally {
       setSavingInstant(false);
     }
@@ -306,47 +327,73 @@ function ProfileTab({ profile, onSaved }) {
               </Button>
             </div>
           </div>
-          {/* Founder direction (2026-08): with instant booking on, a counsel
-              may not scroll down to Availability & Pricing to set the Urgent
-              fee at all — surface just that one field right here instead of
-              the full 2-court-type x 5-slot pricing grid below. */}
-          {form.instant_booking && (
-            <div className="pt-4 border-t">
-              <div className="flex items-center gap-1.5 text-sm font-bold mb-1">
-                <Clock className="w-3.5 h-3.5 text-amber-600" /> Urgent (same-day) fee
-              </div>
-              <p className="text-xs text-muted-foreground mb-3">
-                Instant booking can hand you urgent requests right away — set your urgent fee so it's ready.
-              </p>
-              <div className="grid sm:grid-cols-2 gap-3">
-                {PRICING_COURT_TYPES.map((courtType) => {
-                  const minimum = PRICING_MINIMUMS[courtType].urgent;
-                  const amount = form.pricing?.[courtType]?.urgent;
-                  const belowMin = amount != null && amount < minimum;
-                  return (
-                    <div key={courtType}>
-                      <Label>{PRICING_COURT_TYPE_LABELS[courtType]}</Label>
-                      <Input
-                        type="number" min={minimum}
-                        value={amount ?? ""}
-                        onChange={(e) => setPricing(courtType, "urgent", e.target.value)}
-                        placeholder={`Min ₹${minimum}`}
-                        onWheel={(e) => e.target.blur()}
-                        className={belowMin ? "border-red-500 focus-visible:ring-red-500" : undefined}
-                        aria-invalid={belowMin || undefined}
-                        data-testid={`instant-urgent-fee-${courtType}`}
-                      />
-                      {belowMin ? (
-                        <p className="text-2xs text-red-600 mt-0.5">Must be at least ₹{minimum}</p>
-                      ) : (
-                        <p className="text-2xs text-muted-foreground mt-0.5">Min ₹{minimum}</p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+          {/* This is now the single place to set the Urgent fee — always
+              shown here, not just while instant booking is on (a counsel
+              can price urgent work without opting into auto-accept), and
+              removed from the Availability & Pricing grid below, which
+              used to render it a second time (see PRICING_SLOTS.filter
+              there). Founder direction (2026-08) was originally to surface
+              it here only when instant booking is on so a counsel wouldn't
+              have to scroll down for it; now it just lives here full stop. */}
+          <div className="pt-4 border-t">
+            <div className="flex items-center gap-1.5 text-sm font-bold mb-1">
+              <Clock className="w-3.5 h-3.5 text-amber-600" /> Urgent (same-day) fee
             </div>
-          )}
+            <p className="text-xs text-muted-foreground mb-3">
+              Shown to clients making an urgent request, whether or not instant booking is on.
+            </p>
+            <div className="grid sm:grid-cols-2 gap-3">
+              {PRICING_COURT_TYPES.map((courtType) => {
+                const minimum = pricingMinimum(courtType, "urgent", form.experience_bracket);
+                const amount = form.pricing?.[courtType]?.urgent;
+                const belowMin = amount != null && amount < minimum;
+                return (
+                  <div key={courtType}>
+                    <Label>{PRICING_COURT_TYPE_LABELS[courtType]}</Label>
+                    <Input
+                      type="number" min={minimum}
+                      value={amount ?? ""}
+                      onChange={(e) => setPricing(courtType, "urgent", e.target.value)}
+                      placeholder={`Min ₹${minimum}`}
+                      onWheel={(e) => e.target.blur()}
+                      className={belowMin ? "border-red-500 focus-visible:ring-red-500" : undefined}
+                      aria-invalid={belowMin || undefined}
+                      data-testid={`instant-urgent-fee-${courtType}`}
+                    />
+                    {belowMin ? (
+                      <p className="text-2xs text-red-600 mt-0.5">Must be at least ₹{minimum}</p>
+                    ) : (
+                      <p className="text-2xs text-muted-foreground mt-0.5">Min ₹{minimum}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="dashboard-card border-none">
+        <CardContent className="p-5 flex items-center justify-between gap-4">
+          <div>
+            <div className="font-display font-bold">Fee negotiation</div>
+            <p className="text-xs text-muted-foreground">
+              Turn this on to also see a
+              Negotiate option and respond to counter offers.
+            </p>
+          </div>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <Switch checked={!!form.negotiation_enabled} onCheckedChange={(v) => set("negotiation_enabled", v)} data-testid="negotiation-enabled-toggle" />
+            <Button
+              type="button" size="sm" onClick={() => saveToggle("negotiation_enabled", setSavingNegotiation, "Fee negotiation updated")}
+              disabled={savingNegotiation}
+              className={form.negotiation_enabled
+                ? "bg-accent hover:bg-accent/90 font-bold"
+                : "bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold"}
+            >
+              Save
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -372,6 +419,44 @@ function ProfileTab({ profile, onSaved }) {
               <Label>Education</Label>
               <Input value={form.education || ""} onChange={(e) => set("education", e.target.value)} />
             </div>
+            <div>
+              <Label>State Bar Council</Label>
+              <Input value={form.state_bar_council || ""} onChange={(e) => set("state_bar_council", e.target.value)} />
+            </div>
+            <div>
+              <Label>Bar Council Enrollment Number</Label>
+              <Input value={form.bar_council_number || ""} onChange={(e) => set("bar_council_number", e.target.value)} />
+            </div>
+            <div>
+              <Label>Current Professional Status</Label>
+              <Input value={form.professional_status || ""} onChange={(e) => set("professional_status", e.target.value)} />
+            </div>
+            <div>
+              <Label>Maximum Distance Willing to Travel</Label>
+              <Select value={form.max_travel_distance || undefined} onValueChange={(v) => set("max_travel_distance", v)}>
+                <SelectTrigger><SelectValue placeholder="Select distance" /></SelectTrigger>
+                <SelectContent>
+                  {MAX_TRAVEL_DISTANCE_OPTIONS.map((o) => <SelectItem key={o} value={o}>{o}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Availability Schedule</Label>
+              <Select value={form.schedule_type || undefined} onValueChange={(v) => set("schedule_type", v)}>
+                <SelectTrigger><SelectValue placeholder="Select schedule" /></SelectTrigger>
+                <SelectContent>
+                  {SCHEDULE_TYPE_OPTIONS.map((o) => <SelectItem key={o} value={o}>{o}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Approximate Number of Matters Handled</Label>
+              <Input
+                type="number" min={0} value={form.matters_handled ?? ""}
+                onChange={(e) => set("matters_handled", e.target.value === "" ? undefined : Number(e.target.value))}
+                onWheel={(e) => e.target.blur()}
+              />
+            </div>
           </div>
           <div>
             <Label>Bio</Label>
@@ -395,15 +480,17 @@ function ProfileTab({ profile, onSaved }) {
       <Card className="dashboard-card border-none">
         <CardContent className="p-5 space-y-4">
           <div>
-            <div className="font-display font-bold">Availability & Pricing</div>
+            <div className="font-display font-bold">Pricing</div>
             <p className="text-xs text-muted-foreground mt-0.5">Set your own price per slot — never below the platform minimum shown under each field. Leave a slot blank if you don't take that kind of work.</p>
           </div>
           {PRICING_COURT_TYPES.map((courtType) => (
             <div key={courtType}>
               <div className="text-sm font-bold mb-2">{PRICING_COURT_TYPE_LABELS[courtType]}</div>
+              {/* "urgent" excluded here — it's set once, above, in the
+                  Instant Booking card, not duplicated in this grid too. */}
               <div className="grid sm:grid-cols-3 gap-3">
-                {PRICING_SLOTS.map((slot) => {
-                  const minimum = PRICING_MINIMUMS[courtType][slot];
+                {PRICING_SLOTS.filter((slot) => slot !== "urgent").map((slot) => {
+                  const minimum = pricingMinimum(courtType, slot, form.experience_bracket);
                   const amount = form.pricing?.[courtType]?.[slot];
                   const belowMin = amount != null && amount < minimum;
                   return (
@@ -443,26 +530,46 @@ function AvailabilityTab() {
   const [dayOfWeek, setDayOfWeek] = useState(0);
   const [date, setDate] = useState("");
   const [courtId, setCourtId] = useState("");
-  const [startTime, setStartTime] = useState("");
-  const [endTime, setEndTime] = useState("");
+  // Bug fix: was two literal clock-time inputs (From/To) — switched to the
+  // same short time-of-day picker every such field in the app now uses (see
+  // TIME_OF_DAY_OPTIONS). A single slot string now, not a start/end pair.
+  const [timeSlot, setTimeSlot] = useState("");
+  const [addingSlot, setAddingSlot] = useState(false);
 
   const load = () => listAvailabilitySlots().then(setSlots);
   useEffect(() => { load(); }, []);
 
+  // UX fix: required fields are Kind (always has a value — the Select has
+  // no blank state), Day of week or Date depending on Kind, and Time Slot
+  // (no longer silently optional — see the label below and practice.py's
+  // matching _validate_slot check). Court stays the one genuinely optional
+  // field. This also drives the Add button's fade/bright state directly —
+  // faded while the form is still incomplete (nothing real to add yet, the
+  // "0 availability" case), bright the moment it's actually ready to submit.
+  const dayOrDateFilled = kind === "recurring_weekly" ? dayOfWeek != null : !!date;
+  const isFormReady = dayOrDateFilled && !!timeSlot;
+
   const add = async () => {
+    if (!isFormReady) {
+      toast.error(dayOrDateFilled ? "Select a time slot" : "Pick a day or date first");
+      return;
+    }
+    setAddingSlot(true);
     try {
       await addAvailabilitySlot({
         kind,
         day_of_week: kind === "recurring_weekly" ? dayOfWeek : undefined,
         date: kind !== "recurring_weekly" ? date : undefined,
         court_id: courtId || undefined,
-        start_time: startTime || undefined,
-        end_time: endTime || undefined,
+        start_time: timeSlot,
       });
       toast.success("Availability added");
+      setTimeSlot(""); // force a fresh, explicit pick for the next slot rather than resubmitting the same one
       load();
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Could not add slot");
+      toast.error(getErrorMessage(err, "Could not add slot"));
+    } finally {
+      setAddingSlot(false);
     }
   };
 
@@ -478,7 +585,7 @@ function AvailabilityTab() {
           <div className="font-display font-bold mb-3">Add availability</div>
           <div className="grid sm:grid-cols-2 gap-3 mb-3">
             <div>
-              <Label>Kind</Label>
+              <Label>Kind *</Label>
               <Select value={kind} onValueChange={setKind}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -488,7 +595,7 @@ function AvailabilityTab() {
             </div>
             {kind === "recurring_weekly" ? (
               <div>
-                <Label>Day of week</Label>
+                <Label>Day of week *</Label>
                 <Select value={String(dayOfWeek)} onValueChange={(v) => setDayOfWeek(Number(v))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -498,27 +605,32 @@ function AvailabilityTab() {
               </div>
             ) : (
               <div>
-                <Label>Date</Label>
+                <Label>Date *</Label>
                 <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
               </div>
             )}
             <div>
-              <Label>Court (optional — blank = any court)</Label>
+              <Label>Court (optional)</Label>
               <Input value={courtId} onChange={(e) => setCourtId(e.target.value)} placeholder="e.g. Delhi High Court" />
             </div>
-            <div className="flex gap-2">
-              <div className="flex-1">
-                <Label>From</Label>
-                <Input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
-              </div>
-              <div className="flex-1">
-                <Label>To</Label>
-                <Input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
-              </div>
+            <div>
+              <Label>Time Slot *</Label>
+              <Select value={timeSlot || undefined} onValueChange={setTimeSlot}>
+                <SelectTrigger><SelectValue placeholder="Select a time slot" /></SelectTrigger>
+                <SelectContent>
+                  {TIME_OF_DAY_OPTIONS.map((opt) => <SelectItem key={opt} value={opt}>{opt}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
           </div>
-          <Button type="button" onClick={add} className="bg-accent hover:bg-accent/90 font-bold">
-            <Plus className="w-4 h-4 mr-1.5" /> Add
+          <Button
+            type="button" onClick={add} disabled={addingSlot}
+            className={isFormReady
+              ? "bg-accent hover:bg-accent/90 font-bold"
+              : "bg-accent/50 hover:bg-accent/60 font-bold"}
+          >
+            {addingSlot ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Plus className="w-4 h-4 mr-1.5" />}
+            Add
           </Button>
         </CardContent>
       </Card>
@@ -542,7 +654,7 @@ function AvailabilityTab() {
                 <TableCell><Badge variant="outline" className="text-2xs uppercase">{s.kind.replace(/_/g, " ")}</Badge></TableCell>
                 <TableCell>{s.kind === "recurring_weekly" ? DAYS[s.day_of_week] : s.date}</TableCell>
                 <TableCell>{s.court_id || "Any"}</TableCell>
-                <TableCell>{s.start_time && s.end_time ? `${s.start_time}–${s.end_time}` : "Full day"}</TableCell>
+                <TableCell>{s.start_time || "Full day"}</TableCell>
                 <TableCell>
                   <button type="button" onClick={() => remove(s.slot_id)} className="text-muted-foreground hover:text-red-600">
                     <Trash2 className="w-4 h-4" />

@@ -14,6 +14,7 @@ import { SingleSelectCombobox } from "./Combobox";
 import CourtOfPracticeField from "./CourtOfPracticeField";
 import { uploadLeadDocument, removeLeadDocument } from "@/lib/leadsApi";
 import { cn, resolveDateBound } from "@/lib/utils";
+import { TIME_OF_DAY_OPTIONS } from "@/config/proxyCounselPricing";
 
 function FieldLabel({ label, required }) {
   if (!label) return null;
@@ -450,11 +451,16 @@ export function SignatureField({ value, onChange }) {
   );
 }
 
-/* Turnaround Time select — when "Custom Time" is picked, reveals From/To
-   time inputs with a smooth height/opacity transition instead of an abrupt
-   layout jump. Used by the E-Filing Partner form. */
+/* Turnaround Time select — when "Custom Time" is picked, reveals a time-slot
+   select with a smooth height/opacity transition instead of an abrupt
+   layout jump. Used by the E-Filing Partner form. Bug fix: the reveal used
+   to be a literal From/To clock-time pair — switched to the same short
+   slot list every other time-of-day picker in the app now uses (see
+   TIME_OF_DAY_OPTIONS), a pick not a typed time. `toValue`/`onToChange`
+   stay accepted for prop-signature compatibility but are unused — the
+   single picked slot now goes entirely into `fromValue`. */
 export function TurnaroundTimeField({
-  label, required, options = [], value, onChange, fromValue, onFromChange, toValue, onToChange,
+  label, required, options = [], value, onChange, fromValue, onFromChange,
 }) {
   const isCustom = value === "Custom Time";
   return (
@@ -465,17 +471,14 @@ export function TurnaroundTimeField({
         style={{ gridTemplateRows: isCustom ? "1fr" : "0fr" }}
       >
         <div className="overflow-hidden">
-          <div
-            className={`grid grid-cols-2 gap-3 pt-3 transition-opacity duration-300 ${isCustom ? "opacity-100" : "opacity-0"}`}
-          >
-            <div>
-              <FieldLabel label="From" required={isCustom} />
-              <Input type="time" value={fromValue ?? ""} onChange={(e) => onFromChange?.(e.target.value)} required={isCustom} />
-            </div>
-            <div>
-              <FieldLabel label="To" required={isCustom} />
-              <Input type="time" value={toValue ?? ""} onChange={(e) => onToChange?.(e.target.value)} required={isCustom} />
-            </div>
+          <div className={`pt-3 transition-opacity duration-300 ${isCustom ? "opacity-100" : "opacity-0"}`}>
+            <FieldLabel label="Time Slot" required={isCustom} />
+            <Select value={fromValue || undefined} onValueChange={onFromChange}>
+              <SelectTrigger><SelectValue placeholder="Select a time slot" /></SelectTrigger>
+              <SelectContent>
+                {TIME_OF_DAY_OPTIONS.map((opt) => <SelectItem key={opt} value={opt}>{opt}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
         </div>
       </div>

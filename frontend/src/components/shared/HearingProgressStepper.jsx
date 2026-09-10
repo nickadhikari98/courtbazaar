@@ -43,10 +43,10 @@ const BROADCAST_STAGES = [
 // steps that never applied to this hearing.
 const TARGETED_STAGES = [
   { statuses: ["requested", "payment_pending"], label: "Payment", labelWhenNegotiating: "Negotiating Fee" },
-  { statuses: ["broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled"], label: "Escrow Funded" },
+  { statuses: ["broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled"], label: "Payment Secured" },
   { statuses: ["hearing_completed"], label: "Order Sheet Uploaded" },
   { statuses: ["verification_pending", "verified"], label: "Verification" },
-  { statuses: ["completed", "rated"], label: "Escrow Released" },
+  { statuses: ["completed", "rated"], label: "Payment Released" },
 ];
 
 const TERMINATED = {

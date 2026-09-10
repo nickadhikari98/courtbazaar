@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { Mic, Clock, Star, ShieldCheck, Loader2 } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
+import { TIME_OF_DAY_OPTIONS } from "@/config/proxyCounselPricing";
 
 export default function StenographerBooking() {
   const navigate = useNavigate();
@@ -20,7 +21,7 @@ export default function StenographerBooking() {
   const [form, setForm] = useState({
     service_id: "", state_id: "state_delhi", court_id: "",
     date: new Date().toISOString().slice(0,10),
-    start_time: "10:00", hours: 2,
+    start_time: TIME_OF_DAY_OPTIONS[0], hours: 2,
     delivery_option: "court", delivery_address: "", notes: "",
     stenographer_id: "",
   });
@@ -109,7 +110,15 @@ export default function StenographerBooking() {
 
             <div className="grid grid-cols-3 gap-3">
               <div><Label>Date</Label><Input type="date" value={form.date} onChange={(e) => setForm({...form, date: e.target.value})} min={new Date().toISOString().slice(0,10)} data-testid="steno-date" /></div>
-              <div><Label>Start time</Label><Input type="time" value={form.start_time} onChange={(e) => setForm({...form, start_time: e.target.value})} data-testid="steno-time" /></div>
+              <div>
+                <Label>Start time</Label>
+                <Select value={form.start_time} onValueChange={(v) => setForm({...form, start_time: v})}>
+                  <SelectTrigger data-testid="steno-time"><SelectValue placeholder="Select a time slot" /></SelectTrigger>
+                  <SelectContent>
+                    {TIME_OF_DAY_OPTIONS.map((opt) => <SelectItem key={opt} value={opt}>{opt}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
               <div><Label>Hours (min {minHours})</Label><Input type="number" min={minHours} max={12} value={form.hours} onChange={(e) => setForm({...form, hours: parseInt(e.target.value) || minHours})} data-testid="steno-hours" /></div>
             </div>
 

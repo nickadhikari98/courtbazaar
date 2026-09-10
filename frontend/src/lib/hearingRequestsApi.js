@@ -40,6 +40,16 @@ export async function cancelHearingRequest(hearingId) {
   return data;
 }
 
+// Fee negotiation toggle (founder direction, 2026-09) — the targeted
+// advocate's one-click Accept at their own listed rate, skipping the
+// Negotiation Module entirely. Always available regardless of whether this
+// advocate has negotiation switched on (see hearingLifecycle.js's
+// canAcceptListedRate) — see backend hearings.accept_at_listed_rate.
+export async function acceptHearingAtListedRate(hearingId) {
+  const { data } = await api.put(`/hearing-requests/${hearingId}/accept-listed-rate`);
+  return data;
+}
+
 // Distinct from cancelHearingRequest — closes the negotiation with the
 // current targeted counsel only; the underlying request is not cancelled
 // (the frontend routes the requester back to counsel selection afterward).

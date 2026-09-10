@@ -92,7 +92,7 @@ export function roleAwareStatusLabel(hearing, viewerRole) {
     return viewerRole === "customer" ? "Payment Processing" : "Waiting for Hiring Advocate Payment";
   }
   if (hearing.status === "broadcast" && hearing.target_advocate_id) {
-    return viewerRole === "customer" ? "Payment Completed — Escrow Funded" : "Escrow Funded";
+    return viewerRole === "customer" ? "Payment Completed — Secured" : "Payment Secured";
   }
   return hearing.status.replace(/_/g, " ");
 }
@@ -173,10 +173,39 @@ export function getHearingPermissions(hearing, user) {
   // hearings.reject_hearing_request/cancel_hearing_request.
   const canReject = !!user?.capabilities?.includes("can_practice_proxy_counsel")
     && isTargetedAtMe && !hearing.commercially_locked && ["requested", "broadcast"].includes(hearing.status);
+  // Fee negotiation toggle (founder direction, 2026-09): the exact same
+  // moment/eligibility as canReject above — Accept-at-listed-rate and
+  // Reject are the targeted advocate's two options before any fee is
+  // locked in, always available regardless of hearing.negotiation_enabled
+  // (only "Negotiate" itself is gated by that — see canNegotiate below).
+  // See hearings.accept_at_listed_rate.
+  const canAcceptListedRate = canReject;
+  // Unchanged meaning ("is there a negotiation to have at all" — the
+  // stepper's own `targeted` prop still keys off this, not the toggle)
   const negotiationRequired = !!hearing.target_advocate_id;
   const negotiationAgreed = !!hearing.commercially_locked;
-  const negotiationPending = (isRequester || isTargetedAtMe) && hearing.status === "requested"
-    && negotiationRequired && !negotiationAgreed;
+  // Whether the "Negotiate"/"Go to Negotiation" path is actually offered —
+  // negotiationRequired (a real targeted hearing) AND this advocate hasn't
+  // switched negotiation off (missing on a hearing created before this
+  // field existed reads as negotiable, same "preserve today's behavior for
+  // anything already in flight" default create_hearing_request's own
+  // snapshot uses). Reject/Accept-at-listed-rate above stay available
+  // either way — this only gates proposing/countering a different amount.
+  const canNegotiate = negotiationRequired && hearing.negotiation_enabled !== false;
+  // Requester-only (not isTargetedAtMe) — the advocate's own entry point to
+  // Negotiate now lives in the Accept/Reject/Negotiate action-bar trio (see
+  // canAcceptListedRate/canNegotiate above and HearingDetailDialog.jsx),
+  // not this banner, so it'd otherwise just duplicate that.
+  const negotiationPending = isRequester && hearing.status === "requested"
+    && canNegotiate && !negotiationAgreed;
+  // The toggle-off counterpart of negotiationPending above — a real targeted
+  // hearing, still unlocked, but this advocate doesn't negotiate: the
+  // customer just waits for Accept/Reject rather than seeing a "Go to
+  // Negotiation" banner they can't act on. Not used by the advocate's own
+  // view — they see the Accept/Reject buttons themselves instead of a
+  // status line (see canAcceptListedRate/canReject above).
+  const fixedPricePending = isRequester && hearing.status === "requested"
+    && negotiationRequired && !canNegotiate && !negotiationAgreed;
   const canPay = isRequester && PAYABLE_HEARING_STATUSES.includes(hearing.status) && hearingCommerciallyReadyForPayment(hearing);
   const canCancel = isRequester && !hearing.commercially_locked
     && ["requested", "broadcast", "accepted", "payment_pending", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"].includes(hearing.status);
@@ -190,8 +219,8 @@ export function getHearingPermissions(hearing, user) {
 
   return {
     isRequester, isAssignedProxyCounsel, isTargetedAtMe, isEligibleAdvocate,
-    canAccept, canDecline, canReject, canCancel, canMarkConducted, canRate, canPay,
-    negotiationRequired, negotiationAgreed, negotiationPending, isEscrowParticipant,
+    canAccept, canDecline, canReject, canAcceptListedRate, canCancel, canMarkConducted, canRate, canPay,
+    negotiationRequired, canNegotiate, negotiationAgreed, negotiationPending, fixedPricePending, isEscrowParticipant,
     viewerRole: getViewerRole(hearing, userId),
     isClosed: isHearingClosed(hearing),
   };
@@ -209,7 +238,7 @@ export function getHearingPermissions(hearing, user) {
    hearing's initial status). */
 const HEARING_TRANSITION_EVENT_META = {
   payment_pending: { icon: Wallet, title: "Payment Initiated", description: (h) => `Payment for ${h.court_id || "this hearing"} was initiated — redirecting to checkout.` },
-  broadcast: { icon: Wallet, title: "Payment Successful", description: (h) => `Payment confirmed — ${h.fee ? `₹${h.fee} is` : "funds are"} now held in escrow.` },
+  broadcast: { icon: Wallet, title: "Payment Successful", description: (h) => `Payment confirmed — ${h.fee ? `₹${h.fee} is` : "funds are"} now held securely by CourtBazaar.` },
   accepted: { icon: Handshake, title: "Proxy Counsel Accepted Hearing", description: (h) => `A Proxy Counsel accepted the request for ${h.court_id || "this hearing"}.` },
   documents_shared: { icon: UploadCloud, title: "Case Documents Needed", description: (h) => `Case documents are being exchanged for ${h.court_id || "this hearing"}.` },
   preparation: { icon: CheckCircle2, title: "Documents Shared", description: (h) => `Case documents were shared — ${h.court_id || "the hearing"} is being prepared.` },
@@ -218,7 +247,7 @@ const HEARING_TRANSITION_EVENT_META = {
   verification_pending: { icon: UploadCloud, title: "Order Sheet Uploaded", description: (h) => `The Court Order Sheet for ${h.court_id || "the hearing"} is awaiting verification.` },
   verified: { icon: ShieldCheck, title: "Hearing Verified", description: (h) => `The order sheet for ${h.court_id || "the hearing"} was verified.` },
   disputed: { icon: AlertTriangle, title: "Order Sheet Disputed", description: (h) => `The order sheet for ${h.court_id || "the hearing"} was disputed and is under review.` },
-  completed: { icon: Banknote, title: "Escrow Released", description: (h) => `Escrow for ${h.court_id || "the hearing"} has been released.` },
+  completed: { icon: Banknote, title: "Payment Released", description: (h) => `Payment for ${h.court_id || "the hearing"} has been released.` },
   rated: { icon: Star, title: "Rating Submitted", description: () => "A rating was submitted for this hearing." },
   rejected: { icon: XCircle, title: "Request Declined", description: (h) => `The hearing request for ${h.court_id || "this hearing"} was declined.` },
   cancelled: { icon: Ban, title: "Request Cancelled", description: (h) => `The hearing request for ${h.court_id || "this hearing"} was cancelled.` },
@@ -251,7 +280,7 @@ function describeFreeTextActivity(note) {
   if (note?.startsWith("Case document uploaded")) return { icon: UploadCloud, title: "Case Document Uploaded" };
   if (note?.startsWith("Fee agreed")) return { icon: Handshake, title: "Fee Agreed" };
   if (note?.startsWith("Payout of")) return { icon: Banknote, title: "Payout Released" };
-  if (note?.startsWith("Escrow refunded")) return { icon: Banknote, title: "Refund Issued" };
+  if (note?.startsWith("Payment refunded")) return { icon: Banknote, title: "Refund Issued" };
   return { icon: Info, title: "Update" };
 }
 

@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { ArrowRight, Loader2, ShieldCheck, Eye, EyeOff } from "lucide-react";
+import { getErrorMessage } from "@/lib/api";
 import Logo from "@/components/shared/Logo";
 import GoogleAuthButton from "@/components/shared/GoogleAuthButton";
 import RoleSelectModal from "@/components/landing/join/RoleSelectModal";
@@ -30,7 +31,14 @@ export default function Register() {
   const { register, googleOAuthEnabled, googleClientId } = useAuth();
   const [loading, setLoading] = useState(false);
   const [agreedToTerms, setAgreedToTerms] = useState(false);
-  const [form, setForm] = useState({ name: "", email: "", phone: "", password: "", role: "advocate" });
+  // Bug fix: this defaulted to "advocate" — anyone who filled the form
+  // without opening the "I am a..." dropdown (or just clicked "Continue
+  // with Google", which sends whatever role this state holds) got their
+  // account, profile badge, and dashboard permanently labeled Advocate
+  // even if they're just a person hiring a proxy counsel or ordering a
+  // print job. "client" is the correct default for that — "advocate" stays
+  // an explicit, deliberate choice in the dropdown below.
+  const [form, setForm] = useState({ name: "", email: "", phone: "", password: "", role: "client" });
   const [vendorJoinOpen, setVendorJoinOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const isVendorRole = form.role === "vendor";
@@ -44,7 +52,15 @@ export default function Register() {
       toast.success("Account created. Welcome to CourtBazaar™!");
       navigate("/dashboard");
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Registration failed");
+      // Bug fix: FastAPI's own request-validation failures (422, e.g. an
+      // EmailStr rejecting a malformed/reserved-domain address) return
+      // `detail` as an ARRAY of {type,loc,msg,...} objects, not a string —
+      // toast.error() rendered that array directly into the DOM, and React
+      // throws "Objects are not valid as a React child", crashing the whole
+      // page (blank/white-screen in prod, the dev error overlay locally)
+      // instead of showing a normal "invalid email" toast. getErrorMessage
+      // already handles both shapes; this page just never used it.
+      toast.error(getErrorMessage(e, "Registration failed"));
     } finally { setLoading(false); }
   };
 
@@ -120,6 +136,7 @@ export default function Register() {
                 <Select value={form.role} onValueChange={(v) => setForm({...form, role: v})}>
                   <SelectTrigger data-testid="register-role-select"><SelectValue /></SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="client">Client / Individual</SelectItem>
                     <SelectItem value="advocate">Advocate</SelectItem>
                     {/* <SelectItem value="law_firm">Law Firm</SelectItem> */}
                     <SelectItem value="vendor">Vendor / Print Shop</SelectItem>
@@ -186,7 +203,22 @@ export default function Register() {
                   <span className="text-2xs uppercase tracking-wide font-bold text-muted-foreground">Or continue with</span>
                   <div className="h-px flex-1 bg-border" />
                 </div>
-                <GoogleAuthButton clientId={googleClientId} role={form.role} />
+                {/* Bug fix: this used to pass form.role straight through as
+                    a query param on the OAuth redirect URL — Google requires
+                    an EXACT match (query string included) against a fixed
+                    list registered in Cloud Console, so every dropdown
+                    choice (advocate/vendor/delivery_partner) needed its own
+                    separately-registered redirect URI, and none of them
+                    were — this is what broke "Continue with Google" outright
+                    (redirect_uri_mismatch) the moment the default changed
+                    from "advocate" to "client". No `role` prop now: a Google
+                    sign-up here always becomes a "client" account regardless
+                    of the dropdown above, matching what's actually
+                    registered. Someone who wants Advocate/Vendor/Delivery
+                    Partner specifically uses the password form instead,
+                    which sends role in the request body — no URL, no Google
+                    allow-list to maintain. */}
+                <GoogleAuthButton clientId={googleClientId} />
               </>
             )}
           </CardContent>

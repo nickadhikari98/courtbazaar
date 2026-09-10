@@ -77,8 +77,9 @@ const HEARING_EVENT_META = {
   "Order sheet verified": { group: "activity", icon: ShieldCheck },
   "Payment successful": { group: "activity", icon: CheckCircle2 },
   "Offer accepted": { group: "activity", icon: CheckCircle2 },
+  "Fee agreed": { group: "activity", icon: CheckCircle2 },
   "Payout released": { group: "activity", icon: Banknote },
-  "Escrow released": { group: "activity", icon: ShieldCheck },
+  "Payment released": { group: "activity", icon: ShieldCheck },
   "Refund issued": { group: "activity", icon: Banknote },
   "Rating received": { group: "activity", icon: Star },
   "Hearing cancelled": { group: "activity", icon: XCircle },
@@ -86,6 +87,12 @@ const HEARING_EVENT_META = {
   "Request declined": { group: "info", icon: XCircle },
   "Negotiation ended": { group: "info", icon: Info },
   "Dispute resolved — no payout": { group: "info", icon: Info },
+  // Auto top-5 fallback (see hearings._create_fallback_requests/
+  // _auto_cancel_fallback_siblings) — same "New hearing request" title as a
+  // manual Select Counsel reuses the row above, these three are its own.
+  "Finding you alternative counsels": { group: "activity", icon: Gavel },
+  "No further matches found": { group: "info", icon: Info },
+  "Request closed": { group: "info", icon: XCircle },
 };
 
 // Classifies a raw /notifications feed row (order/settlement/hearing events

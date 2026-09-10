@@ -6,8 +6,10 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Info, Paperclip, Loader2 } from "lucide-react";
 import { formatINR } from "@/lib/api";
+import { TIME_OF_DAY_OPTIONS } from "@/config/proxyCounselPricing";
 import { toggleInArray } from "@/lib/utils";
 import CourtLocationSelector from "@/components/shared/CourtLocationSelector";
 import WorkRequiredField from "@/components/shared/WorkRequiredField";
@@ -177,7 +179,12 @@ export default function LegalServiceRequestForm({
             </div>
             <div>
               <Label>Hearing Time *</Label>
-              <Input type="time" value={fields.hearing_time} onChange={(e) => set({ hearing_time: e.target.value })} />
+              <Select value={fields.hearing_time || undefined} onValueChange={(v) => set({ hearing_time: v })}>
+                <SelectTrigger aria-invalid={!!errors.hearing_time}><SelectValue placeholder="Select a time slot" /></SelectTrigger>
+                <SelectContent>
+                  {TIME_OF_DAY_OPTIONS.map((opt) => <SelectItem key={opt} value={opt}>{opt}</SelectItem>)}
+                </SelectContent>
+              </Select>
               {errors.hearing_time && <p className="text-xs text-destructive mt-1">{errors.hearing_time}</p>}
             </div>
           </div>
