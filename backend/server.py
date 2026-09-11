@@ -1042,6 +1042,23 @@ async def download_file(file_id: str, inline: bool = False, user=Depends(get_cur
     url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"), inline=inline)
     return {"url": url, "filename": rec.get("original_filename")}
 
+# Bounds how many legacy-document page-count detections (each a blocking
+# storage download + PDF parse, see _detect_hearing_doc_page_count_sync)
+# run at once when /files/mine backfills a whole page of old records —
+# without this, up to 200 docs with no cached page_count would all hit
+# asyncio.to_thread concurrently in one request.
+_PAGE_COUNT_DETECTION_CONCURRENCY = 8
+_page_count_detection_semaphore = asyncio.Semaphore(_PAGE_COUNT_DETECTION_CONCURRENCY)
+
+
+def _detect_hearing_doc_page_count_sync(storage_path: str, filename: str, content_type: str) -> int:
+    """Blocking: downloads the object from storage (boto3) and runs
+    page-count detection (PyPDF2/pdf2image). Only ever called via
+    asyncio.to_thread — never directly from the event loop."""
+    data, _ = get_object(storage_path)
+    return detect_page_count(filename, content_type, data)
+
+
 async def _hearing_doc_page_count(d: dict) -> Optional[int]:
     """hearing_documents predates page-count tracking (add_document now sets
     it going forward — see file_meta.detect_page_count), so older records
@@ -1049,7 +1066,14 @@ async def _hearing_doc_page_count(d: dict) -> Optional[int]:
     convention as db.files. A PDF's real count isn't knowable without
     opening the file, so it's detected once here from the actual stored
     bytes (never fabricated) and cached back onto the record so this only
-    happens once per legacy document, not on every page load."""
+    happens once per legacy document, not on every page load.
+
+    Detection is blocking I/O + CPU work, so it always runs off the event
+    loop (asyncio.to_thread), bounded by _page_count_detection_semaphore so
+    a page full of legacy documents can't spin up unbounded threads at
+    once. Detection failure and cache-write failure are caught
+    independently — either one failing never stops the rest of /files/mine,
+    and a cache-write failure never discards an already-detected count."""
     if "page_count" in d and d["page_count"]:
         return d["page_count"]
     ct = (d.get("content_type") or "").lower()
@@ -1057,13 +1081,22 @@ async def _hearing_doc_page_count(d: dict) -> Optional[int]:
         return 1
     if "pdf" not in ct:
         return None
+    async with _page_count_detection_semaphore:
+        try:
+            page_count = await asyncio.to_thread(
+                _detect_hearing_doc_page_count_sync,
+                d["storage_path"], d.get("original_filename"), d.get("content_type"),
+            )
+        except Exception as e:
+            logger.warning(f"Lazy page count detection failed for hearing doc {d.get('doc_id')}: {e}")
+            return None
     try:
-        data, _ = get_object(d["storage_path"])
-        page_count = detect_page_count(d.get("original_filename"), d.get("content_type"), data)
+        await db.hearing_documents.update_one({"doc_id": d["doc_id"]}, {"$set": {"page_count": page_count}})
     except Exception as e:
-        logger.warning(f"Lazy page count detection failed for hearing doc {d.get('doc_id')}: {e}")
-        return None
-    await db.hearing_documents.update_one({"doc_id": d["doc_id"]}, {"$set": {"page_count": page_count}})
+        # Cache write is best-effort only — the detected count above is
+        # still returned to the caller either way, so /files/mine never
+        # fails or drops a page_count just because this write didn't land.
+        logger.warning(f"Caching detected page count failed for hearing doc {d.get('doc_id')}: {e}")
     return page_count
 
 
@@ -1082,13 +1115,19 @@ async def my_files(user=Depends(get_current_user)):
     hearing_docs = await db.hearing_documents.find(
         {"uploaded_by": user["user_id"], "is_deleted": False}, {"_id": 0}
     ).sort("uploaded_at", -1).to_list(200)
-    for d in hearing_docs:
+    # Concurrent (semaphore-bounded, see _hearing_doc_page_count), not
+    # sequential — legacy docs needing detection no longer serialize behind
+    # each other's storage download + PDF parse. _hearing_doc_page_count
+    # never raises (detection and cache-write failures are caught inside
+    # it), so a bad legacy document can't take the rest of the page down.
+    page_counts = await asyncio.gather(*(_hearing_doc_page_count(d) for d in hearing_docs))
+    for d, page_count in zip(hearing_docs, page_counts):
         files.append({
             "file_id": d["doc_id"],
             "user_id": user["user_id"],
             "original_filename": d["original_filename"],
             "content_type": d.get("content_type"),
-            "page_count": await _hearing_doc_page_count(d),
+            "page_count": page_count,
             "created_at": d["uploaded_at"],
             "source": "hearing",
             "hearing_id": d["hearing_id"],

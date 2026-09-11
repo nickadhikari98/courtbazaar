@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, getErrorMessage } from "@/lib/api";
 import PageContainer from "@/components/layout/PageContainer";
@@ -20,6 +20,12 @@ export default function Documents() {
   const [error, setError] = useState(null);
   const [preview, setPreview] = useState(null); // { file, url, loading, error }
 
+  // Guards against a stale openPreview() response overwriting a newer one —
+  // bumped whenever a new preview starts loading or the dialog is closed, so
+  // an in-flight request from a previous Open click (or a since-closed
+  // dialog) can recognize itself as stale and skip its setPreview call.
+  const activePreviewToken = useRef(0);
+
   const load = useCallback(() => {
     setError(null);
     setFiles(null);
@@ -40,11 +46,14 @@ export default function Documents() {
       : api.get(`/files/${f.file_id}/download`, { params: { inline } }).then((r) => r.data);
 
   const openPreview = async (f) => {
+    const token = ++activePreviewToken.current;
     setPreview({ file: f, url: null, loading: true, error: null });
     try {
       const data = await fetchFileUrl(f, true);
+      if (activePreviewToken.current !== token) return; // superseded by a later Open or a Close
       setPreview({ file: f, url: data.url, loading: false, error: null });
     } catch (err) {
+      if (activePreviewToken.current !== token) return;
       setPreview({ file: f, url: null, loading: false, error: getErrorMessage(err, "Could not load this document") });
     }
   };
@@ -114,7 +123,7 @@ export default function Documents() {
       </div>
       <DocumentPreviewDialog
         open={!!preview}
-        onOpenChange={(v) => { if (!v) setPreview(null); }}
+        onOpenChange={(v) => { if (!v) { activePreviewToken.current++; setPreview(null); } }}
         url={preview?.url}
         filename={preview?.file?.original_filename}
         contentType={preview?.file?.content_type}
