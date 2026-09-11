@@ -192,6 +192,31 @@ def test_list_and_recommend_experience_bracket_filter():
     asyncio.run(body())
 
 
+def test_list_and_recommend_experience_bracket_filter_falls_back_to_years():
+    """A profile with experience_years but no self-selected experience_bracket
+    (e.g. backfilled from a lead's years-of-practice bucket — see
+    leads._derive_practice_profile_patch, which never sets experience_bracket)
+    must still match by its numeric experience_years falling in the bracket's
+    inclusive range, not just profiles that explicitly picked the bracket."""
+    async def body():
+        db = _db()
+        fifteen_yr = f"test_counsel_{uuid.uuid4().hex[:8]}"
+        eight_yr = f"test_counsel_{uuid.uuid4().hex[:8]}"
+        five_yr = f"test_counsel_{uuid.uuid4().hex[:8]}"
+        try:
+            await db.proxy_counsel_profiles.insert_one(_profile(fifteen_yr, experience_years=15))
+            await db.proxy_counsel_profiles.insert_one(_profile(eight_yr, experience_years=8))
+            await db.proxy_counsel_profiles.insert_one(_profile(five_yr, experience_years=5))
+            ranked, _ = await counsel_matching.list_and_recommend(db, experience_bracket="5-7")
+            ids = {c["user_id"] for c in ranked}
+            assert five_yr in ids
+            assert eight_yr not in ids
+            assert fifteen_yr not in ids
+        finally:
+            await _cleanup(db, [fifteen_yr, eight_yr, five_yr])
+    asyncio.run(body())
+
+
 def test_list_and_recommend_experience_bracket_rejects_invalid_value():
     async def body():
         db = _db()

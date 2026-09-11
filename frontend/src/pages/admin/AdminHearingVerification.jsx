@@ -16,6 +16,8 @@ import HearingTimeline from "@/components/shared/HearingTimeline";
 import HearingProgressStepper from "@/components/shared/HearingProgressStepper";
 import EmptyState from "@/components/shared/EmptyState";
 import Loading from "@/components/shared/Loading";
+import OrderAgentSummaryPanel from "@/components/admin/OrderAgentSummaryPanel";
+import OrderAgentHearingSummaryCard from "@/components/admin/OrderAgentHearingSummaryCard";
 import {
   adminListHearingRequests, adminVerifyHearingOrderSheet, adminRejectHearingVerification,
   adminResolveHearingDispute, adminReleaseHearingPayout, getHearingEscrow, getHearingRequest,
@@ -42,6 +44,8 @@ export default function AdminHearingVerification() {
       <PageHeader eyebrow="Admin · Hearing Verification" eyebrowIcon={Banknote}
                   title="Verify order sheets & release payouts"
                   description="Verify and Release Payout are always separate steps — payouts only unlock once a hearing is verified." />
+
+      <OrderAgentSummaryPanel />
 
       <Tabs value={status} onValueChange={setStatus} className="mt-6">
         <TabsList>
@@ -131,6 +135,12 @@ function HearingVerificationDialog({ hearingId, open, onOpenChange, onChanged })
         </DialogHeader>
 
         <HearingProgressStepper status={hearing.status} compact targeted={!!hearing.target_advocate_id} />
+
+        {/* Order Management Agent — on-demand, read-only summary for this hearing.
+            Never auto-runs (no on-mount fetch): only when admin explicitly asks. */}
+        <div className="rounded-lg border p-3 bg-secondary/20">
+          <OrderAgentHearingSummaryCard hearingId={hearingId} open={open} />
+        </div>
 
         {/* Escrow amount / commission / final payout — shown before any action */}
         {escrow && (

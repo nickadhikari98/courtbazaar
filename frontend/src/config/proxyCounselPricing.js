@@ -12,6 +12,7 @@ export const PRICING_SLOT_LABELS = {
   afternoon: "2 PM – 5 PM",
   full_day: "Full Day",
   weekend: "Weekends",
+  urgent: "Urgent (same-day)",
 };
 
 // Founder direction (2026-09): every plain "what time" picker in the app
