@@ -378,14 +378,14 @@ export default function NegotiationOfferPanel({
         )}
 
         {/* Other Actions — walking away, de-emphasized below the primary
-            card. "End Negotiation" only appears for no_offer/waiting: once a
+            card. "End Negotiation" only appears for waiting: once a
             counter exists (action_required), "Reject" above already ends
             the negotiation with this counsel — a second button for the same
-            outcome would just be noise. Cancel Hearing Request (destructive,
-            confirmed) is always available as the one true "start over"
-            escape hatch, whatever stage this is at. */}
-        {stage !== "no_offer" && (
-          <div className="mt-5 pt-3 border-t flex flex-wrap gap-2">
+            outcome would just be noise; for no_offer there's nothing to end
+            yet. Cancel Hearing Request (destructive, confirmed) is always
+            available as the one true "start over" escape hatch, whatever
+            stage this is at. */}
+        <div className="mt-5 pt-3 border-t flex flex-wrap gap-2">
             {stage === "waiting" && (
               <Dialog open={endNegotiationDialogOpen} onOpenChange={setEndNegotiationDialogOpen}>
                 <DialogTrigger asChild>
@@ -431,7 +431,6 @@ export default function NegotiationOfferPanel({
               </DialogContent>
             </Dialog>
           </div>
-        )}
 
         {historyDisclosure}
         {offerModalDialog}

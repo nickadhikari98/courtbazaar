@@ -355,7 +355,8 @@ async def _attach_negotiation_action_flags(db, hearings: List[dict], user_id: st
     pending = [h for h in hearings
                if h.get("target_advocate_id")
                and not h.get("commercially_locked")
-               and h.get("status") in ("requested", "payment_pending")]
+               and h.get("status") in ("requested", "payment_pending")
+               and h.get("negotiation_enabled", True)]
     if not pending:
         return
     neg_by_hearing = {
