@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import json
 import hashlib
 import logging
 from pathlib import Path
@@ -1827,6 +1828,8 @@ async def activate_subscription(payload: dict, user=Depends(get_current_user)):
 # ============================================================================
 # RAZORPAY (alongside Stripe)
 # ============================================================================
+import payment_reconciliation as payment_svc
+
 @api_router.post("/payments/razorpay/create-order")
 async def rzp_create_order(payload: dict, user=Depends(get_current_user)):
     import razorpay_svc
@@ -1851,6 +1854,16 @@ async def rzp_create_order(payload: dict, user=Depends(get_current_user)):
     })
     return rzp
 
+async def _mark_payment_failed(rzp_order_id: str, rzp_payment_id: str) -> bool:
+    """Thin delegate to payment_reconciliation, kept as a module-level name
+    here (rather than calling payment_svc.mark_payment_failed directly from
+    the webhook route) so the webhook handler and tests can call this by a
+    stable name without reaching into the reconciliation module's internals."""
+    return await payment_svc.mark_payment_failed(db, rzp_order_id, rzp_payment_id, _notify_hearing_event)
+
+async def _finalize_marketplace_payment(tx: dict, rzp_payment_id: str) -> bool:
+    return await payment_svc.finalize_marketplace_payment(db, tx, rzp_payment_id)
+
 @api_router.post("/payments/razorpay/verify")
 async def rzp_verify(payload: dict, user=Depends(get_current_user)):
     import razorpay_svc
@@ -1863,15 +1876,7 @@ async def rzp_verify(payload: dict, user=Depends(get_current_user)):
     tx = await db.payment_transactions.find_one({"razorpay_order_id": rzp_order_id}, {"_id": 0})
     if not tx:
         raise HTTPException(404, "Transaction not found")
-    await db.payment_transactions.update_one(
-        {"razorpay_order_id": rzp_order_id},
-        {"$set": {"payment_status": "paid", "status": "complete", "razorpay_payment_id": rzp_payment_id}},
-    )
-    await db.orders.update_one(
-        {"order_id": tx["order_id"]},
-        {"$set": {"payment_status": "paid", "status": "matched"},
-         "$push": {"timeline": {"status": "matched", "at": datetime.now(timezone.utc).isoformat(), "note": "Payment successful via Razorpay"}}},
-    )
+    await _finalize_marketplace_payment(tx, rzp_payment_id)
     return {"ok": True, "payment_id": rzp_payment_id}
 
 @api_router.get("/payments/methods")
@@ -1881,6 +1886,62 @@ async def payment_methods():
         "razorpay": razorpay_svc.is_enabled(),
         "razorpay_simulated": not razorpay_svc.is_enabled(),
     }
+
+@api_router.post("/payments/razorpay/webhook")
+async def razorpay_webhook(request: Request):
+    """Reconciliation safety net for the client-driven /verify routes above:
+    if a browser closes or the network drops right after Razorpay captures
+    a payment but before the client calls /verify, this is the only thing
+    that ever finalizes the transaction. Unauthenticated by design (Razorpay
+    calls this directly) — the HMAC signature is the only auth, so this must
+    read the raw body before any JSON parsing or the signature check breaks.
+
+    payment.captured and payment.failed are handled asymmetrically on
+    purpose: captured can move pending|failed -> paid (a retry succeeding),
+    failed can only move pending -> failed. A late/out-of-order
+    payment.failed must never regress an already-paid transaction — both
+    _finalize_*_payment's {"$ne": "paid"} guard and the failed-handling
+    below share that same rule."""
+    import razorpay_svc
+    body = await request.body()
+    signature = request.headers.get("X-Razorpay-Signature", "")
+    if not razorpay_svc.RAZORPAY_WEBHOOK_SECRET or not razorpay_svc.verify_webhook(body, signature, razorpay_svc.RAZORPAY_WEBHOOK_SECRET):
+        raise HTTPException(400, "Invalid webhook signature")
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        raise HTTPException(400, "Malformed webhook body")
+
+    event = payload.get("event")
+    if event not in ("payment.captured", "payment.failed"):
+        return {"ok": True, "ignored": event}
+
+    entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
+    rzp_order_id = entity.get("order_id")
+    rzp_payment_id = entity.get("id")
+    tx = await db.payment_transactions.find_one({"razorpay_order_id": rzp_order_id}, {"_id": 0})
+    try:
+        await db.payment_webhook_events.insert_one({
+            "razorpay_order_id": rzp_order_id, "razorpay_payment_id": rzp_payment_id,
+            "event": event, "received_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        logger.warning(f"Failed to log webhook event (non-fatal): {e}")
+    if not tx:
+        logger.warning(f"Razorpay webhook for unknown razorpay_order_id={rzp_order_id}")
+        return {"ok": True, "unknown_order": True}
+
+    if event == "payment.failed":
+        await _mark_payment_failed(rzp_order_id, rzp_payment_id)
+        return {"ok": True}
+
+    if tx.get("context_type") == "hearing":
+        hearing = await db.hearing_requests.find_one({"hearing_id": tx["context_id"]})
+        if hearing:
+            await _finalize_hearing_payment(hearing, tx, rzp_payment_id)
+    elif tx.get("order_id"):
+        await _finalize_marketplace_payment(tx, rzp_payment_id)
+    return {"ok": True}
 
 # ============================================================================
 # LAW FIRM Multi-User Seats + Roles
@@ -2658,6 +2719,12 @@ async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)
         )
     return result
 
+async def _finalize_hearing_payment(hearing: dict, tx: dict, rzp_payment_id: str) -> bool:
+    return await payment_svc.finalize_hearing_payment(
+        db, hearing, tx, rzp_payment_id,
+        platform_commission_pct=PLATFORM_COMMISSION_PCT, notify_hearing_event=_notify_hearing_event,
+    )
+
 @api_router.post("/hearing-requests/{hearing_id}/payment/create-order")
 async def create_hearing_payment_order(hearing_id: str, user=Depends(get_current_user)):
     import razorpay_svc
@@ -2693,37 +2760,7 @@ async def verify_hearing_payment(hearing_id: str, payload: dict, user=Depends(ge
     tx = await db.payment_transactions.find_one({"razorpay_order_id": rzp_order_id, "context_type": "hearing", "context_id": hearing_id})
     if not tx:
         raise HTTPException(404, "Payment transaction not found")
-    await db.payment_transactions.update_one(
-        {"razorpay_order_id": rzp_order_id},
-        {"$set": {"payment_status": "paid", "status": "complete", "razorpay_payment_id": rzp_payment_id}},
-    )
-    # M6 reorder: payment now happens before anyone accepts, so
-    # proxy_counsel_user_id is still None here — escrow.create_and_hold's
-    # deferred-payee path (M2) holds the funds unassigned; M12's
-    # accept_hearing_request extension is what calls assign_payee later.
-    await escrow_svc.create_and_hold(
-        db, context_type="hearing", context_id=hearing_id, service_id=hearings_svc.ESCROW_SERVICE_ID,
-        matter_id=hearing.get("matter_id"), payer_user_id=user["user_id"], payee_user_id=hearing["proxy_counsel_user_id"],
-        amount=hearing["fee"], platform_commission_pct=PLATFORM_COMMISSION_PCT,
-        razorpay_order_id=rzp_order_id, razorpay_payment_id=rzp_payment_id,
-    )
-    await hearings_svc.mark_payment_confirmed(db, hearing_id, user)
-    # Targeted advocate is now notified at request-creation time (see
-    # create_hearing_request above) — by the time payment is verified here,
-    # negotiation has already been agreed, so this is a payment-confirmation
-    # notice, not the first the advocate hears of the request. Broadcast-to-
-    # all requests have no single recipient to notify at this point (same as
-    # before) — that's the Counsel Matching Agent's job (M11, not built yet).
-    if hearing.get("target_advocate_id"):
-        await _notify_hearing_event(hearing["target_advocate_id"], "Payment received",
-                                     f"Payment for your hearing at {hearing['court_id']} is confirmed and held securely by CourtBazaar.",
-                                     hearing_id)
-    # Notification audit (production readiness pass): the requester who just
-    # paid previously got nothing durable — only an ephemeral client-side
-    # toast, lost on refresh/different device. They get their own receipt too.
-    await _notify_hearing_event(user["user_id"], "Payment successful",
-                                 f"Your payment for the hearing at {hearing['court_id']} is confirmed and held securely by CourtBazaar.",
-                                 hearing_id)
+    await _finalize_hearing_payment(hearing, tx, rzp_payment_id)
     return {"ok": True, "payment_id": rzp_payment_id, "status": "broadcast"}
 
 @api_router.get("/hearing-requests/{hearing_id}/escrow")

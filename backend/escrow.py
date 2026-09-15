@@ -24,6 +24,11 @@ matching picks a counsel. assign_payee() attaches the payee once one accepts
 and performs the wallet_held_balance credit that create_and_hold would
 otherwise have done immediately. release() refuses to run until a payee has
 been assigned — see release()'s docstring for why.
+
+refund() calls the real gateway (razorpay_svc.refund_payment) when the
+escrow isn't a simulated payment, via the "held" -> "refund_pending" ->
+"refunded" claim sequence documented on refund() itself — the intermediate
+state is what makes a double-invocation (e.g. an admin double-click) safe.
 """
 import uuid
 from datetime import datetime, timezone
@@ -32,13 +37,16 @@ from typing import Any, Dict, Optional
 from fastapi import HTTPException
 from pymongo import ReturnDocument
 
+import razorpay_svc
 from workflow import StateMachine, IllegalTransition
 
 ESCROW_TRANSITIONS = {
     ("created", "capture"): "captured",
     ("captured", "hold"): "held",
     ("held", "release"): "released",
-    ("held", "refund"): "refunded",
+    ("held", "refund"): "refund_pending",
+    ("refund_pending", "refund_confirm"): "refunded",
+    ("refund_pending", "refund_release"): "held",
 }
 
 
@@ -149,22 +157,39 @@ async def release(db, *, context_type: str, context_id: str, released_by_user_id
 
     Refuses to run until a payee has been assigned (see assign_payee) —
     without this guard, an escrow held with payee_user_id=None could be
-    "released" while crediting nobody, silently losing track of the money."""
+    "released" while crediting nobody, silently losing track of the money.
+
+    The "held" -> "released" step is claimed atomically (same idiom as
+    refund()/assign_payee(), not just StateMachine's in-memory check): two
+    near-simultaneous release() calls for the same context could otherwise
+    both read status "held", both pass validation, and both credit the
+    payee's wallet — double-paying them and driving wallet_held_balance
+    negative. Claiming "released" first means only one caller ever proceeds
+    to the wallet mutation; the other gets an idempotent response instead."""
     escrow = await db.escrow_transactions.find_one({"context_type": context_type, "context_id": context_id})
     if not escrow:
         raise HTTPException(404, "No escrow record for this context")
     if not escrow.get("payee_user_id"):
         raise HTTPException(400, "Cannot release escrow with no payee assigned — call assign_payee first")
-    sm = StateMachine(ESCROW_TRANSITIONS, _make_timeline_hook(db, escrow["escrow_id"]))
-    try:
-        await sm.apply(escrow, escrow["status"], "release", {"user_id": released_by_user_id})
-    except IllegalTransition:
-        raise HTTPException(400, f"Cannot release from status '{escrow['status']}'")
 
     now = datetime.now(timezone.utc).isoformat()
-    await db.escrow_transactions.update_one(
-        {"escrow_id": escrow["escrow_id"]}, {"$set": {"status": "released", "updated_at": now}},
+    claimed = await db.escrow_transactions.find_one_and_update(
+        {"escrow_id": escrow["escrow_id"], "status": "held", "payee_user_id": {"$ne": None}},
+        {"$set": {"status": "released", "updated_at": now}},
+        projection={"_id": 0}, return_document=ReturnDocument.AFTER,
     )
+    if not claimed:
+        current = await db.escrow_transactions.find_one({"escrow_id": escrow["escrow_id"]}, {"_id": 0})
+        if current and current["status"] == "released":
+            return current  # already released — idempotent success, not an error
+        if current and not current.get("payee_user_id"):
+            raise HTTPException(400, "Cannot release escrow with no payee assigned — call assign_payee first")
+        raise HTTPException(400, f"Cannot release from status '{current['status'] if current else escrow['status']}'")
+
+    sm = StateMachine(ESCROW_TRANSITIONS, _make_timeline_hook(db, claimed["escrow_id"]))
+    await sm.apply(claimed, "held", "release", {"user_id": released_by_user_id})
+
+    escrow = claimed
     payee_id = escrow["payee_user_id"]
     payee_amount = escrow["payee_amount"]
     await db.users.update_one(
@@ -183,39 +208,82 @@ async def release(db, *, context_type: str, context_id: str, released_by_user_id
         "settlement_state": "withdrawable",
         "created_at": now,
     })
-    escrow["status"] = "released"
-    escrow.pop("_id", None)
     return escrow
 
 
 async def refund(db, *, context_type: str, context_id: str, reason: str) -> dict:
-    """held -> refunded: ledger-level only in this pass — an actual bank/
-    gateway refund call is a documented future step (see module docstring),
-    not built now. Reverses the wallet_held_balance bump from create_and_hold
-    — skipped entirely if no payee was ever assigned (nothing to reverse;
-    see assign_payee/module docstring for the deferred-payee case)."""
+    """held -> refund_pending -> refunded: calls the real gateway refund
+    (razorpay_svc.refund_payment) before any ledger state says "refunded",
+    so a failed gateway call never leaves the ledger claiming money moved
+    that Razorpay never released.
+
+    The "held" -> "refund_pending" step is an atomic conditional write (same
+    idiom as assign_payee), not just the StateMachine's in-memory check —
+    StateMachine.apply() only validates a transition and never touches the
+    database, so without this claim two concurrent refund() calls could both
+    read status "held", both pass validation, and both call the gateway.
+    Claiming "refund_pending" first means only one caller ever proceeds to
+    the gateway; the other gets an idempotent response instead. On gateway
+    failure the claim is released back to "held" so the refund is retryable.
+
+    Skips the gateway call for a simulated payment (no razorpay_payment_id,
+    or one starting with pay_sim_) — see razorpay_svc.refund_payment.
+    Skips the wallet reversal entirely if no payee was ever assigned
+    (nothing to reverse; see assign_payee/module docstring for the
+    deferred-payee case)."""
     escrow = await db.escrow_transactions.find_one({"context_type": context_type, "context_id": context_id})
     if not escrow:
         raise HTTPException(404, "No escrow record for this context")
-    sm = StateMachine(ESCROW_TRANSITIONS, _make_timeline_hook(db, escrow["escrow_id"]))
-    try:
-        await sm.apply(escrow, escrow["status"], "refund", None)
-    except IllegalTransition:
-        raise HTTPException(400, f"Cannot refund from status '{escrow['status']}'")
 
     now = datetime.now(timezone.utc).isoformat()
-    await db.escrow_transactions.update_one(
-        {"escrow_id": escrow["escrow_id"]},
-        {"$set": {"status": "refunded", "refund_reason": reason, "updated_at": now}},
+    refund_pending_state = ESCROW_TRANSITIONS[("held", "refund")]
+    claimed = await db.escrow_transactions.find_one_and_update(
+        {"escrow_id": escrow["escrow_id"], "status": "held"},
+        {"$set": {"status": refund_pending_state, "updated_at": now}},
+        projection={"_id": 0}, return_document=ReturnDocument.AFTER,
     )
-    if escrow.get("payee_user_id"):
-        await db.users.update_one(
-            {"user_id": escrow["payee_user_id"]}, {"$inc": {"wallet_held_balance": -escrow["payee_amount"]}},
+    if not claimed:
+        current = await db.escrow_transactions.find_one({"escrow_id": escrow["escrow_id"]}, {"_id": 0})
+        if current and current["status"] == "refunded":
+            return current  # already refunded — idempotent success, not an error
+        if current and current["status"] == "refund_pending":
+            raise HTTPException(409, "Refund already in progress for this escrow")
+        raise HTTPException(400, f"Cannot refund from status '{escrow['status']}'")
+
+    sm = StateMachine(ESCROW_TRANSITIONS, _make_timeline_hook(db, claimed["escrow_id"]))
+    # The atomic claim above already performed the "held" -> refund_pending_state
+    # write; run the same audit hook sm.apply() would have run for it so this
+    # step still lands in the timeline like every other transition does.
+    await _make_timeline_hook(db, claimed["escrow_id"])(claimed, "held", refund_pending_state, None)
+    rzp_payment_id = claimed.get("razorpay_payment_id")
+    gateway_result = None
+    try:
+        if rzp_payment_id and not rzp_payment_id.startswith("pay_sim_"):
+            gateway_result = razorpay_svc.refund_payment(
+                rzp_payment_id, amount_inr=claimed["amount"],
+                notes={"context_type": context_type, "context_id": context_id, "reason": reason},
+            )
+        await sm.apply(claimed, "refund_pending", "refund_confirm", None)
+    except Exception:
+        # Release the claim so the refund can be retried — never leave the
+        # escrow stuck in refund_pending on a gateway failure.
+        await db.escrow_transactions.update_one(
+            {"escrow_id": claimed["escrow_id"]}, {"$set": {"status": "held", "updated_at": now}},
         )
-    escrow["status"] = "refunded"
-    escrow["refund_reason"] = reason
-    escrow.pop("_id", None)
-    return escrow
+        raise
+
+    now = datetime.now(timezone.utc).isoformat()
+    update_fields = {"status": "refunded", "refund_reason": reason, "updated_at": now}
+    if gateway_result:
+        update_fields["gateway_refund_id"] = gateway_result.get("razorpay_refund_id")
+        update_fields["gateway_refund_status"] = gateway_result.get("status")
+    await db.escrow_transactions.update_one({"escrow_id": claimed["escrow_id"]}, {"$set": update_fields})
+    if claimed.get("payee_user_id"):
+        await db.users.update_one(
+            {"user_id": claimed["payee_user_id"]}, {"$inc": {"wallet_held_balance": -claimed["payee_amount"]}},
+        )
+    claimed.update(update_fields)
+    return claimed
 
 
 async def get_for_context(db, context_type: str, context_id: str) -> Optional[dict]:

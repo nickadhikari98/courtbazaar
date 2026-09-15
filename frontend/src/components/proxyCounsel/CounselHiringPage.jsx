@@ -539,13 +539,24 @@ export default function CounselHiringPage({ serviceType }) {
                             {list.map((h) => (
                               <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveId(h.hearing_id)} data-testid={`hearing-row-${h.hearing_id}`}>
                                 <CardContent className="p-5">
-                                  <div className="flex items-start justify-between gap-4">
-                                    <div className="min-w-0">
-                                      <div className="font-display font-bold">{h.request_details?.common?.case_title || h.court_id}</div>
+                                  {/* flex-wrap so the badge can drop to its own line below
+                                      the case title instead of being forced onto the same
+                                      line and pushed off the right edge — but flex-wrap
+                                      alone wasn't enough: flex-shrink-0 plus no width
+                                      constraint meant the badge group still rendered at
+                                      its full unbroken content width even alone on its own
+                                      line. basis-full (this group claims the whole row on
+                                      mobile) + max-w-full + whitespace-normal on the badge
+                                      itself is what actually lets a long status label (e.g.
+                                      "Waiting for Hiring Advocate Payment") wrap within the
+                                      available width instead of overflowing it. */}
+                                  <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+                                    <div className="min-w-0 flex-1">
+                                      <div className="font-display font-bold truncate">{h.request_details?.common?.case_title || h.court_id}</div>
                                       <div className="text-sm text-muted-foreground">{h.hearing_date} {h.fee ? `· ₹${h.fee}` : ""}</div>
                                     </div>
-                                    <div className="flex items-center gap-2 flex-shrink-0">
-                                      <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} border-0 font-bold uppercase`}>
+                                    <div className="flex items-center justify-between gap-2 basis-full sm:basis-auto sm:justify-end">
+                                      <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} min-w-0 border-0 font-bold uppercase whitespace-normal max-w-full`}>
                                         {roleAwareStatusLabel(h, getViewerRole(h, user?.user_id))}
                                       </Badge>
                                       {key === "active" && (
