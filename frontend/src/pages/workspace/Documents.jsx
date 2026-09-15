@@ -42,11 +42,17 @@ export default function Documents() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>File</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Pages</TableHead>
-              <TableHead>Uploaded</TableHead>
-              <TableHead></TableHead>
+              <TableHead className="px-3 sm:px-4">File</TableHead>
+              {/* Type dropped below sm: with File/Pages/Date/action already at
+                  their natural minimum, this 5th column was consistently the
+                  one pushing the table's minimum width past a phone screen —
+                  the badge already showing next to the filename would be the
+                  first thing worth cutting, and this is the one entirely
+                  redundant with the filename's own extension. */}
+              <TableHead className="hidden sm:table-cell px-3 sm:px-4">Type</TableHead>
+              <TableHead className="px-3 sm:px-4">Pages</TableHead>
+              <TableHead className="px-3 sm:px-4">Date</TableHead>
+              <TableHead className="px-3 sm:px-4"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -54,11 +60,14 @@ export default function Documents() {
             {files?.length === 0 && <TableEmpty colSpan={5}>No documents uploaded yet</TableEmpty>}
             {files?.map((f) => (
               <TableRow key={f.file_id}>
-                <TableCell className="font-semibold truncate max-w-xs">{f.original_filename}</TableCell>
-                <TableCell><Badge variant="outline" className="text-2xs uppercase">{f.content_type?.split("/")[1] || "file"}</Badge></TableCell>
-                <TableCell>{f.page_count || "—"}</TableCell>
-                <TableCell className="text-muted-foreground">{new Date(f.created_at).toLocaleDateString()}</TableCell>
-                <TableCell>
+                <TableCell className="px-3 sm:px-4 font-semibold truncate max-w-[9rem] sm:max-w-xs">
+                  {f.original_filename}
+                  <Badge variant="outline" className="sm:hidden ml-1.5 text-2xs uppercase align-middle">{f.content_type?.split("/")[1] || "file"}</Badge>
+                </TableCell>
+                <TableCell className="hidden sm:table-cell px-3 sm:px-4"><Badge variant="outline" className="text-2xs uppercase">{f.content_type?.split("/")[1] || "file"}</Badge></TableCell>
+                <TableCell className="px-3 sm:px-4">{f.page_count || "—"}</TableCell>
+                <TableCell className="px-3 sm:px-4 text-muted-foreground">{new Date(f.created_at).toLocaleDateString()}</TableCell>
+                <TableCell className="px-3 sm:px-4">
                   <button type="button" onClick={() => open(f.file_id)} className="text-accent hover:underline inline-flex items-center gap-1 text-xs font-bold">
                     <Download className="w-3.5 h-3.5" /> Open
                   </button>
