@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
+RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
 
 
 def is_enabled() -> bool:
@@ -76,6 +77,34 @@ def verify_payment(razorpay_order_id: str, razorpay_payment_id: str, razorpay_si
     except Exception as e:
         logger.error(f"Razorpay verify failed: {e}")
         return False
+
+
+def refund_payment(razorpay_payment_id: str, amount_inr: Optional[float] = None, notes: dict = None) -> dict:
+    """Issue a refund for a captured payment. amount_inr=None means a full
+    refund. Fail-soft mirrors create_order: a simulated payment id (or no
+    keys configured) returns a fabricated refund record with no network
+    call, so callers never need to branch on is_enabled() themselves."""
+    notes = notes or {}
+    if not is_enabled() or razorpay_payment_id.startswith("pay_sim_"):
+        return {
+            "razorpay_refund_id": f"rfnd_sim_{uuid.uuid4().hex[:14]}",
+            "status": "processed",
+            "simulated": True,
+        }
+    try:
+        c = _client()
+        payload = {"notes": notes}
+        if amount_inr is not None:
+            payload["amount"] = int(round(amount_inr * 100))
+        rfnd = c.payment.refund(razorpay_payment_id, payload)
+        return {
+            "razorpay_refund_id": rfnd["id"],
+            "status": rfnd.get("status", "processed"),
+            "simulated": False,
+        }
+    except Exception as e:
+        logger.error(f"Razorpay refund failed: {e}")
+        raise
 
 
 def verify_webhook(body: bytes, signature: str, secret: str) -> bool:

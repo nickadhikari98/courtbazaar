@@ -14,12 +14,14 @@ import os
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import hearings  # noqa: E402
 import escrow  # noqa: E402
+import razorpay_svc  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 
@@ -201,4 +203,108 @@ def test_check_pending_order_sheets_skips_recent_payment():
             assert event is None
         finally:
             await _cleanup(db, [hearing_id], [counsel["user_id"]])
+    asyncio.run(body())
+
+
+def test_refund_calls_gateway_exactly_once_under_concurrent_calls():
+    """issue #50: StateMachine.apply() only validates in memory and never
+    touches the database, so without the "held" -> "refund_pending" atomic
+    claim, two concurrent refund() calls (e.g. an admin double-click) could
+    both read status "held", both pass validation, and both hit the
+    Razorpay refund API. This proves only one ever does."""
+    async def body():
+        db = _db()
+        requester, counsel = _user("requester"), _user("counsel")
+        hearing_id = None
+        orig_refund_payment = razorpay_svc.refund_payment
+        call_count = {"n": 0}
+
+        def fake_refund_payment(payment_id, amount_inr=None, notes=None):
+            call_count["n"] += 1
+            return {"razorpay_refund_id": "rfnd_fake_1", "status": "processed", "simulated": False}
+        razorpay_svc.refund_payment = fake_refund_payment
+        try:
+            hearing = await hearings.create_hearing_request(
+                db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
+            )
+            hearing_id = hearing["hearing_id"]
+            # A non-simulated payment id (doesn't start with pay_sim_) so
+            # refund() actually reaches the (mocked) gateway call.
+            await escrow.create_and_hold(
+                db, context_type="hearing", context_id=hearing_id, service_id=hearings.ESCROW_SERVICE_ID,
+                matter_id=None, payer_user_id=requester["user_id"], payee_user_id=counsel["user_id"],
+                amount=1500.0, platform_commission_pct=0.1,
+                razorpay_order_id=f"order_{uuid.uuid4().hex[:10]}", razorpay_payment_id=f"pay_live_{uuid.uuid4().hex[:10]}",
+            )
+
+            results = await asyncio.gather(
+                escrow.refund(db, context_type="hearing", context_id=hearing_id, reason="test"),
+                escrow.refund(db, context_type="hearing", context_id=hearing_id, reason="test"),
+                return_exceptions=True,
+            )
+            assert call_count["n"] == 1  # exactly one real gateway call, never two
+
+            outcomes = []
+            for r in results:
+                if isinstance(r, HTTPException):
+                    assert r.status_code == 409
+                    outcomes.append("conflict")
+                else:
+                    assert r["status"] == "refunded"
+                    outcomes.append("refunded")
+            assert "refunded" in outcomes  # at least one call actually completed the refund
+
+            escrow_doc = await db.escrow_transactions.find_one({"context_id": hearing_id}, {"_id": 0})
+            assert escrow_doc["status"] == "refunded"
+            assert escrow_doc["gateway_refund_id"] == "rfnd_fake_1"
+        finally:
+            razorpay_svc.refund_payment = orig_refund_payment
+            await _cleanup(db, [hearing_id] if hearing_id else [])
+    asyncio.run(body())
+
+
+def test_refund_gateway_failure_leaves_escrow_held_not_refunded():
+    """A failed gateway call must never leave the ledger claiming money
+    moved that Razorpay never released — the escrow must land back on
+    "held", retryable, not stuck in "refund_pending" or wrongly "refunded"."""
+    async def body():
+        db = _db()
+        requester, counsel = _user("requester"), _user("counsel")
+        hearing_id = None
+        orig_refund_payment = razorpay_svc.refund_payment
+        razorpay_svc.refund_payment = MagicMock(side_effect=RuntimeError("gateway unreachable"))
+        try:
+            hearing = await hearings.create_hearing_request(
+                db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
+            )
+            hearing_id = hearing["hearing_id"]
+            await escrow.create_and_hold(
+                db, context_type="hearing", context_id=hearing_id, service_id=hearings.ESCROW_SERVICE_ID,
+                matter_id=None, payer_user_id=requester["user_id"], payee_user_id=counsel["user_id"],
+                amount=1500.0, platform_commission_pct=0.1,
+                razorpay_order_id=f"order_{uuid.uuid4().hex[:10]}", razorpay_payment_id=f"pay_live_{uuid.uuid4().hex[:10]}",
+            )
+            before = await db.users.find_one({"user_id": counsel["user_id"]}, {"_id": 0}) or {}
+
+            try:
+                await escrow.refund(db, context_type="hearing", context_id=hearing_id, reason="test")
+                assert False, "expected the gateway failure to propagate"
+            except RuntimeError:
+                pass
+
+            escrow_doc = await db.escrow_transactions.find_one({"context_id": hearing_id}, {"_id": 0})
+            assert escrow_doc["status"] == "held"  # released back, retryable — not stuck, not refunded
+
+            after = await db.users.find_one({"user_id": counsel["user_id"]}, {"_id": 0}) or {}
+            assert after.get("wallet_held_balance") == before.get("wallet_held_balance")  # no wallet mutation happened
+
+            # Retry succeeds once the gateway is healthy again.
+            razorpay_svc.refund_payment = lambda payment_id, amount_inr=None, notes=None: {
+                "razorpay_refund_id": "rfnd_retry_1", "status": "processed", "simulated": False,
+            }
+            result = await escrow.refund(db, context_type="hearing", context_id=hearing_id, reason="test")
+            assert result["status"] == "refunded"
+        finally:
+            razorpay_svc.refund_payment = orig_refund_payment
+            await _cleanup(db, [hearing_id] if hearing_id else [])
     asyncio.run(body())
