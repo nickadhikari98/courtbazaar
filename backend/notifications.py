@@ -480,6 +480,76 @@ def notify_admins_new_review(review: dict) -> list:
     return [send_email(addr, tmpl["email_subject"], tmpl["email_html"]) for addr in ADMIN_ALERT_EMAILS]
 
 
+_TICKET_CATEGORY_LABELS = {
+    "order": "Order Issue",
+    "payment": "Payment",
+    "account": "Account",
+    "technical": "Technical Issue",
+    "feature_request": "Feature Request / Change",
+    "other": "Other",
+}
+
+
+def tmpl_support_ticket_created(ticket: dict) -> dict:
+    name = ticket.get("name") or "there"
+    category_label = _TICKET_CATEGORY_LABELS.get(ticket.get("category"), "General")
+    order_line = f"<p><b>Related order:</b> {ticket['order_id']}</p>" if ticket.get("order_id") else ""
+    return {
+        "email_subject": f"We've received your request — Ticket #{ticket['ticket_id']}",
+        "email_html": (
+            f"<p>Hi {name},</p>"
+            f"<p>Thanks for reaching out to CourtBazaar. Your support ticket has been logged and our team "
+            f"will get back to you shortly.</p>"
+            f"<p><b>Ticket ID:</b> {ticket['ticket_id']}<br>"
+            f"<b>Category:</b> {category_label}<br>"
+            f"<b>Subject:</b> {ticket.get('subject', '')}</p>"
+            f"{order_line}"
+            f"<p>Please quote this Ticket ID in any follow-up communication.</p>"
+        ),
+    }
+
+
+def tmpl_support_ticket_replied(ticket: dict, reply_text: str) -> dict:
+    name = ticket.get("name") or "there"
+    status_label = (ticket.get("status") or "").replace("_", " ").title()
+    return {
+        "email_subject": f"Update on your support ticket #{ticket['ticket_id']}",
+        "email_html": (
+            f"<p>Hi {name},</p>"
+            f"<p>There's an update on your support ticket <b>#{ticket['ticket_id']}</b> "
+            f"(\"{ticket.get('subject', '')}\") — status: <b>{status_label}</b>.</p>"
+            f"<p>{reply_text}</p>"
+            f"<p>If you have more questions, just reply to this email.</p>"
+        ),
+    }
+
+
+def tmpl_support_ticket_admin_notify(ticket: dict) -> dict:
+    category_label = _TICKET_CATEGORY_LABELS.get(ticket.get("category"), "General")
+    return {
+        "email_subject": f"New support ticket #{ticket['ticket_id']} — {ticket.get('subject', '')}",
+        "email_html": (
+            f"<p>A new support ticket was submitted on CourtBazaar.</p>"
+            f"<p><b>Ticket ID:</b> {ticket['ticket_id']}<br>"
+            f"<b>From:</b> {ticket.get('name')} ({ticket.get('email')})<br>"
+            f"<b>Category:</b> {category_label}<br>"
+            f"<b>Subject:</b> {ticket.get('subject', '')}</p>"
+            f"<p>{ticket.get('message', '')}</p>"
+            f"<p>Review it in the admin console: Admin → Support Tickets.</p>"
+        ),
+    }
+
+
+def notify_admins_new_support_ticket(ticket: dict) -> list:
+    """Same fail-soft convention as notify_admins_new_review — no-ops (just
+    logs) if ADMIN_ALERT_EMAILS isn't configured."""
+    if not ADMIN_ALERT_EMAILS:
+        logger.info(f"[MOCK admin alert] new support ticket: ticket_id={ticket.get('ticket_id')}")
+        return []
+    tmpl = tmpl_support_ticket_admin_notify(ticket)
+    return [send_email(addr, tmpl["email_subject"], tmpl["email_html"]) for addr in ADMIN_ALERT_EMAILS]
+
+
 def notify(user: dict, event: str, ctx: dict = None) -> list:
     """Send across SMS + WhatsApp + Email based on user prefs."""
     ctx = ctx or {}

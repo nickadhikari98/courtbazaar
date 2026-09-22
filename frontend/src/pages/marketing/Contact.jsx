@@ -1,17 +1,18 @@
-import React from "react";
+import React, { useState } from "react";
 import { toast } from "sonner";
 import {
   Mail, Clock, Handshake, MessageSquareWarning, Newspaper, HeadphonesIcon,
-  MapPin, Copy, Navigation, ExternalLink, ArrowRight, Landmark,
+  MapPin, Copy, Navigation, ExternalLink, ArrowRight, Landmark, LifeBuoy,
 } from "lucide-react";
 import MarketingLayout from "@/components/layout/MarketingLayout";
 import ConfigRequiredBadge from "@/components/legal/ConfigRequiredBadge";
 import ContactMap from "@/components/legal/ContactMap";
+import SupportTicketModal from "@/components/legal/SupportTicketModal";
 import { companyInfo } from "@/config/companyInfo";
 import usePageSEO from "@/hooks/usePageSEO";
 import useStructuredData, { breadcrumbSchema } from "@/hooks/useStructuredData";
 
-function ContactCard({ icon: Icon, title, description, email, needsConfig }) {
+function ContactCard({ icon: Icon, title, description, email, needsConfig, action }) {
   return (
     <div className="landing-premium-card flex flex-col h-full">
       <div className="landing-premium-card-icon">
@@ -19,7 +20,7 @@ function ContactCard({ icon: Icon, title, description, email, needsConfig }) {
       </div>
       <h3 className="font-display font-bold text-base">{title}</h3>
       <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{description}</p>
-      <div className="mt-auto pt-4">
+      <div className="mt-auto pt-4 flex flex-col items-start gap-2">
         {needsConfig ? (
           <ConfigRequiredBadge />
         ) : (
@@ -27,6 +28,7 @@ function ContactCard({ icon: Icon, title, description, email, needsConfig }) {
             {email}
           </a>
         )}
+        {action}
       </div>
     </div>
   );
@@ -40,6 +42,7 @@ export default function Contact() {
   });
   useStructuredData("contact-breadcrumb", breadcrumbSchema([{ label: "Contact Us" }]));
 
+  const [ticketModalOpen, setTicketModalOpen] = useState(false);
   const { lat, lng } = companyInfo.officeCoordinates;
 
   const copyAddress = async () => {
@@ -79,6 +82,15 @@ export default function Contact() {
             description="Order help, account issues, or anything platform-related."
             email={companyInfo.supportEmail.value}
             needsConfig={companyInfo.supportEmail.needsConfig}
+            action={(
+              <button
+                type="button"
+                onClick={() => setTicketModalOpen(true)}
+                className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline"
+              >
+                <LifeBuoy className="w-3.5 h-3.5" /> Raise a Support Ticket
+              </button>
+            )}
           />
           <ContactCard
             icon={Handshake}
@@ -173,15 +185,19 @@ export default function Contact() {
         {/* CTA */}
         <div className="landing-container text-center max-w-xl mx-auto mt-14 pt-10 border-t border-slate-200">
           <h2 className="landing-cta-title">Need assistance?</h2>
-          <p className="text-muted-foreground mt-2">Our support team is ready to assist.</p>
+          <p className="text-muted-foreground mt-2">
+            Raise a support ticket and our team will follow up — every request gets tracked and a real response.
+          </p>
           <p className="text-xs text-muted-foreground/80 mt-1">Average response: within one business day.</p>
-          <a href={`mailto:${companyInfo.supportEmail.value}`} className="inline-block mt-6">
+          <button type="button" onClick={() => setTicketModalOpen(true)} className="inline-block mt-6">
             <span className="inline-flex items-center gap-2 bg-accent hover:bg-accent/90 text-white font-bold px-6 py-3 rounded-lg transition-colors">
-              Contact Support <ArrowRight className="w-4 h-4" />
+              Raise a Support Ticket <ArrowRight className="w-4 h-4" />
             </span>
-          </a>
+          </button>
         </div>
       </section>
+
+      <SupportTicketModal open={ticketModalOpen} onOpenChange={setTicketModalOpen} />
     </MarketingLayout>
   );
 }

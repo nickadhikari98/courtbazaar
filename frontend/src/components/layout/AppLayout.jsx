@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
   User, LogOut, Menu, Scale, Bell, ChevronDown, Shield, Users, Truck,
   Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic, Banknote,
-  UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel, ArrowLeft,
+  UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel, ArrowLeft, LifeBuoy,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -103,6 +103,7 @@ const navItems = (user) => {
       { to: "/admin/vendors", icon: Store, label: "Vendors" },
       { to: "/admin/leads", icon: UserPlus, label: "Leads" },
       { to: "/admin/reviews", icon: Star, label: "Reviews" },
+      { to: "/admin/support-tickets", icon: LifeBuoy, label: "Support Tickets" },
       { to: "/admin/pricing", icon: CreditCard, label: "Pricing" },
       { to: "/admin/users", icon: User, label: "Users" },
       { to: "/admin/reconciliation", icon: Receipt, label: "Reconciliation" },

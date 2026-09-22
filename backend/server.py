@@ -357,6 +357,20 @@ class ReviewBulkAction(BaseModel):
 class ReviewReorder(BaseModel):
     review_ids: List[str]  # full ordered list; position = display_order
 
+class SupportTicketCreate(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+    category: str
+    subject: str
+    message: str
+    order_id: Optional[str] = None
+    captcha_token: Optional[str] = None  # only checked if CAPTCHA_PROVIDER is configured — see captcha.py
+
+class SupportTicketStatusChange(BaseModel):
+    status: str
+    reply: Optional[str] = None
+
 class CalendarEventCreate(BaseModel):
     title: str
     date: str  # ISO date (YYYY-MM-DD)
@@ -494,6 +508,7 @@ async def seed_initial_data():
         return
     import leads as leads_svc
     import reviews as reviews_svc
+    import support_tickets as support_tickets_svc
     import hearings as hearings_svc
     import escrow as escrow_svc
     import counsel_matching as counsel_matching_svc
@@ -502,6 +517,7 @@ async def seed_initial_data():
     import order_agent_tools
     await leads_svc.ensure_indexes(db)
     await reviews_svc.ensure_indexes(db)
+    await support_tickets_svc.ensure_indexes(db)
     await hearings_svc.ensure_indexes(db)
     await escrow_svc.ensure_indexes(db)
     await counsel_matching_svc.ensure_indexes(db)
@@ -1337,6 +1353,59 @@ async def admin_reviews_reorder(payload: ReviewReorder, user=Depends(get_current
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
     return await reviews_svc.admin_reorder(db, payload.review_ids)
+
+# ---------- SUPPORT TICKETS (public: "Raise a Support Ticket" on Contact Us) ----------
+import support_tickets as support_tickets_svc
+
+@api_router.post("/support/tickets")
+async def support_tickets_create(payload: SupportTicketCreate, request: Request):
+    # See the comment on leads_create_draft above re: --proxy-headers.
+    client_ip = request.client.host if request.client else "unknown"
+    verify_captcha(payload.captcha_token, client_ip)
+    support_tickets_svc.check_ticket_rate_limit(client_ip)
+    from notifications import send_email
+    result = await support_tickets_svc.create_ticket(
+        db, send_email, payload.name, payload.email, payload.phone, payload.category,
+        payload.subject, payload.message, payload.order_id, client_ip,
+    )
+    return {**result, "message": "Your support ticket has been raised. We'll be in touch shortly."}
+
+# ---------- ADMIN: SUPPORT TICKETS ----------
+@api_router.get("/admin/support/tickets/stats")
+async def admin_support_tickets_stats(user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await support_tickets_svc.ticket_stats(db)
+
+@api_router.get("/admin/support/tickets")
+async def admin_support_tickets_list(
+    user=Depends(get_current_user),
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await support_tickets_svc.list_tickets(db, status, category, q)
+
+@api_router.get("/admin/support/tickets/{ticket_id}")
+async def admin_support_tickets_detail(ticket_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await support_tickets_svc.get_ticket_detail(db, ticket_id)
+
+@api_router.put("/admin/support/tickets/{ticket_id}/status")
+async def admin_support_tickets_status(ticket_id: str, payload: SupportTicketStatusChange, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    from notifications import send_email
+    return await support_tickets_svc.admin_change_status(db, send_email, ticket_id, payload.status, payload.reply, user)
+
+@api_router.delete("/admin/support/tickets/{ticket_id}")
+async def admin_support_tickets_delete(ticket_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await support_tickets_svc.delete_ticket(db, ticket_id, user)
 
 # ---------- ORDERS ----------
 ORDER_STATUSES = ["placed", "matched", "accepted", "processing", "quality_check", "ready", "out_for_delivery", "delivered", "completed", "cancelled"]
