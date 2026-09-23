@@ -15,11 +15,15 @@ by the caller (server.py's own `_notify_hearing_event`, which threads in
 email-notification context this module has no reason to know about) rather
 than being duplicated here.
 """
+import logging
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
 import escrow as escrow_svc
 import hearings as hearings_svc
+import razorpay_svc
+
+logger = logging.getLogger(__name__)
 
 NotifyHearingEvent = Callable[[str, str, str, str], Awaitable[None]]
 
@@ -131,23 +135,68 @@ async def finalize_hearing_payment(
     mark_payment_confirmed checks hearing["requesting_user_id"] != user
     ["user_id"]; the webhook path has no authenticated end-user, only a
     verified gateway signature, so it's satisfied here with a synthetic
-    actor built straight from the hearing's own requester."""
-    updated_tx = await claim_payment_transaction(db, tx["razorpay_order_id"], "paid", razorpay_payment_id=rzp_payment_id)
+    actor built straight from the hearing's own requester.
+
+    Orphaned-capture protection: the per-order claim above only dedupes
+    repeat deliveries of the SAME Razorpay order. A hearing can have several
+    orders (every create-order call, incl. the payment_pending self-loop
+    retry, makes a new one), and a capture can land after the hearing left
+    payment_pending (cancelled/rejected while checkout was open). So before
+    any escrow is created, this payment must also win an atomic per-hearing
+    claim — see _claim_hearing_for_payment. A capture that loses it is
+    never attached to the hearing: no escrow, no state change; it is
+    refunded and recorded instead (_refund_orphaned_capture). Returns False
+    for both the duplicate and the orphaned case; callers that need to tell
+    them apart read payment_transactions.orphaned."""
+    order_id = tx["razorpay_order_id"]
+    updated_tx = await claim_payment_transaction(db, order_id, "paid", razorpay_payment_id=rzp_payment_id)
     if not updated_tx:
         return False
     hearing_id = hearing["hearing_id"]
-    # M6 reorder: payment now happens before anyone accepts, so
-    # proxy_counsel_user_id is still None here — escrow.create_and_hold's
-    # deferred-payee path (M2) holds the funds unassigned; M12's
-    # accept_hearing_request extension is what calls assign_payee later.
-    await escrow_svc.create_and_hold(
-        db, context_type="hearing", context_id=hearing_id, service_id=hearings_svc.ESCROW_SERVICE_ID,
-        matter_id=hearing.get("matter_id"), payer_user_id=hearing["requesting_user_id"], payee_user_id=hearing["proxy_counsel_user_id"],
-        amount=hearing["fee"], platform_commission_pct=platform_commission_pct,
-        razorpay_order_id=tx["razorpay_order_id"], razorpay_payment_id=rzp_payment_id,
-    )
-    synthetic_actor = {"user_id": hearing["requesting_user_id"]}
-    await hearings_svc.mark_payment_confirmed(db, hearing_id, synthetic_actor)
+    claimed = await _claim_hearing_for_payment(db, hearing_id, order_id)
+    if not claimed:
+        current = await db.hearing_requests.find_one(
+            {"hearing_id": hearing_id}, {"_id": 0, "status": 1, "payment_claim_order_id": 1},
+        )
+        if not current:
+            reason = "hearing_not_found"
+        elif current.get("status") != "payment_pending":
+            reason = f"hearing_not_payable:{current.get('status')}"
+        else:
+            reason = f"hearing_already_claimed_by:{current.get('payment_claim_order_id')}"
+        await _refund_orphaned_capture(db, tx, rzp_payment_id, reason)
+        return False
+    # From here on use the authoritative record returned by the claim, not
+    # the caller's (possibly stale) snapshot.
+    hearing = claimed
+    try:
+        # M6 reorder: payment now happens before anyone accepts, so
+        # proxy_counsel_user_id is still None here — escrow.create_and_hold's
+        # deferred-payee path (M2) holds the funds unassigned; M12's
+        # accept_hearing_request extension is what calls assign_payee later.
+        await escrow_svc.create_and_hold(
+            db, context_type="hearing", context_id=hearing_id, service_id=hearings_svc.ESCROW_SERVICE_ID,
+            matter_id=hearing.get("matter_id"), payer_user_id=hearing["requesting_user_id"], payee_user_id=hearing.get("proxy_counsel_user_id"),
+            amount=hearing["fee"], platform_commission_pct=platform_commission_pct,
+            razorpay_order_id=order_id, razorpay_payment_id=rzp_payment_id,
+        )
+        synthetic_actor = {"user_id": hearing["requesting_user_id"]}
+        await hearings_svc.mark_payment_confirmed(db, hearing_id, synthetic_actor)
+    except Exception as e:
+        # The payment is captured and this hearing is claimed by it, so it
+        # must not fail silently: leave a durable marker for admins/
+        # reconciliation, then re-raise so the caller still sees the error.
+        now = datetime.now(timezone.utc).isoformat()
+        await db.payment_transactions.update_one(
+            {"razorpay_order_id": order_id},
+            {"$set": {"finalize_error": str(e)[:500], "finalize_error_at": now}},
+        )
+        from audit_log import log_audit
+        await log_audit(db, "payment.finalize_failed", None, {
+            "razorpay_order_id": order_id, "razorpay_payment_id": rzp_payment_id,
+            "context_type": "hearing", "context_id": hearing_id, "error": str(e)[:500],
+        })
+        raise
     # Targeted advocate is now notified at request-creation time (see
     # create_hearing_request in server.py) — by the time payment is verified
     # here, negotiation has already been agreed, so this is a
@@ -162,4 +211,72 @@ async def finalize_hearing_payment(
     await notify_hearing_event(hearing["requesting_user_id"], "Payment successful",
                                 f"Your payment for the hearing at {hearing['court_id']} is confirmed and held securely by CourtBazaar.",
                                 hearing_id)
+    return True
+
+
+async def _claim_hearing_for_payment(db, hearing_id: str, razorpay_order_id: str) -> Optional[dict]:
+    """Atomic per-hearing payment claim — a single find_one_and_update that
+    matches only while the hearing is still payment_pending AND no other
+    order has claimed it (same compare-and-swap idiom as hearings._transition).
+    MongoDB applies the match and the $set as one atomic operation on the
+    document, so of any number of concurrent captures for one hearing
+    (verify + webhook, two tabs, two orders) exactly one gets a document
+    back; every other caller gets None. hearings._transition additionally
+    refuses cancel/reject out of payment_pending once this field is set, so
+    a cancel can't slip in between this claim and mark_payment_confirmed.
+    Returns the pre-update hearing document (authoritative, freshly read)."""
+    now = datetime.now(timezone.utc).isoformat()
+    return await db.hearing_requests.find_one_and_update(
+        {"hearing_id": hearing_id, "status": "payment_pending", "payment_claim_order_id": None},
+        {"$set": {"payment_claim_order_id": razorpay_order_id, "payment_claimed_at": now}},
+        projection={"_id": 0},
+    )
+
+
+async def _refund_orphaned_capture(db, tx: dict, rzp_payment_id: str, reason: str) -> None:
+    """A captured payment that can't be attached to its hearing: refund it
+    through the existing gateway refund (simulated without keys / for
+    pay_sim_ ids) and record everything needed for reconciliation on the
+    payment_transactions row itself, which /admin/reconciliation reports as
+    a mismatch. Callers must already hold this order's payment claim
+    (claim_payment_transaction), which is what guarantees this runs — and
+    refunds — at most once per Razorpay order. A refund failure is recorded
+    rather than raised: the money is still captured and needs an admin, not
+    a webhook retry that could no longer reach this code anyway."""
+    order_id = tx["razorpay_order_id"]
+    now = datetime.now(timezone.utc).isoformat()
+    fields = {"orphaned": True, "orphan_reason": reason, "orphaned_at": now}
+    try:
+        result = razorpay_svc.refund_payment(
+            rzp_payment_id, amount_inr=tx.get("amount"),
+            notes={"razorpay_order_id": order_id, "context_type": tx.get("context_type"),
+                   "context_id": tx.get("context_id"), "reason": f"orphaned_capture:{reason}"},
+        )
+        fields.update({
+            "orphan_refund_status": result.get("status"),
+            "orphan_refund_id": result.get("razorpay_refund_id"),
+            "orphan_refund_simulated": bool(result.get("simulated")),
+        })
+    except Exception as e:
+        logger.error(f"Refund of orphaned capture failed for {order_id}: {e}")
+        fields.update({"orphan_refund_status": "failed", "orphan_refund_error": str(e)[:500]})
+    await db.payment_transactions.update_one({"razorpay_order_id": order_id}, {"$set": fields})
+    from audit_log import log_audit
+    await log_audit(db, "payment.orphaned_capture", None, {
+        "razorpay_order_id": order_id, "razorpay_payment_id": rzp_payment_id,
+        "context_type": tx.get("context_type"), "context_id": tx.get("context_id"),
+        "amount": tx.get("amount"), "reason": reason,
+        "refund_status": fields.get("orphan_refund_status"), "refund_id": fields.get("orphan_refund_id"),
+    })
+
+
+async def handle_orphaned_capture(db, tx: dict, rzp_payment_id: str, reason: str) -> bool:
+    """Entry point for a capture whose hearing/order can't be found at all
+    (webhook path). Takes this order's payment claim first so a repeated
+    webhook delivery can never refund twice; returns False if already
+    handled."""
+    claimed_tx = await claim_payment_transaction(db, tx["razorpay_order_id"], "paid", razorpay_payment_id=rzp_payment_id)
+    if not claimed_tx:
+        return False
+    await _refund_orphaned_capture(db, tx, rzp_payment_id, reason)
     return True

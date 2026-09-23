@@ -2008,6 +2008,10 @@ async def razorpay_webhook(request: Request):
         hearing = await db.hearing_requests.find_one({"hearing_id": tx["context_id"]})
         if hearing:
             await _finalize_hearing_payment(hearing, tx, rzp_payment_id)
+        else:
+            # Captured money for a hearing that no longer exists: refund and
+            # record it rather than leaving the transaction silently pending.
+            await payment_svc.handle_orphaned_capture(db, tx, rzp_payment_id, "hearing_not_found")
     elif tx.get("order_id"):
         await _finalize_marketplace_payment(tx, rzp_payment_id)
     return {"ok": True}
@@ -2829,7 +2833,14 @@ async def verify_hearing_payment(hearing_id: str, payload: dict, user=Depends(ge
     tx = await db.payment_transactions.find_one({"razorpay_order_id": rzp_order_id, "context_type": "hearing", "context_id": hearing_id})
     if not tx:
         raise HTTPException(404, "Payment transaction not found")
-    await _finalize_hearing_payment(hearing, tx, rzp_payment_id)
+    finalized = await _finalize_hearing_payment(hearing, tx, rzp_payment_id)
+    if not finalized:
+        # False = either already finalized (e.g. by the webhook — still a
+        # success for the client) or orphaned (not applied; refunded).
+        latest = await db.payment_transactions.find_one({"razorpay_order_id": rzp_order_id}, {"_id": 0, "orphaned": 1})
+        if latest and latest.get("orphaned"):
+            raise HTTPException(409, "This hearing is no longer awaiting payment, so this payment was not applied. "
+                                     "It is being refunded to your original payment method.")
     return {"ok": True, "payment_id": rzp_payment_id, "status": "broadcast"}
 
 @api_router.get("/hearing-requests/{hearing_id}/escrow")
@@ -3180,6 +3191,12 @@ async def admin_reconciliation(
             mismatch = True
             mismatch_reason = f"Txn={pstatus}, Order={order_pstatus}"
             mismatches.append({"session_id": t.get("session_id"), "order_id": t.get("order_id"), "reason": mismatch_reason})
+        elif t.get("orphaned"):
+            # Captured but never attached to its hearing/order (see
+            # payment_reconciliation._refund_orphaned_capture).
+            mismatch = True
+            mismatch_reason = f"Orphaned capture ({t.get('orphan_reason')}); refund {t.get('orphan_refund_status')}"
+            mismatches.append({"session_id": t.get("session_id"), "order_id": t.get("order_id") or t.get("context_id"), "reason": mismatch_reason})
         if gw == "stripe":
             if pstatus == "paid":
                 stripe_paid += 1

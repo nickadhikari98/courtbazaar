@@ -291,6 +291,13 @@ async def _transition(db, sm: StateMachine, entity: dict, from_status: str, acti
     query: Dict[str, Any] = {"hearing_id": entity["hearing_id"], "status": from_status}
     if extra_guard:
         query.update(extra_guard)
+    if from_status == "payment_pending" and action in ("cancel", "reject"):
+        # A captured payment has already claimed this hearing (see
+        # payment_reconciliation._claim_hearing_for_payment) and is mid-way
+        # to escrow + broadcast — leaving payment_pending now would orphan
+        # that payment. Folded into the same atomic write; the loser gets
+        # the standard 409 below.
+        query["payment_claim_order_id"] = None
     now = datetime.now(timezone.utc).isoformat()
     updated = await db.hearing_requests.find_one_and_update(
         query, {"$set": {"status": to_status, "updated_at": now}}, projection={"_id": 0},
