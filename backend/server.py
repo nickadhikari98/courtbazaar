@@ -1787,6 +1787,16 @@ async def admin_escrow_transactions(user=Depends(get_current_user), context_type
     import escrow as escrow_svc
     return await escrow_svc.list_transactions(db, context_type=context_type, status=status)
 
+@api_router.post("/admin/payments/{razorpay_order_id}/retry-orphan-refund")
+async def admin_retry_orphan_refund(razorpay_order_id: str, user=Depends(get_current_user)):
+    """Admin recovery for an orphaned-capture refund (Bug A) that failed or
+    is stuck pending. Idempotent and safe to click twice — see
+    payment_reconciliation.retry_orphan_refund. Candidates are listed as
+    'Orphaned capture' rows in /admin/reconciliation mismatches."""
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await payment_svc.retry_orphan_refund(db, razorpay_order_id, user)
+
 @api_router.post("/admin/escrow-transactions/{escrow_id}/retry-refund")
 async def admin_retry_escrow_refund(escrow_id: str, user=Depends(get_current_user)):
     """Admin recovery for a refund that didn't complete (refund_failed,
@@ -2001,6 +2011,24 @@ async def razorpay_webhook(request: Request):
         raise HTTPException(400, "Malformed webhook body")
 
     event = payload.get("event")
+    if event in ("refund.processed", "refund.failed"):
+        # Bug C: Razorpay's final word on a refund we requested (escrow or
+        # orphaned-capture). Settled with compare-and-swap writes, so a
+        # duplicate/late delivery is a no-op; an unknown refund is 200 +
+        # ignored so Razorpay stops retrying it.
+        refund_entity = payload.get("payload", {}).get("refund", {}).get("entity", {}) or {}
+        try:
+            await db.payment_webhook_events.insert_one({
+                "razorpay_payment_id": refund_entity.get("payment_id"), "razorpay_refund_id": refund_entity.get("id"),
+                "event": event, "received_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as e:
+            logger.warning(f"Failed to log webhook event (non-fatal): {e}")
+        result = await payment_svc.apply_refund_event(db, refund_entity, event)
+        if not result.get("matched"):
+            logger.warning(f"Razorpay {event} for unknown refund {refund_entity.get('id')} (payment {refund_entity.get('payment_id')})")
+            return {"ok": True, "ignored": "unknown_refund"}
+        return {"ok": True, **result}
     if event not in ("payment.captured", "payment.failed"):
         return {"ok": True, "ignored": event}
 
@@ -3218,7 +3246,7 @@ async def admin_reconciliation(
             mismatch = True
             mismatch_reason = f"Txn={pstatus}, Order={order_pstatus}"
             mismatches.append({"session_id": t.get("session_id"), "order_id": t.get("order_id"), "reason": mismatch_reason})
-        elif t.get("orphaned"):
+        elif t.get("orphaned") and t.get("orphan_refund_status") != "processed":
             # Captured but never attached to its hearing/order (see
             # payment_reconciliation._refund_orphaned_capture).
             mismatch = True

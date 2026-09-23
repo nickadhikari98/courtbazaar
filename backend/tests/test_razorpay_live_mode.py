@@ -589,3 +589,262 @@ def test_refund_failure_visible_in_reconciliation_and_admin_retry_endpoint():
             await db.escrow_transactions.delete_many({"context_id": context_id})
             await db.audit_log.delete_many({"action": "payment.refund_retry", "details.escrow_id": doc["escrow_id"]})
     _run_with_server(body())
+
+
+# ---------- Bug C: refund.* webhooks + orphan-refund retry ----------
+# The webhook is exercised through the real route handler with a
+# hand-built Starlette Request (signed body, no httpx, no network).
+
+import json  # noqa: E402
+from starlette.requests import Request  # noqa: E402
+
+_WEBHOOK_SECRET = "whsec_test_only"
+
+
+def _signed_webhook_request(payload: dict, secret: str = _WEBHOOK_SECRET) -> Request:
+    body = json.dumps(payload).encode()
+    sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+    scope = {"type": "http", "method": "POST", "path": "/api/payments/razorpay/webhook", "query_string": b"",
+             "headers": [(b"x-razorpay-signature", sig.encode()), (b"content-type", b"application/json")]}
+    return Request(scope, receive)
+
+
+def _refund_event(event, refund_id, payment_id, amount_inr=1500.0, **extra):
+    entity = {"id": refund_id, "payment_id": payment_id, "amount": int(round(amount_inr * 100)),
+              "status": "processed" if event == "refund.processed" else "failed", **extra}
+    return {"event": event, "payload": {"refund": {"entity": entity}}}
+
+
+class _webhook_secret:
+    def __enter__(self):
+        self._orig = razorpay_svc.RAZORPAY_WEBHOOK_SECRET
+        razorpay_svc.RAZORPAY_WEBHOOK_SECRET = _WEBHOOK_SECRET
+
+    def __exit__(self, *exc):
+        razorpay_svc.RAZORPAY_WEBHOOK_SECRET = self._orig
+
+
+async def _escrow_in_refund_processing(db, counsel_id):
+    """A held escrow whose refund Razorpay accepted as 'pending'."""
+    await db.users.insert_one({"user_id": counsel_id, "wallet_held_balance": 0})
+    context_id = f"hearing_bugc_{uuid.uuid4().hex[:10]}"
+    pay_id = f"pay_live_{uuid.uuid4().hex[:10]}"
+    doc = await escrow.create_and_hold(
+        db, context_type="hearing", context_id=context_id, service_id=hearings.ESCROW_SERVICE_ID,
+        matter_id=None, payer_user_id=_user("payer")["user_id"], payee_user_id=counsel_id,
+        amount=1500.0, platform_commission_pct=0.2,
+        razorpay_order_id=f"order_{uuid.uuid4().hex[:10]}", razorpay_payment_id=pay_id,
+    )
+    refund_id = f"rfnd_{uuid.uuid4().hex[:10]}"
+    orig = razorpay_svc.refund_payment
+    razorpay_svc.refund_payment = lambda pid, amount_inr=None, notes=None: {
+        "razorpay_refund_id": refund_id, "status": "pending", "simulated": False}
+    try:
+        r = await escrow.refund(db, context_type="hearing", context_id=context_id, reason="t")
+    finally:
+        razorpay_svc.refund_payment = orig
+    assert r["status"] == "refund_processing"
+    return context_id, doc, pay_id, refund_id
+
+
+async def _cleanup_bugc(db, context_ids=(), user_ids=(), order_ids=()):
+    if context_ids:
+        await db.escrow_transactions.delete_many({"context_id": {"$in": list(context_ids)}})
+    if user_ids:
+        await db.users.delete_many({"user_id": {"$in": list(user_ids)}})
+    if order_ids:
+        await db.payment_transactions.delete_many({"razorpay_order_id": {"$in": list(order_ids)}})
+        await db.audit_log.delete_many({"details.razorpay_order_id": {"$in": list(order_ids)}})
+
+
+def test_refund_processed_webhook_settles_escrow_and_duplicate_is_noop():
+    async def body():
+        db = _db()
+        counsel = _user("counsel")["user_id"]
+        context_id, doc, pay_id, refund_id = await _escrow_in_refund_processing(db, counsel)
+        try:
+            with _webhook_secret():
+                out = await server.razorpay_webhook(_signed_webhook_request(_refund_event("refund.processed", refund_id, pay_id)))
+                dup = await server.razorpay_webhook(_signed_webhook_request(_refund_event("refund.processed", refund_id, pay_id)))
+            assert out["matched"] == "escrow" and out["status"] == "refunded" and out["changed"] is True
+            assert dup["matched"] == "escrow" and dup["changed"] is False
+            e = await db.escrow_transactions.find_one({"escrow_id": doc["escrow_id"]}, {"_id": 0})
+            assert e["status"] == "refunded" and e["gateway_refund_status"] == "processed" and e["refund_completed_at"]
+            u = await db.users.find_one({"user_id": counsel}, {"_id": 0})
+            assert u["wallet_held_balance"] == 0  # reversed once (at processing), not again
+            assert await db.payment_webhook_events.count_documents({"razorpay_refund_id": refund_id}) == 2
+        finally:
+            await db.payment_webhook_events.delete_many({"razorpay_refund_id": refund_id})
+            await _cleanup_bugc(db, [context_id], [counsel])
+    _run_with_server(body())
+
+
+def test_refund_failed_webhook_marks_escrow_refund_failed_and_never_downgrades_refunded():
+    async def body():
+        db = _db()
+        counsel = _user("counsel")["user_id"]
+        context_id, doc, pay_id, refund_id = await _escrow_in_refund_processing(db, counsel)
+        try:
+            with _webhook_secret():
+                out = await server.razorpay_webhook(_signed_webhook_request(
+                    _refund_event("refund.failed", refund_id, pay_id, error_description="Bank rejected")))
+            assert out["status"] == "refund_failed"
+            e = await db.escrow_transactions.find_one({"escrow_id": doc["escrow_id"]}, {"_id": 0})
+            assert e["status"] == "refund_failed" and e["refund_last_error"] == "Bank rejected"
+
+            # Now processed arrives (e.g. retried by Razorpay) -> refunded; a later 'failed' must not downgrade it.
+            with _webhook_secret():
+                await server.razorpay_webhook(_signed_webhook_request(_refund_event("refund.processed", refund_id, pay_id)))
+                late = await server.razorpay_webhook(_signed_webhook_request(_refund_event("refund.failed", refund_id, pay_id)))
+            assert late["changed"] is False
+            e = await db.escrow_transactions.find_one({"escrow_id": doc["escrow_id"]}, {"_id": 0})
+            assert e["status"] == "refunded"
+        finally:
+            await db.payment_webhook_events.delete_many({"razorpay_refund_id": refund_id})
+            await _cleanup_bugc(db, [context_id], [counsel])
+    _run_with_server(body())
+
+
+def test_refund_processed_webhook_settles_timed_out_refund_failed_escrow_by_payment_id():
+    """The refund call timed out (escrow refund_failed, no refund id stored)
+    but Razorpay did create it — the webhook matches by payment id."""
+    async def body():
+        db = _db()
+        counsel = _user("counsel")["user_id"]
+        await db.users.insert_one({"user_id": counsel, "wallet_held_balance": 0})
+        context_id = f"hearing_bugc_{uuid.uuid4().hex[:10]}"
+        pay_id = f"pay_live_{uuid.uuid4().hex[:10]}"
+        doc = await escrow.create_and_hold(
+            db, context_type="hearing", context_id=context_id, service_id=hearings.ESCROW_SERVICE_ID,
+            matter_id=None, payer_user_id=_user("payer")["user_id"], payee_user_id=counsel,
+            amount=1500.0, platform_commission_pct=0.2,
+            razorpay_order_id=f"order_{uuid.uuid4().hex[:10]}", razorpay_payment_id=pay_id,
+        )
+        orig = razorpay_svc.refund_payment
+
+        def _timeout(*a, **k):
+            raise TimeoutError("read timed out")
+        razorpay_svc.refund_payment = _timeout
+        try:
+            r = await escrow.refund(db, context_type="hearing", context_id=context_id, reason="t")
+            assert r["status"] == "refund_failed"
+            with _webhook_secret():
+                out = await server.razorpay_webhook(_signed_webhook_request(_refund_event("refund.processed", "rfnd_late", pay_id)))
+            assert out["status"] == "refunded"
+            e = await db.escrow_transactions.find_one({"escrow_id": doc["escrow_id"]}, {"_id": 0})
+            assert e["gateway_refund_id"] == "rfnd_late"
+            u = await db.users.find_one({"user_id": counsel}, {"_id": 0})
+            assert u["wallet_held_balance"] == 0  # reversed exactly once, here
+        finally:
+            razorpay_svc.refund_payment = orig
+            await db.payment_webhook_events.delete_many({"razorpay_refund_id": "rfnd_late", "razorpay_payment_id": pay_id})
+            await _cleanup_bugc(db, [context_id], [counsel])
+    _run_with_server(body())
+
+
+def test_refund_webhook_unknown_refund_and_bad_signature():
+    async def body():
+        db = _db()
+        pay_id = f"pay_unknown_{uuid.uuid4().hex[:10]}"
+        try:
+            with _webhook_secret():
+                out = await server.razorpay_webhook(_signed_webhook_request(_refund_event("refund.processed", "rfnd_nope", pay_id)))
+                assert out == {"ok": True, "ignored": "unknown_refund"}
+                try:
+                    await server.razorpay_webhook(_signed_webhook_request(
+                        _refund_event("refund.processed", "rfnd_nope", pay_id), secret="wrong_secret"))
+                    raise AssertionError("bad signature must be rejected")
+                except server.HTTPException as e:
+                    assert e.status_code == 400
+        finally:
+            await db.payment_webhook_events.delete_many({"razorpay_payment_id": pay_id})
+    _run_with_server(body())
+
+
+async def _orphan_tx(db, refund_status, refund_id=None):
+    order_id = f"order_{uuid.uuid4().hex[:12]}"
+    pay_id = f"pay_live_{uuid.uuid4().hex[:10]}"
+    await db.payment_transactions.insert_one({
+        "razorpay_order_id": order_id, "session_id": order_id, "context_type": "hearing", "context_id": "hearing_gone",
+        "amount": 1500.0, "currency": "INR", "gateway": "razorpay", "status": "complete", "payment_status": "paid",
+        "razorpay_payment_id": pay_id, "orphaned": True, "orphan_reason": "hearing_not_payable:cancelled",
+        "orphan_refund_status": refund_status, "orphan_refund_id": refund_id,
+        "created_at": "2026-09-23T00:00:00+00:00",
+    })
+    return order_id, pay_id
+
+
+def test_orphan_refund_webhook_settles_and_leaves_reconciliation():
+    async def body():
+        db = _db()
+        admin = {"user_id": _user("admin")["user_id"], "role": "admin"}
+        order_id, pay_id = await _orphan_tx(db, "pending", "rfnd_orphan_1")
+        try:
+            report = await server.admin_reconciliation(user=admin, gateway=None, status_filter=None, from_date=None, to_date=None)
+            assert [m for m in report["mismatches"] if m.get("session_id") == order_id]  # pending -> flagged
+
+            with _webhook_secret():
+                out = await server.razorpay_webhook(_signed_webhook_request(_refund_event("refund.processed", "rfnd_orphan_1", pay_id)))
+                dup = await server.razorpay_webhook(_signed_webhook_request(_refund_event("refund.processed", "rfnd_orphan_1", pay_id)))
+            assert out["matched"] == "orphan" and out["changed"] is True and dup["changed"] is False
+            tx = await db.payment_transactions.find_one({"razorpay_order_id": order_id}, {"_id": 0})
+            assert tx["orphan_refund_status"] == "processed" and tx["orphan_refund_settled_at"]
+
+            report = await server.admin_reconciliation(user=admin, gateway=None, status_filter=None, from_date=None, to_date=None)
+            assert not [m for m in report["mismatches"] if m.get("session_id") == order_id]  # resolved -> not flagged
+        finally:
+            await db.payment_webhook_events.delete_many({"razorpay_refund_id": "rfnd_orphan_1"})
+            await _cleanup_bugc(db, order_ids=[order_id])
+    _run_with_server(body())
+
+
+def test_orphan_refund_retry_endpoint_is_idempotent_and_race_safe():
+    async def body():
+        db = _db()
+        admin = {"user_id": _user("admin")["user_id"], "role": "admin"}
+        non_admin = {"user_id": _user("user")["user_id"], "role": "client"}
+        order_id, pay_id = await _orphan_tx(db, "failed")
+        order_id2, _ = await _orphan_tx(db, "failed")
+        calls = []
+        orig = (razorpay_svc.refund_payment, razorpay_svc.fetch_refunds)
+
+        def _refund(pid, amount_inr=None, notes=None):
+            calls.append(amount_inr)
+            return {"razorpay_refund_id": f"rfnd_retry_{len(calls)}", "status": "processed", "simulated": False}
+        razorpay_svc.refund_payment, razorpay_svc.fetch_refunds = _refund, (lambda pid: [])
+        try:
+            try:
+                await server.admin_retry_orphan_refund(order_id, user=non_admin)
+                raise AssertionError("non-admin must be refused")
+            except server.HTTPException as e:
+                assert e.status_code == 403
+
+            out = await server.admin_retry_orphan_refund(order_id, user=admin)
+            again = await server.admin_retry_orphan_refund(order_id, user=admin)  # double click
+            assert out["orphan_refund_status"] == "processed" and again["orphan_refund_status"] == "processed"
+            assert calls == [1500.0]  # exactly one refund
+
+            # Concurrent retries on another orphan -> exactly one gateway refund.
+            results = await asyncio.gather(
+                server.admin_retry_orphan_refund(order_id2, user=admin),
+                server.admin_retry_orphan_refund(order_id2, user=admin),
+                return_exceptions=True,
+            )
+            assert len(calls) == 2
+            assert any(not isinstance(r, Exception) and r["orphan_refund_status"] == "processed" for r in results)
+            assert all(not isinstance(r, Exception) or (isinstance(r, server.HTTPException) and r.status_code == 409) for r in results)
+
+            # Retry after a timeout where Razorpay already holds the refund -> recorded, no new refund.
+            order_id3, pay_id3 = await _orphan_tx(db, "failed")
+            razorpay_svc.fetch_refunds = lambda pid: [{"razorpay_refund_id": "rfnd_existing", "amount_inr": 1500.0, "status": "processed"}]
+            out3 = await server.admin_retry_orphan_refund(order_id3, user=admin)
+            assert out3["orphan_refund_status"] == "processed" and out3["orphan_refund_id"] == "rfnd_existing"
+            assert len(calls) == 2
+            await _cleanup_bugc(db, order_ids=[order_id3])
+        finally:
+            razorpay_svc.refund_payment, razorpay_svc.fetch_refunds = orig
+            await _cleanup_bugc(db, order_ids=[order_id, order_id2])
+    _run_with_server(body())

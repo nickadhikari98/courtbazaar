@@ -56,6 +56,11 @@ ESCROW_TRANSITIONS = {
     ("refund_failed", "refund_retry"): "refund_pending",
     ("refund_processing", "refund_retry"): "refund_pending",
     ("refund_pending", "refund_retry"): "refund_pending",  # stale in-flight claim only (see retry_refund)
+    # Bug C: Razorpay's refund.processed / refund.failed webhook settles a
+    # refund asynchronously (see settle_refund_from_gateway).
+    ("refund_processing", "refund_confirm"): "refunded",
+    ("refund_failed", "refund_confirm"): "refunded",
+    ("refund_processing", "refund_fail"): "refund_failed",
 }
 
 # Statuses an admin needs to look at: refund failed, accepted-but-not-
@@ -388,6 +393,59 @@ async def _settle_refund_attempt(db, claimed: dict, *, reason: str, check_existi
         await _reverse_payee_hold_once(db, claimed)
     claimed.update(fields)
     return claimed
+
+
+async def settle_refund_from_gateway(db, *, refund_id: Optional[str], payment_id: Optional[str],
+                                     gateway_status: str, error: Optional[str] = None) -> Optional[dict]:
+    """Bug C: apply Razorpay's final word on a refund (refund.processed /
+    refund.failed webhook) to the escrow that requested it. Matched by
+    gateway_refund_id first, then by payment id. Returns the escrow with
+    refund_settled True/False (False = duplicate/late event, nothing
+    changed), or None when no escrow matched.
+
+    Each step is a compare-and-swap on the current status, so a duplicate or
+    late webhook is a no-op:
+      processed: refund_processing | refund_failed | refund_pending -> refunded
+                 (refund_failed covers a call that timed out after Razorpay
+                 actually created the refund)
+      failed:    refund_processing | refund_pending -> refund_failed
+                 (never downgrades an escrow that is already refunded)"""
+    escrow = None
+    if refund_id:
+        escrow = await db.escrow_transactions.find_one({"gateway_refund_id": refund_id}, {"_id": 0})
+    if not escrow and payment_id:
+        escrow = await db.escrow_transactions.find_one(
+            {"razorpay_payment_id": payment_id,
+             "status": {"$in": ["refund_processing", "refund_failed", "refund_pending"]}}, {"_id": 0})
+    if not escrow:
+        return None
+
+    now = datetime.now(timezone.utc).isoformat()
+    status = (gateway_status or "").lower()
+    if status == "processed":
+        from_states, to_state = ["refund_processing", "refund_failed", "refund_pending"], "refunded"
+        fields = {"status": "refunded", "gateway_refund_status": "processed", "refund_completed_at": now, "updated_at": now}
+    elif status == "failed":
+        from_states, to_state = ["refund_processing", "refund_pending"], "refund_failed"
+        fields = {"status": "refund_failed", "gateway_refund_status": "failed", "refund_failed_at": now, "updated_at": now,
+                  "refund_last_error": error or "Razorpay reported the refund as failed"}
+    else:
+        return None
+    if refund_id:
+        fields["gateway_refund_id"] = refund_id
+
+    before = await db.escrow_transactions.find_one_and_update(
+        {"escrow_id": escrow["escrow_id"], "status": {"$in": from_states}},
+        {"$set": fields}, projection={"_id": 0}, return_document=ReturnDocument.BEFORE,
+    )
+    if not before:
+        # Already settled (duplicate/late webhook) — no-op, but still report the match.
+        current = await db.escrow_transactions.find_one({"escrow_id": escrow["escrow_id"]}, {"_id": 0})
+        return {**(current or escrow), "refund_settled": False}
+    await _make_timeline_hook(db, escrow["escrow_id"])(before, before["status"], to_state, {"user_id": "razorpay_webhook"})
+    if to_state == "refunded":
+        await _reverse_payee_hold_once(db, before)
+    return {**before, **fields, "refund_settled": True}
 
 
 async def _reverse_payee_hold_once(db, escrow: dict) -> None:
