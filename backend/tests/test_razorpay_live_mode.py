@@ -537,3 +537,55 @@ def test_cancel_refused_once_a_payment_has_claimed_the_hearing():
         finally:
             await _cleanup(db, hearing_ids=[hearing_id])
     asyncio.run(body())
+
+
+# ---------- Bug B: failed refunds are visible to admins and retryable ----------
+
+import escrow  # noqa: E402
+
+
+def test_refund_failure_visible_in_reconciliation_and_admin_retry_endpoint():
+    async def body():
+        db = _db()
+        admin = {"user_id": _user("admin")["user_id"], "role": "admin"}
+        non_admin = {"user_id": _user("user")["user_id"], "role": "client"}
+        context_id = f"hearing_bugb_{uuid.uuid4().hex[:10]}"
+        doc = await escrow.create_and_hold(
+            db, context_type="hearing", context_id=context_id, service_id=hearings.ESCROW_SERVICE_ID,
+            matter_id=None, payer_user_id=_user("payer")["user_id"], payee_user_id=None,
+            amount=1500.0, platform_commission_pct=0.2,
+            razorpay_order_id=f"order_{uuid.uuid4().hex[:10]}", razorpay_payment_id=f"pay_live_{uuid.uuid4().hex[:10]}",
+        )
+        orig = (razorpay_svc.refund_payment, razorpay_svc.fetch_refunds)
+        try:
+            def _fail(*a, **k):
+                raise RuntimeError("gateway down")
+            razorpay_svc.refund_payment, razorpay_svc.fetch_refunds = _fail, (lambda pid: [])
+            r = await escrow.refund(db, context_type="hearing", context_id=context_id, reason="t")
+            assert r["status"] == "refund_failed"
+
+            report = await server.admin_reconciliation(user=admin, gateway=None, status_filter=None, from_date=None, to_date=None)
+            flagged = [m for m in report["mismatches"] if m.get("escrow_id") == doc["escrow_id"]]
+            assert len(flagged) == 1 and "refund_failed" in flagged[0]["reason"] and "gateway down" in flagged[0]["reason"]
+
+            try:
+                await server.admin_retry_escrow_refund(doc["escrow_id"], user=non_admin)
+                raise AssertionError("non-admin must be refused")
+            except server.HTTPException as e:
+                assert e.status_code == 403
+
+            razorpay_svc.refund_payment = lambda pid, amount_inr=None, notes=None: {
+                "razorpay_refund_id": "rfnd_admin", "status": "processed", "simulated": False}
+            out = await server.admin_retry_escrow_refund(doc["escrow_id"], user=admin)
+            assert out["status"] == "refunded"
+            again = await server.admin_retry_escrow_refund(doc["escrow_id"], user=admin)  # double click
+            assert again["status"] == "refunded" and again["gateway_refund_id"] == "rfnd_admin"
+
+            report = await server.admin_reconciliation(user=admin, gateway=None, status_filter=None, from_date=None, to_date=None)
+            assert not [m for m in report["mismatches"] if m.get("escrow_id") == doc["escrow_id"]]
+            assert await db.audit_log.count_documents({"action": "payment.refund_retry", "details.escrow_id": doc["escrow_id"]}) == 2
+        finally:
+            razorpay_svc.refund_payment, razorpay_svc.fetch_refunds = orig
+            await db.escrow_transactions.delete_many({"context_id": context_id})
+            await db.audit_log.delete_many({"action": "payment.refund_retry", "details.escrow_id": doc["escrow_id"]})
+    _run_with_server(body())

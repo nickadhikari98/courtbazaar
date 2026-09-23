@@ -1787,6 +1787,25 @@ async def admin_escrow_transactions(user=Depends(get_current_user), context_type
     import escrow as escrow_svc
     return await escrow_svc.list_transactions(db, context_type=context_type, status=status)
 
+@api_router.post("/admin/escrow-transactions/{escrow_id}/retry-refund")
+async def admin_retry_escrow_refund(escrow_id: str, user=Depends(get_current_user)):
+    """Admin recovery for a refund that didn't complete (refund_failed,
+    refund_processing, or a stale refund_pending). Idempotent and safe to
+    click twice — see escrow.retry_refund. Find candidates with
+    GET /admin/escrow-transactions?status=refund_failed (or the mismatch
+    list on /admin/reconciliation)."""
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    import escrow as escrow_svc
+    from audit_log import log_audit
+    result = await escrow_svc.retry_refund(db, escrow_id, user)
+    await log_audit(db, "payment.refund_retry", user, {
+        "escrow_id": escrow_id, "context_type": result.get("context_type"), "context_id": result.get("context_id"),
+        "status": result.get("status"), "gateway_refund_id": result.get("gateway_refund_id"),
+        "error": result.get("refund_last_error") if result.get("status") == "refund_failed" else None,
+    })
+    return result
+
 @api_router.get("/admin/vendors")
 async def admin_vendors(user=Depends(get_current_user), status: Optional[str] = None):
     if user["role"] != "admin":
@@ -2783,11 +2802,15 @@ async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)
     result = await hearings_svc.cancel_hearing_request(db, hearing_id, user)
     recipient_id = hearing.get("proxy_counsel_user_id") or hearing.get("target_advocate_id")
     if recipient_id:
-        refunded = hearing["status"] in hearings_svc.CANCEL_REQUIRES_REFUND
+        refund_status = result.get("refund_status")  # set only when escrow was refunded/attempted
+        refund_note = ""
+        if refund_status == "refunded":
+            refund_note = " Any payment held has been refunded."
+        elif refund_status:
+            refund_note = " The payment held is being refunded to the requester."
         await _notify_hearing_event(
             recipient_id, "Hearing cancelled",
-            f"The hearing at {hearing['court_id']} was cancelled by the requester."
-            + (" Any payment held has been refunded." if refunded else ""),
+            f"The hearing at {hearing['court_id']} was cancelled by the requester." + refund_note,
             hearing_id,
         )
     return result
@@ -3090,8 +3113,12 @@ async def resolve_hearing_dispute(hearing_id: str, payload: HearingDisputeResolv
                                      + (f" Note: {payload.remark}" if payload.remark else ""),
                                      hearing_id)
     else:
-        await _notify_hearing_event(hearing["requesting_user_id"], "Refund issued",
+        # Only say "issued" once the refund actually completed (escrow.refund
+        # outcomes); a pending/failed refund is still owed and gets retried.
+        issued = result.get("refund_status") == "refunded"
+        await _notify_hearing_event(hearing["requesting_user_id"], "Refund issued" if issued else "Refund initiated",
                                      f"Your dispute for the hearing at {hearing['court_id']} was resolved with a refund."
+                                     + ("" if issued else " The refund is being processed and may take a few working days.")
                                      + (f" Note: {payload.remark}" if payload.remark else ""),
                                      hearing_id)
         await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Dispute resolved — no payout",
@@ -3230,6 +3257,23 @@ async def admin_reconciliation(
             "mismatch": mismatch,
             "mismatch_reason": mismatch_reason,
         })
+
+    # Escrow refunds that didn't complete (failed, still processing at the
+    # bank, or an in-flight claim that never finished) — surfaced in the same
+    # mismatch list so they're visible without a separate screen. Retry via
+    # POST /admin/escrow-transactions/{escrow_id}/retry-refund.
+    import escrow as escrow_svc
+    stale_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=escrow_svc.STALE_REFUND_PENDING_MINUTES)).isoformat()
+    async for e in db.escrow_transactions.find(
+        {"$or": [{"status": {"$in": ["refund_failed", "refund_processing"]}},
+                 {"status": "refund_pending", "updated_at": {"$lt": stale_cutoff}}]},
+        {"_id": 0, "escrow_id": 1, "razorpay_order_id": 1, "context_id": 1, "status": 1, "refund_last_error": 1},
+    ).sort("updated_at", -1).limit(200):
+        reason = f"Escrow refund {e['status']} (escrow {e['escrow_id']})"
+        if e.get("status") == "refund_failed" and e.get("refund_last_error"):
+            reason += f": {e['refund_last_error'][:120]}"
+        mismatches.append({"session_id": e.get("razorpay_order_id"), "order_id": e.get("context_id"),
+                           "escrow_id": e["escrow_id"], "reason": reason})
 
     return {
         "rows": rows,
