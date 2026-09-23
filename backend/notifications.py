@@ -7,6 +7,7 @@ Fail-soft throughout: if a provider isn't configured (no API key set), calls
 log to console and report status "mocked" instead of raising, exactly as
 before this refactor.
 """
+import html
 import os
 import logging
 import uuid
@@ -490,19 +491,26 @@ _TICKET_CATEGORY_LABELS = {
 }
 
 
+def _esc(value) -> str:
+    """HTML-escape user-controlled text before it goes into an HTML email
+    body. Ticket fields are stored raw (see support_tickets.create_ticket),
+    so escaping exactly once here, at render time, can't double-escape."""
+    return html.escape("" if value is None else str(value), quote=True)
+
+
 def tmpl_support_ticket_created(ticket: dict) -> dict:
-    name = ticket.get("name") or "there"
+    name = _esc(ticket.get("name") or "there")
     category_label = _TICKET_CATEGORY_LABELS.get(ticket.get("category"), "General")
-    order_line = f"<p><b>Related order:</b> {ticket['order_id']}</p>" if ticket.get("order_id") else ""
+    order_line = f"<p><b>Related order:</b> {_esc(ticket['order_id'])}</p>" if ticket.get("order_id") else ""
     return {
         "email_subject": f"We've received your request — Ticket #{ticket['ticket_id']}",
         "email_html": (
             f"<p>Hi {name},</p>"
             f"<p>Thanks for reaching out to CourtBazaar. Your support ticket has been logged and our team "
             f"will get back to you shortly.</p>"
-            f"<p><b>Ticket ID:</b> {ticket['ticket_id']}<br>"
+            f"<p><b>Ticket ID:</b> {_esc(ticket['ticket_id'])}<br>"
             f"<b>Category:</b> {category_label}<br>"
-            f"<b>Subject:</b> {ticket.get('subject', '')}</p>"
+            f"<b>Subject:</b> {_esc(ticket.get('subject', ''))}</p>"
             f"{order_line}"
             f"<p>Please quote this Ticket ID in any follow-up communication.</p>"
         ),
@@ -510,15 +518,15 @@ def tmpl_support_ticket_created(ticket: dict) -> dict:
 
 
 def tmpl_support_ticket_replied(ticket: dict, reply_text: str) -> dict:
-    name = ticket.get("name") or "there"
+    name = _esc(ticket.get("name") or "there")
     status_label = (ticket.get("status") or "").replace("_", " ").title()
     return {
         "email_subject": f"Update on your support ticket #{ticket['ticket_id']}",
         "email_html": (
             f"<p>Hi {name},</p>"
-            f"<p>There's an update on your support ticket <b>#{ticket['ticket_id']}</b> "
-            f"(\"{ticket.get('subject', '')}\") — status: <b>{status_label}</b>.</p>"
-            f"<p>{reply_text}</p>"
+            f"<p>There's an update on your support ticket <b>#{_esc(ticket['ticket_id'])}</b> "
+            f"(\"{_esc(ticket.get('subject', ''))}\") — status: <b>{_esc(status_label)}</b>.</p>"
+            f"<p>{_esc(reply_text)}</p>"
             f"<p>If you have more questions, just reply to this email.</p>"
         ),
     }
@@ -530,11 +538,11 @@ def tmpl_support_ticket_admin_notify(ticket: dict) -> dict:
         "email_subject": f"New support ticket #{ticket['ticket_id']} — {ticket.get('subject', '')}",
         "email_html": (
             f"<p>A new support ticket was submitted on CourtBazaar.</p>"
-            f"<p><b>Ticket ID:</b> {ticket['ticket_id']}<br>"
-            f"<b>From:</b> {ticket.get('name')} ({ticket.get('email')})<br>"
+            f"<p><b>Ticket ID:</b> {_esc(ticket['ticket_id'])}<br>"
+            f"<b>From:</b> {_esc(ticket.get('name'))} ({_esc(ticket.get('email'))})<br>"
             f"<b>Category:</b> {category_label}<br>"
-            f"<b>Subject:</b> {ticket.get('subject', '')}</p>"
-            f"<p>{ticket.get('message', '')}</p>"
+            f"<b>Subject:</b> {_esc(ticket.get('subject', ''))}</p>"
+            f"<p>{_esc(ticket.get('message', ''))}</p>"
             f"<p>Review it in the admin console: Admin → Support Tickets.</p>"
         ),
     }
