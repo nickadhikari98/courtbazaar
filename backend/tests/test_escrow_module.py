@@ -167,7 +167,11 @@ def test_check_pending_order_sheets_notifies_after_three_days():
 
             event = await db.notification_events.find_one({"user_id": counsel["user_id"]}, {"_id": 0})
             assert event is not None
-            assert "Escrow" in event["body"]
+            # Wording changed in 5b25d4b ("waiting in Escrow" -> "held securely
+            # by CourtBazaar"); assert the reminder's current meaning instead.
+            assert event["title"] == "Order sheet reminder"
+            assert "held securely by CourtBazaar" in event["body"]
+            assert "upload the Court Order Sheet" in event["body"]
 
             # Second scan must not re-notify the same hearing.
             before = event["notification_id"]
