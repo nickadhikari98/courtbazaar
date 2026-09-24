@@ -7,7 +7,8 @@ other's transition table.
 
 Payment lifecycle (independent of any service's own operational status):
     created -> captured -> held -> released
-                            held -> refunded
+                            held -> refund_pending -> refunded | refund_processing | refund_failed
+                            refund_failed / refund_processing -> (retry_refund) -> refund_pending
 
 `create_and_hold` auto-chains created->captured->held in one call — there's
 no separate gateway-capture webhook to key off in this simulated-escrow pass
@@ -31,7 +32,7 @@ escrow isn't a simulated payment, via the "held" -> "refund_pending" ->
 state is what makes a double-invocation (e.g. an admin double-click) safe.
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
@@ -47,7 +48,20 @@ ESCROW_TRANSITIONS = {
     ("held", "refund"): "refund_pending",
     ("refund_pending", "refund_confirm"): "refunded",
     ("refund_pending", "refund_release"): "held",
+    # Refund recovery (Bug B): a refund Razorpay accepted but hasn't
+    # processed yet, and a refund that failed — both retryable via
+    # retry_refund(), which re-enters refund_pending.
+    ("refund_pending", "refund_processing"): "refund_processing",
+    ("refund_pending", "refund_fail"): "refund_failed",
+    ("refund_failed", "refund_retry"): "refund_pending",
+    ("refund_processing", "refund_retry"): "refund_pending",
+    ("refund_pending", "refund_retry"): "refund_pending",  # stale in-flight claim only (see retry_refund)
 }
+
+# Statuses an admin needs to look at: refund failed, accepted-but-not-
+# processed, or an in-flight claim that never finished (process crash).
+REFUND_ATTENTION_STATUSES = ("refund_failed", "refund_processing", "refund_pending")
+STALE_REFUND_PENDING_MINUTES = 10
 
 
 def new_escrow_id() -> str:
@@ -223,8 +237,18 @@ async def refund(db, *, context_type: str, context_id: str, reason: str) -> dict
     database, so without this claim two concurrent refund() calls could both
     read status "held", both pass validation, and both call the gateway.
     Claiming "refund_pending" first means only one caller ever proceeds to
-    the gateway; the other gets an idempotent response instead. On gateway
-    failure the claim is released back to "held" so the refund is retryable.
+    the gateway; the other gets an idempotent response instead.
+
+    Outcome (Bug B — refund failure recovery): the gateway's answer decides
+    the resting status, never the mere fact that a request was sent —
+      refunded           Razorpay reports "processed" (or simulated payment)
+      refund_processing  Razorpay accepted it but reports it still pending
+      refund_failed      the call errored/timed out, or Razorpay said failed
+    A failure is recorded (refund_last_error/refund_failed_at) and the
+    escrow is RETURNED, not raised: the caller's own action (cancel,
+    dispute resolution) has already committed, so it should report the
+    refund status rather than 500. refund_failed/refund_processing are
+    retried with retry_refund().
 
     Skips the gateway call for a simulated payment (no razorpay_payment_id,
     or one starting with pay_sim_) — see razorpay_svc.refund_payment.
@@ -239,51 +263,147 @@ async def refund(db, *, context_type: str, context_id: str, reason: str) -> dict
     refund_pending_state = ESCROW_TRANSITIONS[("held", "refund")]
     claimed = await db.escrow_transactions.find_one_and_update(
         {"escrow_id": escrow["escrow_id"], "status": "held"},
-        {"$set": {"status": refund_pending_state, "updated_at": now}},
+        {"$set": {"status": refund_pending_state, "updated_at": now, "refund_requested_at": now, "refund_reason": reason},
+         "$inc": {"refund_attempts": 1}},
         projection={"_id": 0}, return_document=ReturnDocument.AFTER,
     )
     if not claimed:
         current = await db.escrow_transactions.find_one({"escrow_id": escrow["escrow_id"]}, {"_id": 0})
-        if current and current["status"] == "refunded":
-            return current  # already refunded — idempotent success, not an error
+        if current and current["status"] in ("refunded", "refund_processing", "refund_failed"):
+            # Already requested: refunded is idempotent success; the other
+            # two are already recorded and retried via retry_refund(), never
+            # by requesting a second refund here.
+            return current
         if current and current["status"] == "refund_pending":
             raise HTTPException(409, "Refund already in progress for this escrow")
         raise HTTPException(400, f"Cannot refund from status '{escrow['status']}'")
 
-    sm = StateMachine(ESCROW_TRANSITIONS, _make_timeline_hook(db, claimed["escrow_id"]))
     # The atomic claim above already performed the "held" -> refund_pending_state
     # write; run the same audit hook sm.apply() would have run for it so this
     # step still lands in the timeline like every other transition does.
     await _make_timeline_hook(db, claimed["escrow_id"])(claimed, "held", refund_pending_state, None)
-    rzp_payment_id = claimed.get("razorpay_payment_id")
-    gateway_result = None
+    return await _settle_refund_attempt(db, claimed, reason=reason, check_existing=False, actor=None)
+
+
+async def retry_refund(db, escrow_id: str, actor: Optional[dict]) -> dict:
+    """Admin recovery for a refund that didn't complete: refund_failed,
+    refund_processing, or a refund_pending claim older than
+    STALE_REFUND_PENDING_MINUTES (the process died mid-call).
+
+    Safe to call repeatedly/concurrently: the retry is claimed with the same
+    atomic compare-and-swap as refund() (only one caller gets the escrow
+    back into refund_pending; others get 409 or the idempotent result), and
+    before any new gateway request it asks Razorpay which refunds already
+    exist for the payment (razorpay_svc.fetch_refunds) — a refund that
+    already went through (e.g. the first call timed out after Razorpay
+    created it) is recorded, not requested again, and only the unrefunded
+    remainder is ever requested. Razorpay itself also rejects refunding more
+    than was captured, as a final backstop."""
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    stale_cutoff = (now_dt - timedelta(minutes=STALE_REFUND_PENDING_MINUTES)).isoformat()
+    before = await db.escrow_transactions.find_one_and_update(
+        {"escrow_id": escrow_id, "$or": [
+            {"status": {"$in": ["refund_failed", "refund_processing"]}},
+            {"status": "refund_pending", "updated_at": {"$lt": stale_cutoff}},
+        ]},
+        {"$set": {"status": "refund_pending", "updated_at": now, "refund_last_retry_at": now,
+                  "refund_last_retry_by": actor["user_id"] if actor else "system"},
+         "$inc": {"refund_attempts": 1}},
+        projection={"_id": 0}, return_document=ReturnDocument.BEFORE,
+    )
+    if not before:
+        current = await db.escrow_transactions.find_one({"escrow_id": escrow_id}, {"_id": 0})
+        if not current:
+            raise HTTPException(404, "Escrow not found")
+        if current["status"] == "refunded":
+            return current  # already refunded — idempotent, never a second refund
+        if current["status"] == "refund_pending":
+            raise HTTPException(409, "Refund already in progress for this escrow")
+        raise HTTPException(400, f"Nothing to retry: escrow status is '{current['status']}'")
+
+    claimed = {**before, "status": "refund_pending", "updated_at": now,
+               "refund_attempts": (before.get("refund_attempts") or 0) + 1}
+    await _make_timeline_hook(db, escrow_id)(claimed, before["status"], "refund_pending", actor)
+    return await _settle_refund_attempt(
+        db, claimed, reason=before.get("refund_reason") or "Refund retry", check_existing=True, actor=actor,
+    )
+
+
+async def _settle_refund_attempt(db, claimed: dict, *, reason: str, check_existing: bool,
+                                 actor: Optional[dict]) -> dict:
+    """Runs one refund attempt for an escrow this caller has claimed into
+    refund_pending, and records the outcome (see refund()'s docstring for
+    the three outcomes). Never raises for a gateway problem."""
+    escrow_id = claimed["escrow_id"]
+    payment_id = claimed.get("razorpay_payment_id")
+    amount = float(claimed.get("amount") or 0)
+    gateway_result: Optional[dict] = None
+    error: Optional[str] = None
+    outcome: Optional[str] = None
     try:
-        if rzp_payment_id and not rzp_payment_id.startswith("pay_sim_"):
-            gateway_result = razorpay_svc.refund_payment(
-                rzp_payment_id, amount_inr=claimed["amount"],
-                notes={"context_type": context_type, "context_id": context_id, "reason": reason},
-            )
-        await sm.apply(claimed, "refund_pending", "refund_confirm", None)
-    except Exception:
-        # Release the claim so the refund can be retried — never leave the
-        # escrow stuck in refund_pending on a gateway failure.
-        await db.escrow_transactions.update_one(
-            {"escrow_id": claimed["escrow_id"]}, {"$set": {"status": "held", "updated_at": now}},
-        )
-        raise
+        if not payment_id or payment_id.startswith("pay_sim_"):
+            outcome = "refunded"  # simulated payment: nothing to call
+        else:
+            remaining = amount
+            if check_existing:
+                existing = razorpay_svc.fetch_refunds(payment_id)
+                processed = [r for r in existing if (r.get("status") or "").lower() == "processed"]
+                in_flight = [r for r in existing if (r.get("status") or "").lower() in ("pending", "created")]
+                remaining = round(amount - sum(float(r.get("amount_inr") or 0) for r in processed), 2)
+                if remaining <= 0.009:
+                    outcome = "refunded"
+                    gateway_result = {"razorpay_refund_id": processed[-1]["razorpay_refund_id"], "status": "processed"}
+                elif in_flight:
+                    outcome = "refund_processing"
+                    gateway_result = {"razorpay_refund_id": in_flight[-1]["razorpay_refund_id"], "status": in_flight[-1].get("status")}
+            if outcome is None:
+                gateway_result = razorpay_svc.refund_payment(
+                    payment_id, amount_inr=remaining,
+                    notes={"context_type": claimed.get("context_type"), "context_id": claimed.get("context_id"), "reason": reason},
+                )
+                status = (gateway_result.get("status") or "").lower()
+                if gateway_result.get("simulated") or status == "processed":
+                    outcome = "refunded"
+                elif status == "failed":
+                    outcome, error = "refund_failed", "Razorpay reported the refund as failed"
+                else:
+                    outcome = "refund_processing"
+    except Exception as e:
+        outcome, error = "refund_failed", str(e)[:500] or e.__class__.__name__
 
     now = datetime.now(timezone.utc).isoformat()
-    update_fields = {"status": "refunded", "refund_reason": reason, "updated_at": now}
+    fields: Dict[str, Any] = {"status": outcome, "updated_at": now}
     if gateway_result:
-        update_fields["gateway_refund_id"] = gateway_result.get("razorpay_refund_id")
-        update_fields["gateway_refund_status"] = gateway_result.get("status")
-    await db.escrow_transactions.update_one({"escrow_id": claimed["escrow_id"]}, {"$set": update_fields})
-    if claimed.get("payee_user_id"):
-        await db.users.update_one(
-            {"user_id": claimed["payee_user_id"]}, {"$inc": {"wallet_held_balance": -claimed["payee_amount"]}},
-        )
-    claimed.update(update_fields)
+        fields["gateway_refund_id"] = gateway_result.get("razorpay_refund_id")
+        fields["gateway_refund_status"] = gateway_result.get("status")
+    if outcome == "refund_failed":
+        fields.update({"refund_last_error": error, "refund_failed_at": now})
+    elif outcome == "refunded":
+        fields["refund_completed_at"] = now
+    # Settle only our own claim — conditional on still being refund_pending.
+    await db.escrow_transactions.update_one({"escrow_id": escrow_id, "status": "refund_pending"}, {"$set": fields})
+    await _make_timeline_hook(db, escrow_id)(claimed, "refund_pending", outcome, actor)
+    if outcome in ("refunded", "refund_processing"):
+        await _reverse_payee_hold_once(db, claimed)
+    claimed.update(fields)
     return claimed
+
+
+async def _reverse_payee_hold_once(db, escrow: dict) -> None:
+    """Moves the payee's wallet_held_balance back down exactly once per
+    escrow, however many refund attempts/retries reach an accepted outcome
+    — the payee_hold_reversed flag is claimed atomically first."""
+    if not escrow.get("payee_user_id"):
+        return
+    res = await db.escrow_transactions.update_one(
+        {"escrow_id": escrow["escrow_id"], "payee_hold_reversed": {"$ne": True}},
+        {"$set": {"payee_hold_reversed": True}},
+    )
+    if res.modified_count == 1:
+        await db.users.update_one(
+            {"user_id": escrow["payee_user_id"]}, {"$inc": {"wallet_held_balance": -escrow["payee_amount"]}},
+        )
 
 
 async def get_for_context(db, context_type: str, context_id: str) -> Optional[dict]:

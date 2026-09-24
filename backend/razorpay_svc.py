@@ -107,6 +107,26 @@ def refund_payment(razorpay_payment_id: str, amount_inr: Optional[float] = None,
         raise
 
 
+def fetch_refunds(razorpay_payment_id: str) -> list:
+    """Refunds Razorpay already holds for a payment, as a list of
+    {"razorpay_refund_id", "amount_inr", "status"} — used before RETRYING a
+    refund, so a refund that actually went through (e.g. the first call
+    timed out after Razorpay created it) is detected instead of requested
+    again. Razorpay's refund API has no idempotency key, so this lookup is
+    the client-side guard. Simulated payments / no keys -> [] (no network).
+    Raises on a gateway error so callers never mistake "couldn't check" for
+    "no refunds exist"."""
+    if not is_enabled() or razorpay_payment_id.startswith("pay_sim_"):
+        return []
+    c = _client()
+    resp = c.payment.fetch_multiple_refund(razorpay_payment_id)
+    items = resp.get("items", []) if isinstance(resp, dict) else []
+    return [
+        {"razorpay_refund_id": r.get("id"), "amount_inr": (r.get("amount") or 0) / 100.0, "status": r.get("status")}
+        for r in items
+    ]
+
+
 def verify_webhook(body: bytes, signature: str, secret: str) -> bool:
     expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature or "")
