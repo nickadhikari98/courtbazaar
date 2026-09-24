@@ -3267,13 +3267,22 @@ async def admin_reconciliation(
     async for e in db.escrow_transactions.find(
         {"$or": [{"status": {"$in": ["refund_failed", "refund_processing"]}},
                  {"status": "refund_pending", "updated_at": {"$lt": stale_cutoff}}]},
-        {"_id": 0, "escrow_id": 1, "razorpay_order_id": 1, "context_id": 1, "status": 1, "refund_last_error": 1},
+        {"_id": 0, "escrow_id": 1, "razorpay_order_id": 1, "context_id": 1, "status": 1, "refund_last_error": 1,
+         "amount": 1, "payee_user_id": 1, "payee_amount": 1, "payee_hold_reversed": 1},
     ).sort("updated_at", -1).limit(200):
         reason = f"Escrow refund {e['status']} (escrow {e['escrow_id']})"
         if e.get("status") == "refund_failed" and e.get("refund_last_error"):
             reason += f": {e['refund_last_error'][:120]}"
+        # The payee's wallet_held_balance is only reversed once a refund is
+        # accepted (escrow._reverse_payee_hold_once), so for a failed/stuck
+        # refund it still shows the amount — never payable (release() needs
+        # "held"), but worth telling the admin who is looking at it.
+        payee_hold_locked = bool(e.get("payee_user_id")) and not e.get("payee_hold_reversed")
         mismatches.append({"session_id": e.get("razorpay_order_id"), "order_id": e.get("context_id"),
-                           "escrow_id": e["escrow_id"], "reason": reason})
+                           "escrow_id": e["escrow_id"], "reason": reason,
+                           "escrow_status": e.get("status"), "amount": e.get("amount"),
+                           "payee_hold_locked": payee_hold_locked,
+                           "payee_amount": e.get("payee_amount") if payee_hold_locked else None})
 
     return {
         "rows": rows,

@@ -539,6 +539,49 @@ def test_cancel_refused_once_a_payment_has_claimed_the_hearing():
     asyncio.run(body())
 
 
+def test_reconciliation_reports_locked_payee_hold_for_failed_refund():
+    """A failed refund on an escrow with an assigned payee: the payee's held
+    balance is still counted (only reversed once a refund is accepted), and
+    reconciliation says so; once processing is accepted the lock is gone."""
+    async def body():
+        import escrow as escrow_mod
+        db = _db()
+        admin = {"user_id": _user("admin")["user_id"], "role": "admin"}
+        payee = _user("payee")
+        context_id = f"hearing_bugb_{uuid.uuid4().hex[:10]}"
+        await db.users.insert_one({"user_id": payee["user_id"], "wallet_held_balance": 0})
+        doc = await escrow_mod.create_and_hold(
+            db, context_type="hearing", context_id=context_id, service_id=hearings.ESCROW_SERVICE_ID,
+            matter_id=None, payer_user_id=_user("payer")["user_id"], payee_user_id=payee["user_id"],
+            amount=1500.0, platform_commission_pct=0.2,
+            razorpay_order_id=f"order_{uuid.uuid4().hex[:10]}", razorpay_payment_id=f"pay_live_{uuid.uuid4().hex[:10]}",
+        )
+        orig = (razorpay_svc.refund_payment, razorpay_svc.fetch_refunds)
+        try:
+            def _fail(*a, **k):
+                raise RuntimeError("gateway down")
+            razorpay_svc.refund_payment, razorpay_svc.fetch_refunds = _fail, (lambda pid: [])
+            await escrow_mod.refund(db, context_type="hearing", context_id=context_id, reason="t")
+            report = await server.admin_reconciliation(user=admin, gateway=None, status_filter=None, from_date=None, to_date=None)
+            m = [x for x in report["mismatches"] if x.get("escrow_id") == doc["escrow_id"]][0]
+            assert m["escrow_status"] == "refund_failed"
+            assert m["payee_hold_locked"] is True and m["payee_amount"] == doc["payee_amount"]
+
+            razorpay_svc.refund_payment = lambda pid, amount_inr=None, notes=None: {
+                "razorpay_refund_id": "rfnd_p", "status": "pending", "simulated": False}
+            out = await escrow_mod.retry_refund(db, doc["escrow_id"], {"user_id": admin["user_id"]})
+            assert out["status"] == "refund_processing"
+            report = await server.admin_reconciliation(user=admin, gateway=None, status_filter=None, from_date=None, to_date=None)
+            m = [x for x in report["mismatches"] if x.get("escrow_id") == doc["escrow_id"]][0]
+            assert m["escrow_status"] == "refund_processing"
+            assert m["payee_hold_locked"] is False and m["payee_amount"] is None
+        finally:
+            razorpay_svc.refund_payment, razorpay_svc.fetch_refunds = orig
+            await db.escrow_transactions.delete_many({"context_id": context_id})
+            await db.users.delete_many({"user_id": payee["user_id"]})
+    _run_with_server(body())
+
+
 # ---------- Bug B: failed refunds are visible to admins and retryable ----------
 
 import escrow  # noqa: E402
@@ -567,6 +610,10 @@ def test_refund_failure_visible_in_reconciliation_and_admin_retry_endpoint():
             report = await server.admin_reconciliation(user=admin, gateway=None, status_filter=None, from_date=None, to_date=None)
             flagged = [m for m in report["mismatches"] if m.get("escrow_id") == doc["escrow_id"]]
             assert len(flagged) == 1 and "refund_failed" in flagged[0]["reason"] and "gateway down" in flagged[0]["reason"]
+            # Structured fields the admin UI renders (status badge / Retry button / hold note).
+            assert flagged[0]["escrow_status"] == "refund_failed"
+            assert flagged[0]["amount"] == 1500.0
+            assert flagged[0]["payee_hold_locked"] is False  # no payee assigned on this escrow
 
             try:
                 await server.admin_retry_escrow_refund(doc["escrow_id"], user=non_admin)

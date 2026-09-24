@@ -533,3 +533,111 @@ def test_bugb_retry_rules_for_pending_and_held():
         finally:
             await _cleanup(db, [context_id], [counsel["user_id"]])
     asyncio.run(body())
+
+
+# ---------- Bug B hardening: fetch_refunds error path, payee hold ----------
+
+class _live_keys:
+    """Force razorpay_svc into live mode with a stubbed client — no network."""
+    def __init__(self, client):
+        self.client = client
+
+    def __enter__(self):
+        self._orig = (razorpay_svc.RAZORPAY_KEY_ID, razorpay_svc.RAZORPAY_KEY_SECRET, razorpay_svc._client)
+        razorpay_svc.RAZORPAY_KEY_ID, razorpay_svc.RAZORPAY_KEY_SECRET = "rzp_test_fake", "fake_secret"
+        razorpay_svc._client = lambda: self.client
+        return self
+
+    def __exit__(self, *exc):
+        razorpay_svc.RAZORPAY_KEY_ID, razorpay_svc.RAZORPAY_KEY_SECRET, razorpay_svc._client = self._orig
+
+
+def test_fetch_refunds_simulated_live_mapping_and_gateway_error():
+    # Simulated payment / no keys: no client is ever built.
+    assert razorpay_svc.fetch_refunds("pay_sim_abc") == []
+
+    client = MagicMock()
+    client.payment.fetch_multiple_refund.return_value = {"items": [
+        {"id": "rfnd_1", "amount": 50000, "status": "processed"},
+        {"id": "rfnd_2", "amount": 25050, "status": "pending"},
+    ]}
+    with _live_keys(client):
+        out = razorpay_svc.fetch_refunds("pay_live_1")
+    client.payment.fetch_multiple_refund.assert_called_once_with("pay_live_1")
+    assert out == [
+        {"razorpay_refund_id": "rfnd_1", "amount_inr": 500.0, "status": "processed"},
+        {"razorpay_refund_id": "rfnd_2", "amount_inr": 250.5, "status": "pending"},
+    ]
+
+    # Unexpected/empty response shape is "no refunds", not a crash.
+    client.payment.fetch_multiple_refund.return_value = None
+    with _live_keys(client):
+        assert razorpay_svc.fetch_refunds("pay_live_1") == []
+
+    # A gateway error must propagate — "couldn't check" is never "none exist".
+    client.payment.fetch_multiple_refund.side_effect = RuntimeError("razorpay 502")
+    with _live_keys(client):
+        try:
+            razorpay_svc.fetch_refunds("pay_live_1")
+            raise AssertionError("gateway error must be raised")
+        except RuntimeError as e:
+            assert "502" in str(e)
+
+
+def test_bugb_retry_when_refund_lookup_fails_requests_no_refund():
+    """If Razorpay can't be asked which refunds exist, the retry must NOT
+    request a new refund blind (could double-refund) — it stays
+    refund_failed with the lookup error recorded, hold untouched."""
+    async def body():
+        db = _db()
+        counsel = _user("counsel")
+        context_id, doc = await _held_escrow(db, counsel)
+        try:
+            with _gateway(refund=RuntimeError("gateway down")):
+                r = await escrow.refund(db, context_type="hearing", context_id=context_id, reason="t")
+            assert r["status"] == "refund_failed"
+
+            def _lookup_fails(pid):
+                raise RuntimeError("fetch refunds timed out")
+            with _gateway(refund=_processed(), existing=_lookup_fails) as gw:
+                r = await escrow.retry_refund(db, doc["escrow_id"], {"user_id": "admin_t"})
+            assert r["status"] == "refund_failed"
+            assert gw.fetch_calls and gw.refund_calls == []  # never refunded blind
+            e = await db.escrow_transactions.find_one({"escrow_id": doc["escrow_id"]}, {"_id": 0})
+            assert "fetch refunds timed out" in e["refund_last_error"]
+            assert e["refund_attempts"] == 2
+            assert await _held_balance(db, counsel["user_id"]) == doc["payee_amount"]  # still locked
+        finally:
+            await _cleanup(db, [context_id], [counsel["user_id"]])
+    asyncio.run(body())
+
+
+def test_bugb_failed_refund_keeps_payee_hold_until_retry_then_reverses_once():
+    async def body():
+        db = _db()
+        counsel = _user("counsel")
+        context_id, doc = await _held_escrow(db, counsel)
+        try:
+            with _gateway(refund=RuntimeError("gateway down")):
+                r = await escrow.refund(db, context_type="hearing", context_id=context_id, reason="t")
+            assert r["status"] == "refund_failed"
+            # Not accepted by Razorpay -> hold stays (and can't be released: escrow isn't "held").
+            assert await _held_balance(db, counsel["user_id"]) == doc["payee_amount"]
+            try:
+                await escrow.release(db, context_type="hearing", context_id=context_id, released_by_user_id="admin_t")
+                raise AssertionError("a refund_failed escrow must never be released to the payee")
+            except HTTPException:
+                pass
+
+            with _gateway(refund={"razorpay_refund_id": "rfnd_q", "status": "pending", "simulated": False}):
+                r = await escrow.retry_refund(db, doc["escrow_id"], {"user_id": "admin_t"})
+            assert r["status"] == "refund_processing"
+            assert await _held_balance(db, counsel["user_id"]) == 0  # reversed on acceptance
+
+            with _gateway(existing=[{"razorpay_refund_id": "rfnd_q", "amount_inr": 1500.0, "status": "processed"}]) as gw:
+                r = await escrow.retry_refund(db, doc["escrow_id"], {"user_id": "admin_t"})
+            assert r["status"] == "refunded" and gw.refund_calls == []
+            assert await _held_balance(db, counsel["user_id"]) == 0  # not reversed a second time
+        finally:
+            await _cleanup(db, [context_id], [counsel["user_id"]])
+    asyncio.run(body())
