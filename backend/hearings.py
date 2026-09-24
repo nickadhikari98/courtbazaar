@@ -686,6 +686,10 @@ async def cancel_hearing_request(db, hearing_id: str, user: dict) -> dict:
     is_admin = user.get("role") == "admin"
     if hearing["requesting_user_id"] != user["user_id"] and not is_admin:
         raise HTTPException(403, "Forbidden")
+    # Already cancelled/closed: say so, rather than the pre-payment lock
+    # message below (a locked hearing stays commercially_locked after cancel).
+    if (hearing["status"], "cancel") not in HEARING_TRANSITIONS:
+        raise HTTPException(400, "This request can no longer be cancelled")
     paid = hearing["status"] in CANCEL_REQUIRES_REFUND
     if hearing.get("commercially_locked") and not paid:
         raise HTTPException(400, "A fee has been agreed through negotiation — this request is "

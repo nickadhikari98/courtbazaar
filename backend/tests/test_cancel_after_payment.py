@@ -337,6 +337,33 @@ def test_second_cancel_is_rejected_and_never_refunds_twice():
     asyncio.run(body())
 
 
+def test_second_cancel_of_cancelled_locked_hearing_says_closed_not_proceed_to_payment():
+    """A fee-locked hearing stays commercially_locked after cancel — the
+    repeat attempt must get the closed message, not the pre-payment
+    "Proceed to payment" lock message, and must never refund again."""
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id = await fx.paid_locked_hearing(db)
+            with _refund_stub(status="pending") as refunds:
+                first = await hearings.cancel_hearing_request(db, hearing_id, fx.requester)
+                cancelled = await _hearing(db, hearing_id)
+                assert cancelled["status"] == "cancelled" and cancelled.get("commercially_locked") is True
+                for caller in (fx.requester, _admin()):
+                    with pytest.raises(HTTPException) as exc_info:
+                        await hearings.cancel_hearing_request(db, hearing_id, caller)
+                    assert exc_info.value.status_code == 400
+                    assert exc_info.value.detail == "This request can no longer be cancelled"
+                    assert "Proceed to payment" not in exc_info.value.detail
+            assert first["ok"] is True
+            assert len(refunds.calls) == 1
+            assert (await _escrow(db, hearing_id))["refund_attempts"] == 1
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
 def test_concurrent_cancels_only_one_wins_and_refunds_once():
     async def body():
         db, fx = _db(), _Fixture()
