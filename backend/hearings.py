@@ -329,6 +329,7 @@ async def list_hearing_requests(db, user: dict) -> List[dict]:
         clauses.append({"target_advocate_id": user["user_id"], "status": {"$in": ["requested", "payment_pending"]}})
     hearings = await db.hearing_requests.find({"$or": clauses}, {"_id": 0}).sort("created_at", -1).to_list(200)
     await _attach_negotiation_action_flags(db, hearings, user["user_id"])
+    await _attach_decline_flags(db, hearings, user["user_id"])
     return hearings
 
 
@@ -384,7 +385,35 @@ async def get_hearing_request(db, hearing_id: str, user: dict) -> dict:
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
     _check_visible(hearing, user)
+    await _attach_decline_flags(db, [hearing], user["user_id"])
     return hearing
+
+
+async def _notified_counsel_ids(db, hearings: List[dict]) -> Dict[str, set]:
+    """hearing_id -> every counsel user_id the matching waterfall notified,
+    across ALL tiers: the hearing's own notified_counsel_ids only holds the
+    current tier (notify_tier overwrites it), earlier tiers live in
+    counsel_matching_log.tiers[]. The existing record of "this request was
+    offered to you" — decline authorization reads it, doesn't add a new one."""
+    notified = {h["hearing_id"]: set(h.get("notified_counsel_ids") or []) for h in hearings}
+    if notified:
+        async for session in db.counsel_matching_log.find(
+            {"hearing_id": {"$in": list(notified)}}, {"_id": 0, "hearing_id": 1, "tiers": 1},
+        ):
+            for tier in session.get("tiers") or []:
+                notified[session["hearing_id"]].update(tier.get("notified_counsel_ids") or [])
+    return notified
+
+
+async def _attach_decline_flags(db, hearings: List[dict], user_id: str) -> None:
+    """Sets `viewer_can_decline` — whether decline_hearing_request would
+    accept this viewer's decline — so the UI offers Decline only where the
+    backend allows it (the open-requests pool shows every untargeted
+    broadcast request, not just the ones offered to this counsel)."""
+    candidates = [h for h in hearings if h.get("status") == "broadcast" and not h.get("target_advocate_id")]
+    notified = await _notified_counsel_ids(db, candidates)
+    for h in hearings:
+        h["viewer_can_decline"] = user_id in notified.get(h["hearing_id"], set())
 
 
 def _check_visible(hearing: dict, user: dict) -> None:
@@ -606,6 +635,8 @@ async def decline_hearing_request(db, hearing_id: str, user: dict) -> dict:
     """Personal, not global — hides this request from this proxy counsel's
     own open-requests view without affecting anyone else's (broadcast
     requests only; a targeted request uses reject_hearing_request instead).
+    Only a counsel the request was actually offered to (notified in some
+    matching tier) may decline it — anyone else gets 403.
 
     M14: after recording the decline, checks whether every counsel notified
     in the current tier has now declined — if so, advances/escalates
@@ -613,11 +644,28 @@ async def decline_hearing_request(db, hearing_id: str, user: dict) -> dict:
     same pattern as mark_payment_confirmed's M11 run_matching call: a
     failure here must never undo the decline that was just durably
     recorded, so it's caught and logged, never re-raised."""
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    # A targeted request has exactly one recipient, who rejects it instead.
+    if hearing.get("target_advocate_id"):
+        if hearing["target_advocate_id"] != user["user_id"]:
+            raise HTTPException(403, "This request wasn't sent to you")
+        raise HTTPException(400, "This request was sent to you directly — use Reject instead")
+    # Otherwise only a counsel this request was actually offered to (notified
+    # in any matching tier) may decline it — checked before status so an
+    # unrelated counsel learns nothing about the request's state.
+    if user["user_id"] not in (await _notified_counsel_ids(db, [hearing])).get(hearing_id, set()):
+        raise HTTPException(403, "This request wasn't sent to you")
+    # Atomic on status: a request accepted/cancelled since the read above is
+    # refused rather than silently recording a decline. Repeat declines are
+    # harmless ($addToSet).
     result = await db.hearing_requests.update_one(
-        {"hearing_id": hearing_id}, {"$addToSet": {"declined_by": user["user_id"]}},
+        {"hearing_id": hearing_id, "status": "broadcast"},
+        {"$addToSet": {"declined_by": user["user_id"]}},
     )
     if result.matched_count == 0:
-        raise HTTPException(404, "Hearing request not found")
+        raise HTTPException(400, "This request is no longer open")
 
     import counsel_matching
     from audit_log import log_audit

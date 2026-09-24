@@ -158,7 +158,10 @@ export function getHearingPermissions(hearing, user) {
   const isTargetedAtMe = hearing.target_advocate_id === userId;
   const isEligibleAdvocate = hearingIsAcceptableByMe(hearing, user);
   const canAccept = isEligibleAdvocate;
-  const canDecline = isEligibleAdvocate && !hearing.target_advocate_id;
+  // Backend-computed (hearings._attach_decline_flags): only a counsel this
+  // request was actually offered to may decline it — the open pool also shows
+  // requests that were never sent to this counsel.
+  const canDecline = isEligibleAdvocate && !hearing.target_advocate_id && hearing.viewer_can_decline === true;
   // Deliberately NOT gated on isEligibleAdvocate as a whole (which requires
   // status "broadcast", i.e. post-payment) — hearings.HEARING_TRANSITIONS
   // defines ("requested", "reject") specifically so the targeted advocate
