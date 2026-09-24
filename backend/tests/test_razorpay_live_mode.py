@@ -282,3 +282,376 @@ def test_finalize_marketplace_payment_is_idempotent():
         finally:
             await _cleanup(db, order_ids=[order_id])
     _run_with_server(body())
+
+
+# ---------- Orphaned captured payments (Bug A) ----------
+#
+# A capture must win an atomic per-hearing claim before any escrow is
+# created; a capture that loses it (hearing no longer payment_pending, or
+# already claimed by another order) is refunded and recorded, never
+# attached. Refunds are counted through a stub so no gateway call is made.
+
+import payment_reconciliation  # noqa: E402
+
+
+class _count_refunds:
+    """Context manager: replace razorpay_svc.refund_payment with a counting
+    stub (no network), restoring the original afterwards."""
+    def __enter__(self):
+        self.calls = []
+        self._orig = razorpay_svc.refund_payment
+
+        def _stub(payment_id, amount_inr=None, notes=None):
+            self.calls.append({"payment_id": payment_id, "amount_inr": amount_inr, "notes": notes})
+            return {"razorpay_refund_id": f"rfnd_test_{uuid.uuid4().hex[:10]}", "status": "processed", "simulated": True}
+        razorpay_svc.refund_payment = _stub
+        return self
+
+    def __exit__(self, *exc):
+        razorpay_svc.refund_payment = self._orig
+
+
+async def _second_order_for(db, hearing, requester, fee=1500.0):
+    """A second checkout for the same hearing — what the payment_pending
+    self-loop (second tab / retry) produces: a new Razorpay order and row."""
+    rzp_order_id = f"order_{uuid.uuid4().hex[:12]}"
+    await db.payment_transactions.insert_one({
+        "razorpay_order_id": rzp_order_id, "context_type": "hearing", "context_id": hearing["hearing_id"],
+        "user_id": requester["user_id"], "amount": fee, "currency": "INR", "gateway": "razorpay",
+        "status": "initiated", "payment_status": "pending", "simulated": True,
+    })
+    return await db.payment_transactions.find_one({"razorpay_order_id": rzp_order_id}, {"_id": 0})
+
+
+async def _cleanup_orphan_audit(db, order_ids):
+    await db.audit_log.delete_many({
+        "action": {"$in": ["payment.orphaned_capture", "payment.finalize_failed"]},
+        "details.razorpay_order_id": {"$in": list(order_ids)},
+    })
+
+
+# ---------- Finalize failure after the hearing claim (PR #53 review) ----------
+#
+# A capture that wins both claims but then fails in escrow/confirmation
+# leaves the hearing payment_pending with payment_claim_order_id set and the
+# transaction already "paid" — so no retry can finish it. It must be visible
+# to admins and must never be reported to the client as a success.
+
+import escrow  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
+
+
+class _failing_escrow:
+    """Context manager: make escrow.create_and_hold raise, restoring it
+    afterwards (payment_reconciliation calls it through the module)."""
+    def __enter__(self):
+        self._orig = escrow.create_and_hold
+
+        async def _boom(*a, **k):
+            raise RuntimeError("escrow insert failed (test)")
+        escrow.create_and_hold = _boom
+        return self
+
+    def __exit__(self, *exc):
+        escrow.create_and_hold = self._orig
+
+
+def test_finalize_error_is_surfaced_in_admin_reconciliation():
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        hearing, tx = await _hearing_awaiting_confirmation(db, requester)
+        hearing_id = hearing["hearing_id"]
+        order_id = tx["razorpay_order_id"]
+        # A normal, successfully finalized payment alongside it must stay unflagged.
+        ok_hearing, ok_tx = await _hearing_awaiting_confirmation(db, requester)
+        now = "9999-12-31T00:00:00+00:00"  # sort both rows to the top of the reconciliation window
+        await db.payment_transactions.update_many(
+            {"razorpay_order_id": {"$in": [order_id, ok_tx["razorpay_order_id"]]}}, {"$set": {"created_at": now}},
+        )
+        try:
+            with _failing_escrow():
+                try:
+                    await server._finalize_hearing_payment(hearing, tx, f"pay_{uuid.uuid4().hex[:12]}")
+                    raise AssertionError("finalize should have re-raised the escrow failure")
+                except RuntimeError as e:
+                    assert "escrow insert failed" in str(e)
+            assert await server._finalize_hearing_payment(ok_hearing, ok_tx, f"pay_{uuid.uuid4().hex[:12]}") is True
+
+            ftx = await db.payment_transactions.find_one({"razorpay_order_id": order_id}, {"_id": 0})
+            assert "escrow insert failed" in ftx["finalize_error"]
+            assert await db.audit_log.count_documents(
+                {"action": "payment.finalize_failed", "details.razorpay_order_id": order_id}) == 1
+            stuck = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert stuck["status"] == "payment_pending"
+            assert stuck["payment_claim_order_id"] == order_id
+
+            report = await server.admin_reconciliation(
+                user={"role": "admin", "user_id": "test_rzp_admin"},
+                gateway=None, status_filter=None, from_date=None, to_date=None,
+            )
+            rows = {r["razorpay_order_id"]: r for r in report["rows"]}
+            assert rows[order_id]["mismatch"] is True
+            assert "Finalize failed after capture" in rows[order_id]["mismatch_reason"]
+            assert "escrow insert failed" in rows[order_id]["mismatch_reason"]
+            flagged = [m for m in report["mismatches"] if m["session_id"] == ftx.get("session_id")
+                       and "Finalize failed after capture" in m["reason"]]
+            assert len(flagged) == 1 and flagged[0]["order_id"] == hearing_id
+            # Normal reconciliation behaviour unchanged for the healthy payment.
+            assert rows[ok_tx["razorpay_order_id"]]["mismatch"] is False
+            assert rows[ok_tx["razorpay_order_id"]]["mismatch_reason"] is None
+        finally:
+            await _cleanup_orphan_audit(db, [order_id, ok_tx["razorpay_order_id"]])
+            await _cleanup(db, hearing_ids=[hearing_id, ok_hearing["hearing_id"]])
+    _run_with_server(body())
+
+
+def test_verify_does_not_report_broadcast_when_finalize_failed():
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        hearing, tx = await _hearing_awaiting_confirmation(db, requester)
+        hearing_id = hearing["hearing_id"]
+        order_id = tx["razorpay_order_id"]
+        payload = {"razorpay_order_id": order_id, "razorpay_payment_id": f"pay_{uuid.uuid4().hex[:12]}",
+                   "razorpay_signature": "sig_test"}
+        orig_verify = razorpay_svc.verify_payment
+        razorpay_svc.verify_payment = lambda *a, **k: True  # signature check itself is covered elsewhere
+        try:
+            # First attempt: capture claims the hearing, escrow fails -> error propagates.
+            with _failing_escrow():
+                try:
+                    await server.verify_hearing_payment(hearing_id, payload, user=requester)
+                    raise AssertionError("first verify should have failed")
+                except RuntimeError:
+                    pass
+            # Retry (client retry, or after a webhook no-op): must NOT claim success.
+            try:
+                await server.verify_hearing_payment(hearing_id, payload, user=requester)
+                raise AssertionError("verify must not return a success/broadcast response")
+            except HTTPException as e:
+                assert e.status_code == 500
+                assert "could not be finalized" in e.detail
+            fetched = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert fetched["status"] == "payment_pending"
+            assert await db.escrow_transactions.count_documents({"context_id": hearing_id}) == 0
+            # Authorization is unchanged: a different user is still refused before any of this.
+            try:
+                await server.verify_hearing_payment(hearing_id, payload, user=_user("stranger"))
+                raise AssertionError("non-requester must be refused")
+            except HTTPException as e:
+                assert e.status_code in (403, 404)
+        finally:
+            razorpay_svc.verify_payment = orig_verify
+            await _cleanup_orphan_audit(db, [order_id])
+            await _cleanup(db, hearing_ids=[hearing_id])
+    _run_with_server(body())
+
+
+def test_orphan_valid_capture_is_attached_normally():
+    """A. hearing payment_pending -> capture attaches, escrow held, broadcast."""
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        hearing, tx = await _hearing_awaiting_confirmation(db, requester)
+        hearing_id = hearing["hearing_id"]
+        try:
+            with _count_refunds() as refunds:
+                ok = await server._finalize_hearing_payment(hearing, tx, f"pay_{uuid.uuid4().hex[:12]}")
+            assert ok is True
+            assert refunds.calls == []
+            escrows = await db.escrow_transactions.find({"context_id": hearing_id}).to_list(10)
+            assert len(escrows) == 1 and escrows[0]["status"] == "held"
+            fetched = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert fetched["status"] == "broadcast"
+            assert fetched["payment_claim_order_id"] == tx["razorpay_order_id"]
+            ftx = await db.payment_transactions.find_one({"razorpay_order_id": tx["razorpay_order_id"]}, {"_id": 0})
+            assert ftx["payment_status"] == "paid"
+            assert not ftx.get("orphaned")
+        finally:
+            await _cleanup(db, hearing_ids=[hearing_id])
+    _run_with_server(body())
+
+
+def test_orphan_duplicate_capture_no_second_escrow_or_refund():
+    """B. same order delivered again (verify + webhook) -> no duplicate
+    escrow, no refund at all."""
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        hearing, tx = await _hearing_awaiting_confirmation(db, requester)
+        hearing_id = hearing["hearing_id"]
+        try:
+            pay_id = f"pay_{uuid.uuid4().hex[:12]}"
+            with _count_refunds() as refunds:
+                first = await server._finalize_hearing_payment(hearing, tx, pay_id)
+                second = await server._finalize_hearing_payment(hearing, tx, pay_id)
+            assert (first, second) == (True, False)
+            assert refunds.calls == []
+            assert await db.escrow_transactions.count_documents({"context_id": hearing_id}) == 1
+            ftx = await db.payment_transactions.find_one({"razorpay_order_id": tx["razorpay_order_id"]}, {"_id": 0})
+            assert not ftx.get("orphaned")
+        finally:
+            await _cleanup(db, hearing_ids=[hearing_id])
+    _run_with_server(body())
+
+
+def test_orphan_late_capture_after_cancel_is_refunded_not_attached():
+    """C. hearing cancelled while checkout was open, then the capture
+    arrives -> no escrow, hearing stays cancelled, refunded once, recorded;
+    a repeat delivery does not refund again."""
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        hearing, tx = await _hearing_awaiting_confirmation(db, requester)
+        hearing_id = hearing["hearing_id"]
+        order_id = tx["razorpay_order_id"]
+        try:
+            await hearings.cancel_hearing_request(db, hearing_id, requester)
+            pay_id = f"pay_{uuid.uuid4().hex[:12]}"
+            with _count_refunds() as refunds:
+                result = await server._finalize_hearing_payment(hearing, tx, pay_id)
+                repeat = await server._finalize_hearing_payment(hearing, tx, pay_id)
+            assert result is False and repeat is False
+            assert len(refunds.calls) == 1
+            assert refunds.calls[0]["payment_id"] == pay_id
+            assert refunds.calls[0]["amount_inr"] == tx["amount"]
+            assert await db.escrow_transactions.count_documents({"context_id": hearing_id}) == 0
+            fetched = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert fetched["status"] == "cancelled"
+            assert not fetched.get("payment_claim_order_id")
+            ftx = await db.payment_transactions.find_one({"razorpay_order_id": order_id}, {"_id": 0})
+            assert ftx["orphaned"] is True
+            assert ftx["orphan_reason"] == "hearing_not_payable:cancelled"
+            assert ftx["orphan_refund_status"] == "processed"
+            assert ftx["orphan_refund_id"].startswith("rfnd_test_")
+            assert await db.audit_log.count_documents(
+                {"action": "payment.orphaned_capture", "details.razorpay_order_id": order_id}) == 1
+        finally:
+            await _cleanup_orphan_audit(db, [order_id])
+            await _cleanup(db, hearing_ids=[hearing_id])
+    _run_with_server(body())
+
+
+def test_orphan_two_orders_same_hearing_only_one_attaches():
+    """D. two different orders for one hearing captured concurrently ->
+    exactly one attaches (one escrow), the other is refunded and recorded."""
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        hearing, tx1 = await _hearing_awaiting_confirmation(db, requester)
+        hearing_id = hearing["hearing_id"]
+        tx2 = await _second_order_for(db, hearing, requester)
+        order_ids = [tx1["razorpay_order_id"], tx2["razorpay_order_id"]]
+        try:
+            with _count_refunds() as refunds:
+                results = await asyncio.gather(
+                    server._finalize_hearing_payment(hearing, tx1, f"pay_{uuid.uuid4().hex[:12]}"),
+                    server._finalize_hearing_payment(hearing, tx2, f"pay_{uuid.uuid4().hex[:12]}"),
+                )
+            assert sorted(results) == [False, True]
+            assert len(refunds.calls) == 1
+            escrows = await db.escrow_transactions.find({"context_id": hearing_id}, {"_id": 0}).to_list(10)
+            assert len(escrows) == 1
+            winner = order_ids[results.index(True)]
+            loser = order_ids[results.index(False)]
+            assert escrows[0]["razorpay_order_id"] == winner
+            fetched = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert fetched["status"] == "broadcast"
+            assert fetched["payment_claim_order_id"] == winner
+            ltx = await db.payment_transactions.find_one({"razorpay_order_id": loser}, {"_id": 0})
+            assert ltx["orphaned"] is True
+            assert ltx["orphan_reason"] in (f"hearing_already_claimed_by:{winner}", "hearing_not_payable:broadcast")
+            wtx = await db.payment_transactions.find_one({"razorpay_order_id": winner}, {"_id": 0})
+            assert not wtx.get("orphaned")
+        finally:
+            await _cleanup_orphan_audit(db, order_ids)
+            await _cleanup(db, hearing_ids=[hearing_id])
+    _run_with_server(body())
+
+
+def test_orphan_capture_for_missing_hearing_is_refunded_once():
+    """E. capture references a hearing that doesn't exist -> no escrow,
+    refunded and recorded once; a repeat webhook delivery is a no-op."""
+    async def body():
+        db = _db()
+        missing_hearing_id = f"hearing_missing_{uuid.uuid4().hex[:10]}"
+        order_id = f"order_{uuid.uuid4().hex[:12]}"
+        await db.payment_transactions.insert_one({
+            "razorpay_order_id": order_id, "context_type": "hearing", "context_id": missing_hearing_id,
+            "user_id": _user("requester")["user_id"], "amount": 999.0, "currency": "INR", "gateway": "razorpay",
+            "status": "initiated", "payment_status": "pending", "simulated": True,
+        })
+        try:
+            tx = await db.payment_transactions.find_one({"razorpay_order_id": order_id}, {"_id": 0})
+            pay_id = f"pay_{uuid.uuid4().hex[:12]}"
+            with _count_refunds() as refunds:
+                first = await payment_reconciliation.handle_orphaned_capture(server.db, tx, pay_id, "hearing_not_found")
+                second = await payment_reconciliation.handle_orphaned_capture(server.db, tx, pay_id, "hearing_not_found")
+            assert (first, second) == (True, False)
+            assert len(refunds.calls) == 1
+            assert await db.escrow_transactions.count_documents({"context_id": missing_hearing_id}) == 0
+            ftx = await db.payment_transactions.find_one({"razorpay_order_id": order_id}, {"_id": 0})
+            assert ftx["payment_status"] == "paid"  # money was captured
+            assert ftx["orphaned"] is True and ftx["orphan_reason"] == "hearing_not_found"
+            assert await db.audit_log.count_documents(
+                {"action": "payment.orphaned_capture", "details.razorpay_order_id": order_id}) == 1
+        finally:
+            await _cleanup_orphan_audit(db, [order_id])
+            await db.payment_transactions.delete_many({"razorpay_order_id": order_id})
+    _run_with_server(body())
+
+
+def test_orphan_refund_failure_is_recorded_not_raised():
+    """A failing gateway refund must leave a visible record for admins, not
+    crash the webhook (and never attach the payment)."""
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        hearing, tx = await _hearing_awaiting_confirmation(db, requester)
+        hearing_id = hearing["hearing_id"]
+        order_id = tx["razorpay_order_id"]
+        orig = razorpay_svc.refund_payment
+
+        def _boom(*a, **k):
+            raise RuntimeError("gateway down")
+        try:
+            await hearings.cancel_hearing_request(db, hearing_id, requester)
+            razorpay_svc.refund_payment = _boom
+            result = await server._finalize_hearing_payment(hearing, tx, f"pay_{uuid.uuid4().hex[:12]}")
+            assert result is False
+            ftx = await db.payment_transactions.find_one({"razorpay_order_id": order_id}, {"_id": 0})
+            assert ftx["orphaned"] is True
+            assert ftx["orphan_refund_status"] == "failed"
+            assert "gateway down" in ftx["orphan_refund_error"]
+            assert await db.escrow_transactions.count_documents({"context_id": hearing_id}) == 0
+        finally:
+            razorpay_svc.refund_payment = orig
+            await _cleanup_orphan_audit(db, [order_id])
+            await _cleanup(db, hearing_ids=[hearing_id])
+    _run_with_server(body())
+
+
+def test_cancel_refused_once_a_payment_has_claimed_the_hearing():
+    """Race guard: after a capture claims the hearing (and before it reaches
+    broadcast), cancel/reject out of payment_pending must lose atomically."""
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        hearing, tx = await _hearing_awaiting_confirmation(db, requester)
+        hearing_id = hearing["hearing_id"]
+        try:
+            claimed = await payment_reconciliation._claim_hearing_for_payment(db, hearing_id, tx["razorpay_order_id"])
+            assert claimed is not None
+            # A second claim for another order loses.
+            assert await payment_reconciliation._claim_hearing_for_payment(db, hearing_id, "order_other") is None
+            try:
+                await hearings.cancel_hearing_request(db, hearing_id, requester)
+                raise AssertionError("cancel should have been refused")
+            except hearings.HTTPException as e:
+                assert e.status_code == 409
+            fetched = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert fetched["status"] == "payment_pending"
+        finally:
+            await _cleanup(db, hearing_ids=[hearing_id])
+    asyncio.run(body())
