@@ -99,6 +99,13 @@ let webpackConfig = {
   },
 };
 
+// `craco test` (jest) doesn't read the webpack alias above — mirror it.
+webpackConfig.jest = {
+  configure: {
+    moduleNameMapper: { "^@/(.*)$": "<rootDir>/src/$1" },
+  },
+};
+
 webpackConfig.devServer = (devServerConfig) => {
   // Add health check endpoints if enabled
   if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {

@@ -29,6 +29,7 @@ import { SERVICE_CONFIGS } from "@/config/serviceRequestFields";
 import { PRICING_SLOTS, PRICING_SLOT_LABELS, EXPERIENCE_BRACKETS } from "@/config/proxyCounselPricing";
 import { resolveDateBound } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
+import useClientCancelWindowExpiry from "@/hooks/useClientCancelWindowExpiry";
 import {
   HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole,
   isHearingActive, COMPLETED_HEARING_STATUSES, CLOSED_HEARING_STATUSES,
@@ -121,6 +122,17 @@ export default function CounselHiringPage({ serviceType }) {
   const [activeId, setActiveId] = useState(null);
   const [cancelTarget, setCancelTarget] = useState(null); // hearing being confirmed for cancel
   const [cancelling, setCancelling] = useState(false);
+  // Re-renders when a paid request's 1-hour client cancel window closes, so
+  // its Cancel button drops without a refresh (backend still enforces it).
+  const cancelWindowNow = useClientCancelWindowExpiry(hearings, user);
+  // Window closed while the confirm dialog was open (and no cancel in flight):
+  // close it rather than offer a cancel the backend will refuse.
+  useEffect(() => {
+    if (cancelTarget && !cancelling && !getHearingPermissions(cancelTarget, user).canCancel) {
+      setCancelTarget(null);
+      toast.info(CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE);
+    }
+  }, [cancelWindowNow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchAdvocates = () => {
     setStatus("loading");

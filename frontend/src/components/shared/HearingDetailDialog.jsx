@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { jsPDF } from "jspdf";
 import { toast } from "sonner";
@@ -25,6 +25,7 @@ import DocumentPreviewDialog from "@/components/shared/DocumentPreviewDialog";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import EscrowStagePanel from "@/components/negotiation/EscrowStagePanel";
 import ProxyCounselCaseDetailsForm from "@/components/proxyCounsel/ProxyCounselCaseDetailsForm";
+import useClientCancelWindowExpiry from "@/hooks/useClientCancelWindowExpiry";
 import {
   HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions, cancelResultMessage,
   CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE,
@@ -69,6 +70,18 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   };
   useEffect(() => { if (open) load(); }, [open, hearingId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Re-renders when the 1-hour client cancel window closes while this dialog
+  // is open, so Cancel drops and the expiry message shows without a refresh.
+  const expiryHearings = useMemo(() => (hearing ? [hearing] : null), [hearing]);
+  const cancelWindowNow = useClientCancelWindowExpiry(expiryHearings, user);
+  // Window closed while the cancel confirm was open (and no cancel in flight).
+  useEffect(() => {
+    if (pendingAction === "cancel" && !busy && hearing && !getHearingPermissions(hearing, user).canCancel) {
+      setPendingAction(null);
+      toast.info(CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE);
+    }
+  }, [cancelWindowNow]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!hearing) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -89,7 +102,8 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   const {
     isRequester, isAssignedProxyCounsel, canAccept, canDecline, canReject, canAcceptListedRate,
     negotiationRequired, canNegotiate, negotiationAgreed, negotiationPending, fixedPricePending,
-    canPay, canCancel, cancelWindowExpired, canMarkConducted, canRate, isEscrowParticipant, viewerRole,
+    canPay, canCancel, cancelWindowExpired, canShareCaseDetails, canMarkConducted, canRate, isEscrowParticipant, viewerRole,
+    isClosed,
   } = getHearingPermissions(hearing, user);
 
   const run = async (fn) => {
@@ -303,7 +317,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
               </div>
             </div>
           </div>
-        ) : isRequester && hearing.payment_confirmed_at ? (
+        ) : canShareCaseDetails ? (
           <ProxyCounselCaseDetailsForm
             onSubmit={submitCaseDetails}
             submitting={submittingDetails}
@@ -311,7 +325,9 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           />
         ) : (
           <div className="text-sm border rounded-lg p-3 bg-secondary/30 text-muted-foreground italic">
-            {hearing.payment_confirmed_at ? "Waiting for the client to share case details." : "Case details will be shared once payment is confirmed."}
+            {isClosed
+              ? "Case details were not shared before this request was closed."
+              : hearing.payment_confirmed_at ? "Waiting for the client to share case details." : "Case details will be shared once payment is confirmed."}
           </div>
         )}
 
