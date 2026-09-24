@@ -712,12 +712,17 @@ function HearingsTab() {
   const renderCard = (h, onClick) => (
     <Card key={h.hearing_id} className="dashboard-card border-none cursor-pointer hover:shadow-md transition-shadow" onClick={onClick}>
       <CardContent className="p-4">
-        <div className="flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <div className="font-display font-bold text-sm">{h.court_id}</div>
+        {/* flex-wrap + truncate: same fix as CounselHiringPage's "My
+            Requests" cards — a long status label (e.g. "Waiting for Hiring
+            Advocate Payment") with nowhere to wrap on a no-wrap row either
+            overflowed past the screen edge or squeezed the title down to a
+            couple of characters. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <div className="min-w-0 flex-1">
+            <div className="font-display font-bold text-sm truncate">{h.court_id}</div>
             <div className="text-xs text-muted-foreground">{h.hearing_date} {h.fee ? `· ₹${h.fee}` : ""}</div>
           </div>
-          <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} border-0 font-bold uppercase text-2xs`}>
+          <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} border-0 font-bold uppercase text-2xs ml-auto`}>
             {roleAwareStatusLabel(h, getViewerRole(h, user?.user_id))}
           </Badge>
         </div>

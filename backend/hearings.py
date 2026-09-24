@@ -291,6 +291,13 @@ async def _transition(db, sm: StateMachine, entity: dict, from_status: str, acti
     query: Dict[str, Any] = {"hearing_id": entity["hearing_id"], "status": from_status}
     if extra_guard:
         query.update(extra_guard)
+    if from_status == "payment_pending" and action in ("cancel", "reject"):
+        # A captured payment has already claimed this hearing (see
+        # payment_reconciliation._claim_hearing_for_payment) and is mid-way
+        # to escrow + broadcast — leaving payment_pending now would orphan
+        # that payment. Folded into the same atomic write; the loser gets
+        # the standard 409 below.
+        query["payment_claim_order_id"] = None
     now = datetime.now(timezone.utc).isoformat()
     updated = await db.hearing_requests.find_one_and_update(
         query, {"$set": {"status": to_status, "updated_at": now}}, projection={"_id": 0},
@@ -356,7 +363,8 @@ async def _attach_negotiation_action_flags(db, hearings: List[dict], user_id: st
     pending = [h for h in hearings
                if h.get("target_advocate_id")
                and not h.get("commercially_locked")
-               and h.get("status") in ("requested", "payment_pending")]
+               and h.get("status") in ("requested", "payment_pending")
+               and h.get("negotiation_enabled", True)]
     if not pending:
         return
     neg_by_hearing = {
@@ -638,9 +646,21 @@ async def cancel_hearing_request(db, hearing_id: str, user: dict) -> dict:
     except IllegalTransition:
         raise HTTPException(400, "This request can no longer be cancelled")
     if hearing["status"] in CANCEL_REQUIRES_REFUND:
-        await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason="Hearing cancelled after payment was held")
-        await _push_activity(db, hearing_id, "Payment refunded — hearing cancelled after payment was held", user["user_id"])
+        refunded = await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason="Hearing cancelled after payment was held")
+        refund_status = refunded.get("status")
+        await _push_activity(db, hearing_id, _refund_activity_note(refund_status, "hearing cancelled after payment was held"), user["user_id"])
+        return {"ok": True, "refund_status": refund_status}
     return {"ok": True}
+
+
+def _refund_activity_note(refund_status: Optional[str], why: str) -> str:
+    """Activity text that only says "refunded" when the refund actually
+    completed (see escrow.refund's outcomes)."""
+    if refund_status == "refunded":
+        return f"Payment refunded — {why}"
+    if refund_status == "refund_processing":
+        return f"Refund initiated, awaiting bank processing — {why}"
+    return f"Refund could not be completed automatically and will be retried by CourtBazaar — {why}"
 
 
 async def end_negotiation(db, hearing_id: str, user: dict) -> dict:
@@ -1098,7 +1118,8 @@ async def resolve_dispute(db, hearing_id: str, user: dict, action: str, remark: 
     except IllegalTransition:
         raise HTTPException(400, "This hearing isn't currently disputed")
     if sm_action == "refund_and_cancel":
-        await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason=remark or "Dispute resolved with refund")
+        refunded = await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason=remark or "Dispute resolved with refund")
+        return {"ok": True, "status": new_status, "refund_status": refunded.get("status")}
     elif sm_action == "resubmit":
         # Back at verification_pending for another look — restart the 3-day
         # auto-release clock (see auto_release_stale_verifications).

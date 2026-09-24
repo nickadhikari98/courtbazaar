@@ -301,7 +301,11 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
             </div>
           </div>
         ) : isRequester && hearing.payment_confirmed_at ? (
-          <ProxyCounselCaseDetailsForm onSubmit={submitCaseDetails} submitting={submittingDetails} />
+          <ProxyCounselCaseDetailsForm
+            onSubmit={submitCaseDetails}
+            submitting={submittingDetails}
+            initialPriority={hearing.request_details?.common?.priority}
+          />
         ) : (
           <div className="text-sm border rounded-lg p-3 bg-secondary/30 text-muted-foreground italic">
             {hearing.payment_confirmed_at ? "Waiting for the client to share case details." : "Case details will be shared once payment is confirmed."}

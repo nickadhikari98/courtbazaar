@@ -20,10 +20,10 @@ const WORK_TYPE_OPTIONS = SERVICE_WORK_TYPES.proxy_counsel;
    same fields the old all-in-one intake form used to collect upfront,
    just moved behind the payment gate rather than in front of it — no new
    fields are being introduced here, only a later reveal point. */
-export default function ProxyCounselCaseDetailsForm({ onSubmit, submitting }) {
+export default function ProxyCounselCaseDetailsForm({ onSubmit, submitting, initialPriority }) {
   const [fields, setFields] = useState({
     case_title: "", case_number: "", case_type: "", case_stage: "", hearing_time: "",
-    work_required: [], work_required_notes: "", priority: "Normal", case_details: "",
+    work_required: [], work_required_notes: "", priority: initialPriority || "Normal", case_details: "",
   });
   const [errors, setErrors] = useState({});
   const set = (patch) => setFields((f) => ({ ...f, ...patch }));
