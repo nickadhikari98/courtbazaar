@@ -19,10 +19,11 @@ no more offers, no reopening, and — per the commercial-lock rule — no
 walking away either: accept_offer flips hearings.hearing_requests'
 commercially_locked flag (see hearings.set_negotiated_fee) atomically
 *before* this module's own status flips to "agreed", so
-cancel_hearing_request/reject_hearing_request (hearings.py, unchanged)
-refuse outright from that point on. Payment is the only forward action;
-post-lock cancellation, if the business ever wants it, is a separate
-workflow, not a reuse of the pre-negotiation cancel/reject actions. This
+cancel_hearing_request/reject_hearing_request (hearings.py) refuse from
+that point on while the hearing is unpaid — payment is the only forward
+action. Once the agreed fee has been paid, the requester may cancel via
+cancel_hearing_request, which refunds the held escrow (B6); that never
+reopens this negotiation, which stays "agreed". This
 module still never implements a "decline this offer" or "reopen" action
 because none was asked for.
 """

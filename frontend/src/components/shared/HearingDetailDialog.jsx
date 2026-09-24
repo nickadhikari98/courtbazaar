@@ -25,7 +25,7 @@ import DocumentPreviewDialog from "@/components/shared/DocumentPreviewDialog";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import EscrowStagePanel from "@/components/negotiation/EscrowStagePanel";
 import ProxyCounselCaseDetailsForm from "@/components/proxyCounsel/ProxyCounselCaseDetailsForm";
-import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions } from "@/lib/hearingLifecycle";
+import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions, cancelResultMessage } from "@/lib/hearingLifecycle";
 
 /* Shared between the advocate side (HireProxyCounsel.jsx) and the proxy
    counsel side (Practice.jsx's Hearings tab) — the same dialog, with
@@ -560,7 +560,10 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
       description="This permanently cancels the request. If payment has already been held, it will be refunded automatically. This can't be undone."
       confirmLabel="Cancel Request"
       confirmIcon={Ban}
-      onConfirm={() => run(() => cancelHearingRequest(hearingId)).then(() => setPendingAction(null))}
+      onConfirm={() => run(async () => {
+        const { tone, text } = cancelResultMessage(await cancelHearingRequest(hearingId));
+        (tone === "warning" ? toast.warning : toast.success)(text);
+      }).then(() => setPendingAction(null))}
     />
     </>
   );

@@ -32,6 +32,7 @@ import { useAuth } from "@/context/AuthContext";
 import {
   HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole,
   isHearingActive, COMPLETED_HEARING_STATUSES, CLOSED_HEARING_STATUSES,
+  getHearingPermissions, PAID_CANCELLABLE_HEARING_STATUSES, cancelResultMessage,
 } from "@/lib/hearingLifecycle";
 
 const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
@@ -297,14 +298,15 @@ export default function CounselHiringPage({ serviceType }) {
   // there's no hard-delete of a hearing request (audit/refund history has
   // to survive), so this moves it into the Cancelled tab rather than
   // removing it outright. Refunds automatically if payment was already held
-  // (hearings.cancel_hearing_request); refused (with a clear error) once a
-  // fee's been agreed through negotiation.
+  // (hearings.cancel_hearing_request); before payment, refused (with a clear
+  // error) once a fee's been agreed through negotiation.
   const handleCancelRequest = async () => {
     if (!cancelTarget) return;
     setCancelling(true);
     try {
-      await cancelHearingRequest(cancelTarget.hearing_id);
-      toast.success("Request cancelled");
+      const result = await cancelHearingRequest(cancelTarget.hearing_id);
+      const { tone, text } = cancelResultMessage(result);
+      (tone === "warning" ? toast.warning : toast.success)(text);
       setCancelTarget(null);
       listHearingRequests().then(setHearings);
     } catch (err) {
@@ -559,7 +561,7 @@ export default function CounselHiringPage({ serviceType }) {
                                       <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} min-w-0 border-0 font-bold uppercase whitespace-normal max-w-full`}>
                                         {roleAwareStatusLabel(h, getViewerRole(h, user?.user_id))}
                                       </Badge>
-                                      {key === "active" && (
+                                      {key === "active" && getHearingPermissions(h, user).canCancel && (
                                         <button
                                           type="button"
                                           onClick={(e) => { e.stopPropagation(); setCancelTarget(h); }}
@@ -602,7 +604,9 @@ export default function CounselHiringPage({ serviceType }) {
               <>
                 Are you sure you want to cancel the request for{" "}
                 <b className="text-foreground">{cancelTarget?.request_details?.common?.case_title || cancelTarget?.court_id}</b>?
-                {" "}If payment has already been held, it will be refunded automatically.
+                {" "}{PAID_CANCELLABLE_HEARING_STATUSES.includes(cancelTarget?.status)
+                  ? `Your payment${cancelTarget?.fee ? ` of ${formatINR(cancelTarget.fee)}` : ""} is held by CourtBazaar — cancelling will refund it to your original payment method.`
+                  : "No payment has been taken for this request yet."}
               </>
             )}
             confirmLabel="Cancel Request"

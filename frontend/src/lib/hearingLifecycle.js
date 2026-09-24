@@ -132,6 +132,28 @@ export function hearingNeedsMyDocument(h, userId) {
 // staring at a hearing with no way back to Pay.
 export const PAYABLE_HEARING_STATUSES = ["requested", "payment_pending"];
 
+// Cancellation eligibility, split the same way hearings.cancel_hearing_request
+// splits it: before payment a commercially locked (fee agreed) hearing can't
+// be cancelled; once paid (escrow held — hearings.CANCEL_REQUIRES_REFUND) it
+// can, and cancelling refunds the payment.
+export const UNPAID_CANCELLABLE_HEARING_STATUSES = PAYABLE_HEARING_STATUSES;
+export const PAID_CANCELLABLE_HEARING_STATUSES = [
+  "broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed",
+];
+
+// Toast copy for a successful cancel, from the refund_status the cancel
+// endpoint returns (only present when a held payment was refunded) — only
+// says "refunded" when escrow.refund() actually completed.
+export function cancelResultMessage(result) {
+  const refundStatus = result?.refund_status;
+  if (!refundStatus) return { tone: "success", text: "Request cancelled" };
+  if (refundStatus === "refunded") return { tone: "success", text: "Request cancelled — your payment has been refunded" };
+  if (refundStatus === "refund_processing") {
+    return { tone: "success", text: "Request cancelled — refund initiated, awaiting bank processing" };
+  }
+  return { tone: "warning", text: "Request cancelled — the refund couldn't be completed automatically and will be retried by CourtBazaar" };
+}
+
 export function hearingNeedsMyAction(h, user) {
   const paymentDue = h.requesting_user_id === user?.user_id && PAYABLE_HEARING_STATUSES.includes(h.status)
     && hearingCommerciallyReadyForPayment(h);
@@ -207,8 +229,12 @@ export function getHearingPermissions(hearing, user) {
   const fixedPricePending = isRequester && hearing.status === "requested"
     && negotiationRequired && !canNegotiate && !negotiationAgreed;
   const canPay = isRequester && PAYABLE_HEARING_STATUSES.includes(hearing.status) && hearingCommerciallyReadyForPayment(hearing);
-  const canCancel = isRequester && !hearing.commercially_locked
-    && ["requested", "broadcast", "accepted", "payment_pending", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"].includes(hearing.status);
+  // Mirrors hearings.cancel_hearing_request: the commercial lock only blocks
+  // cancelling BEFORE payment; once paid, cancelling refunds the held escrow.
+  const canCancel = isRequester && (
+    PAID_CANCELLABLE_HEARING_STATUSES.includes(hearing.status)
+    || (UNPAID_CANCELLABLE_HEARING_STATUSES.includes(hearing.status) && !hearing.commercially_locked)
+  );
   const canMarkConducted = isAssignedProxyCounsel && hearing.status === "hearing_scheduled";
   const canRate = ["completed", "rated"].includes(hearing.status) && !hearing.rated_by?.includes(userId)
     && (isRequester || isAssignedProxyCounsel);

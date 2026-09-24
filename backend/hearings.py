@@ -630,22 +630,36 @@ async def decline_hearing_request(db, hearing_id: str, user: dict) -> dict:
 
 
 async def cancel_hearing_request(db, hearing_id: str, user: dict) -> dict:
+    """The commercial lock only blocks cancelling BEFORE payment (founder
+    decision, B6): once a hearing is in a CANCEL_REQUIRES_REFUND status the
+    fee has been paid and is held in escrow, so the requester (or an admin)
+    may cancel and is refunded through the existing escrow.refund() path.
+    Pre-payment ("requested"/"payment_pending") a locked hearing still can't
+    be cancelled — the agreed fee is what the requester must now pay.
+
+    Race safety is unchanged: _transition's compare-and-swap is on the exact
+    status read here, so a paid-state cancel can't land on a hearing that
+    moved in the meantime (409), and a pre-payment cancel keeps its
+    commercially_locked + payment_claim_order_id guards (see _transition)
+    against a lock or an in-flight capture racing it. Only the CAS winner
+    ever reaches escrow.refund(), which is itself idempotent."""
     import escrow as escrow_svc
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
     if hearing["requesting_user_id"] != user["user_id"] and user.get("role") != "admin":
         raise HTTPException(403, "Forbidden")
-    if hearing.get("commercially_locked"):
+    paid = hearing["status"] in CANCEL_REQUIRES_REFUND
+    if hearing.get("commercially_locked") and not paid:
         raise HTTPException(400, "A fee has been agreed through negotiation — this request is "
                                   "commercially locked and can no longer be cancelled. Proceed to payment.")
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
         await _transition(db, sm, hearing, hearing["status"], "cancel", user,
-                           extra_guard={"commercially_locked": {"$ne": True}})
+                           extra_guard=None if paid else {"commercially_locked": {"$ne": True}})
     except IllegalTransition:
         raise HTTPException(400, "This request can no longer be cancelled")
-    if hearing["status"] in CANCEL_REQUIRES_REFUND:
+    if paid:
         refunded = await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason="Hearing cancelled after payment was held")
         refund_status = refunded.get("status")
         await _push_activity(db, hearing_id, _refund_activity_note(refund_status, "hearing cancelled after payment was held"), user["user_id"])
@@ -665,11 +679,12 @@ def _refund_activity_note(refund_status: Optional[str], why: str) -> str:
 
 async def end_negotiation(db, hearing_id: str, user: dict) -> dict:
     """Customer-only close-out for a targeted negotiation that isn't working
-    out. Mechanically identical to cancel_hearing_request (same 'cancel'
-    transition/commercially_locked guard — never reaches an escrow-refund
-    branch because a hearing can only leave "requested" once
-    commercially_locked, see set_negotiated_fee, and that's exactly what's
-    guarded against here) — the only difference is the audit-note/
+    out. Mechanically identical to cancel_hearing_request's pre-payment path
+    (same 'cancel' transition/commercially_locked guard). Unlike
+    cancel_hearing_request it refuses a locked hearing even after payment,
+    so it never reaches an escrow-refund branch: a hearing can only leave
+    "requested" once commercially_locked, see set_negotiated_fee, and that's
+    exactly what's guarded against here. The only other difference is the audit-note/
     notification wording (see server.py's endpoint) and who may call it.
 
     Deliberately does NOT retarget this hearing_id at a new advocate: this

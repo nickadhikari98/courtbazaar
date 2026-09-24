@@ -48,13 +48,10 @@ async def _cleanup(db, user_ids=(), hearing_ids=()):
 
 
 def test_cancel_notifies_counsel_with_refund_note():
-    """Broadcast (non-targeted) hearing, not a negotiated one — a targeted
-    hearing's negotiation-agreed fee commercially-locks it, and cancel is
-    refused outright once locked (see hearings.cancel_hearing_request), so
-    a locked+refund-eligible combination can never actually occur together.
-    A broadcast hearing never negotiates, so it can reach "documents_shared"
-    (refund-eligible, escrow held, a counsel assigned) while still
-    cancellable."""
+    """Broadcast (non-targeted) hearing — it never negotiates, so it reaches
+    "documents_shared" (refund-eligible, escrow held, a counsel assigned)
+    without a commercial lock. The paid + commercially-locked (negotiated)
+    cancel-and-refund path is covered in test_cancel_after_payment.py."""
     async def body():
         db = _db()
         import unittest.mock
