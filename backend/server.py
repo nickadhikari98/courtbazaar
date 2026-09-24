@@ -2888,10 +2888,19 @@ async def verify_hearing_payment(hearing_id: str, payload: dict, user=Depends(ge
     if not finalized:
         # False = either already finalized (e.g. by the webhook — still a
         # success for the client) or orphaned (not applied; refunded).
-        latest = await db.payment_transactions.find_one({"razorpay_order_id": rzp_order_id}, {"_id": 0, "orphaned": 1})
+        latest = await db.payment_transactions.find_one(
+            {"razorpay_order_id": rzp_order_id}, {"_id": 0, "orphaned": 1, "finalize_error": 1},
+        )
         if latest and latest.get("orphaned"):
             raise HTTPException(409, "This hearing is no longer awaiting payment, so this payment was not applied. "
                                      "It is being refunded to your original payment method.")
+        if latest and latest.get("finalize_error"):
+            # Captured and claimed, but escrow/confirmation failed afterwards
+            # (see payment_reconciliation.finalize_hearing_payment). The
+            # hearing is NOT broadcast, so never report success here; the
+            # row is flagged in /admin/reconciliation for an admin to resolve.
+            raise HTTPException(500, "Your payment was received but could not be finalized. "
+                                     "Our team has been alerted and will resolve it — please do not pay again.")
     return {"ok": True, "payment_id": rzp_payment_id, "status": "broadcast"}
 
 @api_router.get("/hearing-requests/{hearing_id}/escrow")
@@ -3268,6 +3277,15 @@ async def admin_reconciliation(
                 rzp_pending += 1
             else:
                 rzp_failed += 1
+        if t.get("finalize_error"):
+            # Captured and claimed its hearing, but escrow/confirmation then
+            # failed (payment_reconciliation.finalize_hearing_payment): the
+            # hearing is stuck in payment_pending and needs an admin.
+            finalize_reason = f"Finalize failed after capture — needs admin attention: {t.get('finalize_error')}"
+            mismatch = True
+            mismatch_reason = f"{mismatch_reason}; {finalize_reason}" if mismatch_reason else finalize_reason
+            mismatches.append({"session_id": t.get("session_id"), "order_id": t.get("order_id") or t.get("context_id"),
+                               "reason": finalize_reason})
         rows.append({
             "session_id": t.get("session_id"),
             "razorpay_order_id": t.get("razorpay_order_id"),
@@ -3295,13 +3313,22 @@ async def admin_reconciliation(
     async for e in db.escrow_transactions.find(
         {"$or": [{"status": {"$in": ["refund_failed", "refund_processing"]}},
                  {"status": "refund_pending", "updated_at": {"$lt": stale_cutoff}}]},
-        {"_id": 0, "escrow_id": 1, "razorpay_order_id": 1, "context_id": 1, "status": 1, "refund_last_error": 1},
+        {"_id": 0, "escrow_id": 1, "razorpay_order_id": 1, "context_id": 1, "status": 1, "refund_last_error": 1,
+         "amount": 1, "payee_user_id": 1, "payee_amount": 1, "payee_hold_reversed": 1},
     ).sort("updated_at", -1).limit(200):
         reason = f"Escrow refund {e['status']} (escrow {e['escrow_id']})"
         if e.get("status") == "refund_failed" and e.get("refund_last_error"):
             reason += f": {e['refund_last_error'][:120]}"
+        # The payee's wallet_held_balance is only reversed once a refund is
+        # accepted (escrow._reverse_payee_hold_once), so for a failed/stuck
+        # refund it still shows the amount — never payable (release() needs
+        # "held"), but worth telling the admin who is looking at it.
+        payee_hold_locked = bool(e.get("payee_user_id")) and not e.get("payee_hold_reversed")
         mismatches.append({"session_id": e.get("razorpay_order_id"), "order_id": e.get("context_id"),
-                           "escrow_id": e["escrow_id"], "reason": reason})
+                           "escrow_id": e["escrow_id"], "reason": reason,
+                           "escrow_status": e.get("status"), "amount": e.get("amount"),
+                           "payee_hold_locked": payee_hold_locked,
+                           "payee_amount": e.get("payee_amount") if payee_hold_locked else None})
 
     return {
         "rows": rows,

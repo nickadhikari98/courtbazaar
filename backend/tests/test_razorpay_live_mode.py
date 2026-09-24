@@ -330,6 +330,124 @@ async def _cleanup_orphan_audit(db, order_ids):
     })
 
 
+# ---------- Finalize failure after the hearing claim (PR #53 review) ----------
+#
+# A capture that wins both claims but then fails in escrow/confirmation
+# leaves the hearing payment_pending with payment_claim_order_id set and the
+# transaction already "paid" — so no retry can finish it. It must be visible
+# to admins and must never be reported to the client as a success.
+
+import escrow  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
+
+
+class _failing_escrow:
+    """Context manager: make escrow.create_and_hold raise, restoring it
+    afterwards (payment_reconciliation calls it through the module)."""
+    def __enter__(self):
+        self._orig = escrow.create_and_hold
+
+        async def _boom(*a, **k):
+            raise RuntimeError("escrow insert failed (test)")
+        escrow.create_and_hold = _boom
+        return self
+
+    def __exit__(self, *exc):
+        escrow.create_and_hold = self._orig
+
+
+def test_finalize_error_is_surfaced_in_admin_reconciliation():
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        hearing, tx = await _hearing_awaiting_confirmation(db, requester)
+        hearing_id = hearing["hearing_id"]
+        order_id = tx["razorpay_order_id"]
+        # A normal, successfully finalized payment alongside it must stay unflagged.
+        ok_hearing, ok_tx = await _hearing_awaiting_confirmation(db, requester)
+        now = "9999-12-31T00:00:00+00:00"  # sort both rows to the top of the reconciliation window
+        await db.payment_transactions.update_many(
+            {"razorpay_order_id": {"$in": [order_id, ok_tx["razorpay_order_id"]]}}, {"$set": {"created_at": now}},
+        )
+        try:
+            with _failing_escrow():
+                try:
+                    await server._finalize_hearing_payment(hearing, tx, f"pay_{uuid.uuid4().hex[:12]}")
+                    raise AssertionError("finalize should have re-raised the escrow failure")
+                except RuntimeError as e:
+                    assert "escrow insert failed" in str(e)
+            assert await server._finalize_hearing_payment(ok_hearing, ok_tx, f"pay_{uuid.uuid4().hex[:12]}") is True
+
+            ftx = await db.payment_transactions.find_one({"razorpay_order_id": order_id}, {"_id": 0})
+            assert "escrow insert failed" in ftx["finalize_error"]
+            assert await db.audit_log.count_documents(
+                {"action": "payment.finalize_failed", "details.razorpay_order_id": order_id}) == 1
+            stuck = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert stuck["status"] == "payment_pending"
+            assert stuck["payment_claim_order_id"] == order_id
+
+            report = await server.admin_reconciliation(
+                user={"role": "admin", "user_id": "test_rzp_admin"},
+                gateway=None, status_filter=None, from_date=None, to_date=None,
+            )
+            rows = {r["razorpay_order_id"]: r for r in report["rows"]}
+            assert rows[order_id]["mismatch"] is True
+            assert "Finalize failed after capture" in rows[order_id]["mismatch_reason"]
+            assert "escrow insert failed" in rows[order_id]["mismatch_reason"]
+            flagged = [m for m in report["mismatches"] if m["session_id"] == ftx.get("session_id")
+                       and "Finalize failed after capture" in m["reason"]]
+            assert len(flagged) == 1 and flagged[0]["order_id"] == hearing_id
+            # Normal reconciliation behaviour unchanged for the healthy payment.
+            assert rows[ok_tx["razorpay_order_id"]]["mismatch"] is False
+            assert rows[ok_tx["razorpay_order_id"]]["mismatch_reason"] is None
+        finally:
+            await _cleanup_orphan_audit(db, [order_id, ok_tx["razorpay_order_id"]])
+            await _cleanup(db, hearing_ids=[hearing_id, ok_hearing["hearing_id"]])
+    _run_with_server(body())
+
+
+def test_verify_does_not_report_broadcast_when_finalize_failed():
+    async def body():
+        db = _db()
+        requester = _user("requester")
+        hearing, tx = await _hearing_awaiting_confirmation(db, requester)
+        hearing_id = hearing["hearing_id"]
+        order_id = tx["razorpay_order_id"]
+        payload = {"razorpay_order_id": order_id, "razorpay_payment_id": f"pay_{uuid.uuid4().hex[:12]}",
+                   "razorpay_signature": "sig_test"}
+        orig_verify = razorpay_svc.verify_payment
+        razorpay_svc.verify_payment = lambda *a, **k: True  # signature check itself is covered elsewhere
+        try:
+            # First attempt: capture claims the hearing, escrow fails -> error propagates.
+            with _failing_escrow():
+                try:
+                    await server.verify_hearing_payment(hearing_id, payload, user=requester)
+                    raise AssertionError("first verify should have failed")
+                except RuntimeError:
+                    pass
+            # Retry (client retry, or after a webhook no-op): must NOT claim success.
+            try:
+                await server.verify_hearing_payment(hearing_id, payload, user=requester)
+                raise AssertionError("verify must not return a success/broadcast response")
+            except HTTPException as e:
+                assert e.status_code == 500
+                assert "could not be finalized" in e.detail
+            fetched = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+            assert fetched["status"] == "payment_pending"
+            assert await db.escrow_transactions.count_documents({"context_id": hearing_id}) == 0
+            # Authorization is unchanged: a different user is still refused before any of this.
+            try:
+                await server.verify_hearing_payment(hearing_id, payload, user=_user("stranger"))
+                raise AssertionError("non-requester must be refused")
+            except HTTPException as e:
+                assert e.status_code in (403, 404)
+        finally:
+            razorpay_svc.verify_payment = orig_verify
+            await _cleanup_orphan_audit(db, [order_id])
+            await _cleanup(db, hearing_ids=[hearing_id])
+    _run_with_server(body())
+
+
 def test_orphan_valid_capture_is_attached_normally():
     """A. hearing payment_pending -> capture attaches, escrow held, broadcast."""
     async def body():
@@ -539,6 +657,49 @@ def test_cancel_refused_once_a_payment_has_claimed_the_hearing():
     asyncio.run(body())
 
 
+def test_reconciliation_reports_locked_payee_hold_for_failed_refund():
+    """A failed refund on an escrow with an assigned payee: the payee's held
+    balance is still counted (only reversed once a refund is accepted), and
+    reconciliation says so; once processing is accepted the lock is gone."""
+    async def body():
+        import escrow as escrow_mod
+        db = _db()
+        admin = {"user_id": _user("admin")["user_id"], "role": "admin"}
+        payee = _user("payee")
+        context_id = f"hearing_bugb_{uuid.uuid4().hex[:10]}"
+        await db.users.insert_one({"user_id": payee["user_id"], "wallet_held_balance": 0})
+        doc = await escrow_mod.create_and_hold(
+            db, context_type="hearing", context_id=context_id, service_id=hearings.ESCROW_SERVICE_ID,
+            matter_id=None, payer_user_id=_user("payer")["user_id"], payee_user_id=payee["user_id"],
+            amount=1500.0, platform_commission_pct=0.2,
+            razorpay_order_id=f"order_{uuid.uuid4().hex[:10]}", razorpay_payment_id=f"pay_live_{uuid.uuid4().hex[:10]}",
+        )
+        orig = (razorpay_svc.refund_payment, razorpay_svc.fetch_refunds)
+        try:
+            def _fail(*a, **k):
+                raise RuntimeError("gateway down")
+            razorpay_svc.refund_payment, razorpay_svc.fetch_refunds = _fail, (lambda pid: [])
+            await escrow_mod.refund(db, context_type="hearing", context_id=context_id, reason="t")
+            report = await server.admin_reconciliation(user=admin, gateway=None, status_filter=None, from_date=None, to_date=None)
+            m = [x for x in report["mismatches"] if x.get("escrow_id") == doc["escrow_id"]][0]
+            assert m["escrow_status"] == "refund_failed"
+            assert m["payee_hold_locked"] is True and m["payee_amount"] == doc["payee_amount"]
+
+            razorpay_svc.refund_payment = lambda pid, amount_inr=None, notes=None: {
+                "razorpay_refund_id": "rfnd_p", "status": "pending", "simulated": False}
+            out = await escrow_mod.retry_refund(db, doc["escrow_id"], {"user_id": admin["user_id"]})
+            assert out["status"] == "refund_processing"
+            report = await server.admin_reconciliation(user=admin, gateway=None, status_filter=None, from_date=None, to_date=None)
+            m = [x for x in report["mismatches"] if x.get("escrow_id") == doc["escrow_id"]][0]
+            assert m["escrow_status"] == "refund_processing"
+            assert m["payee_hold_locked"] is False and m["payee_amount"] is None
+        finally:
+            razorpay_svc.refund_payment, razorpay_svc.fetch_refunds = orig
+            await db.escrow_transactions.delete_many({"context_id": context_id})
+            await db.users.delete_many({"user_id": payee["user_id"]})
+    _run_with_server(body())
+
+
 # ---------- Bug B: failed refunds are visible to admins and retryable ----------
 
 import escrow  # noqa: E402
@@ -567,6 +728,10 @@ def test_refund_failure_visible_in_reconciliation_and_admin_retry_endpoint():
             report = await server.admin_reconciliation(user=admin, gateway=None, status_filter=None, from_date=None, to_date=None)
             flagged = [m for m in report["mismatches"] if m.get("escrow_id") == doc["escrow_id"]]
             assert len(flagged) == 1 and "refund_failed" in flagged[0]["reason"] and "gateway down" in flagged[0]["reason"]
+            # Structured fields the admin UI renders (status badge / Retry button / hold note).
+            assert flagged[0]["escrow_status"] == "refund_failed"
+            assert flagged[0]["amount"] == 1500.0
+            assert flagged[0]["payee_hold_locked"] is False  # no payee assigned on this escrow
 
             try:
                 await server.admin_retry_escrow_refund(doc["escrow_id"], user=non_admin)
