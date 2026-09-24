@@ -34,8 +34,21 @@ async def _insert_user(db, user):
     await db.users.insert_one({"user_id": user["user_id"], "name": f"Test {user['user_id']}"})
 
 
+async def _enable_negotiation(db, counsel):
+    # Fee negotiation toggle (5b25d4b): a targeted hearing snapshots the
+    # counsel's own proxy_counsel_profiles.negotiation_enabled at creation —
+    # no profile means negotiation is off and every propose_offer is refused.
+    # A real approved counsel always has a profile; these tests exercise the
+    # negotiable path, so the counsel gets one with the toggle on. Removed by
+    # _cleanup (throwaway test_negnotif_* ids only).
+    await db.proxy_counsel_profiles.insert_one({"user_id": counsel["user_id"], "negotiation_enabled": True})
+
+
 async def _cleanup(db, user_ids=(), hearing_ids=()):
     if user_ids:
+        test_ids = [u for u in user_ids if u and u.startswith("test_negnotif_")]
+        if test_ids:
+            await db.proxy_counsel_profiles.delete_many({"user_id": {"$in": test_ids}})
         await db.users.delete_many({"user_id": {"$in": list(user_ids)}})
         await db.notification_events.delete_many({"user_id": {"$in": list(user_ids)}})
     if hearing_ids:
@@ -97,6 +110,7 @@ def test_target_advocate_gets_auto_created_first_offer_when_fee_given(monkeypatc
         try:
             await _insert_user(db, requester)
             await _insert_user(db, counsel)
+            await _enable_negotiation(db, counsel)
             payload = server.HearingRequestCreate(
                 court_id="court_tishazari", hearing_date="2026-08-01", case_details="Test case",
                 fee=1500.0, target_advocate_id=counsel["user_id"],
@@ -104,6 +118,7 @@ def test_target_advocate_gets_auto_created_first_offer_when_fee_given(monkeypatc
             hearing = await server.create_hearing_request(payload, requester)
             hearing_id = hearing["hearing_id"]
             assert hearing["status"] == "requested"
+            assert hearing["negotiation_enabled"] is True
 
             negotiation_doc = await db.negotiations.find_one({"hearing_id": hearing_id}, {"_id": 0})
             assert negotiation_doc is not None
@@ -144,10 +159,16 @@ def test_broadcast_hearing_creation_notifies_no_one(monkeypatch):
 
 async def _make_hearing(db, requester, counsel):
     import hearings
-    hearing = await hearings.create_hearing_request(
-        db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
-        target_advocate_id=counsel["user_id"],
-    )
+    await _enable_negotiation(db, counsel)
+    try:
+        hearing = await hearings.create_hearing_request(
+            db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
+            target_advocate_id=counsel["user_id"],
+        )
+    except Exception:
+        await db.proxy_counsel_profiles.delete_one({"user_id": counsel["user_id"]})
+        raise
+    assert hearing["negotiation_enabled"] is True
     return hearing["hearing_id"]
 
 
@@ -190,8 +211,13 @@ def test_post_message_notifies_the_other_party_with_sender_name(monkeypatch):
             await _insert_user(db, requester)
             await _insert_user(db, counsel)
 
+            # In a real request get_current_user hands the endpoint the full
+            # users row (name included) and sender_name is read from it
+            # (hearings.add_message). Calling the endpoint function directly
+            # skips that dependency, so pass the same shape it would build.
+            requester_as_current_user = {**requester, "name": f"Test {requester['user_id']}"}
             payload = server.HearingMessageCreate(text="Can we move the hearing prep call?")
-            message = await server.post_hearing_message(hearing_id, payload, requester)
+            message = await server.post_hearing_message(hearing_id, payload, requester_as_current_user)
             assert message["sender_user_id"] == requester["user_id"]
             assert message["sender_name"] == f"Test {requester['user_id']}"
 
