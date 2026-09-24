@@ -16,7 +16,7 @@ email-notification context this module has no reason to know about) rather
 than being duplicated here.
 """
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Optional
 
 import escrow as escrow_svc
@@ -245,12 +245,13 @@ async def _refund_orphaned_capture(db, tx: dict, rzp_payment_id: str, reason: st
     a webhook retry that could no longer reach this code anyway."""
     order_id = tx["razorpay_order_id"]
     now = datetime.now(timezone.utc).isoformat()
-    fields = {"orphaned": True, "orphan_reason": reason, "orphaned_at": now}
+    fields = {"orphaned": True, "orphan_reason": reason, "orphaned_at": now, "orphan_refund_attempts": 1}
     try:
         result = razorpay_svc.refund_payment(
             rzp_payment_id, amount_inr=tx.get("amount"),
             notes={"razorpay_order_id": order_id, "context_type": tx.get("context_type"),
-                   "context_id": tx.get("context_id"), "reason": f"orphaned_capture:{reason}"},
+                   "context_id": tx.get("context_id"), "reason": f"orphaned_capture:{reason}",
+                   "orphan_refund_attempt": 1},
         )
         fields.update({
             "orphan_refund_status": result.get("status"),
@@ -280,3 +281,189 @@ async def handle_orphaned_capture(db, tx: dict, rzp_payment_id: str, reason: str
         return False
     await _refund_orphaned_capture(db, tx, rzp_payment_id, reason)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Bug C: Razorpay refund webhooks + orphan-refund retry
+# ---------------------------------------------------------------------------
+
+ORPHAN_REFUND_RETRYABLE = ("failed", "pending", "created")
+STALE_ORPHAN_RETRY_MINUTES = 10
+
+
+async def apply_refund_event(db, refund_entity: dict, event: str) -> dict:
+    """refund.processed / refund.failed from the Razorpay webhook. Settles
+    whichever record requested the refund — an escrow refund
+    (escrow.settle_refund_from_gateway) or an orphaned-capture refund on
+    payment_transactions — with compare-and-swap writes, so duplicate or
+    late deliveries are no-ops. Returns a small summary for logging."""
+    refund_id = refund_entity.get("id")
+    payment_id = refund_entity.get("payment_id")
+    status = "processed" if event == "refund.processed" else "failed"
+    error = None
+    if status == "failed":
+        error = (refund_entity.get("error_description") or refund_entity.get("error_reason")
+                 or "Razorpay reported the refund as failed")
+
+    notes = refund_entity.get("notes") or {}
+    if not isinstance(notes, dict):  # Razorpay sends [] when a refund has no notes
+        notes = {}
+    escrow = await escrow_svc.settle_refund_from_gateway(
+        db, refund_id=refund_id, payment_id=payment_id, gateway_status=status, error=error, notes=notes,
+    )
+    if escrow:
+        out = {"matched": "escrow", "escrow_id": escrow["escrow_id"], "status": escrow["status"],
+               "changed": bool(escrow.get("refund_settled"))}
+        if escrow.get("refund_stale"):
+            out["stale"] = True
+        return out
+
+    # Orphaned capture refunds (Bug A) — same attribution rules as
+    # escrow.settle_refund_from_gateway: exact refund id; then notes
+    # (razorpay_order_id + orphan_refund_attempt, current attempt only); then,
+    # without notes, the payment id only while a single refund request was
+    # ever sent and no refund id is stored. Anything else is a stale event of
+    # an earlier attempt: recorded, never applied.
+    tx = None
+    attempt_guard = None
+    if refund_id:
+        tx = await db.payment_transactions.find_one({"orphaned": True, "orphan_refund_id": refund_id}, {"_id": 0})
+    if not tx and notes.get("razorpay_order_id") and notes.get("orphan_refund_attempt") is not None:
+        candidate = await db.payment_transactions.find_one(
+            {"orphaned": True, "razorpay_order_id": notes["razorpay_order_id"]}, {"_id": 0})
+        if candidate:
+            attempt = escrow_svc._as_int(notes.get("orphan_refund_attempt"))
+            if (attempt is not None and attempt == (candidate.get("orphan_refund_attempts") or 1)
+                    and candidate.get("orphan_refund_id") in (None, refund_id)):
+                tx, attempt_guard = candidate, attempt
+            else:
+                return await _record_stale_orphan_refund_event(db, candidate, refund_id, status, attempt)
+    if not tx and payment_id and notes.get("orphan_refund_attempt") is None:
+        candidate = await db.payment_transactions.find_one(
+            {"orphaned": True, "razorpay_payment_id": payment_id}, {"_id": 0})
+        if candidate:
+            if candidate.get("orphan_refund_id") is None and (candidate.get("orphan_refund_attempts") or 1) <= 1:
+                tx, attempt_guard = candidate, "single"
+            else:
+                return await _record_stale_orphan_refund_event(db, candidate, refund_id, status, None)
+    if not tx:
+        return {"matched": None}
+    now = datetime.now(timezone.utc).isoformat()
+    allowed_from = ["pending", "created", "failed", "retrying"] if status == "processed" else ["pending", "created", "retrying"]
+    fields = {"orphan_refund_status": status, "orphan_refund_settled_at": now}
+    if refund_id:
+        fields["orphan_refund_id"] = refund_id
+    if status == "failed":
+        fields["orphan_refund_error"] = error
+    cas = {"razorpay_order_id": tx["razorpay_order_id"], "orphan_refund_status": {"$in": allowed_from}}
+    cas["orphan_refund_id"] = {"$in": [None, refund_id]} if refund_id else None
+    if attempt_guard == "single":
+        cas["orphan_refund_attempts"] = {"$not": {"$gt": 1}}
+    elif attempt_guard is not None:
+        cas["orphan_refund_attempts"] = attempt_guard
+    res = await db.payment_transactions.update_one(cas, {"$set": fields})
+    return {"matched": "orphan", "razorpay_order_id": tx["razorpay_order_id"],
+            "status": status if res.modified_count else tx.get("orphan_refund_status"), "changed": bool(res.modified_count)}
+
+
+async def _record_stale_orphan_refund_event(db, tx: dict, refund_id: Optional[str], status: str,
+                                            attempt: Optional[int]) -> dict:
+    """Orphan counterpart of escrow._record_stale_refund_event: an earlier
+    attempt's refund event never changes the orphan's refund status/id; it is
+    recorded, and a PROCESSED one flags the row for admin review (possible
+    duplicate refund)."""
+    update = {
+        "$addToSet": {"orphan_stale_refund_events": {"refund_id": refund_id, "status": status, "attempt": attempt}},
+        "$set": {"orphan_stale_refund_last_at": datetime.now(timezone.utc).isoformat()},
+    }
+    if status == "processed":
+        update["$set"]["orphan_refund_needs_review"] = True
+    await db.payment_transactions.update_one({"razorpay_order_id": tx["razorpay_order_id"]}, update)
+    return {"matched": "orphan", "razorpay_order_id": tx["razorpay_order_id"],
+            "status": tx.get("orphan_refund_status"), "changed": False, "stale": True}
+
+
+async def retry_orphan_refund(db, razorpay_order_id: str, actor: Optional[dict]) -> dict:
+    """Admin recovery for an orphaned-capture refund that failed or is stuck
+    pending. Same safety pattern as escrow.retry_refund: an atomic claim
+    (orphan_refund_status -> "retrying"; a concurrent retry gets 409), then a
+    lookup of refunds Razorpay already holds for the payment before any new
+    request, refunding only the unrefunded remainder."""
+    from fastapi import HTTPException
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    stale = (now_dt - timedelta(minutes=STALE_ORPHAN_RETRY_MINUTES)).isoformat()
+    before = await db.payment_transactions.find_one_and_update(
+        {"razorpay_order_id": razorpay_order_id, "orphaned": True, "$or": [
+            {"orphan_refund_status": {"$in": list(ORPHAN_REFUND_RETRYABLE)}},
+            {"orphan_refund_status": "retrying", "orphan_refund_retry_at": {"$lt": stale}},
+        ]},
+        {"$set": {"orphan_refund_status": "retrying", "orphan_refund_retry_at": now,
+                  "orphan_refund_retry_by": actor["user_id"] if actor else "system"},
+         "$inc": {"orphan_refund_attempts": 1}},
+        projection={"_id": 0},
+    )
+    if not before:
+        current = await db.payment_transactions.find_one({"razorpay_order_id": razorpay_order_id}, {"_id": 0})
+        if not current or not current.get("orphaned"):
+            raise HTTPException(404, "No orphaned payment for this order")
+        if current.get("orphan_refund_status") == "processed":
+            return current  # already refunded — idempotent, never a second refund
+        if current.get("orphan_refund_status") == "retrying":
+            raise HTTPException(409, "A refund retry is already in progress for this payment")
+        raise HTTPException(400, f"Nothing to retry: refund status is '{current.get('orphan_refund_status')}'")
+
+    payment_id = before.get("razorpay_payment_id")
+    amount = float(before.get("amount") or 0)
+    fields: dict = {}
+    try:
+        existing = razorpay_svc.fetch_refunds(payment_id) if payment_id else []
+        processed = [r for r in existing if (r.get("status") or "").lower() == "processed"]
+        in_flight = [r for r in existing if (r.get("status") or "").lower() in ("pending", "created")]
+        remaining = round(amount - sum(float(r.get("amount_inr") or 0) for r in processed), 2)
+        if payment_id and remaining <= 0.009:
+            fields = {"orphan_refund_status": "processed", "orphan_refund_id": processed[-1]["razorpay_refund_id"]}
+        elif in_flight:
+            fields = {"orphan_refund_status": "pending", "orphan_refund_id": in_flight[-1]["razorpay_refund_id"]}
+        else:
+            result = razorpay_svc.refund_payment(
+                payment_id, amount_inr=remaining,
+                notes={"razorpay_order_id": razorpay_order_id, "reason": "orphaned_capture_retry",
+                       "orphan_refund_attempt": (before.get("orphan_refund_attempts") or 0) + 1},
+            )
+            status = (result.get("status") or "").lower()
+            if result.get("simulated"):
+                status = "processed"
+            fields = {"orphan_refund_status": status if status in ("processed", "failed") else "pending",
+                      "orphan_refund_id": result.get("razorpay_refund_id")}
+    except Exception as e:
+        logger.error(f"Orphan refund retry failed for {razorpay_order_id}: {e}")
+        fields = {"orphan_refund_status": "failed", "orphan_refund_error": str(e)[:500]}
+    fields["orphan_refund_settled_at" if fields["orphan_refund_status"] == "processed" else "orphan_refund_updated_at"] = datetime.now(timezone.utc).isoformat()
+    res = await db.payment_transactions.update_one(
+        {"razorpay_order_id": razorpay_order_id, "orphan_refund_status": "retrying"}, {"$set": fields},
+    )
+    settled_elsewhere = res.matched_count == 0
+    from audit_log import log_audit
+    await log_audit(db, "payment.orphan_refund_retry", actor, {
+        "razorpay_order_id": razorpay_order_id, "razorpay_payment_id": payment_id,
+        "status": fields["orphan_refund_status"], "refund_id": fields.get("orphan_refund_id"),
+        "error": fields.get("orphan_refund_error"), "settled_elsewhere": settled_elsewhere,
+    })
+    if settled_elsewhere:
+        # A refund webhook settled this orphan while our gateway call was in
+        # flight — report what is actually stored, not this attempt's outcome.
+        current = await db.payment_transactions.find_one({"razorpay_order_id": razorpay_order_id}, {"_id": 0})
+        return {**(current or before), "refund_settled_elsewhere": True}
+    if fields["orphan_refund_status"] == "pending" and fields.get("orphan_refund_id"):
+        # Webhook for this new refund may have arrived before its id was
+        # stored (logged, but matched nothing) — replay it so it isn't lost.
+        ev = await db.payment_webhook_events.find_one(
+            {"razorpay_refund_id": fields["orphan_refund_id"], "event": {"$in": ["refund.processed", "refund.failed"]}},
+            {"_id": 0, "event": 1}, sort=[("received_at", -1)],
+        )
+        if ev:
+            await apply_refund_event(db, {"id": fields["orphan_refund_id"], "payment_id": payment_id}, ev["event"])
+            current = await db.payment_transactions.find_one({"razorpay_order_id": razorpay_order_id}, {"_id": 0})
+            return {**(current or before)}
+    return {**before, **fields}

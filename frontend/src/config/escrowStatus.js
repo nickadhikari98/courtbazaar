@@ -39,3 +39,26 @@ export const RETRYABLE_REFUND_STATUSES = ["refund_failed", "refund_processing", 
 export function isRetryableRefund(status) {
   return RETRYABLE_REFUND_STATUSES.includes(status);
 }
+
+/* Orphaned-capture refunds (payment_transactions.orphan_refund_status, see
+   payment_reconciliation._refund_orphaned_capture / retry_orphan_refund). */
+export const ORPHAN_REFUND_META = {
+  pending: { label: "Orphan refund in progress", tone: "warning" },
+  created: { label: "Orphan refund in progress", tone: "warning" },
+  retrying: { label: "Orphan refund retry running", tone: "warning" },
+  failed: { label: "Orphan refund failed — needs retry", tone: "danger" },
+  processed: { label: "Orphan refunded", tone: "success" },
+};
+
+export function orphanRefundLabel(status) {
+  return ORPHAN_REFUND_META[status]?.label || (status ? `Orphan refund ${status}` : "Orphan refund status unknown");
+}
+
+export function orphanRefundClasses(status) {
+  return ESCROW_TONE_CLASSES[ORPHAN_REFUND_META[status]?.tone || "neutral"];
+}
+
+/* Mirrors payment_reconciliation.ORPHAN_REFUND_RETRYABLE. */
+export function isRetryableOrphanRefund(status) {
+  return ["failed", "pending", "created"].includes(status);
+}
