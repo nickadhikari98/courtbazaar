@@ -108,6 +108,17 @@ export function hearingIsAcceptableByMe(h, user) {
   return h.status === "broadcast" && (!h.target_advocate_id || h.target_advocate_id === user.user_id);
 }
 
+/* Where a targeted counsel "responds" to a pending offer: the Negotiation
+   Module only when this hearing is negotiable (same test as
+   getHearingPermissions' canNegotiate — a missing negotiation_enabled on a
+   pre-toggle hearing still reads as negotiable), otherwise the Hearing Detail
+   dialog, whose Accept (listed rate) / Reject actions are the whole flow.
+   NegotiationModule itself refuses a non-negotiable hearing, so routing there
+   would just bounce the counsel out. */
+export function counselRespondsViaNegotiation(h) {
+  return !!h?.target_advocate_id && h.negotiation_enabled !== false;
+}
+
 /* The commercial gate for payment — mirrors hearings.initiate_payment's
    server-side check exactly: a fee must be set, and a *targeted* hearing
    must be commercially locked; a broadcast hearing (no target_advocate_id)
