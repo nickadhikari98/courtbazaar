@@ -365,7 +365,11 @@ async def _settle_refund_attempt(db, claimed: dict, *, reason: str, check_existi
             if outcome is None:
                 gateway_result = razorpay_svc.refund_payment(
                     payment_id, amount_inr=remaining,
-                    notes={"context_type": claimed.get("context_type"), "context_id": claimed.get("context_id"), "reason": reason},
+                    notes={"context_type": claimed.get("context_type"), "context_id": claimed.get("context_id"), "reason": reason,
+                           # Attribution for refund webhooks: which escrow and which
+                           # attempt this Razorpay refund belongs to (see
+                           # settle_refund_from_gateway).
+                           "escrow_id": escrow_id, "refund_attempt": claimed.get("refund_attempts")},
                 )
                 status = (gateway_result.get("status") or "").lower()
                 if gateway_result.get("simulated") or status == "processed":
@@ -387,21 +391,79 @@ async def _settle_refund_attempt(db, claimed: dict, *, reason: str, check_existi
     elif outcome == "refunded":
         fields["refund_completed_at"] = now
     # Settle only our own claim — conditional on still being refund_pending.
-    await db.escrow_transactions.update_one({"escrow_id": escrow_id, "status": "refund_pending"}, {"$set": fields})
+    res = await db.escrow_transactions.update_one({"escrow_id": escrow_id, "status": "refund_pending"}, {"$set": fields})
+    if res.matched_count == 0:
+        # Something else settled this escrow while our gateway call was in
+        # flight (a refund webhook, or a stale-claim retry). Report the real
+        # stored status instead of this attempt's outcome, and skip side
+        # effects — whoever settled it already applied them.
+        current = await db.escrow_transactions.find_one({"escrow_id": escrow_id}, {"_id": 0})
+        return {**(current or claimed), "refund_settled_elsewhere": True}
     await _make_timeline_hook(db, escrow_id)(claimed, "refund_pending", outcome, actor)
     if outcome in ("refunded", "refund_processing"):
         await _reverse_payee_hold_once(db, claimed)
     claimed.update(fields)
+    if outcome == "refund_processing" and fields.get("gateway_refund_id"):
+        replayed = await _replay_logged_refund_webhook(db, fields["gateway_refund_id"], claimed.get("razorpay_payment_id"))
+        if replayed and replayed.get("refund_settled"):
+            return replayed
     return claimed
 
 
+async def _replay_logged_refund_webhook(db, refund_id: str, payment_id: Optional[str]) -> Optional[dict]:
+    """settle_refund_from_gateway only matches a refund id once it is stored
+    on the escrow. If Razorpay's refund.processed/failed webhook for a NEW
+    refund arrived before this attempt stored that id, the webhook was logged
+    (payment_webhook_events) but matched nothing. Re-apply the latest logged
+    event for this refund id now, so that webhook is never lost."""
+    ev = await db.payment_webhook_events.find_one(
+        {"razorpay_refund_id": refund_id, "event": {"$in": ["refund.processed", "refund.failed"]}},
+        {"_id": 0, "event": 1}, sort=[("received_at", -1)],
+    )
+    if not ev:
+        return None
+    status = "processed" if ev["event"] == "refund.processed" else "failed"
+    return await settle_refund_from_gateway(db, refund_id=refund_id, payment_id=payment_id, gateway_status=status)
+
+
+def _as_int(value) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _record_stale_refund_event(db, escrow: dict, refund_id: Optional[str], status: str,
+                                     attempt: Optional[int]) -> dict:
+    """A refund webhook that belongs to an earlier refund attempt of this
+    escrow (or can't be attributed unambiguously). It must not change the
+    escrow's status, refund id or payee hold. It is recorded (idempotently)
+    and — when that older refund was actually PROCESSED, i.e. money went
+    back to the customer — flagged for admin review, because the current
+    attempt may also refund (possible duplicate refund)."""
+    update: Dict[str, Any] = {
+        "$addToSet": {"stale_refund_events": {"refund_id": refund_id, "status": status, "attempt": attempt}},
+        "$set": {"stale_refund_last_at": datetime.now(timezone.utc).isoformat()},
+    }
+    if status == "processed":
+        update["$set"]["refund_needs_review"] = True
+    await db.escrow_transactions.update_one({"escrow_id": escrow["escrow_id"]}, update)
+    current = await db.escrow_transactions.find_one({"escrow_id": escrow["escrow_id"]}, {"_id": 0})
+    return {**(current or escrow), "refund_settled": False, "refund_stale": True}
+
+
 async def settle_refund_from_gateway(db, *, refund_id: Optional[str], payment_id: Optional[str],
-                                     gateway_status: str, error: Optional[str] = None) -> Optional[dict]:
+                                     gateway_status: str, error: Optional[str] = None,
+                                     notes: Optional[dict] = None) -> Optional[dict]:
     """Bug C: apply Razorpay's final word on a refund (refund.processed /
     refund.failed webhook) to the escrow that requested it. Matched by
-    gateway_refund_id first, then by payment id. Returns the escrow with
-    refund_settled True/False (False = duplicate/late event, nothing
-    changed), or None when no escrow matched.
+    gateway_refund_id first, then by the refund's notes (escrow_id +
+    refund_attempt — only the escrow's current attempt may settle it), then,
+    for refunds without notes, by payment id only while a single refund
+    request was ever sent. Returns the escrow with refund_settled True/False
+    (False = duplicate/late/stale event, nothing changed; refund_stale True =
+    event of an earlier attempt, recorded for review), or None when no
+    escrow matched.
 
     Each step is a compare-and-swap on the current status, so a duplicate or
     late webhook is a no-op:
@@ -410,18 +472,45 @@ async def settle_refund_from_gateway(db, *, refund_id: Optional[str], payment_id
                  actually created the refund)
       failed:    refund_processing | refund_pending -> refund_failed
                  (never downgrades an escrow that is already refunded)"""
+    notes = notes or {}
+    status = (gateway_status or "").lower()
+    if status not in ("processed", "failed"):
+        return None
     escrow = None
+    attempt_guard: Any = None
     if refund_id:
         escrow = await db.escrow_transactions.find_one({"gateway_refund_id": refund_id}, {"_id": 0})
-    if not escrow and payment_id:
-        escrow = await db.escrow_transactions.find_one(
+    if not escrow and notes.get("escrow_id"):
+        # Refunds CourtBazaar created carry escrow_id + refund_attempt in their
+        # notes. Only the escrow's CURRENT attempt may settle it; an event for
+        # an earlier attempt (e.g. refund A that timed out, then an admin
+        # retry sent refund B) is recorded as stale and never applied.
+        candidate = await db.escrow_transactions.find_one({"escrow_id": notes["escrow_id"]}, {"_id": 0})
+        if candidate:
+            attempt = _as_int(notes.get("refund_attempt"))
+            if (attempt is not None and attempt == (candidate.get("refund_attempts") or 0)
+                    and candidate.get("gateway_refund_id") in (None, refund_id)):
+                escrow, attempt_guard = candidate, attempt
+            else:
+                return await _record_stale_refund_event(db, candidate, refund_id, status, attempt)
+    if not escrow and payment_id and not notes.get("escrow_id"):
+        # No attribution notes (refunds created before notes were added). The
+        # payment id is only unambiguous while exactly ONE refund request was
+        # ever sent for this escrow and no refund id is stored yet (first call
+        # timed out). After a retry sent another request, an id-less match
+        # could belong to either attempt — recorded as stale, never applied.
+        candidate = await db.escrow_transactions.find_one(
             {"razorpay_payment_id": payment_id,
              "status": {"$in": ["refund_processing", "refund_failed", "refund_pending"]}}, {"_id": 0})
+        if candidate:
+            if candidate.get("gateway_refund_id") is None and (candidate.get("refund_attempts") or 0) <= 1:
+                escrow, attempt_guard = candidate, "single"
+            else:
+                return await _record_stale_refund_event(db, candidate, refund_id, status, None)
     if not escrow:
         return None
 
     now = datetime.now(timezone.utc).isoformat()
-    status = (gateway_status or "").lower()
     if status == "processed":
         from_states, to_state = ["refund_processing", "refund_failed", "refund_pending"], "refunded"
         fields = {"status": "refunded", "gateway_refund_status": "processed", "refund_completed_at": now, "updated_at": now}
@@ -429,14 +518,22 @@ async def settle_refund_from_gateway(db, *, refund_id: Optional[str], payment_id
         from_states, to_state = ["refund_processing", "refund_pending"], "refund_failed"
         fields = {"status": "refund_failed", "gateway_refund_status": "failed", "refund_failed_at": now, "updated_at": now,
                   "refund_last_error": error or "Razorpay reported the refund as failed"}
-    else:
-        return None
     if refund_id:
         fields["gateway_refund_id"] = refund_id
 
+    # Same refund-id guard inside the atomic write, so a retry that records a
+    # new refund id between the lookup above and this update can't be
+    # overwritten by the older refund's event.
+    cas: Dict[str, Any] = {"escrow_id": escrow["escrow_id"], "status": {"$in": from_states}}
+    cas["gateway_refund_id"] = {"$in": [None, refund_id]} if refund_id else None
+    # ...and the attempt that matched must still be the escrow's current one:
+    # an admin retry claiming a new attempt in between makes this a no-op.
+    if attempt_guard == "single":
+        cas["refund_attempts"] = {"$not": {"$gt": 1}}
+    elif attempt_guard is not None:
+        cas["refund_attempts"] = attempt_guard
     before = await db.escrow_transactions.find_one_and_update(
-        {"escrow_id": escrow["escrow_id"], "status": {"$in": from_states}},
-        {"$set": fields}, projection={"_id": 0}, return_document=ReturnDocument.BEFORE,
+        cas, {"$set": fields}, projection={"_id": 0}, return_document=ReturnDocument.BEFORE,
     )
     if not before:
         # Already settled (duplicate/late webhook) — no-op, but still report the match.

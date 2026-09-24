@@ -3241,6 +3241,8 @@ async def admin_reconciliation(
     stripe_paid = stripe_pending = stripe_failed = 0
     rzp_paid = rzp_pending = rzp_failed = 0
     stripe_paid_amt = rzp_paid_amt = 0.0
+    stripe_orphaned = rzp_orphaned = 0
+    stripe_orphaned_amt = rzp_orphaned_amt = 0.0
     mismatches = []
 
     for t in txns:
@@ -3255,13 +3257,29 @@ async def admin_reconciliation(
             mismatch = True
             mismatch_reason = f"Txn={pstatus}, Order={order_pstatus}"
             mismatches.append({"session_id": t.get("session_id"), "order_id": t.get("order_id"), "reason": mismatch_reason})
-        elif t.get("orphaned") and t.get("orphan_refund_status") != "processed":
+        elif t.get("orphaned") and (t.get("orphan_refund_status") != "processed" or t.get("orphan_refund_needs_review")):
             # Captured but never attached to its hearing/order (see
             # payment_reconciliation._refund_orphaned_capture).
             mismatch = True
             mismatch_reason = f"Orphaned capture ({t.get('orphan_reason')}); refund {t.get('orphan_refund_status')}"
-            mismatches.append({"session_id": t.get("session_id"), "order_id": t.get("order_id") or t.get("context_id"), "reason": mismatch_reason})
-        if gw == "stripe":
+            if t.get("orphan_refund_needs_review"):
+                mismatch_reason += " — REVIEW: an earlier refund attempt was also processed; check for a duplicate refund"
+            # razorpay_order_id + orphan_refund_status let the admin UI offer
+            # POST /admin/payments/{razorpay_order_id}/retry-orphan-refund.
+            mismatches.append({"session_id": t.get("session_id"), "order_id": t.get("order_id") or t.get("context_id"),
+                               "reason": mismatch_reason, "orphaned": True,
+                               "razorpay_order_id": t.get("razorpay_order_id"),
+                               "orphan_refund_status": t.get("orphan_refund_status"), "amount": t.get("amount")})
+        if t.get("orphaned"):
+            # Captured but never attached to anything and refunded (or being
+            # refunded) — not revenue, so kept out of the paid totals.
+            if gw == "stripe":
+                stripe_orphaned += 1
+                stripe_orphaned_amt += amt
+            else:
+                rzp_orphaned += 1
+                rzp_orphaned_amt += amt
+        elif gw == "stripe":
             if pstatus == "paid":
                 stripe_paid += 1
                 stripe_paid_amt += amt
@@ -3302,6 +3320,7 @@ async def admin_reconciliation(
             "created_at": t.get("created_at"),
             "mismatch": mismatch,
             "mismatch_reason": mismatch_reason,
+            "orphaned": bool(t.get("orphaned")),
         })
 
     # Escrow refunds that didn't complete (failed, still processing at the
@@ -3312,13 +3331,21 @@ async def admin_reconciliation(
     stale_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=escrow_svc.STALE_REFUND_PENDING_MINUTES)).isoformat()
     async for e in db.escrow_transactions.find(
         {"$or": [{"status": {"$in": ["refund_failed", "refund_processing"]}},
-                 {"status": "refund_pending", "updated_at": {"$lt": stale_cutoff}}]},
+                 {"status": "refund_pending", "updated_at": {"$lt": stale_cutoff}},
+                 # An earlier attempt's refund was PROCESSED while a newer attempt
+                 # was active (escrow._record_stale_refund_event) — possible
+                 # duplicate refund, needs a human look.
+                 {"refund_needs_review": True}]},
         {"_id": 0, "escrow_id": 1, "razorpay_order_id": 1, "context_id": 1, "status": 1, "refund_last_error": 1,
-         "amount": 1, "payee_user_id": 1, "payee_amount": 1, "payee_hold_reversed": 1},
+         "amount": 1, "payee_user_id": 1, "payee_amount": 1, "payee_hold_reversed": 1,
+         "refund_needs_review": 1, "stale_refund_events": 1},
     ).sort("updated_at", -1).limit(200):
         reason = f"Escrow refund {e['status']} (escrow {e['escrow_id']})"
         if e.get("status") == "refund_failed" and e.get("refund_last_error"):
             reason += f": {e['refund_last_error'][:120]}"
+        if e.get("refund_needs_review"):
+            stale_ids = [x.get("refund_id") for x in (e.get("stale_refund_events") or []) if x.get("status") == "processed"]
+            reason += f" — REVIEW: earlier refund attempt {', '.join(filter(None, stale_ids)) or '(unknown id)'} was also processed; check for a duplicate refund"
         # The payee's wallet_held_balance is only reversed once a refund is
         # accepted (escrow._reverse_payee_hold_once), so for a failed/stuck
         # refund it still shows the amount — never payable (release() needs
@@ -3328,13 +3355,16 @@ async def admin_reconciliation(
                            "escrow_id": e["escrow_id"], "reason": reason,
                            "escrow_status": e.get("status"), "amount": e.get("amount"),
                            "payee_hold_locked": payee_hold_locked,
-                           "payee_amount": e.get("payee_amount") if payee_hold_locked else None})
+                           "payee_amount": e.get("payee_amount") if payee_hold_locked else None,
+                           "refund_needs_review": bool(e.get("refund_needs_review"))})
 
     return {
         "rows": rows,
         "totals": {
-            "stripe": {"paid": stripe_paid, "pending": stripe_pending, "failed": stripe_failed, "paid_amount": round(stripe_paid_amt, 2)},
-            "razorpay": {"paid": rzp_paid, "pending": rzp_pending, "failed": rzp_failed, "paid_amount": round(rzp_paid_amt, 2)},
+            "stripe": {"paid": stripe_paid, "pending": stripe_pending, "failed": stripe_failed, "paid_amount": round(stripe_paid_amt, 2),
+                       "orphaned": stripe_orphaned, "orphaned_amount": round(stripe_orphaned_amt, 2)},
+            "razorpay": {"paid": rzp_paid, "pending": rzp_pending, "failed": rzp_failed, "paid_amount": round(rzp_paid_amt, 2),
+                         "orphaned": rzp_orphaned, "orphaned_amount": round(rzp_orphaned_amt, 2)},
             "grand_total_paid": round(stripe_paid_amt + rzp_paid_amt, 2),
             "transaction_count": len(rows),
         },
@@ -3351,10 +3381,12 @@ async def admin_reconciliation_csv(user=Depends(get_current_user)):
     txns = await db.payment_transactions.find({}, {"_id": 0}).sort("created_at", -1).to_list(2000)
     buf = _io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["session_id", "gateway", "order_id", "user_id", "amount", "currency", "payment_status", "simulated", "created_at"])
+    w.writerow(["session_id", "gateway", "order_id", "user_id", "amount", "currency", "payment_status", "simulated", "created_at",
+                "orphaned", "orphan_refund_status"])
     for t in txns:
         gw = t.get("gateway") or ("razorpay" if t.get("razorpay_order_id") else "stripe")
-        w.writerow([t.get("session_id"), gw, t.get("order_id"), t.get("user_id"), t.get("amount"), t.get("currency", "inr"), t.get("payment_status"), t.get("simulated", False), t.get("created_at")])
+        w.writerow([t.get("session_id"), gw, t.get("order_id"), t.get("user_id"), t.get("amount"), t.get("currency", "inr"), t.get("payment_status"), t.get("simulated", False), t.get("created_at"),
+                    bool(t.get("orphaned")), t.get("orphan_refund_status") or ""])
     return Response(content=buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=courtbazaar-reconciliation.csv"})
 

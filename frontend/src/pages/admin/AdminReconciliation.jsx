@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api, formatINR, downloadFile } from "@/lib/api";
-import { escrowStatusLabel, escrowStatusClasses, isRetryableRefund } from "@/config/escrowStatus";
+import { escrowStatusLabel, escrowStatusClasses, isRetryableRefund, orphanRefundLabel, orphanRefundClasses, isRetryableOrphanRefund } from "@/config/escrowStatus";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -42,6 +42,25 @@ export default function AdminReconciliation() {
       await load();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Could not retry the refund");
+    } finally {
+      setRetrying(null);
+    }
+  };
+
+  // Orphaned-capture refund retry (Bug C): POST /admin/payments/{razorpay_order_id}/retry-orphan-refund
+  // — atomic claim + Razorpay lookup first, so it never refunds twice.
+  const retryOrphanRefund = async (m) => {
+    if (!window.confirm(`Retry the refund for orphaned payment ${m.razorpay_order_id}${m.amount != null ? ` (${formatINR(m.amount)})` : ""}? CourtBazaar first checks Razorpay for an existing refund and only requests what is still owed.`)) return;
+    setRetrying(m.razorpay_order_id);
+    try {
+      const { data: result } = await api.post(`/admin/payments/${m.razorpay_order_id}/retry-orphan-refund`);
+      const label = orphanRefundLabel(result.orphan_refund_status);
+      if (result.orphan_refund_status === "processed") toast.success(label);
+      else if (result.orphan_refund_status === "failed") toast.error(`${label}${result.orphan_refund_error ? `: ${result.orphan_refund_error}` : ""}`);
+      else toast.message(label);
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not retry the orphan refund");
     } finally {
       setRetrying(null);
     }
@@ -93,6 +112,11 @@ export default function AdminReconciliation() {
               <span className="text-emerald-700">{data.totals.razorpay.paid} paid</span>
               <span className="text-amber-700">{data.totals.razorpay.pending} pending</span>
               <span className="text-rose-700">{data.totals.razorpay.failed} failed</span>
+              {data.totals.razorpay.orphaned > 0 && (
+                <span className="text-muted-foreground" data-testid="totals-razorpay-orphaned">
+                  {data.totals.razorpay.orphaned} orphaned ({formatINR(data.totals.razorpay.orphaned_amount)}, not counted)
+                </span>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -117,8 +141,8 @@ export default function AdminReconciliation() {
               {[
                 // Actionable escrow refund issues are always shown (they carry a
                 // Retry button); other mismatches keep the existing top-10 cap.
-                ...data.mismatches.filter((m) => m.escrow_id),
-                ...data.mismatches.filter((m) => !m.escrow_id).slice(0, 10),
+                ...data.mismatches.filter((m) => m.escrow_id || m.orphaned),
+                ...data.mismatches.filter((m) => !m.escrow_id && !m.orphaned).slice(0, 10),
               ].map((m, i) => (
                 m.escrow_id ? (
                   <div key={i} className="rounded-md bg-white/70 border border-rose-100 p-2 flex flex-wrap items-center gap-2" data-testid={`escrow-mismatch-${m.escrow_id}`}>
@@ -134,6 +158,17 @@ export default function AdminReconciliation() {
                       <Button size="sm" variant="outline" className="ml-auto font-bold h-7" disabled={retrying === m.escrow_id}
                               onClick={() => retryRefund(m)} data-testid={`retry-refund-${m.escrow_id}`}>
                         <RotateCcw className="w-3 h-3 mr-1" /> {retrying === m.escrow_id ? "Retrying…" : "Retry refund"}
+                      </Button>
+                    )}
+                  </div>
+                ) : m.orphaned ? (
+                  <div key={i} className="rounded-md bg-white/70 border border-rose-100 p-2 flex flex-wrap items-center gap-2" data-testid={`orphan-mismatch-${m.razorpay_order_id}`}>
+                    <Badge className={`${orphanRefundClasses(m.orphan_refund_status)} border-0 font-bold text-2xs`}>{orphanRefundLabel(m.orphan_refund_status)}</Badge>
+                    <span className="font-mono"><b>{m.order_id}</b> · {m.reason}</span>
+                    {m.razorpay_order_id && isRetryableOrphanRefund(m.orphan_refund_status) && (
+                      <Button size="sm" variant="outline" className="ml-auto font-bold h-7" disabled={retrying === m.razorpay_order_id}
+                              onClick={() => retryOrphanRefund(m)} data-testid={`retry-orphan-refund-${m.razorpay_order_id}`}>
+                        <RotateCcw className="w-3 h-3 mr-1" /> {retrying === m.razorpay_order_id ? "Retrying…" : "Retry orphan refund"}
                       </Button>
                     )}
                   </div>
@@ -192,7 +227,7 @@ export default function AdminReconciliation() {
                   <TableCell className="font-mono text-xs">{r.order_id}</TableCell>
                   <TableCell className="font-bold">{formatINR(r.amount)}</TableCell>
                   <TableCell><StatusBadge s={r.payment_status} /></TableCell>
-                  <TableCell className="text-xs">{r.order_payment_status || "—"} {r.mismatch && <span className="text-rose-700 font-bold">⚠ MISMATCH</span>}</TableCell>
+                  <TableCell className="text-xs">{r.order_payment_status || "—"} {r.mismatch && <span className="text-rose-700 font-bold">⚠ MISMATCH</span>}{r.orphaned && <span className="text-muted-foreground font-bold"> · ORPHANED</span>}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{r.created_at ? new Date(r.created_at).toLocaleString('en-IN') : '—'}</TableCell>
                 </TableRow>
               ))}
