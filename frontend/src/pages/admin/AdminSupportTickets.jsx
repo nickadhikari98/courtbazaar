@@ -68,6 +68,10 @@ function TicketDetailDialog({ ticketId, open, onOpenChange, onChanged }) {
   };
 
   const remove = async () => {
+    // Destructive and not undoable — confirm before any request is sent.
+    // Cancel returns here with no API call and no busy/loading change.
+    const label = ticket?.ticket_id ? `ticket #${ticket.ticket_id}` : "this ticket";
+    if (!window.confirm(`Delete ${label}? This permanently removes it and cannot be undone.`)) return;
     setBusy(true);
     try {
       await adminDeleteSupportTicket(ticketId);
