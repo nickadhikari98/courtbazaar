@@ -119,6 +119,38 @@ HEARING_TRANSITIONS = {
 # guessing separately whether a refund happened.
 CANCEL_REQUIRES_REFUND = {"broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"}
 
+# Founder rule (B6 final): after a successful payment the requester may cancel
+# (and be refunded) only within this window, measured from
+# hearing.payment_confirmed_at (set by mark_payment_confirmed). After it, only
+# an admin can cancel + refund. Mirrored by frontend
+# lib/hearingLifecycle.js's CLIENT_CANCEL_WINDOW_MS.
+CLIENT_CANCEL_WINDOW = timedelta(hours=1)
+CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE = (
+    "Cancellation is available only within 1 hour of payment. "
+    "Please contact admin for cancellation after this period."
+)
+
+
+def _utcnow() -> datetime:
+    """Server clock for the client cancellation window — a function (not an
+    inline datetime.now) so tests can freeze it; never a client-sent time."""
+    return datetime.now(timezone.utc)
+
+
+def _within_client_cancel_window(payment_confirmed_at: Optional[str], now: datetime) -> bool:
+    """payment_confirmed_at + 1h > now — exactly 1:00:00 after payment is
+    already outside. A missing/unparseable timestamp fails closed (admin
+    only): the window can't be measured, so it's never assumed open."""
+    if not payment_confirmed_at:
+        return False
+    try:
+        confirmed = datetime.fromisoformat(payment_confirmed_at)
+    except (TypeError, ValueError):
+        return False
+    if confirmed.tzinfo is None:
+        confirmed = confirmed.replace(tzinfo=timezone.utc)
+    return confirmed + CLIENT_CANCEL_WINDOW > now
+
 # service_id is nullable on escrow_transactions in general, but hearings
 # aren't a db.services catalog row — this constant keeps every hearing
 # escrow record groupable/reportable by service anyway (see escrow.py).
@@ -630,37 +662,53 @@ async def decline_hearing_request(db, hearing_id: str, user: dict) -> dict:
 
 
 async def cancel_hearing_request(db, hearing_id: str, user: dict) -> dict:
-    """The commercial lock only blocks cancelling BEFORE payment (founder
-    decision, B6): once a hearing is in a CANCEL_REQUIRES_REFUND status the
-    fee has been paid and is held in escrow, so the requester (or an admin)
-    may cancel and is refunded through the existing escrow.refund() path.
-    Pre-payment ("requested"/"payment_pending") a locked hearing still can't
-    be cancelled — the agreed fee is what the requester must now pay.
+    """Founder rule (B6 final):
+      - Before payment ("requested"/"payment_pending") a commercially locked
+        hearing can't be cancelled — the agreed fee is what the requester
+        must now pay. Unchanged.
+      - After payment (a CANCEL_REQUIRES_REFUND status, escrow held) the
+        requester may cancel only while payment_confirmed_at +
+        CLIENT_CANCEL_WINDOW > now (server clock); an admin may cancel at any
+        time. Either way the refund goes through the existing escrow.refund().
 
-    Race safety is unchanged: _transition's compare-and-swap is on the exact
-    status read here, so a paid-state cancel can't land on a hearing that
-    moved in the meantime (409), and a pre-payment cancel keeps its
-    commercially_locked + payment_claim_order_id guards (see _transition)
-    against a lock or an in-flight capture racing it. Only the CAS winner
-    ever reaches escrow.refund(), which is itself idempotent."""
+    Race safety: _transition's compare-and-swap is on the exact status read
+    here, so a paid-state cancel can't land on a hearing that moved in the
+    meantime (409), and a pre-payment cancel keeps its commercially_locked +
+    payment_claim_order_id guards (see _transition). A requester's paid-state
+    cancel also folds the window into that same atomic write (via the
+    payment_confirmed_at guard), so the window can't expire between the check
+    and the write. Only the CAS winner ever reaches escrow.refund(), which is
+    itself idempotent."""
     import escrow as escrow_svc
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
-    if hearing["requesting_user_id"] != user["user_id"] and user.get("role") != "admin":
+    is_admin = user.get("role") == "admin"
+    if hearing["requesting_user_id"] != user["user_id"] and not is_admin:
         raise HTTPException(403, "Forbidden")
     paid = hearing["status"] in CANCEL_REQUIRES_REFUND
     if hearing.get("commercially_locked") and not paid:
         raise HTTPException(400, "A fee has been agreed through negotiation — this request is "
                                   "commercially locked and can no longer be cancelled. Proceed to payment.")
+    extra_guard: Optional[Dict[str, Any]] = None if paid else {"commercially_locked": {"$ne": True}}
+    if paid and not is_admin:
+        now = _utcnow()
+        if not _within_client_cancel_window(hearing.get("payment_confirmed_at"), now):
+            raise HTTPException(400, CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE)
+        # Same boundary, re-checked atomically in the write itself.
+        # payment_confirmed_at is always datetime.isoformat() UTC, which sorts
+        # chronologically as a string; a null never matches $gt.
+        cutoff = (now - CLIENT_CANCEL_WINDOW).isoformat(timespec="microseconds")
+        extra_guard = {"payment_confirmed_at": {"$gt": cutoff}}
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
-        await _transition(db, sm, hearing, hearing["status"], "cancel", user,
-                           extra_guard=None if paid else {"commercially_locked": {"$ne": True}})
+        await _transition(db, sm, hearing, hearing["status"], "cancel", user, extra_guard=extra_guard)
     except IllegalTransition:
         raise HTTPException(400, "This request can no longer be cancelled")
     if paid:
-        refunded = await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason="Hearing cancelled after payment was held")
+        reason = "Hearing cancelled by admin after payment was held" if is_admin \
+            else "Hearing cancelled after payment was held"
+        refunded = await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason=reason)
         refund_status = refunded.get("status")
         await _push_activity(db, hearing_id, _refund_activity_note(refund_status, "hearing cancelled after payment was held"), user["user_id"])
         return {"ok": True, "refund_status": refund_status}

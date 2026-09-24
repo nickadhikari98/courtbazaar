@@ -25,7 +25,10 @@ import DocumentPreviewDialog from "@/components/shared/DocumentPreviewDialog";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import EscrowStagePanel from "@/components/negotiation/EscrowStagePanel";
 import ProxyCounselCaseDetailsForm from "@/components/proxyCounsel/ProxyCounselCaseDetailsForm";
-import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions, cancelResultMessage } from "@/lib/hearingLifecycle";
+import {
+  HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions, cancelResultMessage,
+  CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE,
+} from "@/lib/hearingLifecycle";
 
 /* Shared between the advocate side (HireProxyCounsel.jsx) and the proxy
    counsel side (Practice.jsx's Hearings tab) — the same dialog, with
@@ -86,7 +89,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   const {
     isRequester, isAssignedProxyCounsel, canAccept, canDecline, canReject, canAcceptListedRate,
     negotiationRequired, canNegotiate, negotiationAgreed, negotiationPending, fixedPricePending,
-    canPay, canCancel, canMarkConducted, canRate, isEscrowParticipant, viewerRole,
+    canPay, canCancel, cancelWindowExpired, canMarkConducted, canRate, isEscrowParticipant, viewerRole,
   } = getHearingPermissions(hearing, user);
 
   const run = async (fn) => {
@@ -512,6 +515,11 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
             <Button type="button" disabled={busy} variant="outline" onClick={() => setPendingAction("cancel")} className="font-bold text-red-600 border-red-200 hover:bg-red-50 ml-auto">
               <Ban className="w-4 h-4 mr-1.5" /> Cancel Request
             </Button>
+          )}
+          {cancelWindowExpired && (
+            <p className="text-xs text-muted-foreground basis-full" data-testid="cancel-window-expired">
+              {CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE}
+            </p>
           )}
         </div>
       </DialogContent>

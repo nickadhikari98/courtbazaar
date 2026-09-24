@@ -1,10 +1,14 @@
 """B6 — cancel after payment (hearings.cancel_hearing_request).
 
-Founder decision: the commercial lock (fee agreed via negotiation or
+Founder rule (final): the commercial lock (fee agreed via negotiation or
 Accept-at-listed-rate) only blocks cancelling BEFORE payment. Once the fee is
-paid and held in escrow, the requester (or an admin) may cancel and is
-refunded through the existing escrow.refund() path — never a new refund
-implementation.
+paid and held in escrow, the requester may cancel — and is refunded through
+the existing escrow.refund() path — only within 1 hour of
+hearing.payment_confirmed_at; after that only an admin can cancel + refund.
+
+The 1-hour window is tested by freezing hearings._utcnow relative to the
+hearing's own payment_confirmed_at (set by the real capture path) — no
+sleeping, and the stored payment timestamp is never rewritten.
 
 Same convention as test_negotiation.py / test_razorpay_live_mode.py: drives
 hearings/negotiation/escrow/payment_reconciliation directly via Motor with
@@ -29,7 +33,30 @@ import payment_reconciliation  # noqa: E402
 import razorpay_svc  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
+from datetime import datetime, timedelta  # noqa: E402
+
 PAID_FEE = 3000.0
+ONE_HOUR = timedelta(hours=1)
+
+
+class _frozen_now:
+    """Freeze the server clock the cancellation window reads
+    (hearings._utcnow) at `payment_confirmed_at + offset`."""
+
+    def __init__(self, payment_confirmed_at, offset):
+        self.now = datetime.fromisoformat(payment_confirmed_at) + offset
+
+    def __enter__(self):
+        self._orig = hearings._utcnow
+        hearings._utcnow = lambda: self.now
+        return self
+
+    def __exit__(self, *exc):
+        hearings._utcnow = self._orig
+
+
+def _admin():
+    return {"user_id": _user("admin")["user_id"], "role": "admin"}
 
 
 def _db():
@@ -486,5 +513,266 @@ def test_unlocked_unpaid_cancel_still_works_without_refund():
             assert (await _hearing(db, hearing["hearing_id"]))["status"] == "cancelled"
             assert refunds.calls == []
         finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+# ---------- Founder rule: 1-hour client cancellation window ----------
+
+async def _paid(db, fx, accepted=False):
+    hearing_id = await fx.paid_locked_hearing(db, accepted=accepted)
+    return hearing_id, (await _hearing(db, hearing_id))["payment_confirmed_at"]
+
+
+@pytest.mark.parametrize("offset", [
+    timedelta(minutes=59),                                      # A
+    timedelta(minutes=59, seconds=59),                          # B
+    timedelta(minutes=59, seconds=59, microseconds=999999),     # last instant inside
+], ids=["59m", "59m59s", "59m59.999999s"])
+def test_client_can_cancel_inside_the_one_hour_window(offset):
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id, confirmed_at = await _paid(db, fx)
+            assert confirmed_at  # set by the real capture path (mark_payment_confirmed)
+            with _refund_stub(status="pending") as refunds, _frozen_now(confirmed_at, offset):
+                result = await hearings.cancel_hearing_request(db, hearing_id, fx.requester)
+            assert result == {"ok": True, "refund_status": "refund_processing"}
+            assert (await _hearing(db, hearing_id))["status"] == "cancelled"
+            assert len(refunds.calls) == 1
+            esc = await _escrow(db, hearing_id)
+            assert esc["refund_attempts"] == 1
+            assert esc["refund_reason"] == "Hearing cancelled after payment was held"
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+@pytest.mark.parametrize("offset", [
+    ONE_HOUR,                                  # C: exactly 1 hour is already outside
+    ONE_HOUR + timedelta(seconds=1),           # D
+    timedelta(days=3),                         # long after
+], ids=["exactly-1h", "1h+1s", "3d"])
+def test_client_cannot_cancel_at_or_after_one_hour(offset):
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id, confirmed_at = await _paid(db, fx)
+            before = await _hearing(db, hearing_id)
+            with _refund_stub() as refunds, _frozen_now(confirmed_at, offset):
+                with pytest.raises(HTTPException) as exc_info:
+                    await hearings.cancel_hearing_request(db, hearing_id, fx.requester)
+            assert exc_info.value.status_code == 400
+            assert exc_info.value.detail == hearings.CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE
+            after = await _hearing(db, hearing_id)
+            assert after["status"] == "broadcast"
+            assert after["timeline"] == before["timeline"]
+            assert (await _escrow(db, hearing_id))["status"] == "held"
+            assert refunds.calls == []
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+def test_client_window_applies_in_every_paid_status_not_just_broadcast():
+    """Counsel already accepted (documents_shared, payee assigned): still the
+    requester's 1-hour window, measured from payment, not from acceptance."""
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id, confirmed_at = await _paid(db, fx, accepted=True)
+            with _refund_stub() as refunds, _frozen_now(confirmed_at, ONE_HOUR + timedelta(minutes=5)):
+                with pytest.raises(HTTPException) as exc_info:
+                    await hearings.cancel_hearing_request(db, hearing_id, fx.requester)
+            assert exc_info.value.status_code == 400
+            assert (await _hearing(db, hearing_id))["status"] == "documents_shared"
+            assert refunds.calls == []
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+def test_window_is_also_enforced_atomically_in_the_write():
+    """Even if the pre-check passed a moment earlier (simulated), a write that
+    lands after the boundary must not cancel: the window is folded into the
+    compare-and-swap, not only checked before it."""
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        orig_check = hearings._within_client_cancel_window
+        try:
+            hearing_id, confirmed_at = await _paid(db, fx)
+            hearings._within_client_cancel_window = lambda *_a, **_k: True
+            with _refund_stub() as refunds, _frozen_now(confirmed_at, ONE_HOUR + timedelta(milliseconds=1)):
+                with pytest.raises(HTTPException) as exc_info:
+                    await hearings.cancel_hearing_request(db, hearing_id, fx.requester)
+            assert exc_info.value.status_code == 409
+            assert (await _hearing(db, hearing_id))["status"] == "broadcast"
+            assert refunds.calls == []
+        finally:
+            hearings._within_client_cancel_window = orig_check
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+def test_missing_payment_confirmation_time_fails_closed_for_client_but_not_admin():
+    """A paid-state hearing whose payment_confirmed_at isn't written (the
+    instant between the broadcast transition and mark_payment_confirmed's
+    follow-up write, or a legacy row), simulated by unsetting it. The window
+    can't be measured, so the client is refused; an admin isn't."""
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id, _confirmed_at = await _paid(db, fx)
+            await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$set": {"payment_confirmed_at": None}})
+            with _refund_stub(status="processed") as refunds:
+                with pytest.raises(HTTPException) as exc_info:
+                    await hearings.cancel_hearing_request(db, hearing_id, fx.requester)
+                assert exc_info.value.status_code == 400
+                assert refunds.calls == []
+                result = await hearings.cancel_hearing_request(db, hearing_id, _admin())
+            assert result == {"ok": True, "refund_status": "refunded"}
+            assert len(refunds.calls) == 1
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+def test_client_supplied_fields_cannot_extend_the_window():
+    """The window only ever reads the stored payment_confirmed_at and the
+    server clock. Extra fields on the caller (cancel has no request body at
+    all) change nothing."""
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id, confirmed_at = await _paid(db, fx)
+            forged = {**fx.requester, "payment_confirmed_at": datetime.now().isoformat(),
+                      "now": confirmed_at, "role": "client"}
+            with _refund_stub() as refunds, _frozen_now(confirmed_at, ONE_HOUR + timedelta(seconds=1)):
+                with pytest.raises(HTTPException) as exc_info:
+                    await hearings.cancel_hearing_request(db, hearing_id, forged)
+            assert exc_info.value.status_code == 400
+            assert refunds.calls == []
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+@pytest.mark.parametrize("offset", [ONE_HOUR + timedelta(seconds=1), timedelta(days=30)], ids=["1h+1s", "30d"])
+def test_admin_can_cancel_and_refund_after_the_client_window(offset):  # E, F
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id, confirmed_at = await _paid(db, fx, accepted=True)
+            with _refund_stub(status="pending") as refunds, _frozen_now(confirmed_at, offset):
+                with pytest.raises(HTTPException):
+                    await hearings.cancel_hearing_request(db, hearing_id, fx.requester)
+                result = await hearings.cancel_hearing_request(db, hearing_id, _admin())
+            assert result == {"ok": True, "refund_status": "refund_processing"}
+            assert (await _hearing(db, hearing_id))["status"] == "cancelled"
+            assert len(refunds.calls) == 1
+            esc = await _escrow(db, hearing_id)
+            assert esc["refund_attempts"] == 1
+            assert esc["refund_reason"] == "Hearing cancelled by admin after payment was held"
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+def test_non_admin_roles_cannot_use_the_admin_path_after_the_window():
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id, confirmed_at = await _paid(db, fx, accepted=True)
+            with _refund_stub() as refunds, _frozen_now(confirmed_at, ONE_HOUR * 2):
+                for actor, code in ((fx.counsel, 403), ({**_user("stranger"), "role": "advocate"}, 403),
+                                    ({**fx.requester, "role": "client"}, 400)):
+                    with pytest.raises(HTTPException) as exc_info:
+                        await hearings.cancel_hearing_request(db, hearing_id, actor)
+                    assert exc_info.value.status_code == code
+            assert (await _hearing(db, hearing_id))["status"] == "documents_shared"
+            assert refunds.calls == []
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+def test_repeated_admin_cancellation_never_refunds_twice():
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id, confirmed_at = await _paid(db, fx)
+            admin = _admin()
+            with _refund_stub(status="pending") as refunds, _frozen_now(confirmed_at, ONE_HOUR * 3):
+                await hearings.cancel_hearing_request(db, hearing_id, admin)
+                results = await asyncio.gather(
+                    *[hearings.cancel_hearing_request(db, hearing_id, admin) for _ in range(3)],
+                    return_exceptions=True,
+                )
+            assert all(isinstance(r, HTTPException) and r.status_code == 400 for r in results), results
+            assert len(refunds.calls) == 1
+            assert (await _escrow(db, hearing_id))["refund_attempts"] == 1
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+def test_concurrent_client_cancels_inside_the_window_refund_once():
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id, confirmed_at = await _paid(db, fx)
+            with _refund_stub(status="pending") as refunds, _frozen_now(confirmed_at, timedelta(minutes=59)):
+                results = await asyncio.gather(
+                    *[hearings.cancel_hearing_request(db, hearing_id, fx.requester) for _ in range(4)],
+                    return_exceptions=True,
+                )
+            assert len([r for r in results if isinstance(r, dict)]) == 1, results
+            assert all(r.status_code in (400, 409) for r in results if isinstance(r, HTTPException))
+            assert len(refunds.calls) == 1
+            assert (await _escrow(db, hearing_id))["refund_attempts"] == 1
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+def test_admin_cancel_failed_refund_is_still_retryable_exactly_once():
+    """L: existing refund retry behaviour is untouched. A gateway failure on
+    an admin cancel leaves refund_failed; retry_refund then settles it with a
+    single further gateway call."""
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        orig = (razorpay_svc.refund_payment, razorpay_svc.fetch_refunds)
+        try:
+            hearing_id, confirmed_at = await _paid(db, fx)
+
+            def _fail(*_a, **_k):
+                raise RuntimeError("gateway down")
+            razorpay_svc.refund_payment, razorpay_svc.fetch_refunds = _fail, (lambda pid: [])
+            with _frozen_now(confirmed_at, ONE_HOUR * 2):
+                result = await hearings.cancel_hearing_request(db, hearing_id, _admin())
+            assert result == {"ok": True, "refund_status": "refund_failed"}
+            esc = await _escrow(db, hearing_id)
+            assert esc["status"] == "refund_failed" and "gateway down" in esc["refund_last_error"]
+
+            razorpay_svc.refund_payment, razorpay_svc.fetch_refunds = orig
+            with _refund_stub(status="processed") as refunds:
+                retried = await escrow.retry_refund(db, esc["escrow_id"], {"user_id": "test_b6_admin"})
+                again = await escrow.retry_refund(db, esc["escrow_id"], {"user_id": "test_b6_admin"})
+            assert retried["status"] == "refunded" and again["status"] == "refunded"
+            assert len(refunds.calls) == 1
+            assert (await _escrow(db, hearing_id))["refund_attempts"] == 2
+        finally:
+            razorpay_svc.refund_payment, razorpay_svc.fetch_refunds = orig
             await fx.cleanup(db)
     asyncio.run(body())

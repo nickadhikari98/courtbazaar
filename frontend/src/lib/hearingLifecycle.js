@@ -141,6 +141,26 @@ export const PAID_CANCELLABLE_HEARING_STATUSES = [
   "broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed",
 ];
 
+// Founder rule (B6 final): after payment the requester can cancel only within
+// 1 hour of hearing.payment_confirmed_at; after that only an admin can.
+// Mirrors hearings.CLIENT_CANCEL_WINDOW — the backend enforces it on its own
+// clock; this only decides what to show.
+export const CLIENT_CANCEL_WINDOW_MS = 60 * 60 * 1000;
+export const CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE =
+  "Cancellation is available only within 1 hour of payment. Please contact admin for cancellation after this period.";
+
+// Date the requester's cancellation window closes, or null if the payment
+// confirmation time isn't known (treated as closed, same as the backend).
+export function clientCancelDeadline(hearing) {
+  const confirmedMs = Date.parse(hearing?.payment_confirmed_at || "");
+  return Number.isNaN(confirmedMs) ? null : new Date(confirmedMs + CLIENT_CANCEL_WINDOW_MS);
+}
+
+export function isWithinClientCancelWindow(hearing, now = Date.now()) {
+  const deadline = clientCancelDeadline(hearing);
+  return !!deadline && deadline.getTime() > now;
+}
+
 // Toast copy for a successful cancel, from the refund_status the cancel
 // endpoint returns (only present when a held payment was refunded) — only
 // says "refunded" when escrow.refund() actually completed.
@@ -230,11 +250,14 @@ export function getHearingPermissions(hearing, user) {
     && negotiationRequired && !canNegotiate && !negotiationAgreed;
   const canPay = isRequester && PAYABLE_HEARING_STATUSES.includes(hearing.status) && hearingCommerciallyReadyForPayment(hearing);
   // Mirrors hearings.cancel_hearing_request: the commercial lock only blocks
-  // cancelling BEFORE payment; once paid, cancelling refunds the held escrow.
+  // cancelling BEFORE payment; once paid, the requester can cancel (and is
+  // refunded) only within 1 hour of payment — after that, admin only.
+  const isPaidCancellableStatus = PAID_CANCELLABLE_HEARING_STATUSES.includes(hearing.status);
   const canCancel = isRequester && (
-    PAID_CANCELLABLE_HEARING_STATUSES.includes(hearing.status)
+    (isPaidCancellableStatus && isWithinClientCancelWindow(hearing))
     || (UNPAID_CANCELLABLE_HEARING_STATUSES.includes(hearing.status) && !hearing.commercially_locked)
   );
+  const cancelWindowExpired = isRequester && isPaidCancellableStatus && !isWithinClientCancelWindow(hearing);
   const canMarkConducted = isAssignedProxyCounsel && hearing.status === "hearing_scheduled";
   const canRate = ["completed", "rated"].includes(hearing.status) && !hearing.rated_by?.includes(userId)
     && (isRequester || isAssignedProxyCounsel);
@@ -245,7 +268,7 @@ export function getHearingPermissions(hearing, user) {
 
   return {
     isRequester, isAssignedProxyCounsel, isTargetedAtMe, isEligibleAdvocate,
-    canAccept, canDecline, canReject, canAcceptListedRate, canCancel, canMarkConducted, canRate, canPay,
+    canAccept, canDecline, canReject, canAcceptListedRate, canCancel, cancelWindowExpired, canMarkConducted, canRate, canPay,
     negotiationRequired, canNegotiate, negotiationAgreed, negotiationPending, fixedPricePending, isEscrowParticipant,
     viewerRole: getViewerRole(hearing, userId),
     isClosed: isHearingClosed(hearing),

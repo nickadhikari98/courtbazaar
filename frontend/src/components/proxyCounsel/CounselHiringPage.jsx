@@ -33,6 +33,7 @@ import {
   HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole,
   isHearingActive, COMPLETED_HEARING_STATUSES, CLOSED_HEARING_STATUSES,
   getHearingPermissions, PAID_CANCELLABLE_HEARING_STATUSES, cancelResultMessage,
+  CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE, clientCancelDeadline,
 } from "@/lib/hearingLifecycle";
 
 const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
@@ -575,6 +576,11 @@ export default function CounselHiringPage({ serviceType }) {
                                     </div>
                                   </div>
                                   <HearingActivityPreview hearing={h} />
+                                  {key === "active" && getHearingPermissions(h, user).cancelWindowExpired && (
+                                    <p className="text-xs text-muted-foreground mt-2" data-testid={`cancel-window-expired-${h.hearing_id}`}>
+                                      {CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE}
+                                    </p>
+                                  )}
                                 </CardContent>
                               </Card>
                             ))}
@@ -606,6 +612,9 @@ export default function CounselHiringPage({ serviceType }) {
                 <b className="text-foreground">{cancelTarget?.request_details?.common?.case_title || cancelTarget?.court_id}</b>?
                 {" "}{PAID_CANCELLABLE_HEARING_STATUSES.includes(cancelTarget?.status)
                   ? `Your payment${cancelTarget?.fee ? ` of ${formatINR(cancelTarget.fee)}` : ""} is held by CourtBazaar — cancelling will refund it to your original payment method.`
+                    + (clientCancelDeadline(cancelTarget)
+                      ? ` You can cancel until ${clientCancelDeadline(cancelTarget).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}.`
+                      : "")
                   : "No payment has been taken for this request yet."}
               </>
             )}
