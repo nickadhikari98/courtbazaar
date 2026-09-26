@@ -3236,13 +3236,13 @@ async def admin_reconciliation(
     if order_ids:
         async for o in db.orders.find({"order_id": {"$in": order_ids}}, {"_id": 0, "order_id": 1, "payment_status": 1, "pricing.total": 1, "status": 1}):
             orders_map[o["order_id"]] = o
+    # B7: a refund lives on the escrow, not on the payment row.
+    escrow_status_map = await payment_svc.escrow_status_by_order(db, [t.get("razorpay_order_id") for t in txns])
 
     rows = []
-    stripe_paid = stripe_pending = stripe_failed = 0
-    rzp_paid = rzp_pending = rzp_failed = 0
-    stripe_paid_amt = rzp_paid_amt = 0.0
-    stripe_orphaned = rzp_orphaned = 0
-    stripe_orphaned_amt = rzp_orphaned_amt = 0.0
+    # Per gateway, one bucket per payment_reconciliation.collection_state.
+    counts = {gw: {k: 0 for k in ("paid", "pending", "failed", "orphaned", "refunding", "refunded")} for gw in ("stripe", "razorpay")}
+    amounts = {gw: {k: 0.0 for k in ("paid", "orphaned", "refunding", "refunded")} for gw in ("stripe", "razorpay")}
     mismatches = []
 
     for t in txns:
@@ -3270,31 +3270,15 @@ async def admin_reconciliation(
                                "reason": mismatch_reason, "orphaned": True,
                                "razorpay_order_id": t.get("razorpay_order_id"),
                                "orphan_refund_status": t.get("orphan_refund_status"), "amount": t.get("amount")})
-        if t.get("orphaned"):
-            # Captured but never attached to anything and refunded (or being
-            # refunded) — not revenue, so kept out of the paid totals.
-            if gw == "stripe":
-                stripe_orphaned += 1
-                stripe_orphaned_amt += amt
-            else:
-                rzp_orphaned += 1
-                rzp_orphaned_amt += amt
-        elif gw == "stripe":
-            if pstatus == "paid":
-                stripe_paid += 1
-                stripe_paid_amt += amt
-            elif pstatus == "pending":
-                stripe_pending += 1
-            else:
-                stripe_failed += 1
-        else:
-            if pstatus == "paid":
-                rzp_paid += 1
-                rzp_paid_amt += amt
-            elif pstatus == "pending":
-                rzp_pending += 1
-            else:
-                rzp_failed += 1
+        # Orphaned captures and refunded / refunding payments are not
+        # collected money, so they're kept out of the paid totals; a failed
+        # refund still counts as paid (see collection_state).
+        escrow_status = escrow_status_map.get(t.get("razorpay_order_id"))
+        collection = payment_svc.collection_state(t, escrow_status)
+        bucket = "stripe" if gw == "stripe" else "razorpay"
+        counts[bucket][collection] += 1
+        if collection in amounts[bucket]:
+            amounts[bucket][collection] += amt
         if t.get("finalize_error"):
             # Captured and claimed its hearing, but escrow/confirmation then
             # failed (payment_reconciliation.finalize_hearing_payment): the
@@ -3321,6 +3305,8 @@ async def admin_reconciliation(
             "mismatch": mismatch,
             "mismatch_reason": mismatch_reason,
             "orphaned": bool(t.get("orphaned")),
+            "refund_status": escrow_status if escrow_status in payment_svc.ESCROW_REFUND_STATUSES else None,
+            "collection_state": collection,
         })
 
     # Escrow refunds that didn't complete (failed, still processing at the
@@ -3358,14 +3344,17 @@ async def admin_reconciliation(
                            "payee_amount": e.get("payee_amount") if payee_hold_locked else None,
                            "refund_needs_review": bool(e.get("refund_needs_review"))})
 
+    def _gateway_totals(gw):
+        return {**counts[gw], **{f"{k}_amount": round(v, 2) for k, v in amounts[gw].items()}}
+
     return {
         "rows": rows,
         "totals": {
-            "stripe": {"paid": stripe_paid, "pending": stripe_pending, "failed": stripe_failed, "paid_amount": round(stripe_paid_amt, 2),
-                       "orphaned": stripe_orphaned, "orphaned_amount": round(stripe_orphaned_amt, 2)},
-            "razorpay": {"paid": rzp_paid, "pending": rzp_pending, "failed": rzp_failed, "paid_amount": round(rzp_paid_amt, 2),
-                         "orphaned": rzp_orphaned, "orphaned_amount": round(rzp_orphaned_amt, 2)},
-            "grand_total_paid": round(stripe_paid_amt + rzp_paid_amt, 2),
+            "stripe": _gateway_totals("stripe"),
+            "razorpay": _gateway_totals("razorpay"),
+            "grand_total_paid": round(amounts["stripe"]["paid"] + amounts["razorpay"]["paid"], 2),
+            "grand_total_refunding": round(amounts["stripe"]["refunding"] + amounts["razorpay"]["refunding"], 2),
+            "grand_total_refunded": round(amounts["stripe"]["refunded"] + amounts["razorpay"]["refunded"], 2),
             "transaction_count": len(rows),
         },
         "mismatches": mismatches,
@@ -3379,14 +3368,20 @@ async def admin_reconciliation_csv(user=Depends(get_current_user)):
     import csv
     import io as _io
     txns = await db.payment_transactions.find({}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    escrow_status_map = await payment_svc.escrow_status_by_order(db, [t.get("razorpay_order_id") for t in txns])
     buf = _io.StringIO()
     w = csv.writer(buf)
+    # counted_as_paid is the same rule as /admin/reconciliation's paid totals
+    # (payment_reconciliation.collection_state), so the export sums to them.
     w.writerow(["session_id", "gateway", "order_id", "user_id", "amount", "currency", "payment_status", "simulated", "created_at",
-                "orphaned", "orphan_refund_status"])
+                "orphaned", "orphan_refund_status", "refund_status", "counted_as_paid"])
     for t in txns:
         gw = t.get("gateway") or ("razorpay" if t.get("razorpay_order_id") else "stripe")
+        escrow_status = escrow_status_map.get(t.get("razorpay_order_id"))
         w.writerow([t.get("session_id"), gw, t.get("order_id"), t.get("user_id"), t.get("amount"), t.get("currency", "inr"), t.get("payment_status"), t.get("simulated", False), t.get("created_at"),
-                    bool(t.get("orphaned")), t.get("orphan_refund_status") or ""])
+                    bool(t.get("orphaned")), t.get("orphan_refund_status") or "",
+                    escrow_status if escrow_status in payment_svc.ESCROW_REFUND_STATUSES else "",
+                    payment_svc.collection_state(t, escrow_status) == "paid"])
     return Response(content=buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=courtbazaar-reconciliation.csv"})
 
