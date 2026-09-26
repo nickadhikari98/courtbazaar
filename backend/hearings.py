@@ -125,6 +125,14 @@ CANCEL_REQUIRES_REFUND = {"broadcast", "accepted", "documents_shared", "preparat
 CLOSED_HEARING_STATUSES = ("cancelled", "rejected", "expired")
 CASE_DETAILS_CLOSED_MESSAGE = "This request is no longer active and case details cannot be shared."
 
+# The hearing has already taken place (conducted, then order-sheet
+# verification, payout, rating), so the case brief the counsel worked from
+# is final — no further requester edits. Separate from CLOSED_HEARING_STATUSES
+# on purpose: those states keep their own meaning/message. "disputed" is not
+# here, for the same reason it isn't closed (still under admin review).
+CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES = ("hearing_completed", "verification_pending", "verified", "completed", "rated")
+CASE_DETAILS_LOCKED_MESSAGE = "This hearing has already taken place, so its case details can no longer be changed."
+
 # Founder rule (B6 final): after a successful payment the requester may cancel
 # (and be refunded) only within this window, measured from
 # hearing.payment_confirmed_at (set by mark_payment_confirmed). After it, only
@@ -1169,7 +1177,8 @@ async def submit_case_details(db, hearing_id: str, user: dict, details: dict) ->
     point of the reorder. Not write-once: a requester can call this again to
     correct a typo; `details_submitted` only flips the frontend from "fill
     this in" to "here's what was shared", it isn't an access lock. Refused on
-    a closed (cancelled/rejected/expired) hearing — B6."""
+    a closed (cancelled/rejected/expired) hearing — B6 — and once the hearing
+    has taken place (CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES)."""
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
@@ -1179,6 +1188,8 @@ async def submit_case_details(db, hearing_id: str, user: dict, details: dict) ->
         raise HTTPException(400, "Case details can be shared once payment is confirmed")
     if hearing["status"] in CLOSED_HEARING_STATUSES:
         raise HTTPException(400, CASE_DETAILS_CLOSED_MESSAGE)
+    if hearing["status"] in CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES:
+        raise HTTPException(400, CASE_DETAILS_LOCKED_MESSAGE)
 
     common_fields = ("case_title", "case_number", "case_type", "case_stage", "hearing_time", "priority")
     service_specific_fields = ("work_required", "work_required_notes")
@@ -1193,13 +1204,18 @@ async def submit_case_details(db, hearing_id: str, user: dict, details: dict) ->
         "details_submitted": True,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    # Closed-status guard repeated in the write itself, so a cancel landing
-    # between the read above and this update can't be followed by a brief.
+    # Status guards repeated in the write itself, so a cancel (or the hearing
+    # being marked conducted) landing between the read above and this update
+    # can't be followed by a brief.
     result = await db.hearing_requests.update_one(
-        {"hearing_id": hearing_id, "status": {"$nin": list(CLOSED_HEARING_STATUSES)}}, {"$set": update},
+        {"hearing_id": hearing_id,
+         "status": {"$nin": list(CLOSED_HEARING_STATUSES) + list(CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES)}},
+        {"$set": update},
     )
     if result.matched_count == 0:
-        raise HTTPException(400, CASE_DETAILS_CLOSED_MESSAGE)
+        current = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0, "status": 1})
+        locked = bool(current) and current.get("status") in CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES
+        raise HTTPException(400, CASE_DETAILS_LOCKED_MESSAGE if locked else CASE_DETAILS_CLOSED_MESSAGE)
     await _push_activity(db, hearing_id, "Case details shared with the counsel", user["user_id"])
     updated = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
     return updated

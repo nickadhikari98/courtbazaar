@@ -1,5 +1,6 @@
 import {
   getHearingPermissions, msUntilNextClientCancelExpiry, CLIENT_CANCEL_WINDOW_MS,
+  CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES, isCaseDetailsLockedAfterHearing, isHearingClosed,
 } from "@/lib/hearingLifecycle";
 
 const PAID_AT = "2026-08-16T05:40:43.104000+00:00";
@@ -103,5 +104,37 @@ describe("Share Case Details availability (B6)", () => {
   test("not offered before payment or once already shared", () => {
     expect(getHearingPermissions(paidHearing({ payment_confirmed_at: null }), client).canShareCaseDetails).toBe(false);
     expect(getHearingPermissions(paidHearing({ details_submitted: true }), client).canShareCaseDetails).toBe(false);
+  });
+});
+
+describe("case details once the hearing has taken place", () => {
+  const LOCKED = ["hearing_completed", "verification_pending", "verified", "completed", "rated"];
+
+  test("the case-details form is not offered after the hearing has taken place", () => {
+    for (const status of LOCKED) {
+      expect(getHearingPermissions(paidHearing({ status }), client).canShareCaseDetails).toBe(false);
+    }
+  });
+
+  test("still offered on paid hearings that haven't happened yet (unchanged)", () => {
+    for (const status of ["broadcast", "documents_shared", "preparation", "hearing_scheduled"]) {
+      expect(getHearingPermissions(paidHearing({ status }), client).canShareCaseDetails).toBe(true);
+    }
+  });
+
+  test("closed and disputed behaviour unchanged", () => {
+    for (const status of ["cancelled", "rejected", "expired"]) {
+      expect(getHearingPermissions(paidHearing({ status }), client).canShareCaseDetails).toBe(false);
+    }
+    expect(getHearingPermissions(paidHearing({ status: "disputed" }), client).canShareCaseDetails).toBe(true);
+  });
+
+  test("lock set mirrors the backend and never overlaps the closed set", () => {
+    expect(CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES).toEqual(LOCKED);
+    for (const status of LOCKED) {
+      expect(isCaseDetailsLockedAfterHearing({ status })).toBe(true);
+      expect(isHearingClosed({ status })).toBe(false);
+    }
+    expect(isCaseDetailsLockedAfterHearing({ status: "disputed" })).toBe(false);
   });
 });

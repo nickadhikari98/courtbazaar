@@ -28,7 +28,7 @@ import ProxyCounselCaseDetailsForm from "@/components/proxyCounsel/ProxyCounselC
 import useClientCancelWindowExpiry from "@/hooks/useClientCancelWindowExpiry";
 import {
   HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions, cancelResultMessage,
-  CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE,
+  CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE, isCaseDetailsLockedAfterHearing,
 } from "@/lib/hearingLifecycle";
 
 /* Shared between the advocate side (HireProxyCounsel.jsx) and the proxy
@@ -327,7 +327,9 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
           <div className="text-sm border rounded-lg p-3 bg-secondary/30 text-muted-foreground italic">
             {isClosed
               ? "Case details were not shared before this request was closed."
-              : hearing.payment_confirmed_at ? "Waiting for the client to share case details." : "Case details will be shared once payment is confirmed."}
+              : isCaseDetailsLockedAfterHearing(hearing)
+                ? "Case details were not shared before this hearing took place."
+                : hearing.payment_confirmed_at ? "Waiting for the client to share case details." : "Case details will be shared once payment is confirmed."}
           </div>
         )}
 
