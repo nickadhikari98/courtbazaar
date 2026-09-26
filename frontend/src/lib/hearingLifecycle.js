@@ -43,6 +43,16 @@ export function isHearingClosed(hearing) {
   return !!hearing && CLOSED_HEARING_STATUSES.includes(hearing.status);
 }
 
+// The hearing has already taken place, so its case details are final —
+// mirrors hearings.py's CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES (the
+// backend enforces it; this only stops offering the form). "disputed" is
+// deliberately absent, same as in CLOSED_HEARING_STATUSES.
+export const CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES = ["hearing_completed", "verification_pending", "verified", "completed", "rated"];
+
+export function isCaseDetailsLockedAfterHearing(hearing) {
+  return !!hearing && CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES.includes(hearing.status);
+}
+
 // Successful, paid-out dead ends — distinct from CLOSED_HEARING_STATUSES
 // (rejected/cancelled/expired), which are dead ends with no payout.
 export const COMPLETED_HEARING_STATUSES = ["completed", "rated"];
@@ -293,9 +303,10 @@ export function getHearingPermissions(hearing, user, now = Date.now()) {
   );
   const cancelWindowExpired = isRequester && isPaidCancellableStatus && !isWithinClientCancelWindow(hearing, now);
   // Case brief can be shared once payment is confirmed (hearings.submit_case_details),
-  // but not on a hearing that's already cancelled/rejected/expired.
+  // but not on a hearing that's already cancelled/rejected/expired, nor once
+  // the hearing has taken place.
   const canShareCaseDetails = isRequester && !!hearing.payment_confirmed_at
-    && !hearing.details_submitted && !isHearingClosed(hearing);
+    && !hearing.details_submitted && !isHearingClosed(hearing) && !isCaseDetailsLockedAfterHearing(hearing);
   const canMarkConducted = isAssignedProxyCounsel && hearing.status === "hearing_scheduled";
   const canRate = ["completed", "rated"].includes(hearing.status) && !hearing.rated_by?.includes(userId)
     && (isRequester || isAssignedProxyCounsel);

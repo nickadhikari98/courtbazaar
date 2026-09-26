@@ -217,3 +217,111 @@ def test_cancel_racing_the_submit_is_caught_by_the_atomic_write():
         finally:
             await fx.cleanup(db)
     asyncio.run(body())
+
+
+# ---------- Completed-hearing protection ----------
+# Once the hearing has taken place its case brief is final: the requester
+# can't share or change case details any more. Separate from the closed set
+# above, which keeps its own message.
+
+LOCKED_MESSAGE = "This hearing has already taken place, so its case details can no longer be changed."
+LOCKED_STATUSES = ["hearing_completed", "verification_pending", "verified", "completed", "rated"]
+
+
+@pytest.mark.parametrize("done_status", LOCKED_STATUSES)
+def test_hearing_that_has_taken_place_rejects_case_details(done_status):
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id = await fx.paid_locked_hearing(db)
+            await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$set": {"status": done_status}})
+            before = await _hearing(db, hearing_id)
+            with pytest.raises(HTTPException) as exc_info:
+                await hearings.submit_case_details(db, hearing_id, fx.requester, DETAILS)
+            assert exc_info.value.status_code == 400
+            assert exc_info.value.detail == LOCKED_MESSAGE
+            assert _snapshot(await _hearing(db, hearing_id)) == _snapshot(before)
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+def test_completed_hearing_keeps_previously_shared_details_unchanged():
+    """Details shared while the hearing was active can't be overwritten
+    after it has taken place (the edit Step 4 QA found accepted)."""
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id = await fx.paid_locked_hearing(db)
+            await hearings.submit_case_details(db, hearing_id, fx.requester, DETAILS)
+            await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$set": {"status": "completed"}})
+            before = await _hearing(db, hearing_id)
+            with pytest.raises(HTTPException) as exc_info:
+                await hearings.submit_case_details(db, hearing_id, fx.requester, {"case_details": "Rewritten after the fact."})
+            assert exc_info.value.detail == LOCKED_MESSAGE
+            after = await _hearing(db, hearing_id)
+            assert after["case_details"] == DETAILS["case_details"]
+            assert _snapshot(after) == _snapshot(before)
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+def test_hearing_marked_conducted_during_the_submit_is_caught_by_the_atomic_write():
+    """The read sees an active hearing, but it is marked conducted before the
+    write — the status guard inside update_one refuses it."""
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id = await fx.paid_locked_hearing(db)
+            stale = await db.hearing_requests.find_one({"hearing_id": hearing_id})
+            await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$set": {"status": "hearing_completed"}})
+            before = await _hearing(db, hearing_id)
+
+            class _StaleRead:
+                def __init__(self, real):
+                    self._real, self._served = real, False
+
+                def __getattr__(self, name):
+                    coll = getattr(self._real, name)
+                    if name != "hearing_requests":
+                        return coll
+                    outer = self
+
+                    class _Coll:
+                        def __getattr__(self, attr):
+                            return getattr(coll, attr)
+
+                        async def find_one(self, *args, **kwargs):
+                            if not outer._served:
+                                outer._served = True
+                                return dict(stale)
+                            return await coll.find_one(*args, **kwargs)
+                    return _Coll()
+
+            with pytest.raises(HTTPException) as exc_info:
+                await hearings.submit_case_details(_StaleRead(db), hearing_id, fx.requester, DETAILS)
+            assert exc_info.value.status_code == 400
+            assert exc_info.value.detail == LOCKED_MESSAGE
+            assert _snapshot(await _hearing(db, hearing_id)) == _snapshot(before)
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
+
+
+@pytest.mark.parametrize("open_status", ["broadcast", "documents_shared", "preparation", "hearing_scheduled"])
+def test_hearings_not_yet_held_still_accept_case_details(open_status):
+    async def body():
+        db, fx = _db(), _Fixture()
+        await fx.setup_users(db)
+        try:
+            hearing_id = await fx.paid_locked_hearing(db)
+            await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$set": {"status": open_status}})
+            updated = await hearings.submit_case_details(db, hearing_id, fx.requester, DETAILS)
+            assert updated["details_submitted"] is True and updated["case_details"] == DETAILS["case_details"]
+        finally:
+            await fx.cleanup(db)
+    asyncio.run(body())
