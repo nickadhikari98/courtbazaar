@@ -1816,6 +1816,24 @@ async def admin_retry_escrow_refund(escrow_id: str, user=Depends(get_current_use
     })
     return result
 
+@api_router.post("/admin/escrow-transactions/{escrow_id}/sync-refund")
+async def admin_sync_escrow_refund(escrow_id: str, user=Depends(get_current_user)):
+    """Missed-webhook recovery for a refund_processing escrow: asks Razorpay
+    for the stored refund's status and settles to it (escrow.
+    sync_refund_status). Never requests a refund — unlike retry-refund,
+    which may. The scheduler below runs the same check automatically."""
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    import escrow as escrow_svc
+    from audit_log import log_audit
+    result = await escrow_svc.sync_refund_status(db, escrow_id, user)
+    if result["refund_sync"] == "settled":
+        await log_audit(db, "payment.refund_synced", user, {
+            "escrow_id": escrow_id, "context_type": result.get("context_type"), "context_id": result.get("context_id"),
+            "status": result.get("status"), "gateway_refund_id": result.get("gateway_refund_id"),
+        })
+    return result
+
 @api_router.get("/admin/vendors")
 async def admin_vendors(user=Depends(get_current_user), status: Optional[str] = None):
     if user["role"] != "admin":
@@ -4165,6 +4183,36 @@ async def schedule_auto_release_verifications():
         logger.info("Auto-release verification scheduler started (poll every 1h)")
     except Exception as e:
         logger.warning(f"Auto-release verification scheduler not started: {e}")
+
+
+@app.on_event("startup")
+async def schedule_refund_status_sync():
+    """Missed refund webhooks: a refund Razorpay accepted stays
+    refund_processing until its refund.processed / refund.failed webhook
+    arrives — if it never does, this sweep reads the refund's status from
+    Razorpay and settles it (escrow.sync_processing_refunds; read-only at
+    the gateway, never requests a refund). Only runs with live Razorpay
+    keys: simulated refunds settle synchronously and never wait on one."""
+    import razorpay_svc
+    if not razorpay_svc.is_enabled():
+        return
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        import escrow as escrow_svc
+        async def _job():
+            try:
+                counts = await escrow_svc.sync_processing_refunds(db)
+                if counts["checked"]:
+                    logger.info(f"Refund status sync: {counts}")
+            except Exception as e:
+                logger.error(f"Scheduled refund status sync error: {e}")
+        sched = AsyncIOScheduler()
+        sched.add_job(_job, IntervalTrigger(minutes=15), max_instances=1)
+        sched.start()
+        logger.info("Refund status sync scheduler started (poll every 15m)")
+    except Exception as e:
+        logger.warning(f"Refund status sync scheduler not started: {e}")
 
 
 app.include_router(api_router)

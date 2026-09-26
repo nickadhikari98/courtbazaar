@@ -127,6 +127,26 @@ def fetch_refunds(razorpay_payment_id: str) -> list:
     ]
 
 
+def fetch_refund(razorpay_payment_id: str, razorpay_refund_id: str) -> Optional[dict]:
+    """Read-only lookup of ONE refund's current state — GET
+    /payments/{payment_id}/refunds/{refund_id}, scoped to the payment so a
+    refund id belonging to another payment is a gateway error, never a
+    match. Returns {"razorpay_refund_id", "payment_id", "amount_inr",
+    "status", "notes"}. Used by escrow.sync_refund_status to recover a
+    missed refund.processed/failed webhook; never creates a refund.
+    Simulated payments / no keys -> None (no network). Raises on a gateway
+    error, same contract as fetch_refunds."""
+    if not is_enabled() or razorpay_payment_id.startswith("pay_sim_"):
+        return None
+    c = _client()
+    r = c.payment.fetch_refund_id(razorpay_payment_id, razorpay_refund_id)
+    return {
+        "razorpay_refund_id": r.get("id"), "payment_id": r.get("payment_id"),
+        "amount_inr": (r.get("amount") or 0) / 100.0, "status": r.get("status"),
+        "notes": r.get("notes") if isinstance(r.get("notes"), dict) else {},
+    }
+
+
 def verify_webhook(body: bytes, signature: str, secret: str) -> bool:
     expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature or "")

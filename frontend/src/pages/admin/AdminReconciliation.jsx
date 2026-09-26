@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty } from "@/components/ui/table";
-import { Download, AlertTriangle, CheckCircle2, XCircle, Clock, RotateCcw, Lock } from "lucide-react";
+import { Download, AlertTriangle, CheckCircle2, XCircle, Clock, RotateCcw, RefreshCw, Lock } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
 import Loading from "@/components/shared/Loading";
@@ -42,6 +42,25 @@ export default function AdminReconciliation() {
       await load();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Could not retry the refund");
+    } finally {
+      setRetrying(null);
+    }
+  };
+
+  // Missed-webhook recovery: POST /admin/escrow-transactions/{escrow_id}/sync-refund
+  // (escrow.sync_refund_status) only reads the stored refund's status from
+  // Razorpay and settles to it — it never requests a refund, so no confirm.
+  const checkRefund = async (m) => {
+    setRetrying(m.escrow_id);
+    try {
+      const { data: result } = await api.post(`/admin/escrow-transactions/${m.escrow_id}/sync-refund`);
+      if (result.refund_sync === "still_pending") toast.message("Razorpay still reports this refund as pending");
+      else if (result.status === "refunded") toast.success("Razorpay processed this refund — marked refunded");
+      else if (result.status === "refund_failed") toast.error("Razorpay reports this refund failed — use Retry refund");
+      else toast.message(escrowStatusLabel(result.status));
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not check the refund status");
     } finally {
       setRetrying(null);
     }
@@ -178,8 +197,14 @@ export default function AdminReconciliation() {
                         {`Counsel's held balance${m.payee_amount != null ? ` (${formatINR(m.payee_amount)})` : ""} stays locked until this refund succeeds. It can never be paid out from this escrow.`}
                       </span>
                     )}
-                    {isRetryableRefund(m.escrow_status) && (
+                    {m.escrow_status === "refund_processing" && (
                       <Button size="sm" variant="outline" className="ml-auto font-bold h-7" disabled={retrying === m.escrow_id}
+                              onClick={() => checkRefund(m)} data-testid={`check-refund-${m.escrow_id}`}>
+                        <RefreshCw className="w-3 h-3 mr-1" /> Check status
+                      </Button>
+                    )}
+                    {isRetryableRefund(m.escrow_status) && (
+                      <Button size="sm" variant="outline" className={`${m.escrow_status === "refund_processing" ? "" : "ml-auto "}font-bold h-7`} disabled={retrying === m.escrow_id}
                               onClick={() => retryRefund(m)} data-testid={`retry-refund-${m.escrow_id}`}>
                         <RotateCcw className="w-3 h-3 mr-1" /> {retrying === m.escrow_id ? "Retrying…" : "Retry refund"}
                       </Button>
