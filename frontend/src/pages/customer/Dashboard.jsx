@@ -9,7 +9,7 @@ import { Progress } from "@/components/ui/progress";
 import PageContainer from "@/components/layout/PageContainer";
 import WidgetGrid from "@/components/dashboard/WidgetGrid";
 import { homeWidgets, hearingNeedsMyAction, hearingNeedsMyDocument } from "@/config/homeWidgets";
-import { CLOSED_HEARING_STATUSES, getHearingPermissions, humanizeHearingActivity } from "@/lib/hearingLifecycle";
+import { CLOSED_HEARING_STATUSES, getHearingPermissions, humanizeHearingActivity, counselRespondsViaNegotiation } from "@/lib/hearingLifecycle";
 import { timeAgo } from "@/lib/utils";
 import {
   Plus, Printer, FileText, Gavel, Stamp, Package, BookOpen, Sparkles, Truck, ArrowRight,
@@ -266,8 +266,14 @@ export default function Dashboard() {
     }
     notifications.forEach((n) => {
       const meta = classifyNotification(n);
+      // A fixed-price (negotiation off) offer opens its detail dialog — the
+      // Negotiation Module would only bounce the counsel back out. A hearing
+      // not in the loaded list keeps the existing /negotiate link (that page
+      // redirects a non-negotiable one to Practice itself).
+      const offer = hearings.find((h) => h.hearing_id === n.related_entity_id);
+      const viaNegotiation = !offer || counselRespondsViaNegotiation(offer);
       const target = n.related_entity_type === "hearing" && n.related_entity_id
-        ? (n.title === "New hearing request"
+        ? (n.title === "New hearing request" && viaNegotiation
           ? { onClick: () => navigate(`/hearing-requests/${n.related_entity_id}/negotiate`) }
           : { onClick: () => setActiveHearingId(n.related_entity_id) })
         : n.related_entity_type === "order" && n.related_entity_id
@@ -281,7 +287,7 @@ export default function Dashboard() {
     });
 
     return items.sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
-  }, [myDocumentHearings, myActionHearings, notifications, canPracticeProxyCounsel, walletHeld, user, navigate]);
+  }, [myDocumentHearings, myActionHearings, notifications, canPracticeProxyCounsel, walletHeld, user, navigate, hearings]);
 
   // Dashboard widget only ever shows the top 4 — Action Required bubbles
   // above Recent Activity/Information (stable sort keeps each tier's own

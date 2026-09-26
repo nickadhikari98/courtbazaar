@@ -368,6 +368,7 @@ async def list_hearing_requests(db, user: dict) -> List[dict]:
     hearings = await db.hearing_requests.find({"$or": clauses}, {"_id": 0}).sort("created_at", -1).to_list(200)
     await _attach_negotiation_action_flags(db, hearings, user["user_id"])
     await _attach_decline_flags(db, hearings, user["user_id"])
+    await _attach_listed_rates(db, hearings, user["user_id"])
     return hearings
 
 
@@ -424,6 +425,7 @@ async def get_hearing_request(db, hearing_id: str, user: dict) -> dict:
         raise HTTPException(404, "Hearing request not found")
     _check_visible(hearing, user)
     await _attach_decline_flags(db, [hearing], user["user_id"])
+    await _attach_listed_rates(db, [hearing], user["user_id"])
     return hearing
 
 
@@ -452,6 +454,23 @@ async def _attach_decline_flags(db, hearings: List[dict], user_id: str) -> None:
     notified = await _notified_counsel_ids(db, candidates)
     for h in hearings:
         h["viewer_can_decline"] = user_id in notified.get(h["hearing_id"], set())
+
+
+async def _attach_listed_rates(db, hearings: List[dict], user_id: str) -> None:
+    """Sets `listed_rate` on a fixed-price (negotiation_enabled false),
+    not-yet-accepted targeted hearing, for its two participants only — the
+    amount accept_at_listed_rate would lock (same _listed_rate_for_hearing),
+    so the counsel sees the price they're accepting and the requester the
+    price they'll pay. hearing.fee isn't that number until Accept sets it.
+    None when the counsel hasn't priced anything yet. Display only."""
+    for h in hearings:
+        if (h.get("target_advocate_id") and h.get("negotiation_enabled") is False
+                and not h.get("commercially_locked") and h.get("status") in ("requested", "payment_pending")
+                and user_id in (h["target_advocate_id"], h.get("requesting_user_id"))):
+            try:
+                h["listed_rate"] = await _listed_rate_for_hearing(db, h)
+            except HTTPException:
+                h["listed_rate"] = None
 
 
 def _check_visible(hearing: dict, user: dict) -> None:

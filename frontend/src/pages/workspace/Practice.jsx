@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
@@ -31,7 +31,7 @@ import Loading from "@/components/shared/Loading";
 import { useAuth } from "@/context/AuthContext";
 import {
   HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole,
-  isHearingActive, COMPLETED_HEARING_STATUSES, CLOSED_HEARING_STATUSES,
+  isHearingActive, COMPLETED_HEARING_STATUSES, CLOSED_HEARING_STATUSES, counselRespondsViaNegotiation,
 } from "@/lib/hearingLifecycle";
 import {
   PRICING_SLOTS, PRICING_SLOT_LABELS, PRICING_COURT_TYPES, PRICING_COURT_TYPE_LABELS,
@@ -683,11 +683,11 @@ function PerformanceTab() {
   return <StatGrid stats={stats} />;
 }
 
-function HearingsTab() {
+export function HearingsTab({ initialActiveId = null }) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [hearings, setHearings] = useState(null);
-  const [activeId, setActiveId] = useState(null);
+  const [activeId, setActiveId] = useState(initialActiveId);
 
   const load = () => listHearingRequests().then(setHearings);
   useEffect(() => { load(); }, []);
@@ -752,10 +752,16 @@ function HearingsTab() {
                 <CardContent className="p-4">
                   <div className="font-display font-bold text-sm truncate">{h.request_details?.common?.case_title || h.court_id}</div>
                   <div className="text-xs text-muted-foreground mt-0.5">{h.request_details?.common?.court_name || h.court_id} · {h.hearing_date}</div>
-                  {h.fee != null && <div className="text-lg font-display font-bold mt-2">{formatINR(h.fee)}</div>}
+                  {/* A fixed-price offer has no fee until Accept — show the
+                      listed rate it will lock (hearings._attach_listed_rates). */}
+                  {(h.fee ?? h.listed_rate) != null && (
+                    <div className="text-lg font-display font-bold mt-2">{formatINR(h.fee ?? h.listed_rate)}</div>
+                  )}
                   <Button
                     type="button" size="sm" className="w-full font-bold bg-accent hover:bg-accent/90 mt-3"
-                    onClick={() => navigate(`/hearing-requests/${h.hearing_id}/negotiate`)}
+                    onClick={() => (counselRespondsViaNegotiation(h)
+                      ? navigate(`/hearing-requests/${h.hearing_id}/negotiate`)
+                      : setActiveId(h.hearing_id))}
                     data-testid={`respond-to-offer-${h.hearing_id}`}
                   >
                     Respond to Offer <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
@@ -802,13 +808,22 @@ function HearingsTab() {
 
 export default function Practice() {
   const [profile, setProfile] = useState(null);
+  // A hearing to open on arrival (NegotiationModule sends a counsel here for
+  // a non-negotiable offer) — read once, then dropped from history so a
+  // refresh doesn't reopen it.
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [openHearingId] = useState(() => location.state?.openHearingId || null);
+  useEffect(() => {
+    if (location.state?.openHearingId) navigate(location.pathname, { replace: true, state: null });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { getPracticeProfile().then(setProfile); }, []);
 
   return (
     <PageContainer className="max-w-4xl">
       <PageHeader eyebrow="My Practice" eyebrowIcon={Briefcase} title="Your practice, in one place" />
-      <Tabs defaultValue="profile" className="mt-6">
+      <Tabs defaultValue={openHearingId ? "hearings" : "profile"} className="mt-6">
         <TabsList>
           <TabsTrigger value="profile">Profile</TabsTrigger>
           <TabsTrigger value="availability">Availability</TabsTrigger>
@@ -822,7 +837,7 @@ export default function Practice() {
           <AvailabilityTab />
         </TabsContent>
         <TabsContent value="hearings" className="mt-4">
-          <HearingsTab />
+          <HearingsTab initialActiveId={openHearingId} />
         </TabsContent>
         <TabsContent value="performance" className="mt-4">
           <PerformanceTab />

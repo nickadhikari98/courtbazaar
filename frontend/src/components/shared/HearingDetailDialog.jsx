@@ -370,10 +370,28 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
         {fixedPricePending && (
           <div className="border rounded-lg p-4 bg-amber-50 border-amber-200">
             <div className="font-display font-bold text-sm">Waiting for the counsel to respond</div>
+            {hearing.listed_rate != null && (
+              <div className="text-lg font-display font-bold mt-1" data-testid="listed-rate">Listed rate {formatINR(hearing.listed_rate)}</div>
+            )}
             <p className="text-xs text-muted-foreground mt-1">
               This counsel doesn't negotiate fees — once they Accept, the listed rate is locked in
               (you'll be prompted to pay next) or decline it.
             </p>
+          </div>
+        )}
+
+        {/* The targeted counsel's side of a fixed-price offer: the exact
+            amount Accept locks (hearings._attach_listed_rates), since
+            hearing.fee isn't set until then. */}
+        {canAcceptListedRate && !canNegotiate && (
+          <div className="border rounded-lg p-4 bg-accent/5 border-accent/30" data-testid="fixed-price-offer">
+            <div className="font-display font-bold text-sm">Fixed-price request — no negotiation</div>
+            {hearing.listed_rate != null ? (
+              <div className="text-lg font-display font-bold mt-1" data-testid="listed-rate">Your listed rate {formatINR(hearing.listed_rate)}</div>
+            ) : (
+              <p className="text-xs text-amber-700 mt-1">You haven't set your pricing yet — set it in My Practice → Profile before accepting.</p>
+            )}
+            <p className="text-xs text-muted-foreground mt-1">Accept locks this fee in and the client is asked to pay; Reject turns the request down.</p>
           </div>
         )}
 
@@ -551,7 +569,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
       onOpenChange={(v) => !v && setPendingAction(null)}
       busy={busy}
       title="Accept at your listed rate?"
-      description="This agrees to your own listed rate for this court type — no negotiation. The client will be prompted to pay next, and this locks the fee in for good."
+      description={`This agrees to your own listed rate${hearing.listed_rate != null ? ` of ${formatINR(hearing.listed_rate)}` : " for this court type"} — no negotiation. The client will be prompted to pay next, and this locks the fee in for good.`}
       confirmLabel="Accept"
       confirmIcon={CheckCircle2}
       confirmVariant="default"

@@ -112,8 +112,15 @@ export default function NegotiationModule() {
   // locks hearing.commercially_locked/fee directly and never touches that
   // collection, so this page would otherwise show a stale/empty negotiation
   // instead of the real agreed amount.
+  // The counsel is sent to the hearing's detail instead (Accept at listed
+  // rate / Reject live there), not dropped on the dashboard.
   useEffect(() => {
     if (hearing && !canNegotiate) {
+      if (viewerRole === "counsel") {
+        toast.info("This request is at your listed rate — accept or reject it here.");
+        navigate("/practice", { replace: true, state: { openHearingId: hearing.hearing_id } });
+        return;
+      }
       toast.error("This counsel doesn't negotiate fees for this request.");
       navigate(`/dashboard`, { replace: true });
     }
