@@ -467,3 +467,53 @@ async def retry_orphan_refund(db, razorpay_order_id: str, actor: Optional[dict])
             current = await db.payment_transactions.find_one({"razorpay_order_id": razorpay_order_id}, {"_id": 0})
             return {**(current or before)}
     return {**before, **fields}
+
+
+# ---------------------------------------------------------------------------
+# B7: reconciliation totals vs. escrow refunds
+# ---------------------------------------------------------------------------
+#
+# A refund never touches payment_transactions — its payment_status stays
+# "paid" for good (claim_payment_transaction's {"$ne": "paid"} guard). The
+# refund lives on the escrow row for the same razorpay_order_id
+# (escrow.ESCROW_TRANSITIONS), so the reconciliation report has to read it
+# from there, or refunded money is reported as collected.
+
+# Money returned, or on its way back (refund claimed / accepted by the gateway
+# but not yet processed): not collected. refund_failed is deliberately absent
+# — the refund never went through, so the payment is still collected.
+ESCROW_REFUNDED_STATUSES = ("refunded",)
+ESCROW_REFUNDING_STATUSES = ("refund_pending", "refund_processing")
+ESCROW_REFUND_STATUSES = ESCROW_REFUNDED_STATUSES + ESCROW_REFUNDING_STATUSES + ("refund_failed",)
+
+
+async def escrow_status_by_order(db, razorpay_order_ids) -> dict:
+    """{razorpay_order_id: escrow status} for the given orders (one query)."""
+    ids = [i for i in set(razorpay_order_ids) if i]
+    if not ids:
+        return {}
+    return {
+        e["razorpay_order_id"]: e.get("status")
+        async for e in db.escrow_transactions.find(
+            {"razorpay_order_id": {"$in": ids}}, {"_id": 0, "razorpay_order_id": 1, "status": 1})
+    }
+
+
+def collection_state(tx: dict, escrow_status: Optional[str]) -> str:
+    """How a payment_transactions row counts in reconciliation totals — the
+    one rule the admin report's totals, its rows and the CSV export share:
+      "orphaned"  captured but never attached (refunded separately; not revenue)
+      "refunded"  paid, escrow refunded — not collected
+      "refunding" paid, escrow refund_pending/refund_processing — not collected
+      "paid"      paid and still collected (incl. escrow refund_failed)
+      "pending" / "failed"  never collected"""
+    if tx.get("orphaned"):
+        return "orphaned"
+    pstatus = tx.get("payment_status", "pending")
+    if pstatus == "paid":
+        if escrow_status in ESCROW_REFUNDED_STATUSES:
+            return "refunded"
+        if escrow_status in ESCROW_REFUNDING_STATUSES:
+            return "refunding"
+        return "paid"
+    return "pending" if pstatus == "pending" else "failed"

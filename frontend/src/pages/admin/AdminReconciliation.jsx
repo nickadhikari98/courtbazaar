@@ -82,6 +82,23 @@ export default function AdminReconciliation() {
     return <Badge className={`${cls} border-0 font-bold uppercase text-2xs flex items-center gap-1`}><Icon className="w-3 h-3" /> {s}</Badge>;
   };
 
+  // B7: refunded / refund-in-progress payments are left out of the paid
+  // totals (payment_reconciliation.collection_state) — say so on each card.
+  const NotCounted = ({ t, testid }) => (
+    <>
+      {t.refunding > 0 && (
+        <span className="text-muted-foreground" data-testid={`${testid}-refunding`}>
+          {t.refunding} refund in progress ({formatINR(t.refunding_amount)}, not counted)
+        </span>
+      )}
+      {t.refunded > 0 && (
+        <span className="text-muted-foreground" data-testid={`${testid}-refunded`}>
+          {t.refunded} refunded ({formatINR(t.refunded_amount)}, not counted)
+        </span>
+      )}
+    </>
+  );
+
   return (
     <PageContainer>
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
@@ -97,10 +114,11 @@ export default function AdminReconciliation() {
           <CardContent className="p-5">
             <div className="cb-overline">Stripe</div>
             <div className="font-display font-black text-2xl mt-1">{formatINR(data.totals.stripe.paid_amount)}</div>
-            <div className="text-xs font-semibold mt-1 flex gap-2">
+            <div className="text-xs font-semibold mt-1 flex flex-wrap gap-x-2">
               <span className="text-emerald-700">{data.totals.stripe.paid} paid</span>
               <span className="text-amber-700">{data.totals.stripe.pending} pending</span>
               <span className="text-rose-700">{data.totals.stripe.failed} failed</span>
+              <NotCounted t={data.totals.stripe} testid="totals-stripe" />
             </div>
           </CardContent>
         </Card>
@@ -108,7 +126,7 @@ export default function AdminReconciliation() {
           <CardContent className="p-5">
             <div className="cb-overline">Razorpay</div>
             <div className="font-display font-black text-2xl mt-1">{formatINR(data.totals.razorpay.paid_amount)}</div>
-            <div className="text-xs font-semibold mt-1 flex gap-2">
+            <div className="text-xs font-semibold mt-1 flex flex-wrap gap-x-2">
               <span className="text-emerald-700">{data.totals.razorpay.paid} paid</span>
               <span className="text-amber-700">{data.totals.razorpay.pending} pending</span>
               <span className="text-rose-700">{data.totals.razorpay.failed} failed</span>
@@ -117,6 +135,7 @@ export default function AdminReconciliation() {
                   {data.totals.razorpay.orphaned} orphaned ({formatINR(data.totals.razorpay.orphaned_amount)}, not counted)
                 </span>
               )}
+              <NotCounted t={data.totals.razorpay} testid="totals-razorpay" />
             </div>
           </CardContent>
         </Card>
@@ -125,6 +144,11 @@ export default function AdminReconciliation() {
             <div className="cb-overline text-white/60">Combined paid</div>
             <div className="font-display font-black text-3xl text-accent mt-1 tracking-tighter">{formatINR(data.totals.grand_total_paid)}</div>
             <div className="text-xs font-semibold mt-1 text-white/70">{data.totals.transaction_count} transactions</div>
+            {(data.totals.grand_total_refunded > 0 || data.totals.grand_total_refunding > 0) && (
+              <div className="text-xs font-semibold mt-1 text-white/70" data-testid="totals-grand-excluded">
+                Excludes {formatINR(data.totals.grand_total_refunded)} refunded · {formatINR(data.totals.grand_total_refunding)} refund in progress
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -226,7 +250,16 @@ export default function AdminReconciliation() {
                   </TableCell>
                   <TableCell className="font-mono text-xs">{r.order_id}</TableCell>
                   <TableCell className="font-bold">{formatINR(r.amount)}</TableCell>
-                  <TableCell><StatusBadge s={r.payment_status} /></TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <StatusBadge s={r.payment_status} />
+                      {r.refund_status && (
+                        <Badge className={`${escrowStatusClasses(r.refund_status)} border-0 font-bold text-2xs`} data-testid={`recon-refund-${i}`}>
+                          {escrowStatusLabel(r.refund_status)}
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
                   <TableCell className="text-xs">{r.order_payment_status || "—"} {r.mismatch && <span className="text-rose-700 font-bold">⚠ MISMATCH</span>}{r.orphaned && <span className="text-muted-foreground font-bold"> · ORPHANED</span>}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{r.created_at ? new Date(r.created_at).toLocaleString('en-IN') : '—'}</TableCell>
                 </TableRow>

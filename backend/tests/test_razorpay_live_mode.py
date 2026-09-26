@@ -1224,9 +1224,10 @@ def test_reconciliation_orphans_excluded_from_paid_totals_and_retryable():
 
             csv_resp = await server.admin_reconciliation_csv(user=admin)
             lines = csv_resp.body.decode().splitlines()
-            assert lines[0].endswith(",orphaned,orphan_refund_status")
-            assert [ln for ln in lines if ln.startswith(order_id + ",")][0].endswith(",True,failed")
-            assert [ln for ln in lines if ln.startswith(paid_order + ",")][0].endswith(",False,")
+            # B7 appended refund_status + counted_as_paid after the orphan columns.
+            assert lines[0].endswith(",orphaned,orphan_refund_status,refund_status,counted_as_paid")
+            assert [ln for ln in lines if ln.startswith(order_id + ",")][0].endswith(",True,failed,,False")
+            assert [ln for ln in lines if ln.startswith(paid_order + ",")][0].endswith(",False,,,True")
         finally:
             await _cleanup_bugc(db, order_ids=[order_id, paid_order])
     _run_with_server(body())
