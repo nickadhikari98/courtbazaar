@@ -2828,9 +2828,12 @@ async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)
     # refunded — reusing that same set rather than guessing separately.
     hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
     result = await hearings_svc.cancel_hearing_request(db, hearing_id, user)
+    # Admin Cancel & Refund (B6): an admin cancel isn't the requester's doing,
+    # and the requester is then a counter-party who must hear about it too.
+    by_admin = user.get("role") == "admin"
+    refund_status = result.get("refund_status")  # set only when escrow was refunded/attempted
     recipient_id = hearing.get("proxy_counsel_user_id") or hearing.get("target_advocate_id")
     if recipient_id:
-        refund_status = result.get("refund_status")  # set only when escrow was refunded/attempted
         refund_note = ""
         if refund_status == "refunded":
             refund_note = " Any payment held has been refunded."
@@ -2838,7 +2841,19 @@ async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)
             refund_note = " The payment held is being refunded to the requester."
         await _notify_hearing_event(
             recipient_id, "Hearing cancelled",
-            f"The hearing at {hearing['court_id']} was cancelled by the requester." + refund_note,
+            f"The hearing at {hearing['court_id']} was cancelled by "
+            f"{'CourtBazaar support' if by_admin else 'the requester'}." + refund_note,
+            hearing_id,
+        )
+    if by_admin and hearing.get("requesting_user_id"):
+        refund_note = ""
+        if refund_status == "refunded":
+            refund_note = " Your payment has been refunded to your original payment method."
+        elif refund_status:
+            refund_note = " Your refund has been initiated and will reach your original payment method shortly."
+        await _notify_hearing_event(
+            hearing["requesting_user_id"], "Hearing cancelled",
+            f"Your hearing at {hearing['court_id']} was cancelled by CourtBazaar support." + refund_note,
             hearing_id,
         )
     return result
