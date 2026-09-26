@@ -1,12 +1,13 @@
 """Order Management Agent — orchestration (order_management_agent.py).
 Exercises the degrade-gracefully paths (no API key / timeout / model error)
 and the tool-calling loop against a fake client, so these tests need no real
-Gemini API key or network access — same "best-effort, never propagate"
+Groq API key or network access — same "best-effort, never propagate"
 convention as hearings.check_pending_order_sheets/auto_release_stale_
 verifications. The tool-dispatch test and the "hearing not found" test run
 against a real local MongoDB (same conventions as the other test files).
 """
 import asyncio
+import json
 import os
 import sys
 import uuid
@@ -28,25 +29,55 @@ def _user(prefix):
     return {"user_id": f"test_oma_{prefix}_{uuid.uuid4().hex[:10]}"}
 
 
+# Fakes of the Groq (OpenAI-compatible) chat-completions API the agent calls
+# — client.chat.completions.create(...) -> response.choices[0].message, with
+# tool calls as message.tool_calls[i].function.{name, arguments (JSON str)}.
+# The agent was switched from Gemini to Groq (see order_management_agent.py's
+# provider note); these replace the earlier Gemini-SDK fakes.
 class _FakeCall:
     def __init__(self, name, args):
         self.name = name
         self.args = args
 
 
+class _FakeFunction:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _FakeToolCall:
+    def __init__(self, index, call):
+        self.id = f"call_{index}"
+        self.type = "function"
+        self.function = _FakeFunction(call.name, json.dumps(call.args))
+
+
+class _FakeMessage:
+    def __init__(self, function_calls, text):
+        self.content = text
+        self.tool_calls = [_FakeToolCall(i, c) for i, c in enumerate(function_calls)] or None
+
+
+class _FakeChoice:
+    def __init__(self, message):
+        self.message = message
+
+
 class _FakeResponse:
     def __init__(self, function_calls=None, text=None):
-        self.function_calls = function_calls or []
-        self.text = text
+        self.choices = [_FakeChoice(_FakeMessage(function_calls or [], text))]
 
 
-class _FakeModels:
+class _FakeCompletions:
     def __init__(self, responses=None, delay=0, error=None):
         self._responses = list(responses or [])
         self._delay = delay
         self._error = error
+        self.calls = []
 
-    async def generate_content(self, model, contents, config):
+    async def create(self, model, messages, tools, tool_choice):
+        self.calls.append({"model": model, "messages": list(messages), "tools": tools, "tool_choice": tool_choice})
         if self._delay:
             await asyncio.sleep(self._delay)
         if self._error:
@@ -54,37 +85,37 @@ class _FakeModels:
         return self._responses.pop(0)
 
 
-class _FakeAio:
+class _FakeChat:
     def __init__(self, **kwargs):
-        self.models = _FakeModels(**kwargs)
+        self.completions = _FakeCompletions(**kwargs)
 
 
 class _FakeClient:
     def __init__(self, **kwargs):
-        self.aio = _FakeAio(**kwargs)
+        self.chat = _FakeChat(**kwargs)
 
 
 def test_get_client_returns_none_without_api_key():
-    original = os.environ.pop("GEMINI_API_KEY", None)
+    original = os.environ.pop("GROQ_API_KEY", None)
     try:
         assert agent._get_client() is None
     finally:
         if original is not None:
-            os.environ["GEMINI_API_KEY"] = original
+            os.environ["GROQ_API_KEY"] = original
 
 
 def test_summarize_all_without_api_key_degrades_gracefully():
     async def body():
         db = _db()
-        original = os.environ.pop("GEMINI_API_KEY", None)
+        original = os.environ.pop("GROQ_API_KEY", None)
         try:
             result = await agent.summarize_all(db)
             assert result["available"] is False
-            assert result["reason"] == "GEMINI_API_KEY not configured"
+            assert result["reason"] == "GROQ_API_KEY not configured"
             assert "hearings" in result and "escalated_hearings" in result and "open_flags" in result
         finally:
             if original is not None:
-                os.environ["GEMINI_API_KEY"] = original
+                os.environ["GROQ_API_KEY"] = original
     asyncio.run(body())
 
 
@@ -260,15 +291,17 @@ def test_execute_tool_list_hearings_with_null_status_arg():
 
 
 def test_tool_declarations_build_without_api_key():
-    original = os.environ.pop("GEMINI_API_KEY", None)
+    original = os.environ.pop("GROQ_API_KEY", None)
     try:
         declarations = agent._tool_declarations()
-        assert len(declarations) == 1
-        names = {fd.name for fd in declarations[0].function_declarations}
-        assert names == {
-            "list_hearings", "list_escalated_hearings", "get_hearing_detail",
+        # OpenAI/Groq tool schema: one {"type": "function", "function": {...}} per tool.
+        assert all(d["type"] == "function" and d["function"]["parameters"]["type"] == "object" for d in declarations)
+        names = [d["function"]["name"] for d in declarations]
+        assert len(names) == len(set(names))
+        assert set(names) == {
+            "get_attention_summary", "list_hearings", "list_escalated_hearings", "get_hearing_detail",
             "get_escrow_status", "get_matching_session", "flag_for_admin_review",
         }
     finally:
         if original is not None:
-            os.environ["GEMINI_API_KEY"] = original
+            os.environ["GROQ_API_KEY"] = original

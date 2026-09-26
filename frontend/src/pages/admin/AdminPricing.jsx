@@ -63,7 +63,16 @@ export default function AdminPricing() {
               const isEdit = edit[s.service_id];
               return (
                 <div key={s.service_id} className="p-5 flex flex-wrap items-center gap-4" data-testid={`pricing-row-${s.service_id}`}>
-                  <div className="flex-1 min-w-0">
+                  {/* basis-full on mobile: flex-1's basis:0% let this shrink
+                      down to almost nothing instead of wrapping the row (a
+                      flex-basis:0% item can always "fit" by shrinking, so
+                      flex-wrap rarely kicks in for the other items first) — a
+                      multi-word service name then broke across several
+                      narrow lines with the price/commission blocks next to it
+                      centered (items-center) right on top of the middle
+                      lines. Taking the full row on mobile removes the
+                      competition for space entirely. */}
+                  <div className="flex-1 min-w-0 basis-full sm:basis-auto">
                     <div className="font-display font-bold">{s.name}</div>
                     <div className="text-xs cb-overline">{s.category}</div>
                   </div>

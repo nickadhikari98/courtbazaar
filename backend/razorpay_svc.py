@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
+RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
 
 
 def is_enabled() -> bool:
@@ -76,6 +77,74 @@ def verify_payment(razorpay_order_id: str, razorpay_payment_id: str, razorpay_si
     except Exception as e:
         logger.error(f"Razorpay verify failed: {e}")
         return False
+
+
+def refund_payment(razorpay_payment_id: str, amount_inr: Optional[float] = None, notes: dict = None) -> dict:
+    """Issue a refund for a captured payment. amount_inr=None means a full
+    refund. Fail-soft mirrors create_order: a simulated payment id (or no
+    keys configured) returns a fabricated refund record with no network
+    call, so callers never need to branch on is_enabled() themselves."""
+    notes = notes or {}
+    if not is_enabled() or razorpay_payment_id.startswith("pay_sim_"):
+        return {
+            "razorpay_refund_id": f"rfnd_sim_{uuid.uuid4().hex[:14]}",
+            "status": "processed",
+            "simulated": True,
+        }
+    try:
+        c = _client()
+        payload = {"notes": notes}
+        if amount_inr is not None:
+            payload["amount"] = int(round(amount_inr * 100))
+        rfnd = c.payment.refund(razorpay_payment_id, payload)
+        return {
+            "razorpay_refund_id": rfnd["id"],
+            "status": rfnd.get("status", "processed"),
+            "simulated": False,
+        }
+    except Exception as e:
+        logger.error(f"Razorpay refund failed: {e}")
+        raise
+
+
+def fetch_refunds(razorpay_payment_id: str) -> list:
+    """Refunds Razorpay already holds for a payment, as a list of
+    {"razorpay_refund_id", "amount_inr", "status"} — used before RETRYING a
+    refund, so a refund that actually went through (e.g. the first call
+    timed out after Razorpay created it) is detected instead of requested
+    again. Razorpay's refund API has no idempotency key, so this lookup is
+    the client-side guard. Simulated payments / no keys -> [] (no network).
+    Raises on a gateway error so callers never mistake "couldn't check" for
+    "no refunds exist"."""
+    if not is_enabled() or razorpay_payment_id.startswith("pay_sim_"):
+        return []
+    c = _client()
+    resp = c.payment.fetch_multiple_refund(razorpay_payment_id)
+    items = resp.get("items", []) if isinstance(resp, dict) else []
+    return [
+        {"razorpay_refund_id": r.get("id"), "amount_inr": (r.get("amount") or 0) / 100.0, "status": r.get("status")}
+        for r in items
+    ]
+
+
+def fetch_refund(razorpay_payment_id: str, razorpay_refund_id: str) -> Optional[dict]:
+    """Read-only lookup of ONE refund's current state — GET
+    /payments/{payment_id}/refunds/{refund_id}, scoped to the payment so a
+    refund id belonging to another payment is a gateway error, never a
+    match. Returns {"razorpay_refund_id", "payment_id", "amount_inr",
+    "status", "notes"}. Used by escrow.sync_refund_status to recover a
+    missed refund.processed/failed webhook; never creates a refund.
+    Simulated payments / no keys -> None (no network). Raises on a gateway
+    error, same contract as fetch_refunds."""
+    if not is_enabled() or razorpay_payment_id.startswith("pay_sim_"):
+        return None
+    c = _client()
+    r = c.payment.fetch_refund_id(razorpay_payment_id, razorpay_refund_id)
+    return {
+        "razorpay_refund_id": r.get("id"), "payment_id": r.get("payment_id"),
+        "amount_inr": (r.get("amount") or 0) / 100.0, "status": r.get("status"),
+        "notes": r.get("notes") if isinstance(r.get("notes"), dict) else {},
+    }
 
 
 def verify_webhook(body: bytes, signature: str, secret: str) -> bool:

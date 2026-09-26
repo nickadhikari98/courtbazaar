@@ -55,6 +55,7 @@ from fastapi import HTTPException
 from pymongo import ReturnDocument
 
 from workflow import StateMachine, IllegalTransition
+from file_meta import detect_page_count
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,52 @@ HEARING_TRANSITIONS = {
 # endpoint reuses this exact set to decide notification copy, rather than
 # guessing separately whether a refund happened.
 CANCEL_REQUIRES_REFUND = {"broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"}
+
+# Truly closed — no further requester mutations (same set as set_negotiated_fee's
+# guard and the frontend's CLOSED_HEARING_STATUSES). "disputed" is deliberately
+# NOT here: it's still open, under admin review.
+CLOSED_HEARING_STATUSES = ("cancelled", "rejected", "expired")
+CASE_DETAILS_CLOSED_MESSAGE = "This request is no longer active and case details cannot be shared."
+
+# The hearing has already taken place (conducted, then order-sheet
+# verification, payout, rating), so the case brief the counsel worked from
+# is final — no further requester edits. Separate from CLOSED_HEARING_STATUSES
+# on purpose: those states keep their own meaning/message. "disputed" is not
+# here, for the same reason it isn't closed (still under admin review).
+CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES = ("hearing_completed", "verification_pending", "verified", "completed", "rated")
+CASE_DETAILS_LOCKED_MESSAGE = "This hearing has already taken place, so its case details can no longer be changed."
+
+# Founder rule (B6 final): after a successful payment the requester may cancel
+# (and be refunded) only within this window, measured from
+# hearing.payment_confirmed_at (set by mark_payment_confirmed). After it, only
+# an admin can cancel + refund. Mirrored by frontend
+# lib/hearingLifecycle.js's CLIENT_CANCEL_WINDOW_MS.
+CLIENT_CANCEL_WINDOW = timedelta(hours=1)
+CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE = (
+    "Cancellation is available only within 1 hour of payment. "
+    "Please contact admin for cancellation after this period."
+)
+
+
+def _utcnow() -> datetime:
+    """Server clock for the client cancellation window — a function (not an
+    inline datetime.now) so tests can freeze it; never a client-sent time."""
+    return datetime.now(timezone.utc)
+
+
+def _within_client_cancel_window(payment_confirmed_at: Optional[str], now: datetime) -> bool:
+    """payment_confirmed_at + 1h > now — exactly 1:00:00 after payment is
+    already outside. A missing/unparseable timestamp fails closed (admin
+    only): the window can't be measured, so it's never assumed open."""
+    if not payment_confirmed_at:
+        return False
+    try:
+        confirmed = datetime.fromisoformat(payment_confirmed_at)
+    except (TypeError, ValueError):
+        return False
+    if confirmed.tzinfo is None:
+        confirmed = confirmed.replace(tzinfo=timezone.utc)
+    return confirmed + CLIENT_CANCEL_WINDOW > now
 
 # service_id is nullable on escrow_transactions in general, but hearings
 # aren't a db.services catalog row — this constant keeps every hearing
@@ -290,6 +337,13 @@ async def _transition(db, sm: StateMachine, entity: dict, from_status: str, acti
     query: Dict[str, Any] = {"hearing_id": entity["hearing_id"], "status": from_status}
     if extra_guard:
         query.update(extra_guard)
+    if from_status == "payment_pending" and action in ("cancel", "reject"):
+        # A captured payment has already claimed this hearing (see
+        # payment_reconciliation._claim_hearing_for_payment) and is mid-way
+        # to escrow + broadcast — leaving payment_pending now would orphan
+        # that payment. Folded into the same atomic write; the loser gets
+        # the standard 409 below.
+        query["payment_claim_order_id"] = None
     now = datetime.now(timezone.utc).isoformat()
     updated = await db.hearing_requests.find_one_and_update(
         query, {"$set": {"status": to_status, "updated_at": now}}, projection={"_id": 0},
@@ -321,6 +375,8 @@ async def list_hearing_requests(db, user: dict) -> List[dict]:
         clauses.append({"target_advocate_id": user["user_id"], "status": {"$in": ["requested", "payment_pending"]}})
     hearings = await db.hearing_requests.find({"$or": clauses}, {"_id": 0}).sort("created_at", -1).to_list(200)
     await _attach_negotiation_action_flags(db, hearings, user["user_id"])
+    await _attach_decline_flags(db, hearings, user["user_id"])
+    await _attach_listed_rates(db, hearings, user["user_id"])
     return hearings
 
 
@@ -355,7 +411,8 @@ async def _attach_negotiation_action_flags(db, hearings: List[dict], user_id: st
     pending = [h for h in hearings
                if h.get("target_advocate_id")
                and not h.get("commercially_locked")
-               and h.get("status") in ("requested", "payment_pending")]
+               and h.get("status") in ("requested", "payment_pending")
+               and h.get("negotiation_enabled", True)]
     if not pending:
         return
     neg_by_hearing = {
@@ -375,7 +432,53 @@ async def get_hearing_request(db, hearing_id: str, user: dict) -> dict:
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
     _check_visible(hearing, user)
+    await _attach_decline_flags(db, [hearing], user["user_id"])
+    await _attach_listed_rates(db, [hearing], user["user_id"])
     return hearing
+
+
+async def _notified_counsel_ids(db, hearings: List[dict]) -> Dict[str, set]:
+    """hearing_id -> every counsel user_id the matching waterfall notified,
+    across ALL tiers: the hearing's own notified_counsel_ids only holds the
+    current tier (notify_tier overwrites it), earlier tiers live in
+    counsel_matching_log.tiers[]. The existing record of "this request was
+    offered to you" — decline authorization reads it, doesn't add a new one."""
+    notified = {h["hearing_id"]: set(h.get("notified_counsel_ids") or []) for h in hearings}
+    if notified:
+        async for session in db.counsel_matching_log.find(
+            {"hearing_id": {"$in": list(notified)}}, {"_id": 0, "hearing_id": 1, "tiers": 1},
+        ):
+            for tier in session.get("tiers") or []:
+                notified[session["hearing_id"]].update(tier.get("notified_counsel_ids") or [])
+    return notified
+
+
+async def _attach_decline_flags(db, hearings: List[dict], user_id: str) -> None:
+    """Sets `viewer_can_decline` — whether decline_hearing_request would
+    accept this viewer's decline — so the UI offers Decline only where the
+    backend allows it (the open-requests pool shows every untargeted
+    broadcast request, not just the ones offered to this counsel)."""
+    candidates = [h for h in hearings if h.get("status") == "broadcast" and not h.get("target_advocate_id")]
+    notified = await _notified_counsel_ids(db, candidates)
+    for h in hearings:
+        h["viewer_can_decline"] = user_id in notified.get(h["hearing_id"], set())
+
+
+async def _attach_listed_rates(db, hearings: List[dict], user_id: str) -> None:
+    """Sets `listed_rate` on a fixed-price (negotiation_enabled false),
+    not-yet-accepted targeted hearing, for its two participants only — the
+    amount accept_at_listed_rate would lock (same _listed_rate_for_hearing),
+    so the counsel sees the price they're accepting and the requester the
+    price they'll pay. hearing.fee isn't that number until Accept sets it.
+    None when the counsel hasn't priced anything yet. Display only."""
+    for h in hearings:
+        if (h.get("target_advocate_id") and h.get("negotiation_enabled") is False
+                and not h.get("commercially_locked") and h.get("status") in ("requested", "payment_pending")
+                and user_id in (h["target_advocate_id"], h.get("requesting_user_id"))):
+            try:
+                h["listed_rate"] = await _listed_rate_for_hearing(db, h)
+            except HTTPException:
+                h["listed_rate"] = None
 
 
 def _check_visible(hearing: dict, user: dict) -> None:
@@ -597,6 +700,8 @@ async def decline_hearing_request(db, hearing_id: str, user: dict) -> dict:
     """Personal, not global — hides this request from this proxy counsel's
     own open-requests view without affecting anyone else's (broadcast
     requests only; a targeted request uses reject_hearing_request instead).
+    Only a counsel the request was actually offered to (notified in some
+    matching tier) may decline it — anyone else gets 403.
 
     M14: after recording the decline, checks whether every counsel notified
     in the current tier has now declined — if so, advances/escalates
@@ -604,11 +709,28 @@ async def decline_hearing_request(db, hearing_id: str, user: dict) -> dict:
     same pattern as mark_payment_confirmed's M11 run_matching call: a
     failure here must never undo the decline that was just durably
     recorded, so it's caught and logged, never re-raised."""
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    # A targeted request has exactly one recipient, who rejects it instead.
+    if hearing.get("target_advocate_id"):
+        if hearing["target_advocate_id"] != user["user_id"]:
+            raise HTTPException(403, "This request wasn't sent to you")
+        raise HTTPException(400, "This request was sent to you directly — use Reject instead")
+    # Otherwise only a counsel this request was actually offered to (notified
+    # in any matching tier) may decline it — checked before status so an
+    # unrelated counsel learns nothing about the request's state.
+    if user["user_id"] not in (await _notified_counsel_ids(db, [hearing])).get(hearing_id, set()):
+        raise HTTPException(403, "This request wasn't sent to you")
+    # Atomic on status: a request accepted/cancelled since the read above is
+    # refused rather than silently recording a decline. Repeat declines are
+    # harmless ($addToSet).
     result = await db.hearing_requests.update_one(
-        {"hearing_id": hearing_id}, {"$addToSet": {"declined_by": user["user_id"]}},
+        {"hearing_id": hearing_id, "status": "broadcast"},
+        {"$addToSet": {"declined_by": user["user_id"]}},
     )
     if result.matched_count == 0:
-        raise HTTPException(404, "Hearing request not found")
+        raise HTTPException(400, "This request is no longer open")
 
     import counsel_matching
     from audit_log import log_audit
@@ -621,34 +743,81 @@ async def decline_hearing_request(db, hearing_id: str, user: dict) -> dict:
 
 
 async def cancel_hearing_request(db, hearing_id: str, user: dict) -> dict:
+    """Founder rule (B6 final):
+      - Before payment ("requested"/"payment_pending") a commercially locked
+        hearing can't be cancelled — the agreed fee is what the requester
+        must now pay. Unchanged.
+      - After payment (a CANCEL_REQUIRES_REFUND status, escrow held) the
+        requester may cancel only while payment_confirmed_at +
+        CLIENT_CANCEL_WINDOW > now (server clock); an admin may cancel at any
+        time. Either way the refund goes through the existing escrow.refund().
+
+    Race safety: _transition's compare-and-swap is on the exact status read
+    here, so a paid-state cancel can't land on a hearing that moved in the
+    meantime (409), and a pre-payment cancel keeps its commercially_locked +
+    payment_claim_order_id guards (see _transition). A requester's paid-state
+    cancel also folds the window into that same atomic write (via the
+    payment_confirmed_at guard), so the window can't expire between the check
+    and the write. Only the CAS winner ever reaches escrow.refund(), which is
+    itself idempotent."""
     import escrow as escrow_svc
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
-    if hearing["requesting_user_id"] != user["user_id"] and user.get("role") != "admin":
+    is_admin = user.get("role") == "admin"
+    if hearing["requesting_user_id"] != user["user_id"] and not is_admin:
         raise HTTPException(403, "Forbidden")
-    if hearing.get("commercially_locked"):
+    # Already cancelled/closed: say so, rather than the pre-payment lock
+    # message below (a locked hearing stays commercially_locked after cancel).
+    if (hearing["status"], "cancel") not in HEARING_TRANSITIONS:
+        raise HTTPException(400, "This request can no longer be cancelled")
+    paid = hearing["status"] in CANCEL_REQUIRES_REFUND
+    if hearing.get("commercially_locked") and not paid:
         raise HTTPException(400, "A fee has been agreed through negotiation — this request is "
                                   "commercially locked and can no longer be cancelled. Proceed to payment.")
+    extra_guard: Optional[Dict[str, Any]] = None if paid else {"commercially_locked": {"$ne": True}}
+    if paid and not is_admin:
+        now = _utcnow()
+        if not _within_client_cancel_window(hearing.get("payment_confirmed_at"), now):
+            raise HTTPException(400, CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE)
+        # Same boundary, re-checked atomically in the write itself.
+        # payment_confirmed_at is always datetime.isoformat() UTC, which sorts
+        # chronologically as a string; a null never matches $gt.
+        cutoff = (now - CLIENT_CANCEL_WINDOW).isoformat(timespec="microseconds")
+        extra_guard = {"payment_confirmed_at": {"$gt": cutoff}}
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
-        await _transition(db, sm, hearing, hearing["status"], "cancel", user,
-                           extra_guard={"commercially_locked": {"$ne": True}})
+        await _transition(db, sm, hearing, hearing["status"], "cancel", user, extra_guard=extra_guard)
     except IllegalTransition:
         raise HTTPException(400, "This request can no longer be cancelled")
-    if hearing["status"] in CANCEL_REQUIRES_REFUND:
-        await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason="Hearing cancelled after payment was held")
-        await _push_activity(db, hearing_id, "Payment refunded — hearing cancelled after payment was held", user["user_id"])
+    if paid:
+        reason = "Hearing cancelled by admin after payment was held" if is_admin \
+            else "Hearing cancelled after payment was held"
+        refunded = await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason=reason)
+        refund_status = refunded.get("status")
+        await _push_activity(db, hearing_id, _refund_activity_note(refund_status, "hearing cancelled after payment was held"), user["user_id"])
+        return {"ok": True, "refund_status": refund_status}
     return {"ok": True}
+
+
+def _refund_activity_note(refund_status: Optional[str], why: str) -> str:
+    """Activity text that only says "refunded" when the refund actually
+    completed (see escrow.refund's outcomes)."""
+    if refund_status == "refunded":
+        return f"Payment refunded — {why}"
+    if refund_status == "refund_processing":
+        return f"Refund initiated, awaiting bank processing — {why}"
+    return f"Refund could not be completed automatically and will be retried by CourtBazaar — {why}"
 
 
 async def end_negotiation(db, hearing_id: str, user: dict) -> dict:
     """Customer-only close-out for a targeted negotiation that isn't working
-    out. Mechanically identical to cancel_hearing_request (same 'cancel'
-    transition/commercially_locked guard — never reaches an escrow-refund
-    branch because a hearing can only leave "requested" once
-    commercially_locked, see set_negotiated_fee, and that's exactly what's
-    guarded against here) — the only difference is the audit-note/
+    out. Mechanically identical to cancel_hearing_request's pre-payment path
+    (same 'cancel' transition/commercially_locked guard). Unlike
+    cancel_hearing_request it refuses a locked hearing even after payment,
+    so it never reaches an escrow-refund branch: a hearing can only leave
+    "requested" once commercially_locked, see set_negotiated_fee, and that's
+    exactly what's guarded against here. The only other difference is the audit-note/
     notification wording (see server.py's endpoint) and who may call it.
 
     Deliberately does NOT retarget this hearing_id at a new advocate: this
@@ -719,6 +888,7 @@ async def add_document(db, put_object_fn, validate_upload_fn, hearing_id: str, u
         "original_filename": filename,
         "content_type": content_type,
         "size": result.get("size", len(data)),
+        "page_count": detect_page_count(filename, content_type, data),
         "storage_path": result["path"],
         "is_deleted": False,
         "uploaded_by": user["user_id"],
@@ -1006,7 +1176,9 @@ async def submit_case_details(db, hearing_id: str, user: dict, details: dict) ->
     is ever visible to a counsel before money is held in escrow — the whole
     point of the reorder. Not write-once: a requester can call this again to
     correct a typo; `details_submitted` only flips the frontend from "fill
-    this in" to "here's what was shared", it isn't an access lock."""
+    this in" to "here's what was shared", it isn't an access lock. Refused on
+    a closed (cancelled/rejected/expired) hearing — B6 — and once the hearing
+    has taken place (CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES)."""
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
@@ -1014,6 +1186,10 @@ async def submit_case_details(db, hearing_id: str, user: dict, details: dict) ->
         raise HTTPException(403, "Only the requester can share case details")
     if not hearing.get("payment_confirmed_at"):
         raise HTTPException(400, "Case details can be shared once payment is confirmed")
+    if hearing["status"] in CLOSED_HEARING_STATUSES:
+        raise HTTPException(400, CASE_DETAILS_CLOSED_MESSAGE)
+    if hearing["status"] in CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES:
+        raise HTTPException(400, CASE_DETAILS_LOCKED_MESSAGE)
 
     common_fields = ("case_title", "case_number", "case_type", "case_stage", "hearing_time", "priority")
     service_specific_fields = ("work_required", "work_required_notes")
@@ -1028,7 +1204,18 @@ async def submit_case_details(db, hearing_id: str, user: dict, details: dict) ->
         "details_submitted": True,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$set": update})
+    # Status guards repeated in the write itself, so a cancel (or the hearing
+    # being marked conducted) landing between the read above and this update
+    # can't be followed by a brief.
+    result = await db.hearing_requests.update_one(
+        {"hearing_id": hearing_id,
+         "status": {"$nin": list(CLOSED_HEARING_STATUSES) + list(CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES)}},
+        {"$set": update},
+    )
+    if result.matched_count == 0:
+        current = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0, "status": 1})
+        locked = bool(current) and current.get("status") in CASE_DETAILS_LOCKED_AFTER_HEARING_STATUSES
+        raise HTTPException(400, CASE_DETAILS_LOCKED_MESSAGE if locked else CASE_DETAILS_CLOSED_MESSAGE)
     await _push_activity(db, hearing_id, "Case details shared with the counsel", user["user_id"])
     updated = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
     return updated
@@ -1096,7 +1283,8 @@ async def resolve_dispute(db, hearing_id: str, user: dict, action: str, remark: 
     except IllegalTransition:
         raise HTTPException(400, "This hearing isn't currently disputed")
     if sm_action == "refund_and_cancel":
-        await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason=remark or "Dispute resolved with refund")
+        refunded = await escrow_svc.refund(db, context_type="hearing", context_id=hearing_id, reason=remark or "Dispute resolved with refund")
+        return {"ok": True, "status": new_status, "refund_status": refunded.get("status")}
     elif sm_action == "resubmit":
         # Back at verification_pending for another look — restart the 3-day
         # auto-release clock (see auto_release_stale_verifications).

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { jsPDF } from "jspdf";
 import { toast } from "sonner";
@@ -25,7 +25,11 @@ import DocumentPreviewDialog from "@/components/shared/DocumentPreviewDialog";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import EscrowStagePanel from "@/components/negotiation/EscrowStagePanel";
 import ProxyCounselCaseDetailsForm from "@/components/proxyCounsel/ProxyCounselCaseDetailsForm";
-import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions } from "@/lib/hearingLifecycle";
+import useClientCancelWindowExpiry from "@/hooks/useClientCancelWindowExpiry";
+import {
+  HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions, cancelResultMessage,
+  CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE, isCaseDetailsLockedAfterHearing,
+} from "@/lib/hearingLifecycle";
 
 /* Shared between the advocate side (HireProxyCounsel.jsx) and the proxy
    counsel side (Practice.jsx's Hearings tab) — the same dialog, with
@@ -66,6 +70,18 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   };
   useEffect(() => { if (open) load(); }, [open, hearingId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Re-renders when the 1-hour client cancel window closes while this dialog
+  // is open, so Cancel drops and the expiry message shows without a refresh.
+  const expiryHearings = useMemo(() => (hearing ? [hearing] : null), [hearing]);
+  const cancelWindowNow = useClientCancelWindowExpiry(expiryHearings, user);
+  // Window closed while the cancel confirm was open (and no cancel in flight).
+  useEffect(() => {
+    if (pendingAction === "cancel" && !busy && hearing && !getHearingPermissions(hearing, user).canCancel) {
+      setPendingAction(null);
+      toast.info(CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE);
+    }
+  }, [cancelWindowNow]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!hearing) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -86,7 +102,8 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
   const {
     isRequester, isAssignedProxyCounsel, canAccept, canDecline, canReject, canAcceptListedRate,
     negotiationRequired, canNegotiate, negotiationAgreed, negotiationPending, fixedPricePending,
-    canPay, canCancel, canMarkConducted, canRate, isEscrowParticipant, viewerRole,
+    canPay, canCancel, cancelWindowExpired, canShareCaseDetails, canMarkConducted, canRate, isEscrowParticipant, viewerRole,
+    isClosed,
   } = getHearingPermissions(hearing, user);
 
   const run = async (fn) => {
@@ -300,11 +317,19 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
               </div>
             </div>
           </div>
-        ) : isRequester && hearing.payment_confirmed_at ? (
-          <ProxyCounselCaseDetailsForm onSubmit={submitCaseDetails} submitting={submittingDetails} />
+        ) : canShareCaseDetails ? (
+          <ProxyCounselCaseDetailsForm
+            onSubmit={submitCaseDetails}
+            submitting={submittingDetails}
+            initialPriority={hearing.request_details?.common?.priority}
+          />
         ) : (
           <div className="text-sm border rounded-lg p-3 bg-secondary/30 text-muted-foreground italic">
-            {hearing.payment_confirmed_at ? "Waiting for the client to share case details." : "Case details will be shared once payment is confirmed."}
+            {isClosed
+              ? "Case details were not shared before this request was closed."
+              : isCaseDetailsLockedAfterHearing(hearing)
+                ? "Case details were not shared before this hearing took place."
+                : hearing.payment_confirmed_at ? "Waiting for the client to share case details." : "Case details will be shared once payment is confirmed."}
           </div>
         )}
 
@@ -347,10 +372,28 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
         {fixedPricePending && (
           <div className="border rounded-lg p-4 bg-amber-50 border-amber-200">
             <div className="font-display font-bold text-sm">Waiting for the counsel to respond</div>
+            {hearing.listed_rate != null && (
+              <div className="text-lg font-display font-bold mt-1" data-testid="listed-rate">Listed rate {formatINR(hearing.listed_rate)}</div>
+            )}
             <p className="text-xs text-muted-foreground mt-1">
               This counsel doesn't negotiate fees — once they Accept, the listed rate is locked in
               (you'll be prompted to pay next) or decline it.
             </p>
+          </div>
+        )}
+
+        {/* The targeted counsel's side of a fixed-price offer: the exact
+            amount Accept locks (hearings._attach_listed_rates), since
+            hearing.fee isn't set until then. */}
+        {canAcceptListedRate && !canNegotiate && (
+          <div className="border rounded-lg p-4 bg-accent/5 border-accent/30" data-testid="fixed-price-offer">
+            <div className="font-display font-bold text-sm">Fixed-price request — no negotiation</div>
+            {hearing.listed_rate != null ? (
+              <div className="text-lg font-display font-bold mt-1" data-testid="listed-rate">Your listed rate {formatINR(hearing.listed_rate)}</div>
+            ) : (
+              <p className="text-xs text-amber-700 mt-1">You haven't set your pricing yet — set it in My Practice → Profile before accepting.</p>
+            )}
+            <p className="text-xs text-muted-foreground mt-1">Accept locks this fee in and the client is asked to pay; Reject turns the request down.</p>
           </div>
         )}
 
@@ -509,6 +552,11 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
               <Ban className="w-4 h-4 mr-1.5" /> Cancel Request
             </Button>
           )}
+          {cancelWindowExpired && (
+            <p className="text-xs text-muted-foreground basis-full" data-testid="cancel-window-expired">
+              {CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE}
+            </p>
+          )}
         </div>
       </DialogContent>
     </Dialog>
@@ -523,7 +571,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
       onOpenChange={(v) => !v && setPendingAction(null)}
       busy={busy}
       title="Accept at your listed rate?"
-      description="This agrees to your own listed rate for this court type — no negotiation. The client will be prompted to pay next, and this locks the fee in for good."
+      description={`This agrees to your own listed rate${hearing.listed_rate != null ? ` of ${formatINR(hearing.listed_rate)}` : " for this court type"} — no negotiation. The client will be prompted to pay next, and this locks the fee in for good.`}
       confirmLabel="Accept"
       confirmIcon={CheckCircle2}
       confirmVariant="default"
@@ -556,7 +604,10 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
       description="This permanently cancels the request. If payment has already been held, it will be refunded automatically. This can't be undone."
       confirmLabel="Cancel Request"
       confirmIcon={Ban}
-      onConfirm={() => run(() => cancelHearingRequest(hearingId)).then(() => setPendingAction(null))}
+      onConfirm={() => run(async () => {
+        const { tone, text } = cancelResultMessage(await cancelHearingRequest(hearingId));
+        (tone === "warning" ? toast.warning : toast.success)(text);
+      }).then(() => setPendingAction(null))}
     />
     </>
   );

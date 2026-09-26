@@ -177,18 +177,28 @@ export default function FirmManagement() {
               const Icon = roleIcons[m.role] || Users;
               const initials = initialsOf(m.name || "U");
               return (
-                <div key={m.user_id} className="flex items-center gap-4 p-3 hover:bg-secondary rounded-lg" data-testid={`firm-member-${m.user_id}`}>
-                  <Avatar className="w-10 h-10"><AvatarFallback className="bg-primary text-white text-xs">{initials}</AvatarFallback></Avatar>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-display font-bold">{m.name}</div>
-                    <div className="text-xs text-muted-foreground">{m.email}</div>
+                <div key={m.user_id} className="flex flex-wrap items-center gap-x-4 gap-y-2 p-3 hover:bg-secondary rounded-lg" data-testid={`firm-member-${m.user_id}`}>
+                  {/* basis-full on mobile: a long name/email in this flex-1
+                      column had no truncate and no room to wrap into
+                      (min-w-0 lets the column itself shrink to near nothing),
+                      so the text visibly overflowed underneath the role
+                      badge next to it. Full-width on mobile removes the
+                      competition for space; sm: restores the original single-row layout. */}
+                  <div className="flex items-center gap-4 flex-1 min-w-0 basis-full sm:basis-auto">
+                    <Avatar className="w-10 h-10 flex-shrink-0"><AvatarFallback className="bg-primary text-white text-xs">{initials}</AvatarFallback></Avatar>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-display font-bold truncate">{m.name}</div>
+                      <div className="text-xs text-muted-foreground truncate">{m.email}</div>
+                    </div>
                   </div>
-                  <Badge className="bg-accent/10 text-accent border-0 font-bold flex items-center gap-1.5"><Icon className="w-3 h-3" /> {roleLabels[m.role]}</Badge>
-                  {isOwner && m.role !== "owner" && (
-                    <button onClick={() => removeMember(m.user_id)} className="p-2 text-destructive hover:bg-destructive/10 rounded-lg" data-testid={`remove-member-${m.user_id}`}>
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2 flex-shrink-0 ml-auto sm:ml-0">
+                    <Badge className="bg-accent/10 text-accent border-0 font-bold flex items-center gap-1.5"><Icon className="w-3 h-3" /> {roleLabels[m.role]}</Badge>
+                    {isOwner && m.role !== "owner" && (
+                      <button onClick={() => removeMember(m.user_id)} className="p-2 text-destructive hover:bg-destructive/10 rounded-lg" data-testid={`remove-member-${m.user_id}`}>
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}

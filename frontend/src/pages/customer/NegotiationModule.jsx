@@ -27,6 +27,7 @@ import EmptyState from "@/components/shared/EmptyState";
 import Loading from "@/components/shared/Loading";
 import EscrowStagePanel from "@/components/negotiation/EscrowStagePanel";
 import NegotiationOfferChain from "@/components/negotiation/NegotiationOfferChain";
+import { ASSIGNMENT_CTA_CLASS } from "@/components/negotiation/assignmentCta";
 import { useNegotiationPoll } from "@/components/negotiation/useNegotiationPoll";
 import { HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getHearingPermissions } from "@/lib/hearingLifecycle";
 
@@ -112,8 +113,15 @@ export default function NegotiationModule() {
   // locks hearing.commercially_locked/fee directly and never touches that
   // collection, so this page would otherwise show a stale/empty negotiation
   // instead of the real agreed amount.
+  // The counsel is sent to the hearing's detail instead (Accept at listed
+  // rate / Reject live there), not dropped on the dashboard.
   useEffect(() => {
     if (hearing && !canNegotiate) {
+      if (viewerRole === "counsel") {
+        toast.info("This request is at your listed rate — accept or reject it here.");
+        navigate("/practice", { replace: true, state: { openHearingId: hearing.hearing_id } });
+        return;
+      }
       toast.error("This counsel doesn't negotiate fees for this request.");
       navigate(`/dashboard`, { replace: true });
     }
@@ -424,7 +432,7 @@ export default function NegotiationModule() {
                       <div className="font-display font-bold text-sm mb-1">{ASSIGNMENT_MODULE.title}</div>
                       <p className="text-xs text-muted-foreground mb-3">{ASSIGNMENT_MODULE.body}</p>
                       <Button
-                        type="button" size="sm" variant="outline" className="font-bold"
+                        type="button" size="sm" variant="outline" className={ASSIGNMENT_CTA_CLASS}
                         onClick={(e) => { e.stopPropagation(); setDetailOpen(true); }}
                       >
                         {ASSIGNMENT_MODULE.cta} <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
