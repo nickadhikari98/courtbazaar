@@ -454,7 +454,7 @@ async def _record_stale_refund_event(db, escrow: dict, refund_id: Optional[str],
 
 async def settle_refund_from_gateway(db, *, refund_id: Optional[str], payment_id: Optional[str],
                                      gateway_status: str, error: Optional[str] = None,
-                                     notes: Optional[dict] = None) -> Optional[dict]:
+                                     notes: Optional[dict] = None, actor: Optional[dict] = None) -> Optional[dict]:
     """Bug C: apply Razorpay's final word on a refund (refund.processed /
     refund.failed webhook) to the escrow that requested it. Matched by
     gateway_refund_id first, then by the refund's notes (escrow_id +
@@ -539,10 +539,84 @@ async def settle_refund_from_gateway(db, *, refund_id: Optional[str], payment_id
         # Already settled (duplicate/late webhook) — no-op, but still report the match.
         current = await db.escrow_transactions.find_one({"escrow_id": escrow["escrow_id"]}, {"_id": 0})
         return {**(current or escrow), "refund_settled": False}
-    await _make_timeline_hook(db, escrow["escrow_id"])(before, before["status"], to_state, {"user_id": "razorpay_webhook"})
+    await _make_timeline_hook(db, escrow["escrow_id"])(before, before["status"], to_state, actor or {"user_id": "razorpay_webhook"})
     if to_state == "refunded":
         await _reverse_payee_hold_once(db, before)
     return {**before, **fields, "refund_settled": True}
+
+
+# Missed-webhook recovery: an escrow whose refund Razorpay accepted
+# (refund_processing, gateway_refund_id stored) only reaches refunded /
+# refund_failed through the refund.processed / refund.failed webhook. If that
+# webhook never arrives, nothing else ever looks again — so this asks Razorpay
+# for that one refund's status and applies it through the webhook's own
+# settle_refund_from_gateway (same matching, same compare-and-swap, same
+# side effects). Read-only at the gateway: it never requests a refund.
+REFUND_SYNC_MIN_AGE_MINUTES = 10
+REFUND_SYNC_BATCH = 50
+
+
+async def sync_refund_status(db, escrow_id: str, actor: Optional[dict] = None) -> dict:
+    """Checks the stored Razorpay refund of a refund_processing escrow and
+    settles the escrow to what Razorpay reports:
+      processed        -> refunded
+      failed           -> refund_failed (then retried via retry_refund)
+      pending/created  -> unchanged, still refund_processing
+    Returns the escrow plus "refund_sync": settled | no_change |
+    still_pending | not_applicable. Anything other than a refund_processing
+    escrow with a stored refund id and a real payment is not_applicable and
+    left alone (a failed call with no refund id is retry_refund's job).
+
+    Safe to run repeatedly/concurrently: the only write is
+    settle_refund_from_gateway's compare-and-swap, so a second run (or a
+    webhook arriving at the same time) is a no-op. Raises 502 — having
+    changed nothing — when Razorpay can't be reached."""
+    escrow = await db.escrow_transactions.find_one({"escrow_id": escrow_id}, {"_id": 0})
+    if not escrow:
+        raise HTTPException(404, "Escrow not found")
+    refund_id, payment_id = escrow.get("gateway_refund_id"), escrow.get("razorpay_payment_id")
+    if (escrow["status"] != "refund_processing" or not refund_id
+            or not payment_id or payment_id.startswith("pay_sim_")):
+        return {**escrow, "refund_sync": "not_applicable"}
+    try:
+        refund = razorpay_svc.fetch_refund(payment_id, refund_id)
+    except Exception as e:
+        raise HTTPException(502, f"Could not check the refund with Razorpay; nothing was changed ({str(e)[:200]})")
+    gateway_status = ((refund or {}).get("status") or "").lower()
+    if gateway_status not in ("processed", "failed"):
+        return {**escrow, "refund_sync": "still_pending", "gateway_refund_status": gateway_status or None}
+    settled = await settle_refund_from_gateway(
+        db, refund_id=refund_id, payment_id=payment_id, gateway_status=gateway_status,
+        notes=refund.get("notes"), actor=actor or {"user_id": "refund_status_sync"},
+    )
+    if not settled:
+        current = await db.escrow_transactions.find_one({"escrow_id": escrow_id}, {"_id": 0})
+        return {**(current or escrow), "refund_sync": "no_change"}
+    return {**settled, "refund_sync": "settled" if settled.get("refund_settled") else "no_change"}
+
+
+async def sync_processing_refunds(db) -> dict:
+    """Periodic sweep behind the scheduler in server.py: runs
+    sync_refund_status for refund_processing escrows that have been waiting
+    at least REFUND_SYNC_MIN_AGE_MINUTES (normally the webhook settles them
+    first). One escrow's gateway error doesn't stop the rest."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=REFUND_SYNC_MIN_AGE_MINUTES)).isoformat()
+    counts = {"checked": 0, "settled": 0, "still_pending": 0, "errors": 0}
+    async for e in db.escrow_transactions.find(
+        {"status": "refund_processing", "gateway_refund_id": {"$nin": [None, ""]}, "updated_at": {"$lt": cutoff}},
+        {"_id": 0, "escrow_id": 1},
+    ).sort("updated_at", 1).limit(REFUND_SYNC_BATCH):
+        counts["checked"] += 1
+        try:
+            result = await sync_refund_status(db, e["escrow_id"])
+        except HTTPException:
+            counts["errors"] += 1
+            continue
+        if result["refund_sync"] == "settled":
+            counts["settled"] += 1
+        elif result["refund_sync"] == "still_pending":
+            counts["still_pending"] += 1
+    return counts
 
 
 async def _reverse_payee_hold_once(db, escrow: dict) -> None:
