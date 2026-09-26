@@ -132,6 +132,66 @@ export function hearingNeedsMyDocument(h, userId) {
 // staring at a hearing with no way back to Pay.
 export const PAYABLE_HEARING_STATUSES = ["requested", "payment_pending"];
 
+// Cancellation eligibility, split the same way hearings.cancel_hearing_request
+// splits it: before payment a commercially locked (fee agreed) hearing can't
+// be cancelled; once paid (escrow held — hearings.CANCEL_REQUIRES_REFUND) it
+// can, and cancelling refunds the payment.
+export const UNPAID_CANCELLABLE_HEARING_STATUSES = PAYABLE_HEARING_STATUSES;
+export const PAID_CANCELLABLE_HEARING_STATUSES = [
+  "broadcast", "accepted", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed",
+];
+
+// Founder rule (B6 final): after payment the requester can cancel only within
+// 1 hour of hearing.payment_confirmed_at; after that only an admin can.
+// Mirrors hearings.CLIENT_CANCEL_WINDOW — the backend enforces it on its own
+// clock; this only decides what to show.
+export const CLIENT_CANCEL_WINDOW_MS = 60 * 60 * 1000;
+export const CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE =
+  "Cancellation is available only within 1 hour of payment. Please contact admin for cancellation after this period.";
+
+// Date the requester's cancellation window closes, or null if the payment
+// confirmation time isn't known (treated as closed, same as the backend).
+export function clientCancelDeadline(hearing) {
+  const confirmedMs = Date.parse(hearing?.payment_confirmed_at || "");
+  return Number.isNaN(confirmedMs) ? null : new Date(confirmedMs + CLIENT_CANCEL_WINDOW_MS);
+}
+
+export function isWithinClientCancelWindow(hearing, now = Date.now()) {
+  const deadline = clientCancelDeadline(hearing);
+  return !!deadline && deadline.getTime() > now;
+}
+
+// Milliseconds until the soonest still-open client cancellation window (among
+// hearings this user requested, in a paid status) closes, or null if none is
+// open. useClientCancelWindowExpiry schedules one re-render for that moment,
+// so a page left open drops its Cancel button without a refresh — display
+// only; the backend still enforces the window on its own clock.
+export function msUntilNextClientCancelExpiry(hearings, user, now = Date.now()) {
+  let soonest = null;
+  for (const hearing of hearings || []) {
+    if (!hearing || hearing.requesting_user_id !== user?.user_id) continue;
+    if (!PAID_CANCELLABLE_HEARING_STATUSES.includes(hearing.status)) continue;
+    const deadline = clientCancelDeadline(hearing);
+    if (!deadline || deadline.getTime() <= now) continue;
+    const ms = deadline.getTime() - now;
+    if (soonest === null || ms < soonest) soonest = ms;
+  }
+  return soonest;
+}
+
+// Toast copy for a successful cancel, from the refund_status the cancel
+// endpoint returns (only present when a held payment was refunded) — only
+// says "refunded" when escrow.refund() actually completed.
+export function cancelResultMessage(result) {
+  const refundStatus = result?.refund_status;
+  if (!refundStatus) return { tone: "success", text: "Request cancelled" };
+  if (refundStatus === "refunded") return { tone: "success", text: "Request cancelled — your payment has been refunded" };
+  if (refundStatus === "refund_processing") {
+    return { tone: "success", text: "Request cancelled — refund initiated, awaiting bank processing" };
+  }
+  return { tone: "warning", text: "Request cancelled — the refund couldn't be completed automatically and will be retried by CourtBazaar" };
+}
+
 export function hearingNeedsMyAction(h, user) {
   const paymentDue = h.requesting_user_id === user?.user_id && PAYABLE_HEARING_STATUSES.includes(h.status)
     && hearingCommerciallyReadyForPayment(h);
@@ -150,7 +210,9 @@ export function hearingNeedsMyAction(h, user) {
    HearingDetailDialog.jsx both make instead of each re-deriving these
    booleans locally. Returns {} for a not-yet-loaded hearing so callers can
    destructure before their own loading guard without a null-check dance. */
-export function getHearingPermissions(hearing, user) {
+// `now` defaults to the render-time clock (tests pass a fixed one); pages
+// re-render at the cancellation deadline via useClientCancelWindowExpiry.
+export function getHearingPermissions(hearing, user, now = Date.now()) {
   if (!hearing) return {};
   const userId = user?.user_id;
   const isRequester = hearing.requesting_user_id === userId;
@@ -207,8 +269,19 @@ export function getHearingPermissions(hearing, user) {
   const fixedPricePending = isRequester && hearing.status === "requested"
     && negotiationRequired && !canNegotiate && !negotiationAgreed;
   const canPay = isRequester && PAYABLE_HEARING_STATUSES.includes(hearing.status) && hearingCommerciallyReadyForPayment(hearing);
-  const canCancel = isRequester && !hearing.commercially_locked
-    && ["requested", "broadcast", "accepted", "payment_pending", "documents_shared", "preparation", "hearing_scheduled", "hearing_completed"].includes(hearing.status);
+  // Mirrors hearings.cancel_hearing_request: the commercial lock only blocks
+  // cancelling BEFORE payment; once paid, the requester can cancel (and is
+  // refunded) only within 1 hour of payment — after that, admin only.
+  const isPaidCancellableStatus = PAID_CANCELLABLE_HEARING_STATUSES.includes(hearing.status);
+  const canCancel = isRequester && (
+    (isPaidCancellableStatus && isWithinClientCancelWindow(hearing, now))
+    || (UNPAID_CANCELLABLE_HEARING_STATUSES.includes(hearing.status) && !hearing.commercially_locked)
+  );
+  const cancelWindowExpired = isRequester && isPaidCancellableStatus && !isWithinClientCancelWindow(hearing, now);
+  // Case brief can be shared once payment is confirmed (hearings.submit_case_details),
+  // but not on a hearing that's already cancelled/rejected/expired.
+  const canShareCaseDetails = isRequester && !!hearing.payment_confirmed_at
+    && !hearing.details_submitted && !isHearingClosed(hearing);
   const canMarkConducted = isAssignedProxyCounsel && hearing.status === "hearing_scheduled";
   const canRate = ["completed", "rated"].includes(hearing.status) && !hearing.rated_by?.includes(userId)
     && (isRequester || isAssignedProxyCounsel);
@@ -219,7 +292,7 @@ export function getHearingPermissions(hearing, user) {
 
   return {
     isRequester, isAssignedProxyCounsel, isTargetedAtMe, isEligibleAdvocate,
-    canAccept, canDecline, canReject, canAcceptListedRate, canCancel, canMarkConducted, canRate, canPay,
+    canAccept, canDecline, canReject, canAcceptListedRate, canCancel, cancelWindowExpired, canShareCaseDetails, canMarkConducted, canRate, canPay,
     negotiationRequired, canNegotiate, negotiationAgreed, negotiationPending, fixedPricePending, isEscrowParticipant,
     viewerRole: getViewerRole(hearing, userId),
     isClosed: isHearingClosed(hearing),

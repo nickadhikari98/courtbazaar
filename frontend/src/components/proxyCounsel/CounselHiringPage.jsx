@@ -29,9 +29,12 @@ import { SERVICE_CONFIGS } from "@/config/serviceRequestFields";
 import { PRICING_SLOTS, PRICING_SLOT_LABELS, EXPERIENCE_BRACKETS } from "@/config/proxyCounselPricing";
 import { resolveDateBound } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
+import useClientCancelWindowExpiry from "@/hooks/useClientCancelWindowExpiry";
 import {
   HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole,
   isHearingActive, COMPLETED_HEARING_STATUSES, CLOSED_HEARING_STATUSES,
+  getHearingPermissions, PAID_CANCELLABLE_HEARING_STATUSES, cancelResultMessage,
+  CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE, clientCancelDeadline,
 } from "@/lib/hearingLifecycle";
 
 const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
@@ -119,6 +122,17 @@ export default function CounselHiringPage({ serviceType }) {
   const [activeId, setActiveId] = useState(null);
   const [cancelTarget, setCancelTarget] = useState(null); // hearing being confirmed for cancel
   const [cancelling, setCancelling] = useState(false);
+  // Re-renders when a paid request's 1-hour client cancel window closes, so
+  // its Cancel button drops without a refresh (backend still enforces it).
+  const cancelWindowNow = useClientCancelWindowExpiry(hearings, user);
+  // Window closed while the confirm dialog was open (and no cancel in flight):
+  // close it rather than offer a cancel the backend will refuse.
+  useEffect(() => {
+    if (cancelTarget && !cancelling && !getHearingPermissions(cancelTarget, user).canCancel) {
+      setCancelTarget(null);
+      toast.info(CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE);
+    }
+  }, [cancelWindowNow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchAdvocates = () => {
     setStatus("loading");
@@ -297,14 +311,15 @@ export default function CounselHiringPage({ serviceType }) {
   // there's no hard-delete of a hearing request (audit/refund history has
   // to survive), so this moves it into the Cancelled tab rather than
   // removing it outright. Refunds automatically if payment was already held
-  // (hearings.cancel_hearing_request); refused (with a clear error) once a
-  // fee's been agreed through negotiation.
+  // (hearings.cancel_hearing_request); before payment, refused (with a clear
+  // error) once a fee's been agreed through negotiation.
   const handleCancelRequest = async () => {
     if (!cancelTarget) return;
     setCancelling(true);
     try {
-      await cancelHearingRequest(cancelTarget.hearing_id);
-      toast.success("Request cancelled");
+      const result = await cancelHearingRequest(cancelTarget.hearing_id);
+      const { tone, text } = cancelResultMessage(result);
+      (tone === "warning" ? toast.warning : toast.success)(text);
       setCancelTarget(null);
       listHearingRequests().then(setHearings);
     } catch (err) {
@@ -559,7 +574,7 @@ export default function CounselHiringPage({ serviceType }) {
                                       <Badge className={`${HEARING_STATUS_BADGE_COLOR[h.status] || ""} min-w-0 border-0 font-bold uppercase whitespace-normal max-w-full`}>
                                         {roleAwareStatusLabel(h, getViewerRole(h, user?.user_id))}
                                       </Badge>
-                                      {key === "active" && (
+                                      {key === "active" && getHearingPermissions(h, user).canCancel && (
                                         <button
                                           type="button"
                                           onClick={(e) => { e.stopPropagation(); setCancelTarget(h); }}
@@ -573,6 +588,11 @@ export default function CounselHiringPage({ serviceType }) {
                                     </div>
                                   </div>
                                   <HearingActivityPreview hearing={h} />
+                                  {key === "active" && getHearingPermissions(h, user).cancelWindowExpired && (
+                                    <p className="text-xs text-muted-foreground mt-2" data-testid={`cancel-window-expired-${h.hearing_id}`}>
+                                      {CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE}
+                                    </p>
+                                  )}
                                 </CardContent>
                               </Card>
                             ))}
@@ -602,7 +622,12 @@ export default function CounselHiringPage({ serviceType }) {
               <>
                 Are you sure you want to cancel the request for{" "}
                 <b className="text-foreground">{cancelTarget?.request_details?.common?.case_title || cancelTarget?.court_id}</b>?
-                {" "}If payment has already been held, it will be refunded automatically.
+                {" "}{PAID_CANCELLABLE_HEARING_STATUSES.includes(cancelTarget?.status)
+                  ? `Your payment${cancelTarget?.fee ? ` of ${formatINR(cancelTarget.fee)}` : ""} is held by CourtBazaar — cancelling will refund it to your original payment method.`
+                    + (clientCancelDeadline(cancelTarget)
+                      ? ` You can cancel until ${clientCancelDeadline(cancelTarget).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}.`
+                      : "")
+                  : "No payment has been taken for this request yet."}
               </>
             )}
             confirmLabel="Cancel Request"
