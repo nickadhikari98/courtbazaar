@@ -156,6 +156,13 @@ export async function adminListHearingRequests(status) {
   return data;
 }
 
+// Admin recovery for a refund that didn't complete — escrow.retry_refund is
+// idempotent (atomic claim + Razorpay lookup), never a second refund.
+export async function adminRetryEscrowRefund(escrowId) {
+  const { data } = await api.post(`/admin/escrow-transactions/${escrowId}/retry-refund`);
+  return data;
+}
+
 export async function adminVerifyHearingOrderSheet(hearingId) {
   const { data } = await api.put(`/hearing-requests/${hearingId}/verify`);
   return data;

@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import json
 import hashlib
 import logging
 from pathlib import Path
@@ -75,6 +76,7 @@ async def ensure_db_ready() -> bool:
 # S3-compatible (Cloudflare R2 by default, swappable to AWS S3 via env vars) —
 # see storage.py. Replaces the old Emergent-platform-specific object store.
 from storage import put_object, get_object, delete_object, presigned_download_url
+from file_meta import detect_page_count
 
 
 async def delete_order_files(order_id: str) -> dict:
@@ -355,6 +357,20 @@ class ReviewBulkAction(BaseModel):
 class ReviewReorder(BaseModel):
     review_ids: List[str]  # full ordered list; position = display_order
 
+class SupportTicketCreate(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+    category: str
+    subject: str
+    message: str
+    order_id: Optional[str] = None
+    captcha_token: Optional[str] = None  # only checked if CAPTCHA_PROVIDER is configured — see captcha.py
+
+class SupportTicketStatusChange(BaseModel):
+    status: str
+    reply: Optional[str] = None
+
 class CalendarEventCreate(BaseModel):
     title: str
     date: str  # ISO date (YYYY-MM-DD)
@@ -492,6 +508,7 @@ async def seed_initial_data():
         return
     import leads as leads_svc
     import reviews as reviews_svc
+    import support_tickets as support_tickets_svc
     import hearings as hearings_svc
     import escrow as escrow_svc
     import counsel_matching as counsel_matching_svc
@@ -500,6 +517,7 @@ async def seed_initial_data():
     import order_agent_tools
     await leads_svc.ensure_indexes(db)
     await reviews_svc.ensure_indexes(db)
+    await support_tickets_svc.ensure_indexes(db)
     await hearings_svc.ensure_indexes(db)
     await escrow_svc.ensure_indexes(db)
     await counsel_matching_svc.ensure_indexes(db)
@@ -1007,59 +1025,7 @@ async def upload_file(file: UploadFile = File(...), user=Depends(get_current_use
         logger.error(f"Upload failed: {e}")
         raise HTTPException(500, f"Upload failed: {e}")
 
-    # Auto-detect page count
-    page_count = 1
-    try:
-        fn = (file.filename or "").lower()
-        ct = (content_type or "").lower()
-        if "pdf" in ct or fn.endswith(".pdf"):
-            import io as _io
-            page_count = 0
-            # 1) Try PyPDF2 (works for normal PDFs with structure intact)
-            try:
-                from PyPDF2 import PdfReader
-                reader = PdfReader(_io.BytesIO(data))
-                page_count = len(reader.pages)
-            except Exception as e:
-                logger.warning(f"PyPDF2 page count failed: {e}")
-            # 2) Fallback to pdfinfo / pdf2image for scanned or malformed PDFs
-            if page_count == 0:
-                try:
-                    from pdf2image.pdf2image import pdfinfo_from_bytes
-                    info = pdfinfo_from_bytes(data, userpw=None)
-                    page_count = int(info.get("Pages", 0))
-                except Exception as e:
-                    logger.warning(f"pdfinfo fallback failed: {e}")
-            # 3) Last-resort: count "/Type /Page" markers in raw bytes
-            if page_count == 0:
-                try:
-                    page_count = max(1, data.count(b"/Type /Page") - data.count(b"/Type /Pages"))
-                except Exception:
-                    page_count = 1
-            page_count = max(1, page_count)
-        elif "tiff" in ct or fn.endswith((".tif", ".tiff")):
-            # Multi-page TIFF support
-            try:
-                from PIL import Image
-                import io as _io
-                img = Image.open(_io.BytesIO(data))
-                page_count = getattr(img, "n_frames", 1) or 1
-            except Exception:
-                page_count = 1
-        elif "image" in ct or any(fn.endswith(e) for e in [".jpg", ".jpeg", ".png", ".bmp", ".webp", ".heic", ".heif"]):
-            page_count = 1
-        elif "officedocument" in ct or fn.endswith((".docx", ".doc")):
-            try:
-                from docx import Document
-                import io as _io
-                doc = Document(_io.BytesIO(data))
-                total_chars = sum(len(p.text) for p in doc.paragraphs)
-                page_count = max(1, total_chars // 3000)
-            except Exception:
-                page_count = max(1, len(data) // 50000)
-    except Exception as e:
-        logger.error(f"Page count detection failed: {e}")
-        page_count = 1
+    page_count = detect_page_count(file.filename, content_type, data)
 
     record = {
         "file_id": file_id,
@@ -1078,7 +1044,7 @@ async def upload_file(file: UploadFile = File(...), user=Depends(get_current_use
     return record
 
 @api_router.get("/files/{file_id}/download")
-async def download_file(file_id: str, user=Depends(get_current_user)):
+async def download_file(file_id: str, inline: bool = False, user=Depends(get_current_user)):
     rec = await db.files.find_one({"file_id": file_id, "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(404, "File not found")
@@ -1089,12 +1055,104 @@ async def download_file(file_id: str, user=Depends(get_current_user)):
         is_assigned_vendor = await db.orders.find_one({"vendor_id": user["user_id"], "file_ids": file_id}) is not None
     if not (is_owner or is_admin or is_assigned_vendor):
         raise HTTPException(403, "Forbidden")
-    url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"))
+    # inline=true (Documents page preview modal): browser renders the file in-tab
+    # instead of prompting a download — same convention as the hearing-document
+    # download-url route.
+    url = presigned_download_url(rec["storage_path"], filename=rec.get("original_filename"), inline=inline)
     return {"url": url, "filename": rec.get("original_filename")}
+
+# Bounds how many legacy-document page-count detections (each a blocking
+# storage download + PDF parse, see _detect_hearing_doc_page_count_sync)
+# run at once when /files/mine backfills a whole page of old records —
+# without this, up to 200 docs with no cached page_count would all hit
+# asyncio.to_thread concurrently in one request.
+_PAGE_COUNT_DETECTION_CONCURRENCY = 8
+_page_count_detection_semaphore = asyncio.Semaphore(_PAGE_COUNT_DETECTION_CONCURRENCY)
+
+
+def _detect_hearing_doc_page_count_sync(storage_path: str, filename: str, content_type: str) -> int:
+    """Blocking: downloads the object from storage (boto3) and runs
+    page-count detection (PyPDF2/pdf2image). Only ever called via
+    asyncio.to_thread — never directly from the event loop."""
+    data, _ = get_object(storage_path)
+    return detect_page_count(filename, content_type, data)
+
+
+async def _hearing_doc_page_count(d: dict) -> Optional[int]:
+    """hearing_documents predates page-count tracking (add_document now sets
+    it going forward — see file_meta.detect_page_count), so older records
+    have no stored value. An image is deterministically 1 page, same
+    convention as db.files. A PDF's real count isn't knowable without
+    opening the file, so it's detected once here from the actual stored
+    bytes (never fabricated) and cached back onto the record so this only
+    happens once per legacy document, not on every page load.
+
+    Detection is blocking I/O + CPU work, so it always runs off the event
+    loop (asyncio.to_thread), bounded by _page_count_detection_semaphore so
+    a page full of legacy documents can't spin up unbounded threads at
+    once. Detection failure and cache-write failure are caught
+    independently — either one failing never stops the rest of /files/mine,
+    and a cache-write failure never discards an already-detected count."""
+    if "page_count" in d and d["page_count"]:
+        return d["page_count"]
+    ct = (d.get("content_type") or "").lower()
+    if "image" in ct:
+        return 1
+    if "pdf" not in ct:
+        return None
+    async with _page_count_detection_semaphore:
+        try:
+            page_count = await asyncio.to_thread(
+                _detect_hearing_doc_page_count_sync,
+                d["storage_path"], d.get("original_filename"), d.get("content_type"),
+            )
+        except Exception as e:
+            logger.warning(f"Lazy page count detection failed for hearing doc {d.get('doc_id')}: {e}")
+            return None
+    try:
+        await db.hearing_documents.update_one({"doc_id": d["doc_id"]}, {"$set": {"page_count": page_count}})
+    except Exception as e:
+        # Cache write is best-effort only — the detected count above is
+        # still returned to the caller either way, so /files/mine never
+        # fails or drops a page_count just because this write didn't land.
+        logger.warning(f"Caching detected page count failed for hearing doc {d.get('doc_id')}: {e}")
+    return page_count
+
 
 @api_router.get("/files/mine")
 async def my_files(user=Depends(get_current_user)):
+    # Two disjoint upload flows feed this "all my documents" view: generic
+    # order-attachment uploads (db.files, POST /files/upload) and
+    # hearing-request uploads (db.hearing_documents, POST
+    # /hearing-requests/{id}/documents) — a proxy_counsel user's documents
+    # commonly live entirely in the latter, so both must be merged or their
+    # uploads silently disappear from this page.
     files = await db.files.find({"user_id": user["user_id"], "is_deleted": False}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    for f in files:
+        f["source"] = "order"
+
+    hearing_docs = await db.hearing_documents.find(
+        {"uploaded_by": user["user_id"], "is_deleted": False}, {"_id": 0}
+    ).sort("uploaded_at", -1).to_list(200)
+    # Concurrent (semaphore-bounded, see _hearing_doc_page_count), not
+    # sequential — legacy docs needing detection no longer serialize behind
+    # each other's storage download + PDF parse. _hearing_doc_page_count
+    # never raises (detection and cache-write failures are caught inside
+    # it), so a bad legacy document can't take the rest of the page down.
+    page_counts = await asyncio.gather(*(_hearing_doc_page_count(d) for d in hearing_docs))
+    for d, page_count in zip(hearing_docs, page_counts):
+        files.append({
+            "file_id": d["doc_id"],
+            "user_id": user["user_id"],
+            "original_filename": d["original_filename"],
+            "content_type": d.get("content_type"),
+            "page_count": page_count,
+            "created_at": d["uploaded_at"],
+            "source": "hearing",
+            "hearing_id": d["hearing_id"],
+        })
+
+    files.sort(key=lambda f: f.get("created_at") or "", reverse=True)
     return files
 
 # ---------- LEADS (public: landing-page "Join as..." applications) ----------
@@ -1295,6 +1353,59 @@ async def admin_reviews_reorder(payload: ReviewReorder, user=Depends(get_current
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
     return await reviews_svc.admin_reorder(db, payload.review_ids)
+
+# ---------- SUPPORT TICKETS (public: "Raise a Support Ticket" on Contact Us) ----------
+import support_tickets as support_tickets_svc
+
+@api_router.post("/support/tickets")
+async def support_tickets_create(payload: SupportTicketCreate, request: Request):
+    # See the comment on leads_create_draft above re: --proxy-headers.
+    client_ip = request.client.host if request.client else "unknown"
+    verify_captcha(payload.captcha_token, client_ip)
+    support_tickets_svc.check_ticket_rate_limit(client_ip)
+    from notifications import send_email
+    result = await support_tickets_svc.create_ticket(
+        db, send_email, payload.name, payload.email, payload.phone, payload.category,
+        payload.subject, payload.message, payload.order_id, client_ip,
+    )
+    return {**result, "message": "Your support ticket has been raised. We'll be in touch shortly."}
+
+# ---------- ADMIN: SUPPORT TICKETS ----------
+@api_router.get("/admin/support/tickets/stats")
+async def admin_support_tickets_stats(user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await support_tickets_svc.ticket_stats(db)
+
+@api_router.get("/admin/support/tickets")
+async def admin_support_tickets_list(
+    user=Depends(get_current_user),
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await support_tickets_svc.list_tickets(db, status, category, q)
+
+@api_router.get("/admin/support/tickets/{ticket_id}")
+async def admin_support_tickets_detail(ticket_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await support_tickets_svc.get_ticket_detail(db, ticket_id)
+
+@api_router.put("/admin/support/tickets/{ticket_id}/status")
+async def admin_support_tickets_status(ticket_id: str, payload: SupportTicketStatusChange, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    from notifications import send_email
+    return await support_tickets_svc.admin_change_status(db, send_email, ticket_id, payload.status, payload.reply, user)
+
+@api_router.delete("/admin/support/tickets/{ticket_id}")
+async def admin_support_tickets_delete(ticket_id: str, user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await support_tickets_svc.delete_ticket(db, ticket_id, user)
 
 # ---------- ORDERS ----------
 ORDER_STATUSES = ["placed", "matched", "accepted", "processing", "quality_check", "ready", "out_for_delivery", "delivered", "completed", "cancelled"]
@@ -1676,6 +1787,53 @@ async def admin_escrow_transactions(user=Depends(get_current_user), context_type
     import escrow as escrow_svc
     return await escrow_svc.list_transactions(db, context_type=context_type, status=status)
 
+@api_router.post("/admin/payments/{razorpay_order_id}/retry-orphan-refund")
+async def admin_retry_orphan_refund(razorpay_order_id: str, user=Depends(get_current_user)):
+    """Admin recovery for an orphaned-capture refund (Bug A) that failed or
+    is stuck pending. Idempotent and safe to click twice — see
+    payment_reconciliation.retry_orphan_refund. Candidates are listed as
+    'Orphaned capture' rows in /admin/reconciliation mismatches."""
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    return await payment_svc.retry_orphan_refund(db, razorpay_order_id, user)
+
+@api_router.post("/admin/escrow-transactions/{escrow_id}/retry-refund")
+async def admin_retry_escrow_refund(escrow_id: str, user=Depends(get_current_user)):
+    """Admin recovery for a refund that didn't complete (refund_failed,
+    refund_processing, or a stale refund_pending). Idempotent and safe to
+    click twice — see escrow.retry_refund. Find candidates with
+    GET /admin/escrow-transactions?status=refund_failed (or the mismatch
+    list on /admin/reconciliation)."""
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    import escrow as escrow_svc
+    from audit_log import log_audit
+    result = await escrow_svc.retry_refund(db, escrow_id, user)
+    await log_audit(db, "payment.refund_retry", user, {
+        "escrow_id": escrow_id, "context_type": result.get("context_type"), "context_id": result.get("context_id"),
+        "status": result.get("status"), "gateway_refund_id": result.get("gateway_refund_id"),
+        "error": result.get("refund_last_error") if result.get("status") == "refund_failed" else None,
+    })
+    return result
+
+@api_router.post("/admin/escrow-transactions/{escrow_id}/sync-refund")
+async def admin_sync_escrow_refund(escrow_id: str, user=Depends(get_current_user)):
+    """Missed-webhook recovery for a refund_processing escrow: asks Razorpay
+    for the stored refund's status and settles to it (escrow.
+    sync_refund_status). Never requests a refund — unlike retry-refund,
+    which may. The scheduler below runs the same check automatically."""
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    import escrow as escrow_svc
+    from audit_log import log_audit
+    result = await escrow_svc.sync_refund_status(db, escrow_id, user)
+    if result["refund_sync"] == "settled":
+        await log_audit(db, "payment.refund_synced", user, {
+            "escrow_id": escrow_id, "context_type": result.get("context_type"), "context_id": result.get("context_id"),
+            "status": result.get("status"), "gateway_refund_id": result.get("gateway_refund_id"),
+        })
+    return result
+
 @api_router.get("/admin/vendors")
 async def admin_vendors(user=Depends(get_current_user), status: Optional[str] = None):
     if user["role"] != "admin":
@@ -1786,6 +1944,8 @@ async def activate_subscription(payload: dict, user=Depends(get_current_user)):
 # ============================================================================
 # RAZORPAY (alongside Stripe)
 # ============================================================================
+import payment_reconciliation as payment_svc
+
 @api_router.post("/payments/razorpay/create-order")
 async def rzp_create_order(payload: dict, user=Depends(get_current_user)):
     import razorpay_svc
@@ -1810,6 +1970,16 @@ async def rzp_create_order(payload: dict, user=Depends(get_current_user)):
     })
     return rzp
 
+async def _mark_payment_failed(rzp_order_id: str, rzp_payment_id: str) -> bool:
+    """Thin delegate to payment_reconciliation, kept as a module-level name
+    here (rather than calling payment_svc.mark_payment_failed directly from
+    the webhook route) so the webhook handler and tests can call this by a
+    stable name without reaching into the reconciliation module's internals."""
+    return await payment_svc.mark_payment_failed(db, rzp_order_id, rzp_payment_id, _notify_hearing_event)
+
+async def _finalize_marketplace_payment(tx: dict, rzp_payment_id: str) -> bool:
+    return await payment_svc.finalize_marketplace_payment(db, tx, rzp_payment_id)
+
 @api_router.post("/payments/razorpay/verify")
 async def rzp_verify(payload: dict, user=Depends(get_current_user)):
     import razorpay_svc
@@ -1822,15 +1992,7 @@ async def rzp_verify(payload: dict, user=Depends(get_current_user)):
     tx = await db.payment_transactions.find_one({"razorpay_order_id": rzp_order_id}, {"_id": 0})
     if not tx:
         raise HTTPException(404, "Transaction not found")
-    await db.payment_transactions.update_one(
-        {"razorpay_order_id": rzp_order_id},
-        {"$set": {"payment_status": "paid", "status": "complete", "razorpay_payment_id": rzp_payment_id}},
-    )
-    await db.orders.update_one(
-        {"order_id": tx["order_id"]},
-        {"$set": {"payment_status": "paid", "status": "matched"},
-         "$push": {"timeline": {"status": "matched", "at": datetime.now(timezone.utc).isoformat(), "note": "Payment successful via Razorpay"}}},
-    )
+    await _finalize_marketplace_payment(tx, rzp_payment_id)
     return {"ok": True, "payment_id": rzp_payment_id}
 
 @api_router.get("/payments/methods")
@@ -1840,6 +2002,84 @@ async def payment_methods():
         "razorpay": razorpay_svc.is_enabled(),
         "razorpay_simulated": not razorpay_svc.is_enabled(),
     }
+
+@api_router.post("/payments/razorpay/webhook")
+async def razorpay_webhook(request: Request):
+    """Reconciliation safety net for the client-driven /verify routes above:
+    if a browser closes or the network drops right after Razorpay captures
+    a payment but before the client calls /verify, this is the only thing
+    that ever finalizes the transaction. Unauthenticated by design (Razorpay
+    calls this directly) — the HMAC signature is the only auth, so this must
+    read the raw body before any JSON parsing or the signature check breaks.
+
+    payment.captured and payment.failed are handled asymmetrically on
+    purpose: captured can move pending|failed -> paid (a retry succeeding),
+    failed can only move pending -> failed. A late/out-of-order
+    payment.failed must never regress an already-paid transaction — both
+    _finalize_*_payment's {"$ne": "paid"} guard and the failed-handling
+    below share that same rule."""
+    import razorpay_svc
+    body = await request.body()
+    signature = request.headers.get("X-Razorpay-Signature", "")
+    if not razorpay_svc.RAZORPAY_WEBHOOK_SECRET or not razorpay_svc.verify_webhook(body, signature, razorpay_svc.RAZORPAY_WEBHOOK_SECRET):
+        raise HTTPException(400, "Invalid webhook signature")
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        raise HTTPException(400, "Malformed webhook body")
+
+    event = payload.get("event")
+    if event in ("refund.processed", "refund.failed"):
+        # Bug C: Razorpay's final word on a refund we requested (escrow or
+        # orphaned-capture). Settled with compare-and-swap writes, so a
+        # duplicate/late delivery is a no-op; an unknown refund is 200 +
+        # ignored so Razorpay stops retrying it.
+        refund_entity = payload.get("payload", {}).get("refund", {}).get("entity", {}) or {}
+        try:
+            await db.payment_webhook_events.insert_one({
+                "razorpay_payment_id": refund_entity.get("payment_id"), "razorpay_refund_id": refund_entity.get("id"),
+                "event": event, "received_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as e:
+            logger.warning(f"Failed to log webhook event (non-fatal): {e}")
+        result = await payment_svc.apply_refund_event(db, refund_entity, event)
+        if not result.get("matched"):
+            logger.warning(f"Razorpay {event} for unknown refund {refund_entity.get('id')} (payment {refund_entity.get('payment_id')})")
+            return {"ok": True, "ignored": "unknown_refund"}
+        return {"ok": True, **result}
+    if event not in ("payment.captured", "payment.failed"):
+        return {"ok": True, "ignored": event}
+
+    entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
+    rzp_order_id = entity.get("order_id")
+    rzp_payment_id = entity.get("id")
+    tx = await db.payment_transactions.find_one({"razorpay_order_id": rzp_order_id}, {"_id": 0})
+    try:
+        await db.payment_webhook_events.insert_one({
+            "razorpay_order_id": rzp_order_id, "razorpay_payment_id": rzp_payment_id,
+            "event": event, "received_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        logger.warning(f"Failed to log webhook event (non-fatal): {e}")
+    if not tx:
+        logger.warning(f"Razorpay webhook for unknown razorpay_order_id={rzp_order_id}")
+        return {"ok": True, "unknown_order": True}
+
+    if event == "payment.failed":
+        await _mark_payment_failed(rzp_order_id, rzp_payment_id)
+        return {"ok": True}
+
+    if tx.get("context_type") == "hearing":
+        hearing = await db.hearing_requests.find_one({"hearing_id": tx["context_id"]})
+        if hearing:
+            await _finalize_hearing_payment(hearing, tx, rzp_payment_id)
+        else:
+            # Captured money for a hearing that no longer exists: refund and
+            # record it rather than leaving the transaction silently pending.
+            await payment_svc.handle_orphaned_capture(db, tx, rzp_payment_id, "hearing_not_found")
+    elif tx.get("order_id"):
+        await _finalize_marketplace_payment(tx, rzp_payment_id)
+    return {"ok": True}
 
 # ============================================================================
 # LAW FIRM Multi-User Seats + Roles
@@ -2606,16 +2846,41 @@ async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)
     # refunded — reusing that same set rather than guessing separately.
     hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
     result = await hearings_svc.cancel_hearing_request(db, hearing_id, user)
+    # Admin Cancel & Refund (B6): an admin cancel isn't the requester's doing,
+    # and the requester is then a counter-party who must hear about it too.
+    by_admin = user.get("role") == "admin"
+    refund_status = result.get("refund_status")  # set only when escrow was refunded/attempted
     recipient_id = hearing.get("proxy_counsel_user_id") or hearing.get("target_advocate_id")
     if recipient_id:
-        refunded = hearing["status"] in hearings_svc.CANCEL_REQUIRES_REFUND
+        refund_note = ""
+        if refund_status == "refunded":
+            refund_note = " Any payment held has been refunded."
+        elif refund_status:
+            refund_note = " The payment held is being refunded to the requester."
         await _notify_hearing_event(
             recipient_id, "Hearing cancelled",
-            f"The hearing at {hearing['court_id']} was cancelled by the requester."
-            + (" Any payment held has been refunded." if refunded else ""),
+            f"The hearing at {hearing['court_id']} was cancelled by "
+            f"{'CourtBazaar support' if by_admin else 'the requester'}." + refund_note,
+            hearing_id,
+        )
+    if by_admin and hearing.get("requesting_user_id"):
+        refund_note = ""
+        if refund_status == "refunded":
+            refund_note = " Your payment has been refunded to your original payment method."
+        elif refund_status:
+            refund_note = " Your refund has been initiated and will reach your original payment method shortly."
+        await _notify_hearing_event(
+            hearing["requesting_user_id"], "Hearing cancelled",
+            f"Your hearing at {hearing['court_id']} was cancelled by CourtBazaar support." + refund_note,
             hearing_id,
         )
     return result
+
+async def _finalize_hearing_payment(hearing: dict, tx: dict, rzp_payment_id: str) -> bool:
+    return await payment_svc.finalize_hearing_payment(
+        db, hearing, tx, rzp_payment_id,
+        platform_commission_pct=PLATFORM_COMMISSION_PCT, notify_hearing_event=_notify_hearing_event,
+    )
 
 @api_router.post("/hearing-requests/{hearing_id}/payment/create-order")
 async def create_hearing_payment_order(hearing_id: str, user=Depends(get_current_user)):
@@ -2652,37 +2917,23 @@ async def verify_hearing_payment(hearing_id: str, payload: dict, user=Depends(ge
     tx = await db.payment_transactions.find_one({"razorpay_order_id": rzp_order_id, "context_type": "hearing", "context_id": hearing_id})
     if not tx:
         raise HTTPException(404, "Payment transaction not found")
-    await db.payment_transactions.update_one(
-        {"razorpay_order_id": rzp_order_id},
-        {"$set": {"payment_status": "paid", "status": "complete", "razorpay_payment_id": rzp_payment_id}},
-    )
-    # M6 reorder: payment now happens before anyone accepts, so
-    # proxy_counsel_user_id is still None here — escrow.create_and_hold's
-    # deferred-payee path (M2) holds the funds unassigned; M12's
-    # accept_hearing_request extension is what calls assign_payee later.
-    await escrow_svc.create_and_hold(
-        db, context_type="hearing", context_id=hearing_id, service_id=hearings_svc.ESCROW_SERVICE_ID,
-        matter_id=hearing.get("matter_id"), payer_user_id=user["user_id"], payee_user_id=hearing["proxy_counsel_user_id"],
-        amount=hearing["fee"], platform_commission_pct=PLATFORM_COMMISSION_PCT,
-        razorpay_order_id=rzp_order_id, razorpay_payment_id=rzp_payment_id,
-    )
-    await hearings_svc.mark_payment_confirmed(db, hearing_id, user)
-    # Targeted advocate is now notified at request-creation time (see
-    # create_hearing_request above) — by the time payment is verified here,
-    # negotiation has already been agreed, so this is a payment-confirmation
-    # notice, not the first the advocate hears of the request. Broadcast-to-
-    # all requests have no single recipient to notify at this point (same as
-    # before) — that's the Counsel Matching Agent's job (M11, not built yet).
-    if hearing.get("target_advocate_id"):
-        await _notify_hearing_event(hearing["target_advocate_id"], "Payment received",
-                                     f"Payment for your hearing at {hearing['court_id']} is confirmed and held securely by CourtBazaar.",
-                                     hearing_id)
-    # Notification audit (production readiness pass): the requester who just
-    # paid previously got nothing durable — only an ephemeral client-side
-    # toast, lost on refresh/different device. They get their own receipt too.
-    await _notify_hearing_event(user["user_id"], "Payment successful",
-                                 f"Your payment for the hearing at {hearing['court_id']} is confirmed and held securely by CourtBazaar.",
-                                 hearing_id)
+    finalized = await _finalize_hearing_payment(hearing, tx, rzp_payment_id)
+    if not finalized:
+        # False = either already finalized (e.g. by the webhook — still a
+        # success for the client) or orphaned (not applied; refunded).
+        latest = await db.payment_transactions.find_one(
+            {"razorpay_order_id": rzp_order_id}, {"_id": 0, "orphaned": 1, "finalize_error": 1},
+        )
+        if latest and latest.get("orphaned"):
+            raise HTTPException(409, "This hearing is no longer awaiting payment, so this payment was not applied. "
+                                     "It is being refunded to your original payment method.")
+        if latest and latest.get("finalize_error"):
+            # Captured and claimed, but escrow/confirmation failed afterwards
+            # (see payment_reconciliation.finalize_hearing_payment). The
+            # hearing is NOT broadcast, so never report success here; the
+            # row is flagged in /admin/reconciliation for an admin to resolve.
+            raise HTTPException(500, "Your payment was received but could not be finalized. "
+                                     "Our team has been alerted and will resolve it — please do not pay again.")
     return {"ok": True, "payment_id": rzp_payment_id, "status": "broadcast"}
 
 @api_router.get("/hearing-requests/{hearing_id}/escrow")
@@ -2932,8 +3183,12 @@ async def resolve_hearing_dispute(hearing_id: str, payload: HearingDisputeResolv
                                      + (f" Note: {payload.remark}" if payload.remark else ""),
                                      hearing_id)
     else:
-        await _notify_hearing_event(hearing["requesting_user_id"], "Refund issued",
+        # Only say "issued" once the refund actually completed (escrow.refund
+        # outcomes); a pending/failed refund is still owed and gets retried.
+        issued = result.get("refund_status") == "refunded"
+        await _notify_hearing_event(hearing["requesting_user_id"], "Refund issued" if issued else "Refund initiated",
                                      f"Your dispute for the hearing at {hearing['court_id']} was resolved with a refund."
+                                     + ("" if issued else " The refund is being processed and may take a few working days.")
                                      + (f" Note: {payload.remark}" if payload.remark else ""),
                                      hearing_id)
         await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Dispute resolved — no payout",
@@ -3014,11 +3269,13 @@ async def admin_reconciliation(
     if order_ids:
         async for o in db.orders.find({"order_id": {"$in": order_ids}}, {"_id": 0, "order_id": 1, "payment_status": 1, "pricing.total": 1, "status": 1}):
             orders_map[o["order_id"]] = o
+    # B7: a refund lives on the escrow, not on the payment row.
+    escrow_status_map = await payment_svc.escrow_status_by_order(db, [t.get("razorpay_order_id") for t in txns])
 
     rows = []
-    stripe_paid = stripe_pending = stripe_failed = 0
-    rzp_paid = rzp_pending = rzp_failed = 0
-    stripe_paid_amt = rzp_paid_amt = 0.0
+    # Per gateway, one bucket per payment_reconciliation.collection_state.
+    counts = {gw: {k: 0 for k in ("paid", "pending", "failed", "orphaned", "refunding", "refunded")} for gw in ("stripe", "razorpay")}
+    amounts = {gw: {k: 0.0 for k in ("paid", "orphaned", "refunding", "refunded")} for gw in ("stripe", "razorpay")}
     mismatches = []
 
     for t in txns:
@@ -3033,22 +3290,37 @@ async def admin_reconciliation(
             mismatch = True
             mismatch_reason = f"Txn={pstatus}, Order={order_pstatus}"
             mismatches.append({"session_id": t.get("session_id"), "order_id": t.get("order_id"), "reason": mismatch_reason})
-        if gw == "stripe":
-            if pstatus == "paid":
-                stripe_paid += 1
-                stripe_paid_amt += amt
-            elif pstatus == "pending":
-                stripe_pending += 1
-            else:
-                stripe_failed += 1
-        else:
-            if pstatus == "paid":
-                rzp_paid += 1
-                rzp_paid_amt += amt
-            elif pstatus == "pending":
-                rzp_pending += 1
-            else:
-                rzp_failed += 1
+        elif t.get("orphaned") and (t.get("orphan_refund_status") != "processed" or t.get("orphan_refund_needs_review")):
+            # Captured but never attached to its hearing/order (see
+            # payment_reconciliation._refund_orphaned_capture).
+            mismatch = True
+            mismatch_reason = f"Orphaned capture ({t.get('orphan_reason')}); refund {t.get('orphan_refund_status')}"
+            if t.get("orphan_refund_needs_review"):
+                mismatch_reason += " — REVIEW: an earlier refund attempt was also processed; check for a duplicate refund"
+            # razorpay_order_id + orphan_refund_status let the admin UI offer
+            # POST /admin/payments/{razorpay_order_id}/retry-orphan-refund.
+            mismatches.append({"session_id": t.get("session_id"), "order_id": t.get("order_id") or t.get("context_id"),
+                               "reason": mismatch_reason, "orphaned": True,
+                               "razorpay_order_id": t.get("razorpay_order_id"),
+                               "orphan_refund_status": t.get("orphan_refund_status"), "amount": t.get("amount")})
+        # Orphaned captures and refunded / refunding payments are not
+        # collected money, so they're kept out of the paid totals; a failed
+        # refund still counts as paid (see collection_state).
+        escrow_status = escrow_status_map.get(t.get("razorpay_order_id"))
+        collection = payment_svc.collection_state(t, escrow_status)
+        bucket = "stripe" if gw == "stripe" else "razorpay"
+        counts[bucket][collection] += 1
+        if collection in amounts[bucket]:
+            amounts[bucket][collection] += amt
+        if t.get("finalize_error"):
+            # Captured and claimed its hearing, but escrow/confirmation then
+            # failed (payment_reconciliation.finalize_hearing_payment): the
+            # hearing is stuck in payment_pending and needs an admin.
+            finalize_reason = f"Finalize failed after capture — needs admin attention: {t.get('finalize_error')}"
+            mismatch = True
+            mismatch_reason = f"{mismatch_reason}; {finalize_reason}" if mismatch_reason else finalize_reason
+            mismatches.append({"session_id": t.get("session_id"), "order_id": t.get("order_id") or t.get("context_id"),
+                               "reason": finalize_reason})
         rows.append({
             "session_id": t.get("session_id"),
             "razorpay_order_id": t.get("razorpay_order_id"),
@@ -3065,14 +3337,57 @@ async def admin_reconciliation(
             "created_at": t.get("created_at"),
             "mismatch": mismatch,
             "mismatch_reason": mismatch_reason,
+            "orphaned": bool(t.get("orphaned")),
+            "refund_status": escrow_status if escrow_status in payment_svc.ESCROW_REFUND_STATUSES else None,
+            "collection_state": collection,
         })
+
+    # Escrow refunds that didn't complete (failed, still processing at the
+    # bank, or an in-flight claim that never finished) — surfaced in the same
+    # mismatch list so they're visible without a separate screen. Retry via
+    # POST /admin/escrow-transactions/{escrow_id}/retry-refund.
+    import escrow as escrow_svc
+    stale_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=escrow_svc.STALE_REFUND_PENDING_MINUTES)).isoformat()
+    async for e in db.escrow_transactions.find(
+        {"$or": [{"status": {"$in": ["refund_failed", "refund_processing"]}},
+                 {"status": "refund_pending", "updated_at": {"$lt": stale_cutoff}},
+                 # An earlier attempt's refund was PROCESSED while a newer attempt
+                 # was active (escrow._record_stale_refund_event) — possible
+                 # duplicate refund, needs a human look.
+                 {"refund_needs_review": True}]},
+        {"_id": 0, "escrow_id": 1, "razorpay_order_id": 1, "context_id": 1, "status": 1, "refund_last_error": 1,
+         "amount": 1, "payee_user_id": 1, "payee_amount": 1, "payee_hold_reversed": 1,
+         "refund_needs_review": 1, "stale_refund_events": 1},
+    ).sort("updated_at", -1).limit(200):
+        reason = f"Escrow refund {e['status']} (escrow {e['escrow_id']})"
+        if e.get("status") == "refund_failed" and e.get("refund_last_error"):
+            reason += f": {e['refund_last_error'][:120]}"
+        if e.get("refund_needs_review"):
+            stale_ids = [x.get("refund_id") for x in (e.get("stale_refund_events") or []) if x.get("status") == "processed"]
+            reason += f" — REVIEW: earlier refund attempt {', '.join(filter(None, stale_ids)) or '(unknown id)'} was also processed; check for a duplicate refund"
+        # The payee's wallet_held_balance is only reversed once a refund is
+        # accepted (escrow._reverse_payee_hold_once), so for a failed/stuck
+        # refund it still shows the amount — never payable (release() needs
+        # "held"), but worth telling the admin who is looking at it.
+        payee_hold_locked = bool(e.get("payee_user_id")) and not e.get("payee_hold_reversed")
+        mismatches.append({"session_id": e.get("razorpay_order_id"), "order_id": e.get("context_id"),
+                           "escrow_id": e["escrow_id"], "reason": reason,
+                           "escrow_status": e.get("status"), "amount": e.get("amount"),
+                           "payee_hold_locked": payee_hold_locked,
+                           "payee_amount": e.get("payee_amount") if payee_hold_locked else None,
+                           "refund_needs_review": bool(e.get("refund_needs_review"))})
+
+    def _gateway_totals(gw):
+        return {**counts[gw], **{f"{k}_amount": round(v, 2) for k, v in amounts[gw].items()}}
 
     return {
         "rows": rows,
         "totals": {
-            "stripe": {"paid": stripe_paid, "pending": stripe_pending, "failed": stripe_failed, "paid_amount": round(stripe_paid_amt, 2)},
-            "razorpay": {"paid": rzp_paid, "pending": rzp_pending, "failed": rzp_failed, "paid_amount": round(rzp_paid_amt, 2)},
-            "grand_total_paid": round(stripe_paid_amt + rzp_paid_amt, 2),
+            "stripe": _gateway_totals("stripe"),
+            "razorpay": _gateway_totals("razorpay"),
+            "grand_total_paid": round(amounts["stripe"]["paid"] + amounts["razorpay"]["paid"], 2),
+            "grand_total_refunding": round(amounts["stripe"]["refunding"] + amounts["razorpay"]["refunding"], 2),
+            "grand_total_refunded": round(amounts["stripe"]["refunded"] + amounts["razorpay"]["refunded"], 2),
             "transaction_count": len(rows),
         },
         "mismatches": mismatches,
@@ -3086,12 +3401,20 @@ async def admin_reconciliation_csv(user=Depends(get_current_user)):
     import csv
     import io as _io
     txns = await db.payment_transactions.find({}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    escrow_status_map = await payment_svc.escrow_status_by_order(db, [t.get("razorpay_order_id") for t in txns])
     buf = _io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["session_id", "gateway", "order_id", "user_id", "amount", "currency", "payment_status", "simulated", "created_at"])
+    # counted_as_paid is the same rule as /admin/reconciliation's paid totals
+    # (payment_reconciliation.collection_state), so the export sums to them.
+    w.writerow(["session_id", "gateway", "order_id", "user_id", "amount", "currency", "payment_status", "simulated", "created_at",
+                "orphaned", "orphan_refund_status", "refund_status", "counted_as_paid"])
     for t in txns:
         gw = t.get("gateway") or ("razorpay" if t.get("razorpay_order_id") else "stripe")
-        w.writerow([t.get("session_id"), gw, t.get("order_id"), t.get("user_id"), t.get("amount"), t.get("currency", "inr"), t.get("payment_status"), t.get("simulated", False), t.get("created_at")])
+        escrow_status = escrow_status_map.get(t.get("razorpay_order_id"))
+        w.writerow([t.get("session_id"), gw, t.get("order_id"), t.get("user_id"), t.get("amount"), t.get("currency", "inr"), t.get("payment_status"), t.get("simulated", False), t.get("created_at"),
+                    bool(t.get("orphaned")), t.get("orphan_refund_status") or "",
+                    escrow_status if escrow_status in payment_svc.ESCROW_REFUND_STATUSES else "",
+                    payment_svc.collection_state(t, escrow_status) == "paid"])
     return Response(content=buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=courtbazaar-reconciliation.csv"})
 
@@ -3860,6 +4183,36 @@ async def schedule_auto_release_verifications():
         logger.info("Auto-release verification scheduler started (poll every 1h)")
     except Exception as e:
         logger.warning(f"Auto-release verification scheduler not started: {e}")
+
+
+@app.on_event("startup")
+async def schedule_refund_status_sync():
+    """Missed refund webhooks: a refund Razorpay accepted stays
+    refund_processing until its refund.processed / refund.failed webhook
+    arrives — if it never does, this sweep reads the refund's status from
+    Razorpay and settles it (escrow.sync_processing_refunds; read-only at
+    the gateway, never requests a refund). Only runs with live Razorpay
+    keys: simulated refunds settle synchronously and never wait on one."""
+    import razorpay_svc
+    if not razorpay_svc.is_enabled():
+        return
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        import escrow as escrow_svc
+        async def _job():
+            try:
+                counts = await escrow_svc.sync_processing_refunds(db)
+                if counts["checked"]:
+                    logger.info(f"Refund status sync: {counts}")
+            except Exception as e:
+                logger.error(f"Scheduled refund status sync error: {e}")
+        sched = AsyncIOScheduler()
+        sched.add_job(_job, IntervalTrigger(minutes=15), max_instances=1)
+        sched.start()
+        logger.info("Refund status sync scheduler started (poll every 15m)")
+    except Exception as e:
+        logger.warning(f"Refund status sync scheduler not started: {e}")
 
 
 app.include_router(api_router)

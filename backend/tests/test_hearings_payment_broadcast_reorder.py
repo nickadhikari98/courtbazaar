@@ -291,6 +291,14 @@ def test_targeted_request_under_new_order():
         other_counsel = _user("other")
         hearing_id = None
         try:
+            # Fee-negotiation toggle (5b25d4b): create_hearing_request snapshots
+            # the target counsel's own proxy_counsel_profiles.negotiation_enabled
+            # (no profile -> False -> propose_offer is refused). A real approved
+            # counsel always has a profile; this test covers the negotiated
+            # targeted flow, so its counsel has negotiation switched on.
+            await db.proxy_counsel_profiles.insert_one(
+                {"user_id": target_counsel["user_id"], "negotiation_enabled": True}
+            )
             hearing = await hearings.create_hearing_request(
                 db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
                 target_advocate_id=target_counsel["user_id"],
@@ -298,6 +306,7 @@ def test_targeted_request_under_new_order():
             hearing_id = hearing["hearing_id"]
             assert hearing["status"] == "requested"
             assert hearing["target_advocate_id"] == target_counsel["user_id"]
+            assert hearing["negotiation_enabled"] is True
 
             # Negotiation Module: a targeted request must reach "agreed"
             # before payment can be initiated — see hearings.initiate_payment's
@@ -328,6 +337,7 @@ def test_targeted_request_under_new_order():
             assert accepted["status"] == "documents_shared"  # M12: auto-chains straight through, "accepted" is no longer the resting status
             assert accepted["proxy_counsel_user_id"] == target_counsel["user_id"]
         finally:
+            await db.proxy_counsel_profiles.delete_many({"user_id": target_counsel["user_id"]})
             await _cleanup(db, [hearing_id] if hearing_id else [])
     asyncio.run(body())
 

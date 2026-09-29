@@ -21,7 +21,10 @@ export default function Login() {
   // viewing a profile itself never requires login) — returns them to where
   // they actually were instead of the generic role-based landing page below.
   const returnTo = location.state?.from;
-  const { login, otpRequest, otpVerify, googleOAuthEnabled, googleClientId } = useAuth();
+  const { login, otpRequest, otpVerify, googleOAuthEnabled, googleClientId, refreshPublicConfig } = useAuth();
+  // If the app-start /config/public fetch failed, re-check now so "Continue
+  // with Google" isn't missing just because the backend was briefly down.
+  useEffect(() => { if (!googleOAuthEnabled) refreshPublicConfig(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

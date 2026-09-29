@@ -44,16 +44,16 @@ export default function Profile() {
 
       <Card className="dashboard-card border-none mb-6">
         <CardContent className="p-6 flex items-center gap-5">
-          <Avatar className="w-20 h-20">
+          <Avatar className="w-20 h-20 flex-shrink-0">
             <AvatarImage src={user?.avatar_url} />
             <AvatarFallback className="bg-primary text-white text-xl font-bold">{initials}</AvatarFallback>
           </Avatar>
-          <div>
-            <div className="font-display font-bold text-2xl">{user?.name}</div>
-            <div className="text-sm text-muted-foreground font-semibold">{user?.email}</div>
-            <div className="mt-2 flex items-center gap-2 text-xs">
+          <div className="min-w-0 flex-1">
+            <div className="font-display font-bold text-2xl truncate">{user?.name}</div>
+            <div className="text-sm text-muted-foreground font-semibold truncate">{user?.email}</div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
               <span className="cb-overline">Role</span> <span className="font-bold capitalize">{user?.role?.replace('_', ' ')}</span>
-              {user?.verified && <span className="flex items-center gap-1 text-emerald-700 font-bold"><ShieldCheck className="w-3.5 h-3.5" /> Verified</span>}
+              {user?.verified && <span className="flex items-center gap-1 text-emerald-700 font-bold flex-shrink-0"><ShieldCheck className="w-3.5 h-3.5" /> Verified</span>}
             </div>
           </div>
         </CardContent>

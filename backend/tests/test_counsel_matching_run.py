@@ -158,7 +158,12 @@ def test_run_matching_zero_eligible_escalates_without_touching_hearing():
     asyncio.run(body())
 
 
-def test_notify_tier_rejects_tier_beyond_one():
+def test_notify_tier_rejects_tiers_outside_1_to_3():
+    """M10 originally shipped tier 1 only and raised NotImplementedError for
+    anything else; M13 (e67084a, waterfall escalation) deliberately extended
+    notify_tier to tiers 1-3 and changed the guard to ValueError for any
+    other tier. An unsupported tier must still be refused before anything
+    is written."""
     async def body():
         db = _db()
         hearing = await _make_hearing(db)
@@ -170,11 +175,44 @@ def test_notify_tier_rejects_tier_beyond_one():
             ranked = counsel_matching.score_candidates(
                 hearing, await db.proxy_counsel_profiles.find({"user_id": {"$in": counsel_ids}}, {"_id": 0}).to_list(10),
             )
-            try:
-                await counsel_matching.notify_tier(db, hearing, ranked, tier=2, tier_size=5)
-                assert False, "expected NotImplementedError"
-            except NotImplementedError:
-                pass
+            for bad_tier in (0, 4):
+                try:
+                    await counsel_matching.notify_tier(db, hearing, ranked, tier=bad_tier, tier_size=5)
+                    assert False, f"expected ValueError for tier {bad_tier}"
+                except ValueError as e:
+                    assert "tiers 1-3" in str(e)
+            stored = await db.hearing_requests.find_one({"hearing_id": hearing["hearing_id"]}, {"_id": 0})
+            assert "match_tier" not in stored and "notified_counsel_ids" not in stored
+        finally:
+            await _cleanup(db, counsel_ids, [hearing["hearing_id"]], [match_id] if match_id else [])
+    asyncio.run(body())
+
+
+def test_notify_tier_advances_tier_1_to_2_but_never_skips_a_tier():
+    """M13 waterfall: tier 2 is claimed only from tier 1 (match_tier ==
+    tier - 1); jumping straight to tier 3 is a no-op "skipped"."""
+    async def body():
+        db = _db()
+        hearing = await _make_hearing(db)
+        counsel_ids = [await _make_counsel(db) for _ in range(3)]
+        match_id = None
+        try:
+            session = await counsel_matching.get_or_create_matching_session(db, hearing["hearing_id"])
+            match_id = session["match_id"]
+            ranked = counsel_matching.score_candidates(
+                hearing, await db.proxy_counsel_profiles.find({"user_id": {"$in": counsel_ids}}, {"_id": 0}).to_list(10),
+            )
+            first = await counsel_matching.notify_tier(db, hearing, ranked, tier=1, tier_size=1)
+            assert first["status"] == "notified" and first["tier"] == 1
+            skipped = await counsel_matching.notify_tier(db, hearing, ranked, tier=3, tier_size=1)
+            assert skipped["status"] == "skipped"
+            second = await counsel_matching.notify_tier(db, hearing, ranked, tier=2, tier_size=2)
+            assert second["status"] == "notified" and second["tier"] == 2
+            stored = await db.hearing_requests.find_one({"hearing_id": hearing["hearing_id"]}, {"_id": 0})
+            assert stored["match_tier"] == 2
+            assert stored["notified_counsel_ids"] == second["notified_counsel_ids"]
+            log = await db.counsel_matching_log.find_one({"match_id": match_id}, {"_id": 0})
+            assert [t["tier"] for t in log["tiers"]] == [1, 2]
         finally:
             await _cleanup(db, counsel_ids, [hearing["hearing_id"]], [match_id] if match_id else [])
     asyncio.run(body())

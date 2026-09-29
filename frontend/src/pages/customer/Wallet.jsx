@@ -62,17 +62,21 @@ export default function Wallet() {
           ) : (
             <div className="divide-y divide-border">
               {txns.map((t, i) => (
-                <div key={i} className="p-4 flex items-center justify-between" data-testid={`wallet-txn-${i}`}>
-                  <div className="flex items-center gap-3">
-                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${t.type === 'credit' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                <div key={i} className="p-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-1" data-testid={`wallet-txn-${i}`}>
+                  {/* min-w-0/truncate: descriptions like "Escrow release
+                      (hearing hearing_5055dcdefac0)" embed a long,
+                      unbreakable id — without this it ran past its column
+                      and under the amount on the right. */}
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${t.type === 'credit' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
                       {t.type === 'credit' ? <ArrowDownLeft className="w-4 h-4" /> : <ArrowUpRight className="w-4 h-4" />}
                     </div>
-                    <div>
-                      <div className="font-semibold text-sm">{t.description}</div>
+                    <div className="min-w-0">
+                      <div className="font-semibold text-sm truncate">{t.description}</div>
                       <div className="text-xs text-muted-foreground">{new Date(t.created_at).toLocaleString('en-IN')}</div>
                     </div>
                   </div>
-                  <div className={`font-display font-bold ${t.type === 'credit' ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  <div className={`font-display font-bold flex-shrink-0 ${t.type === 'credit' ? 'text-emerald-700' : 'text-rose-700'}`}>
                     {t.type === 'credit' ? '+' : '-'}{formatINR(t.amount)}
                   </div>
                 </div>

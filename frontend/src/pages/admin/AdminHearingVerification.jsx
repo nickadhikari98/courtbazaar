@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { formatINR } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,37 +18,59 @@ import EmptyState from "@/components/shared/EmptyState";
 import Loading from "@/components/shared/Loading";
 import OrderAgentSummaryPanel from "@/components/admin/OrderAgentSummaryPanel";
 import OrderAgentHearingSummaryCard from "@/components/admin/OrderAgentHearingSummaryCard";
+import AdminCancelRefundPanel from "@/components/admin/AdminCancelRefundPanel";
+import { PAID_CANCELLABLE_HEARING_STATUSES } from "@/lib/hearingLifecycle";
 import {
   adminListHearingRequests, adminVerifyHearingOrderSheet, adminRejectHearingVerification,
   adminResolveHearingDispute, adminReleaseHearingPayout, getHearingEscrow, getHearingRequest,
   listHearingDocuments, getHearingDocumentUrl,
 } from "@/lib/hearingRequestsApi";
 
+// "paid_active" isn't a backend status: it's every paid, still-cancellable
+// status (the ones admin Cancel & Refund applies to), fetched one status at a
+// time from the existing single-status admin list and merged.
+const PAID_ACTIVE = "paid_active";
 const STATUS_TABS = [
   { value: "verification_pending", label: "Awaiting verification" },
   { value: "verified", label: "Verified — ready for payout" },
   { value: "disputed", label: "Disputed" },
   { value: "completed", label: "Completed" },
+  { value: PAID_ACTIVE, label: "Paid · active" },
+  { value: "cancelled", label: "Cancelled" },
 ];
+
+export function listAdminHearingsForTab(status) {
+  if (status !== PAID_ACTIVE) return adminListHearingRequests(status);
+  return Promise.all(PAID_CANCELLABLE_HEARING_STATUSES.map((s) => adminListHearingRequests(s)))
+    .then((lists) => lists.flat().sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || "")));
+}
 
 export default function AdminHearingVerification() {
   const [status, setStatus] = useState("verification_pending");
   const [hearings, setHearings] = useState(null);
   const [activeId, setActiveId] = useState(null);
 
-  const load = () => { setHearings(null); adminListHearingRequests(status).then(setHearings); };
+  // Ignores a response for a tab the admin has already switched away from.
+  const loadSeq = useRef(0);
+  const load = () => {
+    const seq = ++loadSeq.current;
+    setHearings(null);
+    listAdminHearingsForTab(status)
+      .then((list) => { if (seq === loadSeq.current) setHearings(list); })
+      .catch(() => { if (seq === loadSeq.current) { setHearings([]); toast.error("Could not load hearings"); } });
+  };
   useEffect(() => { load(); }, [status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <PageContainer className="max-w-4xl">
       <PageHeader eyebrow="Admin · Hearing Verification" eyebrowIcon={Banknote}
                   title="Verify order sheets & release payouts"
-                  description="Verify and Release Payout are always separate steps — payouts only unlock once a hearing is verified." />
+                  description="Verify and Release Payout are always separate steps — payouts only unlock once a hearing is verified. Paid hearings can be cancelled & refunded from the Paid · active tab." />
 
       <OrderAgentSummaryPanel />
 
       <Tabs value={status} onValueChange={setStatus} className="mt-6">
-        <TabsList>
+        <TabsList className="flex-wrap h-auto">
           {STATUS_TABS.map((t) => <TabsTrigger key={t.value} value={t.value}>{t.label}</TabsTrigger>)}
         </TabsList>
       </Tabs>
@@ -159,6 +181,8 @@ function HearingVerificationDialog({ hearingId, open, onOpenChange, onChanged })
             </div>
           </div>
         )}
+
+        <AdminCancelRefundPanel hearing={hearing} escrow={escrow} onChanged={() => { onChanged?.(); load(); }} />
 
         <div>
           <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Order sheet</div>

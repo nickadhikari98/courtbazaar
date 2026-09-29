@@ -85,28 +85,38 @@ export default function AdminUsers() {
               const initials = initialsOf(u.name || "U");
               const canDeactivate = !u.deleted && u.role !== "admin" && u.user_id !== currentAdmin?.user_id;
               return (
-                <div key={u.user_id} className="p-4 flex items-center gap-4" data-testid={`admin-user-${u.user_id}`}>
-                  <Avatar className="w-10 h-10"><AvatarFallback className="bg-primary text-white text-xs">{initials}</AvatarFallback></Avatar>
-                  <div className="min-w-0 flex-1">
-                    <div className="font-display font-bold text-sm">{u.name}</div>
-                    <div className="text-xs text-muted-foreground">{u.email} · {u.phone || "—"}</div>
+                <div key={u.user_id} className="p-4 flex flex-wrap items-center gap-x-4 gap-y-2" data-testid={`admin-user-${u.user_id}`}>
+                  {/* This group takes the full row on mobile (basis-full) so the
+                      name/email column truncates against the whole row width
+                      instead of whatever's left after the badges — at basis-auto
+                      widths it was being squeezed down to a couple of characters,
+                      and before truncate existed at all a long name/email simply
+                      overflowed underneath the badges (see git history). */}
+                  <div className="flex items-center gap-4 min-w-0 flex-1 basis-full sm:basis-auto">
+                    <Avatar className="w-10 h-10 flex-shrink-0"><AvatarFallback className="bg-primary text-white text-xs">{initials}</AvatarFallback></Avatar>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-display font-bold text-sm truncate">{u.name}</div>
+                      <div className="text-xs text-muted-foreground truncate">{u.email} · {u.phone || "—"}</div>
+                    </div>
                   </div>
-                  <Badge className="bg-secondary text-foreground border-0 font-bold capitalize text-2xs">{u.role?.replace('_', ' ')}</Badge>
-                  <Badge variant="outline" className="font-bold capitalize text-2xs">{u.subscription}</Badge>
-                  {u.deleted && (
-                    <Badge className="bg-red-100 text-red-700 border-0 font-bold uppercase text-2xs">Deactivated</Badge>
-                  )}
-                  {canDeactivate && (
-                    <button
-                      type="button"
-                      title="Deactivate user"
-                      aria-label="Deactivate user"
-                      onClick={() => setDeactivateTarget(u)}
-                      className="p-1.5 rounded-md text-red-600 hover:bg-red-50 flex-shrink-0"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2 flex-shrink-0 ml-auto sm:ml-0">
+                    <Badge className="bg-secondary text-foreground border-0 font-bold capitalize text-2xs">{u.role?.replace('_', ' ')}</Badge>
+                    <Badge variant="outline" className="font-bold capitalize text-2xs">{u.subscription}</Badge>
+                    {u.deleted && (
+                      <Badge className="bg-red-100 text-red-700 border-0 font-bold uppercase text-2xs">Deactivated</Badge>
+                    )}
+                    {canDeactivate && (
+                      <button
+                        type="button"
+                        title="Deactivate user"
+                        aria-label="Deactivate user"
+                        onClick={() => setDeactivateTarget(u)}
+                        className="p-1.5 rounded-md text-red-600 hover:bg-red-50 flex-shrink-0"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}

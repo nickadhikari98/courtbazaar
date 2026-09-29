@@ -14,12 +14,31 @@ export const AuthProvider = ({ children }) => {
   const [googleOAuthEnabled, setGoogleOAuthEnabled] = useState(false);
   const [googleClientId, setGoogleClientId] = useState(null);
 
-  useEffect(() => {
-    api.get("/config/public").then(({ data }) => {
-      setGoogleOAuthEnabled(!!data.google_oauth_enabled);
-      setGoogleClientId(data.google_client_id || null);
-    }).catch(() => {});
+  const loadPublicConfig = useCallback(async () => {
+    const { data } = await api.get("/config/public");
+    setGoogleOAuthEnabled(!!data.google_oauth_enabled);
+    setGoogleClientId(data.google_client_id || null);
   }, []);
+
+  // This used to be fetched exactly once, with any failure swallowed — so a
+  // single failed request at app start (backend restarting, a network blip)
+  // hid "Continue with Google" for the rest of the session. Retry a few
+  // times with backoff; Login/Register also re-check via refreshPublicConfig
+  // when they open, in case the backend was down for longer than that.
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+    const retryDelaysMs = [1000, 3000, 10000];
+    const attempt = (i) => {
+      loadPublicConfig().catch(() => {
+        if (!cancelled && i < retryDelaysMs.length) timer = setTimeout(() => attempt(i + 1), retryDelaysMs[i]);
+      });
+    };
+    attempt(0);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [loadPublicConfig]);
+
+  const refreshPublicConfig = useCallback(() => loadPublicConfig().catch(() => {}), [loadPublicConfig]);
 
   const checkAuth = useCallback(async () => {
     const tok = getToken();
@@ -103,6 +122,7 @@ export const AuthProvider = ({ children }) => {
     <AuthContext.Provider value={{
       user, loading, login, register, otpRequest, otpVerify, completeGoogleLogin,
       logout, refresh, checkAuth, hasRole, hasCapability, googleOAuthEnabled, googleClientId,
+      refreshPublicConfig,
     }}>
       {children}
     </AuthContext.Provider>

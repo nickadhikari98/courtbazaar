@@ -60,6 +60,7 @@ const AdminDashboard = lazy(() => import("@/pages/admin/AdminDashboard"));
 const AdminVendors = lazy(() => import("@/pages/admin/AdminVendors"));
 const AdminLeads = lazy(() => import("@/pages/admin/AdminLeads"));
 const AdminReviews = lazy(() => import("@/pages/admin/AdminReviews"));
+const AdminSupportTickets = lazy(() => import("@/pages/admin/AdminSupportTickets"));
 const AdminPricing = lazy(() => import("@/pages/admin/AdminPricing"));
 const AdminUsers = lazy(() => import("@/pages/admin/AdminUsers"));
 const AdminReconciliation = lazy(() => import("@/pages/admin/AdminReconciliation"));
@@ -234,6 +235,7 @@ function AppRouter() {
         <Route path="/admin/vendors" element={<ProtectedRoute roles={["admin"]}><AdminVendors /></ProtectedRoute>} />
         <Route path="/admin/leads" element={<ProtectedRoute roles={["admin"]}><AdminLeads /></ProtectedRoute>} />
         <Route path="/admin/reviews" element={<ProtectedRoute roles={["admin"]}><AdminReviews /></ProtectedRoute>} />
+        <Route path="/admin/support-tickets" element={<ProtectedRoute roles={["admin"]}><AdminSupportTickets /></ProtectedRoute>} />
         <Route path="/admin/pricing" element={<ProtectedRoute roles={["admin"]}><AdminPricing /></ProtectedRoute>} />
         <Route path="/admin/users" element={<ProtectedRoute roles={["admin"]}><AdminUsers /></ProtectedRoute>} />
         <Route path="/admin/reconciliation" element={<ProtectedRoute roles={["admin"]}><AdminReconciliation /></ProtectedRoute>} />

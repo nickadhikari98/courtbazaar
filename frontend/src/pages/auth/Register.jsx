@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -28,7 +28,10 @@ const VENDOR_JOIN_FORMS = {
 
 export default function Register() {
   const navigate = useNavigate();
-  const { register, googleOAuthEnabled, googleClientId } = useAuth();
+  const { register, googleOAuthEnabled, googleClientId, refreshPublicConfig } = useAuth();
+  // Same re-check as Login.jsx: a failed app-start /config/public fetch
+  // must not hide "Continue with Google" for the whole session.
+  useEffect(() => { if (!googleOAuthEnabled) refreshPublicConfig(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [loading, setLoading] = useState(false);
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   // Bug fix: this defaulted to "advocate" — anyone who filled the form

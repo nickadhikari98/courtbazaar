@@ -27,7 +27,11 @@ export default function CourtLocationSelector({ value, onChange }) {
   const { state_id, district, court_id } = value || {};
   const [states, setStates] = useState([]);
   const [courts, setCourts] = useState([]);
-  const [courtType, setCourtType] = useState("district"); // "district" | "high_court" | "arbitration"
+  // Derived from the controlled `value` prop (not local state) so a
+  // restored/resumed selection — set via the parent's onChange, e.g. a
+  // post-login redirect restore or an "End Negotiation" resume — always
+  // shows the right tab instead of the desynced default.
+  const courtType = value?.court_type || "district"; // "district" | "high_court" | "arbitration"
 
   useEffect(() => { getStates().then(setStates).catch(() => setStates([])); }, []);
 
@@ -54,7 +58,6 @@ export default function CourtLocationSelector({ value, onChange }) {
 
   const switchCourtType = (type) => {
     if (type === courtType) return;
-    setCourtType(type);
     onChange({ state_id, state_name: value?.state_name, district: "", court_id: "", court_name: "", court_type: type });
   };
 

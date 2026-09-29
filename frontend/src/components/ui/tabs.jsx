@@ -9,7 +9,13 @@ const TabsList = React.forwardRef(({ className, ...props }, ref) => (
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      "inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground",
+      // max-w-full + overflow-x-auto: inline-flex sizes to its content's
+      // full width regardless of the parent's — with enough triggers (or
+      // long labels) on a narrow screen this silently ran past the
+      // container with no scrollbar and no way to reach the cut-off tab
+      // (e.g. a 3rd "Cancelled" tab). Capping the width is what makes the
+      // overflow actually scrollable instead of just clipped or spilling.
+      "inline-flex h-9 max-w-full items-center justify-center overflow-x-auto rounded-lg bg-muted p-1 text-muted-foreground cb-scroll",
       className
     )}
     {...props} />

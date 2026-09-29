@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { formatINR } from "@/lib/api";
 import { humanizeHearingActivity } from "@/lib/hearingLifecycle";
 import { getOrderAgentHearingSummary } from "@/lib/orderAgentApi";
+import { escrowStatusLabel } from "@/config/escrowStatus";
 import { ChevronDown, ChevronRight, Sparkles, Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
 
 /* Structured, glanceable presentation of the Order Management Agent's
@@ -38,13 +39,6 @@ const ORDER_STATUS_META = {
   rejected: { icon: "❌", label: "Rejected" },
   cancelled: { icon: "❌", label: "Cancelled" },
   expired: { icon: "⌛", label: "Expired" },
-};
-
-const ESCROW_STATUS_LABEL = {
-  created: "Payment initiated",
-  held: "Held in escrow",
-  released: "Released to counsel",
-  refunded: "Refunded to client",
 };
 
 const ATTENTION_META = {
@@ -295,7 +289,7 @@ function HearingSummaryBody({ aiSummary, showDetails, setShowDetails }) {
           {escrow && (
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Escrow status</span>
-              <span className="font-semibold">{ESCROW_STATUS_LABEL[escrow.status] || escrow.status}</span>
+              <span className="font-semibold">{escrowStatusLabel(escrow.status)}</span>
             </div>
           )}
           {hearing?.status === "verification_pending" && hearing?.verification_pending_at && (

@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { api, formatINR, downloadFile } from "@/lib/api";
+import { escrowStatusLabel, escrowStatusClasses, isRetryableRefund, orphanRefundLabel, orphanRefundClasses, isRetryableOrphanRefund } from "@/config/escrowStatus";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty } from "@/components/ui/table";
-import { Download, AlertTriangle, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { Download, AlertTriangle, CheckCircle2, XCircle, Clock, RotateCcw, RefreshCw, Lock } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
 import PageHeader from "@/components/layout/PageHeader";
 import Loading from "@/components/shared/Loading";
@@ -14,6 +16,7 @@ export default function AdminReconciliation() {
   const [data, setData] = useState(null);
   const [gateway, setGateway] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [retrying, setRetrying] = useState(null);
 
   const load = async () => {
     const params = {};
@@ -23,6 +26,64 @@ export default function AdminReconciliation() {
     setData(data);
   };
   useEffect(() => { load(); }, [gateway, statusFilter]);
+
+  // Reuses PR #54's POST /admin/escrow-transactions/{escrow_id}/retry-refund
+  // (escrow.retry_refund: atomic claim + Razorpay lookup, so a double click
+  // or a refund that already went through never refunds twice).
+  const retryRefund = async (m) => {
+    if (!window.confirm(`Retry the refund for escrow ${m.escrow_id}${m.amount != null ? ` (${formatINR(m.amount)})` : ""}? CourtBazaar first checks Razorpay for an existing refund and only requests what is still owed.`)) return;
+    setRetrying(m.escrow_id);
+    try {
+      const { data: result } = await api.post(`/admin/escrow-transactions/${m.escrow_id}/retry-refund`);
+      const label = escrowStatusLabel(result.status);
+      if (result.status === "refunded") toast.success(`Refund completed — ${label}`);
+      else if (result.status === "refund_failed") toast.error(`Refund still failing: ${result.refund_last_error || label}`);
+      else toast.message(label);
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not retry the refund");
+    } finally {
+      setRetrying(null);
+    }
+  };
+
+  // Missed-webhook recovery: POST /admin/escrow-transactions/{escrow_id}/sync-refund
+  // (escrow.sync_refund_status) only reads the stored refund's status from
+  // Razorpay and settles to it — it never requests a refund, so no confirm.
+  const checkRefund = async (m) => {
+    setRetrying(m.escrow_id);
+    try {
+      const { data: result } = await api.post(`/admin/escrow-transactions/${m.escrow_id}/sync-refund`);
+      if (result.refund_sync === "still_pending") toast.message("Razorpay still reports this refund as pending");
+      else if (result.status === "refunded") toast.success("Razorpay processed this refund — marked refunded");
+      else if (result.status === "refund_failed") toast.error("Razorpay reports this refund failed — use Retry refund");
+      else toast.message(escrowStatusLabel(result.status));
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not check the refund status");
+    } finally {
+      setRetrying(null);
+    }
+  };
+
+  // Orphaned-capture refund retry (Bug C): POST /admin/payments/{razorpay_order_id}/retry-orphan-refund
+  // — atomic claim + Razorpay lookup first, so it never refunds twice.
+  const retryOrphanRefund = async (m) => {
+    if (!window.confirm(`Retry the refund for orphaned payment ${m.razorpay_order_id}${m.amount != null ? ` (${formatINR(m.amount)})` : ""}? CourtBazaar first checks Razorpay for an existing refund and only requests what is still owed.`)) return;
+    setRetrying(m.razorpay_order_id);
+    try {
+      const { data: result } = await api.post(`/admin/payments/${m.razorpay_order_id}/retry-orphan-refund`);
+      const label = orphanRefundLabel(result.orphan_refund_status);
+      if (result.orphan_refund_status === "processed") toast.success(label);
+      else if (result.orphan_refund_status === "failed") toast.error(`${label}${result.orphan_refund_error ? `: ${result.orphan_refund_error}` : ""}`);
+      else toast.message(label);
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not retry the orphan refund");
+    } finally {
+      setRetrying(null);
+    }
+  };
 
   const exportCSV = () => downloadFile("/admin/reconciliation/export", "courtbazaar-reconciliation.csv");
 
@@ -40,6 +101,23 @@ export default function AdminReconciliation() {
     return <Badge className={`${cls} border-0 font-bold uppercase text-2xs flex items-center gap-1`}><Icon className="w-3 h-3" /> {s}</Badge>;
   };
 
+  // B7: refunded / refund-in-progress payments are left out of the paid
+  // totals (payment_reconciliation.collection_state) — say so on each card.
+  const NotCounted = ({ t, testid }) => (
+    <>
+      {t.refunding > 0 && (
+        <span className="text-muted-foreground" data-testid={`${testid}-refunding`}>
+          {t.refunding} refund in progress ({formatINR(t.refunding_amount)}, not counted)
+        </span>
+      )}
+      {t.refunded > 0 && (
+        <span className="text-muted-foreground" data-testid={`${testid}-refunded`}>
+          {t.refunded} refunded ({formatINR(t.refunded_amount)}, not counted)
+        </span>
+      )}
+    </>
+  );
+
   return (
     <PageContainer>
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
@@ -55,10 +133,11 @@ export default function AdminReconciliation() {
           <CardContent className="p-5">
             <div className="cb-overline">Stripe</div>
             <div className="font-display font-black text-2xl mt-1">{formatINR(data.totals.stripe.paid_amount)}</div>
-            <div className="text-xs font-semibold mt-1 flex gap-2">
+            <div className="text-xs font-semibold mt-1 flex flex-wrap gap-x-2">
               <span className="text-emerald-700">{data.totals.stripe.paid} paid</span>
               <span className="text-amber-700">{data.totals.stripe.pending} pending</span>
               <span className="text-rose-700">{data.totals.stripe.failed} failed</span>
+              <NotCounted t={data.totals.stripe} testid="totals-stripe" />
             </div>
           </CardContent>
         </Card>
@@ -66,10 +145,16 @@ export default function AdminReconciliation() {
           <CardContent className="p-5">
             <div className="cb-overline">Razorpay</div>
             <div className="font-display font-black text-2xl mt-1">{formatINR(data.totals.razorpay.paid_amount)}</div>
-            <div className="text-xs font-semibold mt-1 flex gap-2">
+            <div className="text-xs font-semibold mt-1 flex flex-wrap gap-x-2">
               <span className="text-emerald-700">{data.totals.razorpay.paid} paid</span>
               <span className="text-amber-700">{data.totals.razorpay.pending} pending</span>
               <span className="text-rose-700">{data.totals.razorpay.failed} failed</span>
+              {data.totals.razorpay.orphaned > 0 && (
+                <span className="text-muted-foreground" data-testid="totals-razorpay-orphaned">
+                  {data.totals.razorpay.orphaned} orphaned ({formatINR(data.totals.razorpay.orphaned_amount)}, not counted)
+                </span>
+              )}
+              <NotCounted t={data.totals.razorpay} testid="totals-razorpay" />
             </div>
           </CardContent>
         </Card>
@@ -78,6 +163,11 @@ export default function AdminReconciliation() {
             <div className="cb-overline text-white/60">Combined paid</div>
             <div className="font-display font-black text-3xl text-accent mt-1 tracking-tighter">{formatINR(data.totals.grand_total_paid)}</div>
             <div className="text-xs font-semibold mt-1 text-white/70">{data.totals.transaction_count} transactions</div>
+            {(data.totals.grand_total_refunded > 0 || data.totals.grand_total_refunding > 0) && (
+              <div className="text-xs font-semibold mt-1 text-white/70" data-testid="totals-grand-excluded">
+                Excludes {formatINR(data.totals.grand_total_refunded)} refunded · {formatINR(data.totals.grand_total_refunding)} refund in progress
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -91,8 +181,49 @@ export default function AdminReconciliation() {
               <div className="font-display font-bold text-lg text-rose-900">{data.mismatches.length} mismatch(es) detected</div>
             </div>
             <div className="space-y-1 text-xs">
-              {data.mismatches.slice(0, 10).map((m, i) => (
-                <div key={i} className="font-mono"><b>{m.order_id}</b> · {m.reason}</div>
+              {[
+                // Actionable escrow refund issues are always shown (they carry a
+                // Retry button); other mismatches keep the existing top-10 cap.
+                ...data.mismatches.filter((m) => m.escrow_id || m.orphaned),
+                ...data.mismatches.filter((m) => !m.escrow_id && !m.orphaned).slice(0, 10),
+              ].map((m, i) => (
+                m.escrow_id ? (
+                  <div key={i} className="rounded-md bg-white/70 border border-rose-100 p-2 flex flex-wrap items-center gap-2" data-testid={`escrow-mismatch-${m.escrow_id}`}>
+                    <Badge className={`${escrowStatusClasses(m.escrow_status)} border-0 font-bold text-2xs`}>{escrowStatusLabel(m.escrow_status)}</Badge>
+                    <span className="font-mono"><b>{m.order_id}</b> · {m.reason}</span>
+                    {m.payee_hold_locked && (
+                      <span className="w-full flex items-center gap-1 text-amber-800 font-semibold">
+                        <Lock className="w-3 h-3 flex-shrink-0" />
+                        {`Counsel's held balance${m.payee_amount != null ? ` (${formatINR(m.payee_amount)})` : ""} stays locked until this refund succeeds. It can never be paid out from this escrow.`}
+                      </span>
+                    )}
+                    {m.escrow_status === "refund_processing" && (
+                      <Button size="sm" variant="outline" className="ml-auto font-bold h-7" disabled={retrying === m.escrow_id}
+                              onClick={() => checkRefund(m)} data-testid={`check-refund-${m.escrow_id}`}>
+                        <RefreshCw className="w-3 h-3 mr-1" /> Check status
+                      </Button>
+                    )}
+                    {isRetryableRefund(m.escrow_status) && (
+                      <Button size="sm" variant="outline" className={`${m.escrow_status === "refund_processing" ? "" : "ml-auto "}font-bold h-7`} disabled={retrying === m.escrow_id}
+                              onClick={() => retryRefund(m)} data-testid={`retry-refund-${m.escrow_id}`}>
+                        <RotateCcw className="w-3 h-3 mr-1" /> {retrying === m.escrow_id ? "Retrying…" : "Retry refund"}
+                      </Button>
+                    )}
+                  </div>
+                ) : m.orphaned ? (
+                  <div key={i} className="rounded-md bg-white/70 border border-rose-100 p-2 flex flex-wrap items-center gap-2" data-testid={`orphan-mismatch-${m.razorpay_order_id}`}>
+                    <Badge className={`${orphanRefundClasses(m.orphan_refund_status)} border-0 font-bold text-2xs`}>{orphanRefundLabel(m.orphan_refund_status)}</Badge>
+                    <span className="font-mono"><b>{m.order_id}</b> · {m.reason}</span>
+                    {m.razorpay_order_id && isRetryableOrphanRefund(m.orphan_refund_status) && (
+                      <Button size="sm" variant="outline" className="ml-auto font-bold h-7" disabled={retrying === m.razorpay_order_id}
+                              onClick={() => retryOrphanRefund(m)} data-testid={`retry-orphan-refund-${m.razorpay_order_id}`}>
+                        <RotateCcw className="w-3 h-3 mr-1" /> {retrying === m.razorpay_order_id ? "Retrying…" : "Retry orphan refund"}
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                  <div key={i} className="font-mono"><b>{m.order_id}</b> · {m.reason}</div>
+                )
               ))}
             </div>
           </CardContent>
@@ -144,8 +275,17 @@ export default function AdminReconciliation() {
                   </TableCell>
                   <TableCell className="font-mono text-xs">{r.order_id}</TableCell>
                   <TableCell className="font-bold">{formatINR(r.amount)}</TableCell>
-                  <TableCell><StatusBadge s={r.payment_status} /></TableCell>
-                  <TableCell className="text-xs">{r.order_payment_status || "—"} {r.mismatch && <span className="text-rose-700 font-bold">⚠ MISMATCH</span>}</TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <StatusBadge s={r.payment_status} />
+                      {r.refund_status && (
+                        <Badge className={`${escrowStatusClasses(r.refund_status)} border-0 font-bold text-2xs`} data-testid={`recon-refund-${i}`}>
+                          {escrowStatusLabel(r.refund_status)}
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-xs">{r.order_payment_status || "—"} {r.mismatch && <span className="text-rose-700 font-bold">⚠ MISMATCH</span>}{r.orphaned && <span className="text-muted-foreground font-bold"> · ORPHANED</span>}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{r.created_at ? new Date(r.created_at).toLocaleString('en-IN') : '—'}</TableCell>
                 </TableRow>
               ))}

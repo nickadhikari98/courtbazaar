@@ -30,15 +30,34 @@ def _user(prefix):
 
 
 async def _make_hearing(db, requester, counsel):
-    hearing = await hearings.create_hearing_request(
-        db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
-        target_advocate_id=counsel["user_id"],
-    )
+    # A targeted hearing snapshots the counsel's own
+    # proxy_counsel_profiles.negotiation_enabled at creation (fee negotiation
+    # toggle, 5b25d4b) — no profile means negotiation is off and every
+    # propose_offer is refused. These tests exercise the negotiable path, so
+    # the counsel needs a profile with the toggle on.
+    await db.proxy_counsel_profiles.insert_one({"user_id": counsel["user_id"], "negotiation_enabled": True})
+    try:
+        hearing = await hearings.create_hearing_request(
+            db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
+            target_advocate_id=counsel["user_id"],
+        )
+    except Exception:
+        await db.proxy_counsel_profiles.delete_one({"user_id": counsel["user_id"]})
+        raise
+    assert hearing["negotiation_enabled"] is True
     return hearing["hearing_id"]
 
 
 async def _cleanup(db, hearing_ids=()):
     if hearing_ids:
+        # Only the throwaway counsels these hearings were targeted at
+        # (test_neg_* ids created by _user) — never any other profile row.
+        counsel_ids = await db.hearing_requests.distinct(
+            "target_advocate_id", {"hearing_id": {"$in": list(hearing_ids)}},
+        )
+        counsel_ids = [c for c in counsel_ids if c and c.startswith("test_neg_")]
+        if counsel_ids:
+            await db.proxy_counsel_profiles.delete_many({"user_id": {"$in": counsel_ids}})
         await db.hearing_requests.delete_many({"hearing_id": {"$in": list(hearing_ids)}})
         await db.negotiations.delete_many({"hearing_id": {"$in": list(hearing_ids)}})
 
