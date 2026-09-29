@@ -232,6 +232,15 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
             raise HTTPException(401, "Invalid token")
     raise HTTPException(401, "Not authenticated")
 
+async def get_current_user_optional(authorization: Optional[str] = Header(None)) -> Optional[dict]:
+    """Resolve a valid user when present, while allowing anonymous public chat."""
+    if not authorization:
+        return None
+    try:
+        return await get_current_user(authorization)
+    except HTTPException:
+        return None
+
 # ===== Models =====
 # "client" is the generic default for anyone signing up without going
 # through a professional application (see ROLE_CAPABILITIES above) — kept
@@ -308,9 +317,9 @@ class PricingUpdate(BaseModel):
     active: Optional[bool] = None
     visibility: Optional[Dict[str, bool]] = None  # partial — merged per-surface, not replaced (see handler)
 
-class ChatMessage(BaseModel):
-    session_id: str
-    message: str
+class ChatSendRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+    conversation_id: Optional[str] = None
 
 class RatingCreate(BaseModel):
     order_id: str
@@ -515,6 +524,7 @@ async def seed_initial_data():
     import negotiation as negotiation_svc
     import notifications as notifications_svc
     import order_agent_tools
+    import ai_chat as ai_chat_svc
     await leads_svc.ensure_indexes(db)
     await reviews_svc.ensure_indexes(db)
     await support_tickets_svc.ensure_indexes(db)
@@ -524,6 +534,7 @@ async def seed_initial_data():
     await negotiation_svc.ensure_indexes(db)
     await notifications_svc.ensure_indexes(db)
     await order_agent_tools.ensure_indexes(db)
+    await ai_chat_svc.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -1707,18 +1718,19 @@ async def get_earnings_settlements(user=Depends(get_current_user)):
         {"$or": [{"payee_id": user["user_id"]}, {"vendor_id": user["user_id"]}]}, {"_id": 0},
     ).sort("created_at", -1).to_list(200)
 
-# ---------- AI ASSISTANT ----------
-# Not wired to a real LLM provider yet (the previous integration depended on an
-# uninstalled package). /ai/chat is a clear stub rather than a 500; the filing
-# checklist still returns a useful deterministic answer.
+# ---------- AI ASSISTANT: Instant Legal Help ----------
 @api_router.post("/ai/chat")
-async def ai_chat(req: ChatMessage, user=Depends(get_current_user)):
-    raise HTTPException(503, "AI Assistant chat is not yet available.")
+async def ai_chat(req: ChatSendRequest, user: Optional[dict] = Depends(get_current_user_optional), request: Request = None):
+    import ai_chat as ai_chat_svc
+    client_ip = request.client.host if request and request.client else "unknown"
+    rate_key = user["user_id"] if user else client_ip
+    ai_chat_svc.check_chat_rate_limit(rate_key)
+    return await ai_chat_svc.handle_chat_message(db, req.conversation_id, req.message, user, client_ip=client_ip)
 
-@api_router.get("/ai/history/{session_id}")
-async def ai_history(session_id: str, user=Depends(get_current_user)):
-    msgs = await db.ai_messages.find({"session_id": session_id, "user_id": user["user_id"]}, {"_id": 0}).sort("created_at", 1).to_list(100)
-    return msgs
+@api_router.get("/ai/history/{conversation_id}")
+async def ai_history(conversation_id: str, user: Optional[dict] = Depends(get_current_user_optional)):
+    import ai_chat as ai_chat_svc
+    return await ai_chat_svc.get_conversation_history(db, conversation_id, user)
 
 @api_router.post("/ai/filing-checklist")
 async def filing_checklist(payload: dict, user=Depends(get_current_user)):
