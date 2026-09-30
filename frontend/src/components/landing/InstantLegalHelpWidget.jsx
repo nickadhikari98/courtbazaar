@@ -72,8 +72,14 @@ function cleanAssistantText(str) {
   return cleaned.trim();
 }
 
+const SESSION_EXPIRED_TEXT = "This chat session is no longer available. Please send your message again to start a new chat.";
+
 export default function InstantLegalHelpWidget({ open, onClose, initialMessage }) {
   const [conversationId, setConversationId] = useState(null);
+  // Secret the backend issues with an anonymous conversation's first reply;
+  // it must be sent back to continue that conversation (the id alone isn't
+  // enough). Kept in memory only, like conversationId.
+  const [conversationToken, setConversationToken] = useState(null);
   const [msgs, setMsgs] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -95,12 +101,24 @@ export default function InstantLegalHelpWidget({ open, onClose, initialMessage }
     setInput("");
     setLoading(true);
     try {
-      const { data } = await api.post("/ai/chat", { conversation_id: conversationId, message: content });
+      const { data } = await api.post("/ai/chat", {
+        conversation_id: conversationId,
+        message: content,
+        ...(conversationToken ? { conversation_token: conversationToken } : {}),
+      });
       if (sessionRef.current !== mySession) return; // superseded by "New chat" while this was in flight
       if (data?.conversation_id) setConversationId(data.conversation_id);
+      if (data?.conversation_token) setConversationToken(data.conversation_token);
       setMsgs((prev) => [...prev, { role: "assistant", text: data?.reply || GENERIC_ERROR_TEXT, sources: data?.sources || [] }]);
     } catch (err) {
       if (sessionRef.current !== mySession) return;
+      if (err?.response?.status === 404) {
+        // The conversation can't be continued (unknown or not ours) — start fresh next time.
+        setConversationId(null);
+        setConversationToken(null);
+        setMsgs((prev) => [...prev, { role: "assistant", text: SESSION_EXPIRED_TEXT }]);
+        return;
+      }
       const isUnavailable = err?.response?.status === 503;
       setMsgs((prev) => [...prev, { role: "assistant", text: isUnavailable ? UNAVAILABLE_TEXT : GENERIC_ERROR_TEXT }]);
       if (!isUnavailable) toast.error(getErrorMessage(err, "Something went wrong. Please try again."));
@@ -125,6 +143,7 @@ export default function InstantLegalHelpWidget({ open, onClose, initialMessage }
     sessionRef.current += 1;
     setMsgs([]);
     setConversationId(null);
+    setConversationToken(null);
     setInput("");
     setLoading(false);
   };

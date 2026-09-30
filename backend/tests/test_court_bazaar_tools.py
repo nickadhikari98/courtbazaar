@@ -27,6 +27,7 @@ test_decline_authorization.py), so server.py's real client is never touched.
 import unittest.mock
 import asyncio
 import os
+import re
 import sys
 import uuid
 
@@ -1456,7 +1457,9 @@ def test_unavailable_current_pending_hearing_count_uses_capability_fallback():
     result = run(ai_chat._route_tool_call(object(), query, {}, "127.0.0.1"))
     assert result["status"] == "unsupported"
     assert result["message"] == ai_chat.PENDING_HEARINGS_UNAVAILABLE_MESSAGE
-    assert "isn't exposed through the available public CourtBazaar tools" in result["message"]
+    # Still declines to give a count, without naming internal tools.
+    assert "can’t share the current number of pending hearing requests" in result["message"]
+    assert not re.search(r"\d|\btools?\b", result["message"])
 
 
 def test_current_service_failure_is_distinct_from_missing_service_and_rag_failure():
@@ -1498,7 +1501,7 @@ def test_efiling_empty_services_reply_is_specific():
         class FakeDB:
             ai_chat_messages = FakeCollection()
 
-        async def get_conversation(_db, _conversation_id, _user_id):
+        async def get_conversation(_db, _conversation_id, _user_id, _conversation_token=None):
             return {"conversation_id": "conv_test", "user_id": None}
 
         async def no_prior(_db, _conversation_id, _limit):

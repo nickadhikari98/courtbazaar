@@ -84,3 +84,40 @@ test("chat sends a message and displays only the reply without a source footer",
   expect(container.querySelector('[data-testid="instant-legal-help-msg-assistant-1"]').textContent)
     .toBe("Choose a service, upload documents, then review your order.");
 });
+
+async function sendMessage(text) {
+  const input = container.querySelector('[data-testid="instant-legal-help-input"]');
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(input, text);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => container.querySelector('[data-testid="instant-legal-help-send"]').click());
+}
+
+test("the conversation token issued with the first reply is sent back to continue the chat", async () => {
+  api.post
+    .mockResolvedValueOnce({ data: { conversation_id: "conv_anon", conversation_token: "secret-token", reply: "First." } })
+    .mockResolvedValueOnce({ data: { conversation_id: "conv_anon", reply: "Second." } });
+  act(() => root.render(<MemoryRouter><HeroSection /></MemoryRouter>));
+  act(() => container.querySelector('[data-testid="instant-legal-help-launcher"]').click());
+  await sendMessage("What is bail?");
+  await sendMessage("And anticipatory bail?");
+  expect(api.post).toHaveBeenLastCalledWith("/ai/chat", {
+    conversation_id: "conv_anon", conversation_token: "secret-token", message: "And anticipatory bail?",
+  });
+});
+
+test("a conversation the backend won't continue (404) is dropped and the next message starts fresh", async () => {
+  api.post
+    .mockResolvedValueOnce({ data: { conversation_id: "conv_anon", conversation_token: "secret-token", reply: "First." } })
+    .mockRejectedValueOnce({ response: { status: 404 } })
+    .mockResolvedValueOnce({ data: { conversation_id: "conv_new", conversation_token: "new-token", reply: "Fresh." } });
+  act(() => root.render(<MemoryRouter><HeroSection /></MemoryRouter>));
+  act(() => container.querySelector('[data-testid="instant-legal-help-launcher"]').click());
+  await sendMessage("What is bail?");
+  await sendMessage("Continue");
+  expect(container.textContent).toContain("This chat session is no longer available.");
+  await sendMessage("Try again");
+  expect(api.post).toHaveBeenLastCalledWith("/ai/chat", { conversation_id: null, message: "Try again" });
+});

@@ -15,6 +15,7 @@ const SUGGESTIONS = [
 
 export default function AIAssistant() {
   const [conversationId, setConversationId] = useState(null);
+  const [conversationToken, setConversationToken] = useState(null);
   const [msgs, setMsgs] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -29,10 +30,20 @@ export default function AIAssistant() {
     setInput("");
     setLoading(true);
     try {
-      const { data } = await api.post("/ai/chat", { conversation_id: conversationId, message: content });
+      const { data } = await api.post("/ai/chat", {
+        conversation_id: conversationId,
+        message: content,
+        ...(conversationToken ? { conversation_token: conversationToken } : {}),
+      });
       if (data?.conversation_id) setConversationId(data.conversation_id);
+      if (data?.conversation_token) setConversationToken(data.conversation_token);
       setMsgs(prev => [...prev, { role: "assistant", text: data.reply }]);
-    } catch {
+    } catch (err) {
+      if (err?.response?.status === 404) {
+        // Conversation can't be continued — the next message starts a new one.
+        setConversationId(null);
+        setConversationToken(null);
+      }
       toast.error("AI is unavailable. Try again.");
     } finally { setLoading(false); }
   };

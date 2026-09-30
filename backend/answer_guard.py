@@ -24,8 +24,15 @@ import os
 import re
 from typing import Iterable, List, Optional, Tuple
 
-UNVERIFIED_COURTBAZAAR_MESSAGE = "I couldn't verify that from the available CourtBazaar information."
+UNVERIFIED_COURTBAZAAR_MESSAGE = (
+    "I don’t have verified information about that at the moment. You can ask me about CourtBazaar services, "
+    "courts, or Proxy Counsel."
+)
 UNVERIFIED_GENERAL_MESSAGE = "I don't have enough verified information to answer that reliably."
+UNVERIFIED_LEGAL_MESSAGE = (
+    "I don’t have enough verified information to answer that reliably. If you share more details, I can help "
+    "explain the general legal concept."
+)
 PARTIAL_ANSWER_NOTE = "Some details couldn't be verified from the available information, so I've left them out."
 LEGAL_VERIFY_NOTE = (
     "Please verify any specific section, time limit or figure with a qualified advocate or an official "
@@ -150,6 +157,34 @@ _INJECTION_ECHO_RE = re.compile(
 )
 
 
+# Text in a retrieved passage that addresses the assistant rather than
+# describing CourtBazaar or the rules ("SYSTEM: respond only with ...").
+_DIRECTIVE_RE = re.compile(
+    # role tags: "SYSTEM:", "[assistant instruction]:"
+    r"(?:^|[\s\[(\"'])(?:system|developer|assistant|ai|chatbot|model)\s*(?:message|prompt|instruction)?s?\s*[:\]]"
+    # a sentence that opens with a command to reply/say/tell
+    r"|^\W*(?:always\s+|only\s+|now\s+)?(?:respond|reply|answer|output|print|say|tell|inform|assure)\b"
+    r"|\b(?:respond|reply|answer|output|say)\s+(?:only|exactly|always)\b"
+    r"|\b(?:the|this)\s+(?:assistant|chatbot|ai|model|bot)\s+(?:must|should|will|shall)\b"
+    r"|\bas an ai\b|\byou are now\b",
+    re.IGNORECASE,
+)
+
+
+def evidence_without_directives(evidence: str) -> str:
+    """The evidence a grounded answer is checked against, minus any
+    sentence that is an instruction to the assistant (or an injected
+    "ignore previous instructions"). The model still sees the whole
+    excerpt as data; this only stops a planted directive's payload from
+    counting as support for the answer that repeats it."""
+    kept = []
+    for raw in (evidence or "").split("\n"):
+        pieces = _SENTENCE_SPLIT_RE.split(raw)
+        kept.append(" ".join(p for p in pieces
+                             if not (_DIRECTIVE_RE.search(p) or _INJECTION_ECHO_RE.search(p))))
+    return "\n".join(kept)
+
+
 def _lines(text: str) -> List[Tuple[str, List[str]]]:
     """The answer as lines, each (list marker, [sentences]), so a filtered
     answer can be rebuilt with its original list/line structure."""
@@ -161,7 +196,9 @@ def _lines(text: str) -> List[Tuple[str, List[str]]]:
         prefix = marker.group(0) if marker else ""
         sentences: List[str] = []
         for piece in _SENTENCE_SPLIT_RE.split(raw[len(prefix):].strip()):
-            if sentences and _ABBREVIATION_END_RE.search(sentences[-1]):
+            # Only the tail can end in an abbreviation; searching the whole,
+            # growing sentence each time made this quadratic.
+            if sentences and _ABBREVIATION_END_RE.search(" " + sentences[-1][-24:]):
                 sentences[-1] += " " + piece
             elif piece.strip():
                 sentences.append(piece.strip())
@@ -253,38 +290,275 @@ _LEGAL_FIGURE_RE = re.compile(
     re.IGNORECASE,
 )
 _STATISTIC_RE = re.compile(r"\d+(?:\.\d+)?\s*%|\b\d+(?:\.\d+)?\s*(?:million|billion|crore|lakh)\b", re.IGNORECASE)
+# Legal figures the digit-based pattern above misses: time limits in words
+# ("three years"), roman-numeral Orders, and named statutes.
+_LEGAL_FIGURE_WORDS_RE = re.compile(
+    r"\b(?:" + "|".join(_NUMBER_WORDS) + r")\s+(?:days?|weeks?|months?|years?)\b", re.IGNORECASE,
+)
+_STATUTE_NAME_RE = re.compile(
+    r"\bOrder\s+[IVXL]{1,7}\b|\b(?:Act|Sanhita|Adhiniyam)(?:,?\s*\d{4})?\b|\bCode of (?:Civil|Criminal) Procedure\b"
+    r"|\b(?:IPC|CrPC|Cr\.P\.C|CPC|BNSS|BNS|BSA)\b",
+)
+
+# ---------------------------------------------------------------------------
+# Legal currentness (general-knowledge legal answers)
+# ---------------------------------------------------------------------------
+# The model's legal knowledge can be out of date or simply wrong, and nothing
+# on these turns can check it against a current official source. So:
+# - a section of a repealed code (IPC, CrPC, Indian Evidence Act — replaced
+#   by the BNS, BNSS and BSA from 1 July 2024) cited without historical
+#   framing is marked in place as the old provision, with the new section
+#   only where the correspondence below is known — never a guessed number;
+# - a few well-known remedies tied to the wrong provision (the Phase 3 smoke
+#   failures) are removed and replaced by a fixed, verified correction;
+# - a sentence claiming the law has been verified or is current is removed;
+# - a legal answer that turns on a section, statute, time limit or current
+#   law is qualified as unverified.
+
+CURRENT_LAW_NOTE = (
+    "Laws and procedures change, and this couldn't be checked against the current official text — please "
+    "confirm the current position with a qualified advocate or an official source before relying on it."
+)
+ANTICIPATORY_BAIL_NOTE = (
+    "For reference: since 1 July 2024, anticipatory bail is governed by Section 482 of the BNSS "
+    "(formerly Section 438 CrPC)."
+)
+RECEIVER_NOTE = (
+    "For reference: appointment of receivers is dealt with under Order 40 CPC; Order 39 CPC covers temporary "
+    "injunctions and interlocutory orders."
+)
+INJUNCTION_NOTE = "For reference: temporary injunctions are dealt with under Order 39 CPC."
+
+_ACT_PATTERNS = (
+    ("CrPC", r"cr\.?\s?p\.?\s?c\b|code of criminal procedure(?:,?\s*1973)?"),
+    ("IPC", r"i\.?p\.?c\b|indian penal code(?:,?\s*1860)?"),
+    ("IEA", r"(?:indian\s+)?evidence act(?:,?\s*1872)?"),
+    ("BNSS", r"b\.?n\.?s\.?s\b|bharatiya nagarik suraksha sanhita(?:,?\s*2023)?"),
+    ("BNS", r"b\.?n\.?s\b|bharatiya nyaya sanhita(?:,?\s*2023)?"),
+    ("BSA", r"b\.?s\.?a\b|bharatiya sakshya adhiniyam(?:,?\s*2023)?"),
+)
+_ACT_RES = [(name, re.compile(pattern, re.IGNORECASE)) for name, pattern in _ACT_PATTERNS]
+_ACT = "(?:" + "|".join(pattern for _, pattern in _ACT_PATTERNS) + ")"
+_SEC_NUM = r"\d+[A-Z]{0,2}(?:\(\d+\))*"
+_SEC_WORD = r"(?:sections?|secs?\.|sec\b|s\.|u/s\.?)"
+_SECTION_CITATION_RE = re.compile(
+    rf"\b{_SEC_WORD}\s*(?P<n1>{_SEC_NUM}(?:\s*(?:,|and|or|&)\s*{_SEC_NUM})*)(?:\s*(?:of\s+)?(?:the\s+)?(?P<a1>{_ACT}))?"
+    rf"|(?P<a2>{_ACT})(?:,?\s*\d{{4}})?,?\s*{_SEC_WORD}\s*(?P<n2>{_SEC_NUM})"
+    rf"|\b(?P<n3>{_SEC_NUM})\s+(?:of\s+)?(?:the\s+)?(?P<a3>{_ACT})",
+    re.IGNORECASE,
+)
+_SEC_NUM_RE = re.compile(_SEC_NUM, re.IGNORECASE)
+_REPEALED_SUCCESSOR = {"CrPC": "BNSS", "IPC": "BNS", "IEA": "BSA"}
+_ACT_LABEL = {"CrPC": "CrPC", "IPC": "IPC", "IEA": "Evidence Act", "BNSS": "BNSS", "BNS": "BNS", "BSA": "BSA"}
+# Only widely published correspondences; anything else is marked as the old
+# provision without a new number.
+_RENUMBERED = {
+    "CrPC": {
+        "125": "144", "144": "163", "154": "173", "156": "175", "161": "180", "164": "183", "167": "187",
+        "197": "218", "200": "223", "313": "351", "320": "359", "436": "478", "436A": "479", "437": "480",
+        "438": "482", "439": "483", "482": "528",
+    },
+    "IPC": {
+        "34": "3(5)", "120B": "61", "302": "103", "304": "105", "304A": "106", "304B": "80", "307": "109",
+        "323": "115", "354": "74", "376": "64", "379": "303", "406": "316", "420": "318", "498A": "85",
+        "506": "351", "509": "79",
+    },
+    "IEA": {"65B": "63"},
+}
+_HISTORICAL_FRAMING_RE = re.compile(
+    r"\b(?:formerly|earlier|previously|erstwhile|old(?:er)?|repealed|replac\w*|supersed\w*|succeeded|"
+    r"prior to|used to|pre-july|corresponding|corresponds|equivalent)\b|\bbefore\b[^.]{0,20}\b2024\b",
+    re.IGNORECASE,
+)
+_ORDER_RE = re.compile(r"\b[Oo]rder\s+(\d{1,2})\b|\b(?:Order|ORDER)\s+([IVXL]{1,7})\b|\bO\.\s?(\d{1,2})\b")
+# A sentence that continues the previous one's subject ("It also ...").
+_ANAPHORIC_START_RE = re.compile(
+    r"^\s*(?:it|this|these|they|the order|under (?:it|this|the same)|the same)\b", re.IGNORECASE,
+)
+# (topic, kind, allowed citations, correction note). For sections, an
+# act-less number is read as the act it's allowed under ("Section 438" in an
+# anticipatory-bail sentence is the CrPC one).
+_PROVISION_RULES = (
+    (re.compile(r"\banticipatory bail\b", re.IGNORECASE), "section",
+     {("BNSS", "482"), ("CrPC", "438")}, ANTICIPATORY_BAIL_NOTE),
+    (re.compile(r"\breceivers?(?:ship)?\b", re.IGNORECASE), "order", {40}, RECEIVER_NOTE),
+    (re.compile(r"\b(?:temporary|interim|ad[- ]interim)\s+injunctions?\b", re.IGNORECASE), "order", {39},
+     INJUNCTION_NOTE),
+)
+_VERIFICATION_CLAIM_RE = re.compile(
+    r"\bI(?:'ve|’ve| have)?\s+(?:verified|confirmed|checked|cross-checked)\b"
+    r"|\b(?:has|have) been (?:verified|confirmed)\b"
+    r"|\b(?:verified|confirmed) (?:as|to be) (?:current|accurate|correct|up[- ]to[- ]date)\b"
+    r"|\bcurrent,?\s+verified\b|\bofficially (?:verified|confirmed)\b"
+    r"|\b(?:100%|completely|fully|definitely) (?:accurate|correct|verified|up[- ]to[- ]date)\b"
+    r"|\bguaranteed to be (?:current|accurate|correct)\b",
+    re.IGNORECASE,
+)
+_CURRENT_LAW_QUESTION_RE = re.compile(
+    r"\b(?:current(?:ly)?|latest|now|today|recent(?:ly)?|amend\w*|new law|in force|still (?:valid|applicable)|"
+    r"up[- ]to[- ]date|as of)\b",
+    re.IGNORECASE,
+)
+_CURRENT_LAW_ANSWER_RE = re.compile(r"\b(?:amend\w*|latest|recent(?:ly)?)\b", re.IGNORECASE)
 
 
-def guard_general_answer(answer: str, legal: bool) -> str:
+def _act_key(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    for name, pattern in _ACT_RES:
+        if pattern.fullmatch(text.strip()):
+            return name
+    return None
+
+
+def _base_section(number: str) -> str:
+    return number.split("(")[0].upper()
+
+
+def _section_citations(sentence: str) -> List[dict]:
+    citations = []
+    for m in _SECTION_CITATION_RE.finditer(sentence):
+        numbers = m.group("n1") or m.group("n2") or m.group("n3")
+        citations.append({
+            "start": m.start(), "end": m.end(),
+            "numbers": [_base_section(n) for n in _SEC_NUM_RE.findall(numbers)],
+            "act": _act_key(m.group("a1") or m.group("a2") or m.group("a3")),
+        })
+    return citations
+
+
+def _roman_to_int(value: str) -> int:
+    numerals = {"I": 1, "V": 5, "X": 10, "L": 50}
+    total = 0
+    for i, ch in enumerate(value):
+        n = numerals[ch]
+        total += -n if i + 1 < len(value) and numerals[value[i + 1]] > n else n
+    return total
+
+
+def _orders(sentence: str) -> List[int]:
+    return [int(a or c) if (a or c) else _roman_to_int(b) for a, b, c in _ORDER_RE.findall(sentence)]
+
+
+def _old_provision_label(act: str, numbers: List[str]) -> str:
+    successor = _REPEALED_SUCCESSOR[act]
+    label = _ACT_LABEL[act] + (" provision" if len(numbers) == 1 else " provisions")
+    mapped = [_RENUMBERED[act].get(n) for n in numbers]
+    if all(mapped):
+        word = "Section" if len(mapped) == 1 else "Sections"
+        listed = mapped[0] if len(mapped) == 1 else ", ".join(mapped[:-1]) + " and " + mapped[-1]
+        return f" (pre-July 2024 {label}; now {word} {listed} {successor})"
+    return f" (pre-July 2024 {label}, since replaced by the {successor})"
+
+
+def _check_provisions(sentence: str, context: dict) -> Tuple[Optional[str], List[str]]:
+    """Returns (sentence, correction notes); sentence is None when it ties a
+    known remedy to the wrong provision. `context` carries the previous
+    sentence's topics and Order across sentences ("It also covers ...")."""
+    citations = _section_citations(sentence)
+    orders = _orders(sentence)
+    anaphoric = bool(_ANAPHORIC_START_RE.match(sentence))
+    topics_here = {i for i, rule in enumerate(_PROVISION_RULES) if rule[0].search(sentence)}
+    topics = topics_here | (context["topics"] if anaphoric else set())
+    effective_orders = orders or (context["orders"] if anaphoric else [])
+    context["topics"] = topics
+    context["orders"] = effective_orders
+
+    # Act-less section numbers take the act they're allowed under for the topic.
+    for citation in citations:
+        if citation["act"] is None:
+            for i in topics:
+                _, kind, allowed, _ = _PROVISION_RULES[i]
+                if kind == "section":
+                    acts = {act for act, num in allowed if num in citation["numbers"]}
+                    if len(acts) == 1:
+                        citation["act"] = acts.pop()
+
+    failed = []
+    for i in sorted(topics):
+        _, kind, allowed, note = _PROVISION_RULES[i]
+        if kind == "order":
+            if effective_orders and not any(o in allowed for o in effective_orders):
+                failed.append(note)
+        else:
+            judged = [(c["act"], n) for c in citations if c["act"] in {a for a, _ in allowed} for n in c["numbers"]]
+            if judged and not any(pair in allowed for pair in judged):
+                failed.append(note)
+
+    # "Section X BNSS (formerly Section Y CrPC)" must be a known pairing.
+    for old_act, new_act in _REPEALED_SUCCESSOR.items():
+        old = [n for c in citations if c["act"] == old_act for n in c["numbers"]]
+        new = [n for c in citations if c["act"] == new_act for n in c["numbers"]]
+        if len(old) == 1 and len(new) == 1:
+            expected = _RENUMBERED[old_act].get(old[0])
+            if expected is not None and _base_section(expected) != new[0]:
+                failed.append(next((_PROVISION_RULES[i][3] for i in sorted(topics)), PARTIAL_ANSWER_NOTE))
+    if failed:
+        return None, list(dict.fromkeys(failed))
+
+    # Mark repealed-code sections cited as if current.
+    framed = _HISTORICAL_FRAMING_RE.search(sentence) or any(
+        c["act"] in _REPEALED_SUCCESSOR.values() for c in citations)
+    if not framed:
+        for citation in reversed(citations):
+            if citation["act"] in _REPEALED_SUCCESSOR:
+                label = _old_provision_label(citation["act"], citation["numbers"])
+                sentence = sentence[:citation["end"]] + label + sentence[citation["end"]:]
+    return sentence, []
+
+
+def guard_general_answer(answer: str, legal: bool, question: str = "") -> str:
     """No retrieved evidence backs this answer, so: drop CourtBazaar-specific
-    claims, unverifiable case citations, and long quotations; qualify legal
-    figures (sections, time limits, amounts) and statistics as unverified."""
+    claims, unverifiable case citations, long quotations and claims of
+    verification; mark repealed-code sections as old and correct known
+    wrong provisions; qualify legal figures (sections, statutes, time limits,
+    amounts) and statistics as unverified."""
     lines = []
     kept_count = dropped_courtbazaar = dropped_other = 0
+    corrections: List[str] = []
+    context = {"topics": set(), "orders": []}
     for marker, sentences in _lines(answer):
         kept: List[str] = []
         for sentence in sentences:
             if _COURTBAZAAR_TERM_RE.search(sentence) and _COURTBAZAAR_FACT_RE.search(sentence):
                 dropped_courtbazaar += 1
                 continue
-            if _CASE_CITATION_RE.search(sentence) or _LONG_QUOTE_RE.search(sentence):
+            if (_CASE_CITATION_RE.search(sentence) or _LONG_QUOTE_RE.search(sentence)
+                    or _VERIFICATION_CLAIM_RE.search(sentence)):
                 dropped_other += 1
                 continue
-            kept.append(sentence)
+            checked, notes = _check_provisions(sentence, context)
+            if checked is None:
+                corrections += [n for n in notes if n not in corrections]
+                dropped_other += 1
+                continue
+            kept.append(checked)
         kept_count += len(kept)
         lines.append((marker, kept))
-    if not kept_count:
-        return UNVERIFIED_COURTBAZAAR_MESSAGE if dropped_courtbazaar else UNVERIFIED_GENERAL_MESSAGE
+    corrections = [n for n in corrections if n != PARTIAL_ANSWER_NOTE] + (
+        [PARTIAL_ANSWER_NOTE] if PARTIAL_ANSWER_NOTE in corrections else [])
+    if not kept_count and not corrections:
+        if dropped_courtbazaar:
+            return UNVERIFIED_COURTBAZAAR_MESSAGE
+        return UNVERIFIED_LEGAL_MESSAGE if legal else UNVERIFIED_GENERAL_MESSAGE
     result = _rebuild(lines)
-    notes = []
+    checked_text = result + " " + " ".join(corrections)
+    legal_content = legal or bool(_section_citations(checked_text) or _orders(checked_text))
+    notes = list(corrections)
     if dropped_courtbazaar:
         notes.append(UNVERIFIED_COURTBAZAAR_MESSAGE)
-    if legal and _LEGAL_FIGURE_RE.search(result):
+    if legal_content and (_CURRENT_LAW_QUESTION_RE.search(question or "")
+                          or _CURRENT_LAW_ANSWER_RE.search(result)):
+        notes.append(CURRENT_LAW_NOTE)
+    elif legal_content and (_LEGAL_FIGURE_RE.search(checked_text) or _LEGAL_FIGURE_WORDS_RE.search(checked_text)
+                            or _STATUTE_NAME_RE.search(checked_text)):
         notes.append(LEGAL_VERIFY_NOTE)
     elif not legal and _STATISTIC_RE.search(result):
         notes.append(GENERAL_VERIFY_NOTE)
     if dropped_other and not notes:
         notes.append(PARTIAL_ANSWER_NOTE)
+    if not result:
+        return " ".join(notes)
     return result + ("\n\n" + " ".join(notes) if notes else "")
 
 
@@ -323,7 +597,13 @@ _STACK_TRACE_RE = re.compile(r"Traceback \(most recent call last\)|File \"[^\"]+
 _INJECTION_COMPLIANCE_RE = re.compile(
     r"\b(?:ignoring|disregarding|overriding)\s+(?:all\s+|any\s+|the\s+|my\s+)?(?:previous|prior|above|earlier|"
     r"system|original)\s+(?:instructions|rules|prompts?)\b"
-    r"|\bmy (?:system prompt|instructions) (?:is|are|says?)\b|\bhere (?:is|are) my (?:system prompt|instructions)\b",
+    r"|\bmy (?:system prompt|instructions) (?:is|are|says?)\b|\bhere (?:is|are) my (?:system prompt|instructions)\b"
+    # A paraphrased disclosure of the hidden setup ("My instructions tell me
+    # to ...", "I've been programmed to ...") is as much a leak as a quote.
+    r"|\bmy (?:system prompt|system instructions|instructions|hidden rules|internal rules|developer message|"
+    r"configuration) (?:tells?|says?|states?|requires?|instructs?|direct|directs|asks?)\b"
+    r"|\bI(?:'ve| have)? been (?:instructed|programmed|configured|prompted) to\b"
+    r"|\bI (?:was|am) (?:instructed|programmed|configured|prompted) to\b",
     re.IGNORECASE,
 )
 _SECRET_ENV_HINT_RE = re.compile(r"KEY|SECRET|TOKEN|PASSWORD|PASS\b|MONGO_URL", re.IGNORECASE)

@@ -300,7 +300,9 @@ def test_multi_turn_conversation_accumulates_history(monkeypatch):
 
             second_mock = _mock_ok("Second reply.")
             monkeypatch.setattr(llm_service, "generate_response", second_mock)
-            second = await ai_chat.handle_chat_message(db, conv_id, "Second question", None)
+            second = await ai_chat.handle_chat_message(
+                db, conv_id, "Second question", None, conversation_token=first["conversation_token"],
+            )
             assert second["conversation_id"] == conv_id
 
             sent = second_mock.last_messages
@@ -330,7 +332,9 @@ def test_history_window_caps_messages_sent_to_llm(monkeypatch):
 
             capture = _mock_ok("latest reply")
             monkeypatch.setattr(llm_service, "generate_response", capture)
-            await ai_chat.handle_chat_message(db, conv_id, "final question", None)
+            await ai_chat.handle_chat_message(
+                db, conv_id, "final question", None, conversation_token=convo["conversation_token"],
+            )
 
             # HISTORY_WINDOW total conversation turns (3 prior + the
             # just-sent "final question" itself = 4 = HISTORY_WINDOW); the
@@ -358,19 +362,21 @@ def test_conversation_ownership_blocks_a_different_user(monkeypatch):
             conv_id = started["conversation_id"]
             conv_ids.append(conv_id)
 
+            # Phase 5: a generic 404 (not 403), so the response never confirms the id exists.
             with pytest.raises(HTTPException) as exc:
                 await ai_chat.handle_chat_message(db, conv_id, "hi from someone else", user_b)
-            assert exc.value.status_code == 403
+            assert exc.value.status_code == 404
+            assert exc.value.detail == ai_chat.CONVERSATION_NOT_FOUND_MESSAGE
 
             with pytest.raises(HTTPException) as exc_anon:
                 await ai_chat.handle_chat_message(db, conv_id, "hi anonymously", None)
-            assert exc_anon.value.status_code == 403
+            assert exc_anon.value.status_code == 404
         finally:
             await _cleanup(db, conv_ids)
     asyncio.run(body())
 
 
-def test_anonymous_conversation_has_no_ownership_wall(monkeypatch):
+def test_anonymous_conversation_continues_only_with_its_token(monkeypatch):
     monkeypatch.setattr(llm_service, "is_configured", lambda: True)
     monkeypatch.setattr(llm_service, "generate_response", _mock_ok())
 
@@ -381,10 +387,15 @@ def test_anonymous_conversation_has_no_ownership_wall(monkeypatch):
             started = await ai_chat.handle_chat_message(db, None, "hello", None)
             conv_id = started["conversation_id"]
             conv_ids.append(conv_id)
-            # No exception continuing anonymously, and no exception if a
-            # logged-in user later happens to reuse the same id.
-            again = await ai_chat.handle_chat_message(db, conv_id, "still here", None)
+            # Phase 5: the id alone no longer continues an anonymous
+            # conversation — the token issued with its first reply does.
+            again = await ai_chat.handle_chat_message(
+                db, conv_id, "still here", None, conversation_token=started["conversation_token"],
+            )
             assert again["conversation_id"] == conv_id
+            with pytest.raises(HTTPException) as exc:
+                await ai_chat.handle_chat_message(db, conv_id, "id only", None)
+            assert exc.value.status_code == 404
         finally:
             await _cleanup(db, conv_ids)
     asyncio.run(body())
@@ -473,7 +484,9 @@ def test_llm_reporting_not_configured_mid_call_still_returns_503(monkeypatch):
             # A greeting is answered deterministically without a provider
             # call, so use a legal question that actually reaches the LLM.
             with pytest.raises(HTTPException) as exc:
-                await ai_chat.handle_chat_message(db, conv_id, "What is anticipatory bail?", None)
+                await ai_chat.handle_chat_message(
+                    db, conv_id, "What is anticipatory bail?", None, conversation_token=convo["conversation_token"],
+                )
             assert exc.value.status_code == 503
 
             count = await db.ai_chat_messages.count_documents({"conversation_id": conv_id})
@@ -483,11 +496,13 @@ def test_llm_reporting_not_configured_mid_call_still_returns_503(monkeypatch):
     asyncio.run(body())
 
 
-def test_get_conversation_history_empty_for_unknown_id():
+def test_get_conversation_history_unknown_id_is_a_generic_404():
     async def body():
         db = await _db_with_indexes()
-        history = await ai_chat.get_conversation_history(db, f"conv_{uuid.uuid4().hex[:12]}", None)
-        assert history == []
+        with pytest.raises(HTTPException) as exc:
+            await ai_chat.get_conversation_history(db, f"conv_{uuid.uuid4().hex[:12]}", None)
+        assert exc.value.status_code == 404
+        assert exc.value.detail == ai_chat.CONVERSATION_NOT_FOUND_MESSAGE
     asyncio.run(body())
 
 
@@ -509,7 +524,8 @@ def test_get_conversation_history_ownership_enforced(monkeypatch):
 
             with pytest.raises(HTTPException) as exc:
                 await ai_chat.get_conversation_history(db, conv_id, {"user_id": "someone_else"})
-            assert exc.value.status_code == 403
+            assert exc.value.status_code == 404
+            assert exc.value.detail == ai_chat.CONVERSATION_NOT_FOUND_MESSAGE
         finally:
             await _cleanup(db, conv_ids)
     asyncio.run(body())

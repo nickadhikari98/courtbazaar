@@ -40,12 +40,23 @@ _hearing_summary) — never the raw Mongo document — dropping internal
 scheduling fields, other users' ids, and anything not needed to answer a
 status question.
 
+Phase 5 — own data only. These tools are narrower than the HTTP routes
+they mirror: an admin role, a proxy counsel's view of the open broadcast
+pool, or a targeted pre-payment negotiation never widens what the chatbot
+returns. A caller sees an order only when they placed it or are its vendor,
+and a hearing request only when they requested it or are its assigned
+Proxy Counsel. The admin panel and the hearings pages remain the places for
+that wider access; a chat answer to "my orders" is never another user's
+data. Identifiers from message text or LLM output are only lookup keys —
+ownership is always re-checked here against the database.
+
 None of these four ever accept a user_id as an argument — only `user`, the
 dict FastAPI's own JWT dependency resolved for the actual authenticated
 caller. Callers (ai_chat.py) must never construct or forward a `user` dict
 from message text, LLM output, or any other untrusted source.
 """
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -100,6 +111,17 @@ def _error(tool: str, exc: Exception, message: str = ERROR_MESSAGE) -> Dict[str,
     return {"status": "error", "tool": tool, "message": message}
 
 
+# Every record id this module looks up (court_, adv_/user_, ORD..., hearing_)
+# is a short alphanumeric/underscore token. Anything else — an operator
+# object, a huge string, punctuation — is treated exactly like an id that
+# doesn't exist, before it reaches a query.
+_LOOKUP_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _valid_lookup_id(value: Any) -> bool:
+    return isinstance(value, str) and bool(_LOOKUP_ID_RE.fullmatch(value))
+
+
 def _empty(tool: str) -> Dict[str, Any]:
     return {"status": "empty", "tool": tool, "data": None}
 
@@ -147,6 +169,8 @@ async def get_courts(db, state_id: Optional[str] = None, q: Optional[str] = None
 
 async def get_court(db, court_id: str) -> Dict[str, Any]:
     """Mirrors GET /api/courts/{court_id} exactly (server.py's get_court)."""
+    if not _valid_lookup_id(court_id):
+        return {"status": "empty", "tool": TOOL_GET_COURT, "data": None}
     try:
         court = await db.courts.find_one({"court_id": court_id}, {"_id": 0})
         if not court:
@@ -223,6 +247,8 @@ async def get_proxy_counsel_profile(db, advocate_id: str) -> Dict[str, Any]:
     from this conversation's own prior search_proxy_counsels result — this
     function itself does not and cannot verify that; it will happily look up
     any id, real or not. Never wire this to free-form user/LLM text."""
+    if not _valid_lookup_id(advocate_id):
+        return _empty(TOOL_GET_PROXY_COUNSEL_PROFILE)
     try:
         from server import _advocate_profile_or_404
         profile = await _advocate_profile_or_404(advocate_id)
@@ -237,6 +263,14 @@ async def get_proxy_counsel_profile(db, advocate_id: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Phase 3C-B — authenticated, read-only, own-data-only tools
 # ---------------------------------------------------------------------------
+
+def _owns_order(order: dict, user: dict) -> bool:
+    return user["user_id"] in (order.get("user_id"), order.get("vendor_id"))
+
+
+def _owns_hearing(hearing: dict, user: dict) -> bool:
+    return user["user_id"] in (hearing.get("requesting_user_id"), hearing.get("proxy_counsel_user_id"))
+
 
 def _order_summary(order: dict) -> Dict[str, Any]:
     """Trims a raw `orders` document to what's needed to answer a status
@@ -306,13 +340,12 @@ async def get_my_orders(db, user: dict, status: Optional[str] = None) -> Dict[st
     if guard:
         return guard
     try:
+        # Same role scoping as GET /orders, except that an admin gets their
+        # own orders here, never every user's (see "own data only" above).
         query: Dict[str, Any] = {}
-        role = user.get("role")
-        if role in ("advocate", "law_firm"):
-            query["user_id"] = user["user_id"]
-        elif role == "vendor":
+        if user.get("role") == "vendor":
             query["vendor_id"] = user["user_id"]
-        elif role != "admin":
+        else:
             query["user_id"] = user["user_id"]
         if status:
             query["status"] = status
@@ -333,13 +366,15 @@ async def get_order(db, user: dict, order_id: str) -> Dict[str, Any]:
     guard = _require_user(TOOL_GET_ORDER, user)
     if guard:
         return guard
+    if not _valid_lookup_id(order_id):
+        return _empty(TOOL_GET_ORDER)
     try:
         order = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
     except Exception as e:
         return _error(TOOL_GET_ORDER, e, message=AUTH_ERROR_MESSAGE)
     if not order:
         return _empty(TOOL_GET_ORDER)
-    if user.get("role") != "admin" and order.get("user_id") != user["user_id"] and order.get("vendor_id") != user["user_id"]:
+    if not _owns_order(order, user):  # no admin override here (own data only)
         return _empty(TOOL_GET_ORDER)
     return _success(TOOL_GET_ORDER, _order_summary(order))
 
@@ -355,7 +390,9 @@ async def get_my_hearing_requests(db, user: dict) -> Dict[str, Any]:
     try:
         import hearings as hearings_svc
         hearings = await hearings_svc.list_hearing_requests(db, user)
-        summaries = [_hearing_summary(h) for h in hearings]
+        # list_hearing_requests also returns the open broadcast pool and
+        # targeted negotiations for a proxy counsel — other clients' cases.
+        summaries = [_hearing_summary(h) for h in hearings if _owns_hearing(h, user)]
         return _success(TOOL_GET_MY_HEARING_REQUESTS, summaries)
     except Exception as e:
         return _error(TOOL_GET_MY_HEARING_REQUESTS, e, message=AUTH_ERROR_MESSAGE)
@@ -371,6 +408,8 @@ async def get_hearing_request(db, user: dict, hearing_id: str) -> Dict[str, Any]
     guard = _require_user(TOOL_GET_HEARING_REQUEST, user)
     if guard:
         return guard
+    if not _valid_lookup_id(hearing_id):
+        return _empty(TOOL_GET_HEARING_REQUEST)
     try:
         import hearings as hearings_svc
         from fastapi import HTTPException
@@ -380,6 +419,8 @@ async def get_hearing_request(db, user: dict, hearing_id: str) -> Dict[str, Any]
             if e.status_code in (403, 404):
                 return _empty(TOOL_GET_HEARING_REQUEST)
             raise
+        if not _owns_hearing(hearing, user):  # visible via admin/broadcast is not enough here
+            return _empty(TOOL_GET_HEARING_REQUEST)
         return _success(TOOL_GET_HEARING_REQUEST, _hearing_summary(hearing))
     except Exception as e:
         return _error(TOOL_GET_HEARING_REQUEST, e, message=AUTH_ERROR_MESSAGE)

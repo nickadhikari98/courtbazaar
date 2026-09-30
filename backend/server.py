@@ -319,7 +319,10 @@ class PricingUpdate(BaseModel):
 
 class ChatSendRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
-    conversation_id: Optional[str] = None
+    conversation_id: Optional[str] = Field(None, max_length=64)
+    # Secret issued with an anonymous conversation's first reply; proves the
+    # caller started it (see ai_chat._can_access_conversation). Never an identity.
+    conversation_token: Optional[str] = Field(None, max_length=128)
 
 class RatingCreate(BaseModel):
     order_id: str
@@ -1725,12 +1728,18 @@ async def ai_chat(req: ChatSendRequest, user: Optional[dict] = Depends(get_curre
     client_ip = request.client.host if request and request.client else "unknown"
     rate_key = user["user_id"] if user else client_ip
     ai_chat_svc.check_chat_rate_limit(rate_key)
-    return await ai_chat_svc.handle_chat_message(db, req.conversation_id, req.message, user, client_ip=client_ip)
+    return await ai_chat_svc.handle_chat_message(
+        db, req.conversation_id, req.message, user, client_ip=client_ip, conversation_token=req.conversation_token,
+    )
 
 @api_router.get("/ai/history/{conversation_id}")
-async def ai_history(conversation_id: str, user: Optional[dict] = Depends(get_current_user_optional)):
+async def ai_history(conversation_id: str, user: Optional[dict] = Depends(get_current_user_optional),
+                     request: Request = None,
+                     x_conversation_token: Optional[str] = Header(None, max_length=128)):
     import ai_chat as ai_chat_svc
-    return await ai_chat_svc.get_conversation_history(db, conversation_id, user)
+    client_ip = request.client.host if request and request.client else "unknown"
+    ai_chat_svc.check_history_rate_limit(user["user_id"] if user else client_ip)
+    return await ai_chat_svc.get_conversation_history(db, conversation_id, user, x_conversation_token)
 
 @api_router.post("/ai/filing-checklist")
 async def filing_checklist(payload: dict, user=Depends(get_current_user)):
