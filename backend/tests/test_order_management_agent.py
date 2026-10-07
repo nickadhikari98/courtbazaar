@@ -1,7 +1,7 @@
 """Order Management Agent — orchestration (order_management_agent.py).
 Exercises the degrade-gracefully paths (no API key / timeout / model error)
 and the tool-calling loop against a fake client, so these tests need no real
-Groq API key or network access — same "best-effort, never propagate"
+OpenAI API key or network access — same "best-effort, never propagate"
 convention as hearings.check_pending_order_sheets/auto_release_stale_
 verifications. The tool-dispatch test and the "hearing not found" test run
 against a real local MongoDB (same conventions as the other test files).
@@ -29,11 +29,11 @@ def _user(prefix):
     return {"user_id": f"test_oma_{prefix}_{uuid.uuid4().hex[:10]}"}
 
 
-# Fakes of the Groq (OpenAI-compatible) chat-completions API the agent calls
+# Fakes of the OpenAI chat-completions API the agent calls
 # — client.chat.completions.create(...) -> response.choices[0].message, with
 # tool calls as message.tool_calls[i].function.{name, arguments (JSON str)}.
-# The agent was switched from Gemini to Groq (see order_management_agent.py's
-# provider note); these replace the earlier Gemini-SDK fakes.
+# The agent moved Gemini -> Groq -> OpenAI (see order_management_agent.py's
+# provider note); Groq's API has the same shape, so the fakes are unchanged.
 class _FakeCall:
     def __init__(self, name, args):
         self.name = name
@@ -96,26 +96,26 @@ class _FakeClient:
 
 
 def test_get_client_returns_none_without_api_key():
-    original = os.environ.pop("GROQ_API_KEY", None)
+    original = os.environ.pop("OPENAI_API_KEY", None)
     try:
         assert agent._get_client() is None
     finally:
         if original is not None:
-            os.environ["GROQ_API_KEY"] = original
+            os.environ["OPENAI_API_KEY"] = original
 
 
 def test_summarize_all_without_api_key_degrades_gracefully():
     async def body():
         db = _db()
-        original = os.environ.pop("GROQ_API_KEY", None)
+        original = os.environ.pop("OPENAI_API_KEY", None)
         try:
             result = await agent.summarize_all(db)
             assert result["available"] is False
-            assert result["reason"] == "GROQ_API_KEY not configured"
+            assert result["reason"] == "OPENAI_API_KEY not configured"
             assert "hearings" in result and "escalated_hearings" in result and "open_flags" in result
         finally:
             if original is not None:
-                os.environ["GROQ_API_KEY"] = original
+                os.environ["OPENAI_API_KEY"] = original
     asyncio.run(body())
 
 
@@ -291,10 +291,10 @@ def test_execute_tool_list_hearings_with_null_status_arg():
 
 
 def test_tool_declarations_build_without_api_key():
-    original = os.environ.pop("GROQ_API_KEY", None)
+    original = os.environ.pop("OPENAI_API_KEY", None)
     try:
         declarations = agent._tool_declarations()
-        # OpenAI/Groq tool schema: one {"type": "function", "function": {...}} per tool.
+        # OpenAI tool schema: one {"type": "function", "function": {...}} per tool.
         assert all(d["type"] == "function" and d["function"]["parameters"]["type"] == "object" for d in declarations)
         names = [d["function"]["name"] for d in declarations]
         assert len(names) == len(set(names))
@@ -304,4 +304,143 @@ def test_tool_declarations_build_without_api_key():
         }
     finally:
         if original is not None:
-            os.environ["GROQ_API_KEY"] = original
+            os.environ["OPENAI_API_KEY"] = original
+
+
+# --- OpenAI provider selection, model configuration, and key hygiene --------
+FAKE_OPENAI_KEY = "sk-test-FAKEFAKEFAKE1234567890abcdef"
+
+
+class _RecordingOpenAI(_FakeClient):
+    """Stands in for openai.AsyncOpenAI so _get_client's own construction
+    path runs without a real key or network."""
+    instances = []
+    completions_kwargs = {}
+
+    def __init__(self, api_key=None, **kwargs):
+        self.api_key = api_key
+        _RecordingOpenAI.instances.append(self)
+        super().__init__(**_RecordingOpenAI.completions_kwargs)
+
+
+def _patch_openai(monkeypatch, **completions_kwargs):
+    import openai
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_OPENAI_KEY)
+    _RecordingOpenAI.instances = []
+    _RecordingOpenAI.completions_kwargs = completions_kwargs
+    monkeypatch.setattr(openai, "AsyncOpenAI", _RecordingOpenAI)
+
+
+def test_get_client_selects_openai_not_groq(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_OPENAI_KEY)
+    # A Groq key being present as well must not change the provider.
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test_should_be_ignored")
+    import openai
+    client = agent._get_client()
+    assert isinstance(client, openai.AsyncOpenAI)
+    assert client.api_key == FAKE_OPENAI_KEY
+    assert "api.openai.com" in str(client.base_url)
+
+
+def test_get_client_ignores_groq_key_when_openai_key_missing(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test_should_be_ignored")
+    assert agent._get_client() is None
+
+
+def test_model_defaults_to_gpt_4o_mini_and_honours_openai_model(monkeypatch):
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    assert agent._get_model() == "gpt-4o-mini"
+    monkeypatch.setenv("OPENAI_MODEL", "  ")
+    assert agent._get_model() == "gpt-4o-mini"
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o")
+    assert agent._get_model() == "gpt-4o"
+
+
+def test_summarize_all_uses_openai_client_and_configured_model(monkeypatch):
+    """No client injected — exactly the path the admin route takes."""
+    async def body():
+        db = _db()
+        monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+        _patch_openai(monkeypatch, responses=[
+            _FakeResponse(function_calls=[_FakeCall("get_attention_summary", {})]),
+            _FakeResponse(text="Nothing needs attention."),
+        ])
+
+        result = await agent.summarize_all(db)
+
+        assert result["available"] is True
+        assert result["summary"] == "Nothing needs attention."
+        assert "hearings" in result and "escalated_hearings" in result and "open_flags" in result
+        assert len(_RecordingOpenAI.instances) == 1
+        client = _RecordingOpenAI.instances[0]
+        assert client.api_key == FAKE_OPENAI_KEY
+        calls = client.chat.completions.calls
+        assert len(calls) == 2
+        assert all(c["model"] == "gpt-4o-mini" for c in calls)
+        assert calls[0]["messages"][0] == {"role": "system", "content": agent.SYSTEM_PROMPT}
+        assert FAKE_OPENAI_KEY not in json.dumps(result, default=str)
+    asyncio.run(body())
+
+
+def test_summarize_hearing_without_api_key_is_safe(monkeypatch):
+    async def body():
+        db = _db()
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        requester = _user("requester")
+        hearing_id = None
+        try:
+            hearing = await hearings.create_hearing_request(
+                db, requester["user_id"], "court_tishazari", "2026-09-01", "Test case", 1000.0, None,
+            )
+            hearing_id = hearing["hearing_id"]
+            result = await agent.summarize_hearing(db, hearing_id)
+            assert result["available"] is False
+            assert result["reason"] == "OPENAI_API_KEY not configured"
+            assert "summary" not in result
+            assert result["hearing"]["hearing_id"] == hearing_id
+        finally:
+            if hearing_id:
+                await db.hearing_requests.delete_many({"hearing_id": hearing_id})
+    asyncio.run(body())
+
+
+def test_openai_failure_is_safe_and_never_leaks_the_key(monkeypatch, caplog):
+    """An upstream auth error can echo the key back in its message; neither
+    the response nor the server log may carry it."""
+    async def body():
+        db = _db()
+        _patch_openai(monkeypatch, error=RuntimeError(
+            f"Error code: 401 - Incorrect API key provided: {FAKE_OPENAI_KEY}. "
+            "Also seen: Bearer sk-proj-anotherSecretLookingValue123"
+        ))
+
+        with caplog.at_level("DEBUG"):
+            result = await agent.summarize_all(db)
+
+        assert result["available"] is False
+        assert result["reason"] == "AI summary unavailable"
+        assert "summary" not in result
+        assert "hearings" in result  # fallback data still present
+        assert len(_RecordingOpenAI.instances[0].chat.completions.calls) == 1
+
+        serialized = json.dumps(result, default=str)
+        assert "Order Management Agent failed (RuntimeError)" in caplog.text
+        for secret in (FAKE_OPENAI_KEY, "sk-proj-anotherSecretLookingValue123", "sk-"):
+            assert secret not in serialized
+            assert secret not in caplog.text
+    asyncio.run(body())
+
+
+def test_success_path_never_logs_or_returns_the_key(monkeypatch, caplog):
+    async def body():
+        db = _db()
+        monkeypatch.delenv("OPENAI_MODEL", raising=False)
+        _patch_openai(monkeypatch, responses=[_FakeResponse(text="All clear.")])
+        with caplog.at_level("DEBUG"):
+            result = await agent.summarize_all(db)
+        assert result["available"] is True
+        assert "provider=openai requested_model=gpt-4o-mini" in caplog.text
+        assert FAKE_OPENAI_KEY not in caplog.text
+        assert FAKE_OPENAI_KEY not in json.dumps(result, default=str)
+    asyncio.run(body())
