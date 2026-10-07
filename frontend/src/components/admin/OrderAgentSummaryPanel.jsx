@@ -8,7 +8,7 @@ import { getOrderAgentSummary } from "@/lib/orderAgentApi";
 /* Order Management Agent — "Needs Attention" panel. Read-only: calls
    GET /admin/order-agent/summary on demand (the "Analyze with AI" button
    below) and renders whatever comes back, including the degrade-gracefully
-   shape (available: false) when GROQ_API_KEY isn't configured or the model
+   shape (available: false) when OPENAI_API_KEY isn't configured or the model
    call failed/timed out — the panel never blocks on the AI layer, same
    convention the backend route itself follows (see order_management_agent.py).
    On-demand rather than auto-run on mount, same "never auto-runs, only when
@@ -149,7 +149,7 @@ export default function OrderAgentSummaryPanel() {
         <div className="flex items-center gap-2 mb-3 flex-wrap">
           <Sparkles className="w-4 h-4 text-accent flex-shrink-0" />
           <div className="font-display font-bold text-sm">Needs attention</div>
-          <Badge variant="outline" className="text-2xs font-bold uppercase">Order Management Agent</Badge>
+          
           {aiStatus !== "loading" && state && (
             <Badge
               variant="outline"

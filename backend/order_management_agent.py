@@ -1,4 +1,4 @@
-"""Order Management Agent — Groq (Llama 3.3 70B) orchestration.
+"""Order Management Agent — OpenAI (gpt-4o-mini by default) orchestration.
 
 Read-first, human-in-the-loop reasoning layer over the existing
 hearing_requests order book (see order_agent_tools.py for the tool layer).
@@ -10,29 +10,30 @@ agent_review_flags collection.
 Deliberately stateless between invocations: every call re-fetches current DB
 state through the tool layer.
 
-GROQ_API_KEY is a new, optional env var; if it isn't set, or the model call
-times out/errors, every public function here degrades to a plain "AI
-summary unavailable" response carrying the raw tool data underneath, never
-a 500.
+OPENAI_API_KEY is optional here; if it isn't set, or the model call times
+out/errors, every public function here degrades to a plain "AI summary
+unavailable" response carrying the raw tool data underneath, never a 500.
+OPENAI_MODEL picks the model (default gpt-4o-mini).
 
 Provider note: originally built against Gemini 2.5 Flash per the approved
-spec. Switched to Groq (Llama 3.3 70B) because Gemini 2.5 Flash was
-deprecated for new API keys by Google. Groq's API is OpenAI-compatible
-(chat completions + tools), so the request/response shape here differs from
-the earlier Gemini version, but the tool set, system prompt intent, and all
-read-only/write boundaries are unchanged.
+spec, then Groq, now OpenAI. Groq's API is OpenAI-compatible (chat
+completions + tools), so only the client and model changed in the last
+switch — the request/response shape, tool set, system prompt, and all
+read-only/write boundaries are unchanged. This is independent of the
+chatbot's AI_PROVIDER/AI_MODEL (llm_service.py).
 """
 import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import order_agent_tools
 
 logger = logging.getLogger(__name__)
 
-GROQ_MODEL = "openai/gpt-oss-120b"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 AGENT_TIMEOUT_SECONDS = 25
 MAX_TOOL_ITERATIONS = 6
 
@@ -84,7 +85,7 @@ need."""
 
 
 def _tool_declarations() -> List[Dict[str, Any]]:
-    """OpenAI/Groq-style tool schema (list of {"type": "function", "function": {...}})."""
+    """OpenAI-style tool schema (list of {"type": "function", "function": {...}})."""
     hearing_id_prop = {"type": "string", "description": "The hearing_id to look up"}
     return [
         {
@@ -194,30 +195,49 @@ async def _execute_tool(db, name: str, args: Dict[str, Any]) -> Any:
 
 
 def _get_client():
-    """Returns an AsyncGroq client, or None if GROQ_API_KEY isn't configured —
+    """Returns an AsyncOpenAI client, or None if OPENAI_API_KEY isn't configured —
     the one degrade-gracefully branch every caller below must handle. Reads
     the env var lazily (not at import time) so importing this module never
     requires the key."""
-    api_key = os.environ.get("GROQ_API_KEY")
+    api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         return None
-    from groq import AsyncGroq
-    return AsyncGroq(api_key=api_key)
+    from openai import AsyncOpenAI
+    return AsyncOpenAI(api_key=api_key)
+
+
+def _get_model() -> str:
+    return os.environ.get("OPENAI_MODEL", "").strip() or DEFAULT_OPENAI_MODEL
+
+
+def _safe_error_detail(e: Exception) -> str:
+    """Exception text for server logs with the API key (or anything shaped
+    like one) removed — an upstream auth error can echo part of the key."""
+    detail = str(e)
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if api_key:
+        detail = detail.replace(api_key, "[REDACTED]")
+    detail = re.sub(r"sk-[A-Za-z0-9_*-]{6,}", "[REDACTED]", detail)
+    return detail[:1000]
 
 
 async def _run_agent(db, client, user_prompt: str,
                       max_iterations: int = MAX_TOOL_ITERATIONS) -> str:
-    """Bounded tool-calling loop using Groq's OpenAI-compatible chat completions API."""
+    """Bounded tool-calling loop using OpenAI's chat completions API."""
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
     ]
     tools = _tool_declarations()
+    model = _get_model()
 
     for _ in range(max_iterations):
         response = await client.chat.completions.create(
-            model=GROQ_MODEL, messages=messages, tools=tools, tool_choice="auto",
+            model=model, messages=messages, tools=tools, tool_choice="auto",
         )
+        # response.model is what the provider says actually served the call.
+        logger.info("Order Management Agent LLM call: provider=openai requested_model=%s served_model=%s",
+                    model, getattr(response, "model", None))
         message = response.choices[0].message
         tool_calls = message.tool_calls or []
         if not tool_calls:
@@ -261,7 +281,7 @@ async def _run_with_fallback(db, user_prompt: str, fallback_data: Dict[str, Any]
     """Shared timeout/error envelope for both public entry points below."""
     resolved_client = client if client is not None else _get_client()
     if resolved_client is None:
-        return {"available": False, "reason": "GROQ_API_KEY not configured", **fallback_data}
+        return {"available": False, "reason": "OPENAI_API_KEY not configured", **fallback_data}
     try:
         text = await asyncio.wait_for(
             _run_agent(db, resolved_client, user_prompt), timeout=AGENT_TIMEOUT_SECONDS,
@@ -271,7 +291,7 @@ async def _run_with_fallback(db, user_prompt: str, fallback_data: Dict[str, Any]
         logger.error("Order Management Agent timed out after %ss", AGENT_TIMEOUT_SECONDS)
         return {"available": False, "reason": "AI summary unavailable — request timed out", **fallback_data}
     except Exception as e:
-        logger.error("Order Management Agent failed: %s", e)
+        logger.error("Order Management Agent failed (%s): %s", type(e).__name__, _safe_error_detail(e))
         return {"available": False, "reason": "AI summary unavailable", **fallback_data}
 
 
