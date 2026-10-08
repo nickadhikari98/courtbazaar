@@ -644,6 +644,10 @@ def test_file_search_uses_configured_model_and_returns_document_source(monkeypat
 def test_file_search_without_a_cited_result_returns_no_context(monkeypatch):
     from types import SimpleNamespace
 
+    # Provider set here, not inherited from the environment: with another
+    # provider and no key for it, client setup fails before retrieval runs.
+    monkeypatch.setattr(llm_service, "AI_PROVIDER", "openai")
+    monkeypatch.setattr(llm_service, "AI_MODEL", "gpt-4o-mini")
     monkeypatch.setattr(llm_service, "is_configured", lambda: True)
     monkeypatch.setattr(llm_service, "OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(llm_service, "OPENAI_VECTOR_STORE_ID", "vs-test")
