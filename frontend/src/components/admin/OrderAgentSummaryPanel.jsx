@@ -149,7 +149,7 @@ export default function OrderAgentSummaryPanel() {
         <div className="flex items-center gap-2 mb-3 flex-wrap">
           <Sparkles className="w-4 h-4 text-accent flex-shrink-0" />
           <div className="font-display font-bold text-sm">Needs attention</div>
-          
+          <Badge variant="outline" className="text-2xs font-bold uppercase">Order Management Agent</Badge>
           {aiStatus !== "loading" && state && (
             <Badge
               variant="outline"
