@@ -98,3 +98,7 @@ credentials.json
 *.key
 .credentials
 frontend/node_modules/.cache/default-development/2.pack
+
+# Approved chatbot knowledge-base documents: uploaded to the OpenAI vector store
+# by backend/scripts/setup_ai_knowledge.py, never committed.
+backend/ai_knowledge/
