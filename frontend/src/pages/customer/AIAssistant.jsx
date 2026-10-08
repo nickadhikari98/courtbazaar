@@ -14,7 +14,8 @@ const SUGGESTIONS = [
 ];
 
 export default function AIAssistant() {
-  const [sessionId] = useState(() => `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+  const [conversationId, setConversationId] = useState(null);
+  const [conversationToken, setConversationToken] = useState(null);
   const [msgs, setMsgs] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -29,9 +30,20 @@ export default function AIAssistant() {
     setInput("");
     setLoading(true);
     try {
-      const { data } = await api.post("/ai/chat", { session_id: sessionId, message: content });
+      const { data } = await api.post("/ai/chat", {
+        conversation_id: conversationId,
+        message: content,
+        ...(conversationToken ? { conversation_token: conversationToken } : {}),
+      });
+      if (data?.conversation_id) setConversationId(data.conversation_id);
+      if (data?.conversation_token) setConversationToken(data.conversation_token);
       setMsgs(prev => [...prev, { role: "assistant", text: data.reply }]);
-    } catch {
+    } catch (err) {
+      if (err?.response?.status === 404) {
+        // Conversation can't be continued — the next message starts a new one.
+        setConversationId(null);
+        setConversationToken(null);
+      }
       toast.error("AI is unavailable. Try again.");
     } finally { setLoading(false); }
   };
@@ -43,7 +55,7 @@ export default function AIAssistant() {
     // migration. See DESIGN_SYSTEM_AUDIT.md §5.
     <div className="p-6 lg:p-10 max-w-4xl mx-auto h-[calc(100vh-64px)] flex flex-col">
       <div className="mb-5">
-        <div className="cb-overline text-accent flex items-center gap-2"><Sparkles className="w-3 h-3" /> AI Legal Assistant · Claude Sonnet</div>
+        <div className="cb-overline text-accent flex items-center gap-2"><Sparkles className="w-3 h-3" /> Instant Legal Help · GPT-4o-mini</div>
         <h1 className="font-display font-black text-3xl tracking-tighter mt-1">Ask anything about Indian courts.</h1>
       </div>
 

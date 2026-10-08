@@ -3,6 +3,7 @@ export { default as LandingNav } from "./LandingNav";
 export { default as NavbarLogo } from "./NavbarLogo";
 export { default as MegaMenu } from "./MegaMenu";
 export { default as HeroSection } from "./HeroSection";
+export { default as InstantLegalHelpWidget } from "./InstantLegalHelpWidget";
 export { default as HeroBadge } from "./HeroBadge";
 export { default as TrackingWidget } from "./TrackingWidget";
 export { default as ServiceCard } from "./ServiceCard";
