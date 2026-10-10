@@ -1,0 +1,189 @@
+name: Post-deploy verification
+
+# Read-only smoke test of the live site after a production deploy. It only
+# reports: it never deploys, redeploys or rolls back, uses no secrets, and
+# sends nothing but unauthenticated GET requests to public endpoints.
+#
+# deploy/deploy.sh already proves, from the VPS itself, that the backend
+# answers on 127.0.0.1 and that version.json matches the commit it deployed.
+# This checks what it can't see from there: that the public domain serves the
+# frontend, that /api/ is reachable through Nginx, and that the API can read
+# the database.
+#
+# `workflow_run` only fires from the copy of this file on the default branch
+# (main), so this does nothing until it has been merged there.
+on:
+  workflow_run:
+    workflows: ["Deploy to production"]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: post-deploy-verify
+  cancel-in-progress: false
+
+permissions:
+  contents: read # checkout only, for the commit-ancestry check below
+
+jobs:
+  verify:
+    name: Verify production
+    # Only a successful run of deploy.yml itself, started for main from this
+    # repository. A failed or cancelled deploy is not verified — it has
+    # already reported its own failure.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.path == '.github/workflows/deploy.yml' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # History of main only, to compare commits. No code from it is run.
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Smoke-test the live site (GET only)
+        env:
+          BASE_URL: https://courtbazaar.com
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+          DEPLOY_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -uo pipefail
+
+          # Response bodies go to files in $tmp and are only ever inspected by
+          # the checks below — never printed. Output is limited to the path,
+          # HTTP status, pass/fail and commit SHAs.
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          failures=0
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+          pass() { echo "PASS  $1"; echo "| \`$1\` | pass | $2 |" >> "$summary"; }
+          fail() {
+            echo "::error title=Post-deploy verification::$1 — $2"
+            echo "FAIL  $1 — $2"
+            echo "| \`$1\` | **FAIL** | $2 |" >> "$summary"
+            failures=$((failures + 1))
+          }
+
+          # fetch <path> <file>: GET with a timeout, up to 5 attempts 10s apart
+          # (the runner -> VPS network path is known to be flaky, see
+          # deploy.yml). Redirects are not followed. Leaves the final status
+          # in $status and the content type in $ctype.
+          fetch() {
+            local attempt=1 out
+            while :; do
+              out="$(curl -sS --connect-timeout 10 --max-time 20 \
+                -H 'Cache-Control: no-cache' -o "$2" \
+                -w '%{http_code} %{content_type}' "$BASE_URL$1" 2>/dev/null)" || out="000 "
+              status="${out%% *}"
+              ctype="${out#* }"
+              [ "$status" = "200" ] && return 0
+              [ "$attempt" -ge 5 ] && return 1
+              echo "      $1 -> HTTP $status (attempt $attempt/5), retrying in 10s"
+              attempt=$((attempt + 1))
+              sleep 10
+            done
+          }
+
+          # json_check <file> <js expression over `d`>: true/false only, the
+          # parsed body is never echoed.
+          json_check() {
+            node -e '
+              let d;
+              try { d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); }
+              catch { process.exit(2); }
+              process.exit(eval(process.argv[2]) ? 0 : 1);
+            ' "$1" "$2"
+          }
+
+          # check_json <path> <js expression> <what a pass means>
+          check_json() {
+            local file="$tmp/body.json"
+            if ! fetch "$1" "$file"; then
+              fail "$1" "HTTP $status after 5 attempts"
+            elif json_check "$file" "$2"; then
+              pass "$1" "$3"
+            else
+              fail "$1" "HTTP 200 but the response was not: $3"
+            fi
+          }
+
+          {
+            echo "### Post-deploy verification"
+            echo "Deploy run: $DEPLOY_RUN_URL"
+            echo
+            echo "| Check | Result | Detail |"
+            echo "|---|---|---|"
+          } >> "$summary"
+
+          # 1. The live build is the commit this deploy shipped.
+          #    version.json is written by frontend/scripts/generate-version.js
+          #    during `yarn build` on the VPS, from `git rev-parse HEAD` there
+          #    — i.e. the tip of main at the moment deploy.yml's `git pull
+          #    origin main` ran. That is normally the commit the deploy run
+          #    was started for, but if main moved between the run starting and
+          #    the pull, the VPS deploys the newer tip. So: the live commit
+          #    must be the deploy's commit, or a later commit on main.
+          if ! fetch /version.json "$tmp/version.json"; then
+            fail /version.json "HTTP $status after 5 attempts"
+          else
+            live="$(node -e '
+              try {
+                const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).commit;
+                if (/^[0-9a-f]{40}$/.test(c)) console.log(c);
+              } catch {}
+            ' "$tmp/version.json")"
+            if [ -z "$live" ]; then
+              fail /version.json "no valid commit in the response"
+            elif [ "$live" = "$DEPLOY_SHA" ]; then
+              pass /version.json "live commit ${live:0:7} is the deployed commit"
+            elif git merge-base --is-ancestor "$DEPLOY_SHA" "$live" 2>/dev/null \
+              && git merge-base --is-ancestor "$live" origin/main 2>/dev/null; then
+              echo "::notice title=Post-deploy verification::main moved before the VPS pulled: ${live:0:7} is live, this deploy run was started for ${DEPLOY_SHA:0:7}"
+              pass /version.json "live commit ${live:0:7} is a later commit on main than ${DEPLOY_SHA:0:7}"
+            else
+              fail /version.json "live commit ${live:0:7} is not the deployed commit ${DEPLOY_SHA:0:7} or a later commit on main"
+            fi
+          fi
+
+          # 2. The frontend is served. Checked for the React mount point,
+          #    because Nginx answers 200 with index.html for ANY unknown path —
+          #    a bare 200 here proves nothing.
+          if ! fetch / "$tmp/index.html"; then
+            fail / "HTTP $status after 5 attempts"
+          elif [[ "$ctype" == text/html* ]] && grep -q '<div id="root">' "$tmp/index.html"; then
+            pass / "HTML with the React mount point"
+          else
+            fail / "HTTP 200 but not the app's index.html"
+          fi
+
+          # 3. The API is reachable through Nginx. JSON checks below also rule
+          #    out the index.html fallback being served in place of the API.
+          check_json /api/ \
+            'typeof d.message === "string" && d.message.includes("CourtBazaar")' \
+            'the API root message'
+          check_json /api/config/public \
+            'd !== null && typeof d.google_oauth_enabled === "boolean"' \
+            'the public config object'
+
+          # 4. The API can read MongoDB. /api/ above never touches the
+          #    database; these two are served from it.
+          check_json /api/states \
+            'Array.isArray(d) && d.length > 0 && d.every(s => s && typeof s.name === "string")' \
+            'a non-empty list of states'
+          check_json /api/services \
+            'Array.isArray(d) && d.length > 0' \
+            'a non-empty list of services'
+
+          echo
+          if [ "$failures" -gt 0 ]; then
+            echo "::error title=Post-deploy verification::$failures check(s) failed against $BASE_URL. Nothing was redeployed or rolled back — investigate production now."
+            exit 1
+          fi
+          echo "All post-deploy checks passed for $BASE_URL"
