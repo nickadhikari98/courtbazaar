@@ -56,6 +56,30 @@ _NUMBER_WORDS = {
 _NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _NUMBER_WORD_RE = re.compile(r"\b(?:" + "|".join(_NUMBER_WORDS) + r")\b", re.IGNORECASE)
 _LIST_MARKER_RE = re.compile(r"(?m)^\s*(?:\d+[.)]|[•*-])\s+")
+# A sentence that opens with a subordinate clause, whose main clause only
+# comes after the first separator.
+_SUBORDINATE_START_RE = re.compile(
+    r"^\W*(?:if|when|whenever|unless|where|although|though|because|since|while|once|after|before|until|"
+    r"provided|in case)\b",
+    re.IGNORECASE,
+)
+# Document answers: wording that marks general knowledge or a hedge rather
+# than the document's statement ("Generally, under the Act ...", "typically
+# 50%"). Allowed only if the document itself uses the word.
+_GENERALIZATION_RE = re.compile(
+    r"\b(?:generally|in general|typically|usually|normally|commonly|as a general rule|in most cases|"
+    r"in practice|under indian law)\b",
+    re.IGNORECASE,
+)
+# A named statute ("Arbitration and Conciliation Act, 1996", "Limitation Act").
+_NAMED_STATUTE_RE = re.compile(
+    r"\b((?:[A-Z][a-z]+\s+)(?:(?:and|of|&)\s+)?(?:[A-Z][a-z]+\s+){0,4}(?:Act|Code|Sanhita|Adhiniyam))\b(?:,?\s*(\d{4}))?"
+)
+# A Markdown section heading in a document answer ("## Who pays").
+_HEADING_MARKER_RE = re.compile(r"^\s{0,3}#{1,4}\s+")
+# A heading longer than this is checked like an ordinary sentence: headings
+# are labels, not a place to put claims.
+_HEADING_MAX_WORDS = 10
 # Pricing/policy qualifiers — the words that turn a supported fact into an
 # unsupported promise ("₹500" vs "₹500, including all court expenses").
 _QUALIFIER_STEMS = (
@@ -129,7 +153,19 @@ def _content_supported(sentence: str, evidence_lower: str) -> bool:
     if len(words) < 2:
         return True
     hits = sum(1 for w in words if w[:5] in evidence_lower)
-    return hits * 2 >= len(words)
+    if hits * 2 < len(words):
+        return False
+    # A document answer states what the document says. A generalization or
+    # hedge the document doesn't use, or a statute the document doesn't name,
+    # is general knowledge filling a gap (e.g. "Generally, under the
+    # Arbitration and Conciliation Act, 1996, ...") and is left out.
+    for word in _GENERALIZATION_RE.findall(sentence):
+        if word.lower() not in evidence_lower:
+            return False
+    for name, year in _NAMED_STATUTE_RE.findall(sentence):
+        if name.lower() not in evidence_lower or (year and year not in evidence_lower):
+            return False
+    return True
 
 
 def _clause_supported(clause: str, evidence_lower: str, evidence_numbers: set) -> bool:
@@ -187,12 +223,15 @@ def evidence_without_directives(evidence: str) -> str:
 
 def _lines(text: str) -> List[Tuple[str, List[str]]]:
     """The answer as lines, each (list marker, [sentences]), so a filtered
-    answer can be rebuilt with its original list/line structure."""
-    lines = []
+    answer can be rebuilt with its original list/line structure. A blank
+    line is kept as ("", []) so paragraph breaks survive the rebuild, and a
+    "## " heading's marker is kept like a list marker."""
+    lines: List[Tuple[str, List[str]]] = []
     for raw in (text or "").split("\n"):
         if not raw.strip():
+            lines.append(("", []))
             continue
-        marker = _LIST_MARKER_RE.match(raw)
+        marker = _HEADING_MARKER_RE.match(raw) or _LIST_MARKER_RE.match(raw)
         prefix = marker.group(0) if marker else ""
         sentences: List[str] = []
         for piece in _SENTENCE_SPLIT_RE.split(raw[len(prefix):].strip()):
@@ -206,8 +245,27 @@ def _lines(text: str) -> List[Tuple[str, List[str]]]:
     return lines
 
 
+def _is_heading(marker: str) -> bool:
+    return bool(_HEADING_MARKER_RE.match(marker))
+
+
 def _rebuild(lines: List[Tuple[str, List[str]]]) -> str:
-    return "\n".join(prefix + " ".join(sentences) for prefix, sentences in lines if sentences)
+    """Joins kept lines back up: one blank line between paragraphs, and a
+    heading whose whole section was filtered out is dropped with it."""
+    out: List[str] = []
+    for i, (prefix, sentences) in enumerate(lines):
+        if not sentences:
+            if out and out[-1] != "":
+                out.append("")
+            continue
+        if _is_heading(prefix):
+            following = next((ln for ln in lines[i + 1:] if ln[1]), None)
+            if following is None or _is_heading(following[0]):
+                continue
+        out.append(prefix + " ".join(sentences))
+    while out and out[-1] == "":
+        out.pop()
+    return "\n".join(out)
 
 
 def _supported_prefix(sentence: str, evidence_lower: str, evidence_numbers: set) -> Optional[str]:
@@ -219,6 +277,11 @@ def _supported_prefix(sentence: str, evidence_lower: str, evidence_numbers: set)
         clause = sentence[start:cuts[i + 1]]
         if not _clause_supported(clause, evidence_lower, evidence_numbers):
             if i == 0:
+                return None
+            if i == 1 and _SUBORDINATE_START_RE.match(sentence):
+                # Only the leading "If/When/Unless ..." clause survived: on its
+                # own it's a fragment ("If the Claimant does not pay."), so the
+                # whole sentence goes rather than a half that reads as a claim.
                 return None
             kept = sentence[:cuts[i]].rstrip(" ,;:-")
             return kept if kept.endswith((".", "!", "?")) else kept + "."
@@ -245,9 +308,13 @@ def validate_grounded_answer(answer: str, evidence: str, document_evidence: bool
     kept_count = dropped = truncated = 0
     for marker, sentences in _lines(answer):
         kept: List[str] = []
+        # A short heading is a structural label ("## Who pays"), so it isn't
+        # held to the wording-overlap test; its numbers, qualifiers and any
+        # injection echo are still checked like any other text.
+        label = _is_heading(marker) and len(" ".join(sentences).split()) <= _HEADING_MAX_WORDS
         for sentence in sentences:
             if _INJECTION_ECHO_RE.search(sentence) or (
-                    document_evidence and not _content_supported(sentence, evidence_lower)):
+                    document_evidence and not label and not _content_supported(sentence, evidence_lower)):
                 dropped += 1
                 continue
             supported = _supported_prefix(sentence, evidence_lower, evidence_numbers)
@@ -257,7 +324,8 @@ def validate_grounded_answer(answer: str, evidence: str, document_evidence: bool
             if supported != sentence:
                 truncated += 1
             kept.append(supported)
-        kept_count += len(kept)
+        if not label:
+            kept_count += len(kept)  # headings alone never count as an answer
         lines.append((marker, kept))
     if not kept_count or dropped > kept_count:
         return None

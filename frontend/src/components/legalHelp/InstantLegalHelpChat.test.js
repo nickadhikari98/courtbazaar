@@ -140,11 +140,84 @@ test("chat sends a message and displays only the reply without a source footer",
     .toBe("Choose a service, upload documents, then review your order.");
 });
 
-test("assistant markdown/entity artifacts are cleaned before display", async () => {
-  api.post.mockResolvedValue({ data: { conversation_id: "c", reply: "**Step 1** &amp;#x20;file\n- upload" } });
+test("assistant reply keeps safe structure and cleans entity/escape artifacts", async () => {
+  api.post.mockResolvedValue({ data: { conversation_id: "c", reply: "**Step 1** &amp;#x20;file\n- upload \\- now" } });
   renderChat();
   await sendMessage("steps?");
-  expect($("instant-legal-help-msg-assistant-1").textContent).toBe("Step 1 file\n• upload");
+  const msg = $("instant-legal-help-msg-assistant-1");
+  expect(msg.querySelector("strong").textContent).toBe("Step 1");
+  expect(msg.querySelector("p").textContent).toBe("Step 1 file");
+  expect([...msg.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["upload - now"]);
+  expect(msg.textContent).not.toMatch(/\*\*|&amp;|&#x20;|\\-/);
+});
+
+const DIAC_ANSWER = [
+  "If the Claimant doesn't pay its share, Rule 33 applies.",
+  "",
+  "## The Claimant's share",
+  "Unless the Centre directs otherwise, 50% is payable by the Claimant.",
+  "",
+  "## Termination",
+  "- The Centre may terminate the arbitration (Rule 33.5).",
+  "- This is without prejudice to reintroducing the Claim.",
+].join("\n");
+
+test("a document answer renders headings, lists and server-built source chips", async () => {
+  api.post.mockResolvedValue({ data: {
+    conversation_id: "c", reply: DIAC_ANSWER, sources: ["DIAC Rules conclusive_UsingOCR.pdf"],
+    citations: [{ title: "DIAC Rules", url: null, rules: ["33.1", "33.5"] }], grounding: "supported",
+  } });
+  renderChat();
+  await sendMessage("Tell me about DIAC rules if the claimant does not pay the Arbitral fee.");
+  const msg = $("instant-legal-help-msg-assistant-1");
+  expect([...msg.querySelectorAll("h3")].map((h) => h.textContent)).toEqual(["The Claimant's share", "Termination"]);
+  expect(msg.querySelectorAll("ul li")).toHaveLength(2);
+  expect(msg.textContent).not.toContain("##");
+  const chips = $("instant-legal-help-citations");
+  expect(chips.textContent).toContain("DIAC Rules · Rules 33.1, 33.5");
+  expect(chips.querySelector("a")).toBeNull(); // no approved URL -> label only
+  expect(container.textContent).not.toContain("conclusive_UsingOCR"); // raw filenames never shown
+  expect($("instant-legal-help-insufficient")).toBeNull();
+});
+
+test("a citation with an approved URL is a safe external link", async () => {
+  api.post.mockResolvedValue({ data: {
+    conversation_id: "c", reply: "Answer.", grounding: "supported",
+    citations: [{ title: "DIAC Rules", url: "https://example.org/diac-rules.pdf", rules: ["33.5"] }],
+  } });
+  renderChat();
+  await sendMessage("q");
+  const link = $("instant-legal-help-citations").querySelector("a");
+  expect(link.getAttribute("href")).toBe("https://example.org/diac-rules.pdf");
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+  expect(link.textContent).toBe("DIAC Rules · Rule 33.5");
+});
+
+test("insufficient evidence is shown as its own state, not as an error", async () => {
+  api.post.mockResolvedValue({ data: {
+    conversation_id: "c", degraded: true, grounding: "insufficient", citations: [],
+    reply: "I couldn’t find that information in the available documents.",
+  } });
+  renderChat();
+  await sendMessage("What do the DIAC rules say about appeals to the Supreme Court?");
+  const notice = $("instant-legal-help-insufficient");
+  expect(notice).not.toBeNull();
+  expect(notice.textContent).toContain("Not covered by the available documents");
+  expect(notice.textContent).toContain("I couldn’t find that information");
+  expect($("instant-legal-help-citations")).toBeNull();
+});
+
+test("markup or links inside a reply are shown as text, never rendered", async () => {
+  api.post.mockResolvedValue({ data: {
+    conversation_id: "c",
+    reply: "<img src=x onerror=alert(1)> <script>alert(2)</script> see [here](javascript:alert(3))",
+  } });
+  renderChat();
+  await sendMessage("q");
+  const msg = $("instant-legal-help-msg-assistant-1");
+  expect(msg.querySelector("img, script, a")).toBeNull();
+  expect(msg.textContent).toContain("<script>alert(2)</script>");
 });
 
 test("shows a loading indicator while waiting and blocks a second send", async () => {
