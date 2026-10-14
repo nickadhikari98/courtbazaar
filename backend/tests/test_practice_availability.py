@@ -197,8 +197,16 @@ def test_update_slot_edits_in_place_and_clears_stale_fields():
 
     async def body():
         db = _db()
+        court_id = f"court_test_{uuid.uuid4().hex[:10]}"
+        await db.courts.insert_one({"court_id": court_id, "name": "Test Delhi High Court", "type": "high_court"})
         try:
-            slot = await practice.add_slot(db, user_id, "recurring_weekly", 0, None, "Delhi High Court", MORNING, None)
+            # Free-text courts (what the old Court field saved) are rejected; a real court_id is kept.
+            with pytest.raises(HTTPException) as exc:
+                await practice.add_slot(db, user_id, "recurring_weekly", 0, None, "Delhi High Court", MORNING, None)
+            assert exc.value.status_code == 400
+            slot = await practice.add_slot(db, user_id, "recurring_weekly", 0, None, court_id, MORNING, None)
+            listed = await practice.list_slots(db, user_id)
+            assert listed[0]["court_name"] == "Test Delhi High Court" and listed[0]["court_known"] is True
             day = _future_date()
             updated = await practice.update_slot(db, user_id, slot["slot_id"], "holiday_block", None, day, None, FULL_DAY, None)
             assert updated["slot_id"] == slot["slot_id"]
@@ -233,6 +241,7 @@ def test_update_slot_edits_in_place_and_clears_stale_fields():
             assert [s["slot_id"] for s in await practice.list_slots(db, user_id)] == [second["slot_id"]]
         finally:
             await db.availability_slots.delete_many({"user_id": {"$in": [user_id, other_user]}})
+            await db.courts.delete_many({"court_id": court_id})
     _run(body())
 
 

@@ -2582,6 +2582,11 @@ async def delete_practice_availability(slot_id: str, user=Depends(get_current_us
     _require_capability(user, "can_practice_proxy_counsel")
     return await practice_svc.remove_slot(db, user["user_id"], slot_id)
 
+@api_router.get("/practice/visibility")
+async def get_practice_visibility(user=Depends(get_current_user)):
+    _require_capability(user, "can_practice_proxy_counsel")
+    return await practice_svc.client_visibility(db, user["user_id"])
+
 @api_router.get("/practice/performance")
 async def get_practice_performance(user=Depends(get_current_user)):
     _require_capability(user, "can_practice_proxy_counsel")
@@ -2721,7 +2726,7 @@ async def _advocate_profile_or_404(advocate_id: str) -> dict:
     profile = await db.proxy_counsel_profiles.find_one(
         await counsel_matching.eligible_counsel_query(db, user_id=advocate_id), {"_id": 0},
     )
-    if not profile:
+    if not profile or await counsel_matching.deactivated_user_ids(db, [advocate_id]):
         raise HTTPException(404, "Counsel profile not found")
     name_doc = await db.users.find_one({"user_id": advocate_id}, {"_id": 0, "name": 1})
     court_ids = profile.get("courts") or []
