@@ -34,6 +34,13 @@ export async function removeAvailabilitySlot(slotId) {
   return data;
 }
 
+/* Which client-search gates this counsel currently fails (approval, profile
+   courts, slot pricing). See practice.client_visibility. */
+export async function getPracticeVisibility() {
+  const { data } = await api.get("/practice/visibility");
+  return data;
+}
+
 export async function getPracticePerformance() {
   const { data } = await api.get("/practice/performance");
   return data;
