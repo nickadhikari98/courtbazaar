@@ -399,6 +399,23 @@ async def _reject_duplicate(db, user_id: str, fields: dict, exclude_slot_id: Opt
         raise HTTPException(409, "You've already added this availability")
 
 
+async def _require_known_court(db, court_id: Optional[str]) -> None:
+    """A slot's court must be a real courts row (Practice.jsx now picks it
+    from court search). It used to be free text ("Delhi High Court"), which
+    looked like it scoped the slot to a court but was never comparable to
+    the court_id a client searches by."""
+    if court_id and not await db.courts.find_one({"court_id": court_id}, {"_id": 1}):
+        raise HTTPException(400, "Unknown court. Pick a court from the search results.")
+
+
+async def _court_names(db, court_ids: List[str]) -> Dict[str, str]:
+    ids = sorted({c for c in court_ids if c})
+    if not ids:
+        return {}
+    rows = await db.courts.find({"court_id": {"$in": ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(ids))
+    return {r["court_id"]: r["name"] for r in rows}
+
+
 def _with_status(slot: dict) -> dict:
     """Adds `is_past` (a dated slot whose date is before today, IST) so the
     Availability tab can mark it instead of listing it as current."""
@@ -411,6 +428,7 @@ async def add_slot(db, user_id: str, kind: str, day_of_week: Optional[int], date
     # end_time stays in the signature for request-shape compatibility only;
     # new slots are time-of-day labels and never carry one.
     fields = _validated_slot_fields(kind, day_of_week, date, court_id, start_time)
+    await _require_known_court(db, fields["court_id"])
     await _reject_duplicate(db, user_id, fields)
     slot = {
         "slot_id": f"slot_{uuid.uuid4().hex[:12]}",
@@ -431,6 +449,7 @@ async def update_slot(db, user_id: str, slot_id: str, kind: str, day_of_week: Op
     if not existing:
         raise HTTPException(404, "Slot not found")
     fields = _validated_slot_fields(kind, day_of_week, date, court_id, start_time)
+    await _require_known_court(db, fields["court_id"])
     await _reject_duplicate(db, user_id, fields, exclude_slot_id=slot_id)
     fields["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.availability_slots.update_one({"slot_id": slot_id, "user_id": user_id}, {"$set": fields})
@@ -439,7 +458,74 @@ async def update_slot(db, user_id: str, slot_id: str, kind: str, day_of_week: Op
 
 async def list_slots(db, user_id: str) -> List[dict]:
     rows = await db.availability_slots.find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    names = await _court_names(db, [r.get("court_id") for r in rows])
+    for row in rows:
+        # court_known False = a legacy free-text court from before the picker.
+        row["court_name"] = names.get(row.get("court_id"), row.get("court_id"))
+        row["court_known"] = not row.get("court_id") or row["court_id"] in names
     return [_with_status(row) for row in rows]
+
+
+async def client_visibility(db, user_id: str) -> dict:
+    """Why a counsel would or wouldn't appear in client search — the same
+    gates counsel_matching.list_and_recommend applies, read back for this one
+    counsel so My Practice can say so (Practice.jsx's ClientVisibilityCard).
+
+    Added after a counsel saved a Wednesday, Delhi High Court, 2 PM – 5 PM
+    slot, got "Availability added", and was still missing from that exact
+    client search — not because of the slot, which matched, but because the
+    profile was not yet approved, its Courts didn't include Delhi High Court
+    (the slot's own Court field is not what search filters on), and 2 PM –
+    5 PM had no price. None of that was visible anywhere on the page.
+
+    `blocking` checks hide the counsel from every client search; `warning`
+    checks only hide them from some (a court or time slot)."""
+    profile = await get_or_create_profile(db, user_id)
+    slots = [s for s in await list_slots(db, user_id) if not s.get("is_past")]
+    checks: List[dict] = []
+
+    def check(key: str, ok: bool, severity: str, message: str) -> None:
+        checks.append({"key": key, "ok": ok, "severity": severity, "message": message})
+
+    check("kyc_approved", profile.get("kyc_status") == "approved", "blocking",
+          "Your KYC is approved" if profile.get("kyc_status") == "approved"
+          else "Your KYC is still pending admin approval")
+    check("bar_council_verified", profile.get("bar_council_verified") is True, "blocking",
+          "Your Bar Council enrolment is verified" if profile.get("bar_council_verified") is True
+          else "Your Bar Council enrolment hasn't been verified yet")
+
+    profile_courts = profile.get("courts") or []
+    known = await _court_names(db, profile_courts)
+    unrecognized = [c for c in profile_courts if c not in known]
+    check("courts", bool(known), "blocking",
+          f"Clients searching {', '.join(known.values())} can find you" if known
+          else "Add the courts you appear in under Profile → Courts, picked from search")
+    if unrecognized:
+        check("courts_unrecognized", False, "warning",
+              f"Re-pick from search, these courts aren't recognized: {', '.join(unrecognized)}")
+
+    slot_court_ids = sorted({s["court_id"] for s in slots if s.get("court_id") and s.get("court_known")})
+    missing = [cid for cid in slot_court_ids if cid not in known]
+    if missing:
+        names = await _court_names(db, missing)
+        check("availability_courts", False, "warning",
+              f"Your availability mentions {', '.join(names.get(c, c) for c in missing)}, but it isn't in "
+              "Profile → Courts, so clients searching that court won't see you")
+
+    pricing = profile.get("pricing") or {}
+    slot_keys = {_LABEL_TO_PRICING_SLOT.get(s.get("start_time")) for s in slots} - {None}
+    unpriced = [k for k in PRICING_SLOTS if k in slot_keys
+                and not any(k in (pricing.get(ct) or {}) for ct in PRICING_COURT_TYPES)]
+    if unpriced:
+        check("availability_pricing", False, "warning",
+              f"No price set for {', '.join(PRICING_SLOT_LABELS[k] for k in unpriced)}, so clients filtering "
+              "by that time won't see you. Add it under Profile → Pricing")
+
+    if not profile.get("availability_mode"):
+        check("availability_mode", False, "warning",
+              "\"Available for hearings\" is off, so you won't be offered new hearing requests")
+
+    return {"visible": all(c["ok"] for c in checks if c["severity"] == "blocking"), "checks": checks}
 
 
 async def remove_slot(db, user_id: str, slot_id: str) -> dict:

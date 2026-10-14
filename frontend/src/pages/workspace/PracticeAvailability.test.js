@@ -9,6 +9,8 @@ import {
   listAvailabilitySlots, addAvailabilitySlot, updateAvailabilitySlot, removeAvailabilitySlot,
 } from "@/lib/practiceApi";
 import { toast } from "sonner";
+import { getPracticeVisibility } from "@/lib/practiceApi";
+import { searchCourts, getCourt } from "@/lib/referenceDataApi";
 
 jest.mock("react-router/dom", () => {
   const { TextEncoder, TextDecoder } = require("util");
@@ -25,6 +27,11 @@ jest.mock("@/lib/practiceApi", () => ({
   updateAvailabilitySlot: jest.fn(),
   removeAvailabilitySlot: jest.fn(),
   getPracticePerformance: jest.fn(),
+  getPracticeVisibility: jest.fn(),
+}));
+jest.mock("@/lib/referenceDataApi", () => ({
+  searchCourts: jest.fn(),
+  getCourt: jest.fn(),
 }));
 
 const { act } = React;
@@ -40,7 +47,8 @@ const PAST = localDate(-3);
 
 const WEEKLY = {
   slot_id: "slot_weekly", kind: "recurring_weekly", day_of_week: 1, date: null,
-  court_id: "Delhi High Court", start_time: "10 AM – 1 PM", end_time: null, is_past: false,
+  court_id: "court_delhi_hc", court_name: "Delhi High Court", court_known: true,
+  start_time: "10 AM – 1 PM", end_time: null, is_past: false,
 };
 const LEGACY_PAST = {
   slot_id: "slot_legacy", kind: "holiday_block", day_of_week: null, date: PAST,
@@ -54,6 +62,9 @@ const CUSTOM = {
 let container;
 let root;
 beforeEach(() => {
+  getPracticeVisibility.mockResolvedValue({ visible: true, checks: [] });
+  getCourt.mockImplementation((id) => Promise.resolve({ court_id: id, name: id === "court_delhi_hc" ? "Delhi High Court" : id }));
+  searchCourts.mockResolvedValue([{ court_id: "court_saket", name: "Saket District Court", type: "district" }]);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -77,6 +88,13 @@ function typeInto(input, value) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+async function pickCourt(query) {
+  await act(async () => typeInto($("availability-court-search"), query));
+  await act(async () => { await new Promise((r) => setTimeout(r, 350)); }); // search debounce
+  const option = [...container.querySelectorAll("button")].find((b) => b.textContent.includes("Saket District Court"));
+  await act(async () => option.click());
+}
+
 test("legacy clock-time rows show both ends, and past slots are marked and listed last", async () => {
   await renderTab([LEGACY_PAST, WEEKLY]);
   const rows = [...container.querySelectorAll('[data-testid^="availability-row-"]')];
@@ -90,18 +108,19 @@ test("legacy clock-time rows show both ends, and past slots are marked and liste
 });
 
 test("editing a slot saves it in place via PUT instead of adding a new one", async () => {
-  updateAvailabilitySlot.mockResolvedValue({ ...WEEKLY, court_id: "Saket Court" });
+  updateAvailabilitySlot.mockResolvedValue({ ...WEEKLY, court_id: "court_saket" });
   await renderTab([WEEKLY]);
   await act(async () => $("availability-edit-slot_weekly").click());
   expect(container.textContent).toContain("Edit availability");
   expect($("availability-submit").textContent).toBe("Save changes");
-  const court = container.querySelector('input[placeholder="e.g. Delhi High Court"]');
-  expect(court.value).toBe("Delhi High Court");
-  await act(async () => typeInto(court, "Saket Court"));
+  await flush();
+  expect(container.textContent).toContain("Delhi High Court"); // current court shown as a chip
+  // Court is picked from search (a real court_id), not typed as free text.
+  await pickCourt("Saket");
   await act(async () => $("availability-submit").click());
   await flush();
   expect(updateAvailabilitySlot).toHaveBeenCalledWith("slot_weekly", {
-    kind: "recurring_weekly", day_of_week: 1, date: undefined, court_id: "Saket Court", start_time: "10 AM – 1 PM",
+    kind: "recurring_weekly", day_of_week: 1, date: undefined, court_id: "court_saket", start_time: "10 AM – 1 PM",
   });
   expect(addAvailabilitySlot).not.toHaveBeenCalled();
   expect(listAvailabilitySlots).toHaveBeenCalledTimes(2); // reloaded after the save
@@ -149,4 +168,46 @@ test("a failed load shows an error instead of spinning forever", async () => {
   await act(async () => root.render(<AvailabilityTab />));
   await flush();
   expect(container.textContent).toContain("Couldn't load your availability");
+});
+
+test("visibility card lists why clients can't find the counsel", async () => {
+  getPracticeVisibility.mockResolvedValue({
+    visible: false,
+    checks: [
+      { key: "kyc_approved", ok: false, severity: "blocking", message: "Your KYC is still pending admin approval" },
+      { key: "courts", ok: true, severity: "blocking", message: "Clients searching Delhi High Court can find you" },
+      { key: "availability_pricing", ok: false, severity: "warning", message: "No price set for 2 PM – 5 PM" },
+    ],
+  });
+  await renderTab([WEEKLY]);
+  expect($("client-visibility-status").textContent).toBe("Clients can't find you yet");
+  expect($("client-visibility-kyc_approved").textContent).toContain("KYC is still pending");
+  expect($("client-visibility-availability_pricing")).not.toBeNull();
+  expect($("client-visibility-courts")).toBeNull(); // passing checks aren't listed
+});
+
+test("visibility card is refreshed after the availability changes", async () => {
+  removeAvailabilitySlot.mockResolvedValue({ ok: true });
+  await renderTab([WEEKLY]);
+  expect($("client-visibility-status").textContent).toBe("Clients can find you");
+  expect(getPracticeVisibility).toHaveBeenCalledTimes(1);
+  getPracticeVisibility.mockResolvedValue({
+    visible: true,
+    checks: [{ key: "availability_mode", ok: false, severity: "warning", message: "Available for hearings is off" }],
+  });
+  await act(async () => $("availability-remove-slot_weekly").click());
+  await flush();
+  expect(getPracticeVisibility).toHaveBeenCalledTimes(2);
+  expect($("client-visibility-status").textContent).toBe("Clients can find you, with gaps");
+});
+
+test("a legacy free-text court is flagged and must be re-picked on edit", async () => {
+  updateAvailabilitySlot.mockResolvedValue({});
+  const legacy = { ...WEEKLY, slot_id: "slot_legacy_court", court_id: "Delhi High Court", court_name: "Delhi High Court", court_known: false };
+  await renderTab([legacy]);
+  expect($("availability-row-slot_legacy_court").textContent).toContain("Not a recognized court");
+  await act(async () => $("availability-edit-slot_legacy_court").click());
+  await act(async () => $("availability-submit").click());
+  await flush();
+  expect(updateAvailabilitySlot).toHaveBeenCalledWith("slot_legacy_court", expect.objectContaining({ court_id: undefined }));
 });

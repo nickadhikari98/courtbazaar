@@ -15,10 +15,11 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty, TableLoading,
 } from "@/components/ui/table";
-import { Briefcase, X, Plus, Trash2, Star, CheckCircle2, Clock, ArrowRight, Loader2, Pencil } from "lucide-react";
+import { Briefcase, X, Plus, Trash2, Star, CheckCircle2, Clock, ArrowRight, Loader2, Pencil, AlertTriangle, XCircle } from "lucide-react";
 import {
   getPracticeProfile, updatePracticeProfile, listAvailabilitySlots,
   addAvailabilitySlot, updateAvailabilitySlot, removeAvailabilitySlot, getPracticePerformance,
+  getPracticeVisibility,
 } from "@/lib/practiceApi";
 import { listHearingRequests } from "@/lib/hearingRequestsApi";
 import { getCourt, searchCourts } from "@/lib/referenceDataApi";
@@ -111,7 +112,12 @@ function TagInput({ label, value, onChange, placeholder }) {
    names for already-saved ids are resolved lazily below, so legacy
    free-text rows (pre-fix) still render as a removable chip instead of a
    raw id, they just won't match search until re-picked from here. */
-function CourtPicker({ label, value, onChange }) {
+function CourtPicker({
+  label, value, onChange,
+  hint = "Pick real courts from search — these are what a Counsel's court filter actually matches against.",
+  placeholder = "Search a court by name, e.g. Gujarat High Court",
+  testId = "courts-picker-search",
+}) {
   const [nameById, setNameById] = useState({});
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
@@ -165,8 +171,8 @@ function CourtPicker({ label, value, onChange }) {
           onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
           onFocus={() => setOpen(true)}
           onBlur={() => setTimeout(() => setOpen(false), 150)}
-          placeholder="Search a court by name, e.g. Gujarat High Court"
-          data-testid="courts-picker-search"
+          placeholder={placeholder}
+          data-testid={testId}
         />
         {open && results.length > 0 && (
           <div className="absolute z-20 mt-1 w-full bg-white border border-border rounded-lg shadow-lg max-h-56 overflow-y-auto cb-scroll">
@@ -182,7 +188,7 @@ function CourtPicker({ label, value, onChange }) {
           </div>
         )}
       </div>
-      <p className="text-2xs text-muted-foreground mt-1">Pick real courts from search — these are what a Counsel's court filter actually matches against.</p>
+      <p className="text-2xs text-muted-foreground mt-1">{hint}</p>
     </div>
   );
 }
@@ -536,6 +542,49 @@ function formatSlotTime(slot) {
 
 const EMPTY_SLOT_FORM = { kind: "recurring_weekly", dayOfWeek: 0, date: "", courtId: "", timeSlot: "" };
 
+/* "Visible to clients?" — practice.client_visibility's read-back of the same
+   gates client search applies (approval, profile courts, slot pricing).
+   Exists because "Availability added" alone said nothing about whether a
+   client could actually find this counsel: a saved slot can match while the
+   profile itself is still excluded. Failing blocking checks first. */
+export function ClientVisibilityCard({ visibility }) {
+  if (!visibility) return null;
+  const failing = visibility.checks
+    .filter((c) => !c.ok)
+    .sort((a, b) => (a.severity === "blocking" ? 0 : 1) - (b.severity === "blocking" ? 0 : 1));
+  const allClear = visibility.visible && failing.length === 0;
+  return (
+    <Card className="dashboard-card border-none" data-testid="client-visibility-card">
+      <CardContent className="p-5">
+        <div className="flex items-start gap-3">
+          {allClear
+            ? <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+            : visibility.visible
+              ? <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              : <XCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />}
+          <div className="min-w-0">
+            <div className="font-display font-bold" data-testid="client-visibility-status">
+              {allClear
+                ? "Clients can find you"
+                : visibility.visible ? "Clients can find you, with gaps" : "Clients can't find you yet"}
+            </div>
+            {failing.length > 0 && (
+              <ul className="mt-2 space-y-1.5">
+                {failing.map((c) => (
+                  <li key={c.key} className="text-sm flex gap-2" data-testid={`client-visibility-${c.key}`}>
+                    <span className={`mt-2 w-1.5 h-1.5 rounded-full shrink-0 ${c.severity === "blocking" ? "bg-red-500" : "bg-amber-500"}`} />
+                    <span>{c.message}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function AvailabilityTab() {
   const [slots, setSlots] = useState(null);
   const [loadError, setLoadError] = useState(false);
@@ -544,13 +593,19 @@ export function AvailabilityTab() {
   const [editingId, setEditingId] = useState(null);
   const [savingSlot, setSavingSlot] = useState(false);
   const [removingId, setRemovingId] = useState(null);
+  const [visibility, setVisibility] = useState(null);
   const { kind, dayOfWeek, date, courtId, timeSlot } = form;
   const setField = (key, value) => setForm((f) => ({ ...f, [key]: value }));
   const today = resolveDateBound("today");
 
-  const load = () => listAvailabilitySlots()
-    .then((rows) => { setSlots(rows); setLoadError(false); })
-    .catch(() => { setSlots([]); setLoadError(true); });
+  // The visibility check is advisory: if it fails to load, the card just
+  // stays hidden rather than blocking the tab.
+  const load = () => {
+    getPracticeVisibility().then(setVisibility).catch(() => setVisibility(null));
+    return listAvailabilitySlots()
+      .then((rows) => { setSlots(rows); setLoadError(false); })
+      .catch(() => { setSlots([]); setLoadError(true); });
+  };
   useEffect(() => { load(); }, []);
 
   // Required fields are Kind (always has a value — the Select has no blank
@@ -573,7 +628,8 @@ export function AvailabilityTab() {
       kind: slot.kind,
       dayOfWeek: slot.day_of_week ?? 0,
       date: slot.date || "",
-      courtId: slot.court_id || "",
+      // A legacy free-text court can't be re-saved; it has to be picked again.
+      courtId: slot.court_known === false ? "" : slot.court_id || "",
       // A legacy clock-time row has no matching option — force an explicit pick.
       timeSlot: TIME_OF_DAY_OPTIONS.includes(slot.start_time) ? slot.start_time : "",
     });
@@ -590,7 +646,7 @@ export function AvailabilityTab() {
       kind,
       day_of_week: kind === "recurring_weekly" ? dayOfWeek : undefined,
       date: kind !== "recurring_weekly" ? date : undefined,
-      court_id: courtId.trim() || undefined,
+      court_id: courtId || undefined,
       start_time: timeSlot,
     };
     setSavingSlot(true);
@@ -632,6 +688,7 @@ export function AvailabilityTab() {
 
   return (
     <div className="space-y-4">
+      <ClientVisibilityCard visibility={visibility} />
       <Card className="dashboard-card border-none">
         <CardContent className="p-5">
           <div className="font-display font-bold mb-3">{editingId ? "Edit availability" : "Add availability"}</div>
@@ -668,8 +725,15 @@ export function AvailabilityTab() {
               </div>
             )}
             <div>
-              <Label>Court (optional)</Label>
-              <Input value={courtId} onChange={(e) => setField("courtId", e.target.value)} placeholder="e.g. Delhi High Court" />
+              {/* Single court: picking another replaces it. */}
+              <CourtPicker
+                label="Court (optional)"
+                value={courtId ? [courtId] : []}
+                onChange={(ids) => setField("courtId", ids[ids.length - 1] || "")}
+                placeholder="Search a court, e.g. Delhi High Court"
+                hint="Clients search by the courts on your profile. Add this court under Profile → Courts too."
+                testId="availability-court-search"
+              />
             </div>
             <div>
               <Label>Time Slot *</Label>
@@ -732,7 +796,10 @@ export function AvailabilityTab() {
                   {s.kind === "recurring_weekly" ? DAYS[s.day_of_week] : s.date}
                   {s.is_past && <Badge variant="outline" className="ml-2 text-2xs">Past</Badge>}
                 </TableCell>
-                <TableCell>{s.court_id || "Any"}</TableCell>
+                <TableCell>
+                  {s.court_name || s.court_id || "Any"}
+                  {s.court_known === false && <span className="block text-2xs text-amber-700">Not a recognized court, edit to re-pick</span>}
+                </TableCell>
                 <TableCell>{formatSlotTime(s)}</TableCell>
                 <TableCell>
                   <div className="flex items-center justify-end gap-3">

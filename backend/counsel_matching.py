@@ -127,10 +127,10 @@ async def discover_candidates(db, hearing_id: str) -> List[dict]:
         profile = await db.proxy_counsel_profiles.find_one(
             {"user_id": hearing["target_advocate_id"]}, {"_id": 0},
         )
-        return [profile] if profile else []
+        return await drop_deactivated(db, [profile] if profile else [])
 
     query = {**verified_counsel_query(), "availability_mode": True}
-    return await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500)
+    return await drop_deactivated(db, await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500))
 
 
 def verified_counsel_query() -> Dict[str, Any]:
@@ -142,6 +142,29 @@ def verified_counsel_query() -> Dict[str, Any]:
     on top of this — see its docstring for why that one stays hearing-time
     only."""
     return {"kyc_status": "approved", "bar_council_verified": True}
+
+
+async def deactivated_user_ids(db, user_ids: List[str]) -> set:
+    """Which of `user_ids` belong to a deactivated account (users.deleted,
+    set by audit_log.deactivate_user, e.g. Admin -> Leads -> Delete on an
+    already-approved counsel)."""
+    if not user_ids:
+        return set()
+    rows = await db.users.find(
+        {"user_id": {"$in": list(user_ids)}, "deleted": True}, {"_id": 0, "user_id": 1},
+    ).to_list(len(user_ids))
+    return {r["user_id"] for r in rows}
+
+
+async def drop_deactivated(db, candidates: List[dict]) -> List[dict]:
+    """Bug fix (2026-10): deactivation only ever flipped users.deleted and
+    left the counsel's proxy_counsel_profiles row approved + verified, and
+    nothing that lists or matches counsels looked at users at all, so a
+    deactivated counsel stayed visible and bookable. The trust gate itself
+    stays a profile query (verified_counsel_query); this is the account
+    check layered on top, everywhere counsels are surfaced to clients."""
+    gone = await deactivated_user_ids(db, [c["user_id"] for c in candidates])
+    return [c for c in candidates if c["user_id"] not in gone] if gone else candidates
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +487,7 @@ async def list_and_recommend(
     elif court_id:
         query["courts"] = court_id
 
-    candidates = await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500)
+    candidates = await drop_deactivated(db, await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500))
 
     if hearing_date is not None and candidates:
         slot_docs = await db.availability_slots.find(
