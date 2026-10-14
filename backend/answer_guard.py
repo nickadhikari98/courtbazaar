@@ -336,6 +336,152 @@ def validate_grounded_answer(answer: str, evidence: str, document_evidence: bool
 
 
 # ---------------------------------------------------------------------------
+# Rule attribution (document answers)
+#
+# validate_grounded_answer checks a sentence against everything retrieved, so
+# a sentence that takes the actor from one rule and the condition from another
+# ("The Tribunal may issue an order to terminate ... within thirty days
+# (Rule 33.5)": the Tribunal's order is Rule 16.2, the thirty days are Rule
+# 33.5, where the Centre terminates or directs the Tribunal) passed, because
+# every word was somewhere in the evidence. validate_rule_attribution checks
+# each rule-attributed sentence against that rule's own text only.
+# ---------------------------------------------------------------------------
+
+_ACTOR_WORDS = {
+    "centre": "centre", "center": "centre", "tribunal": "tribunal", "tribunals": "tribunal",
+    "claimant": "claimant", "claimants": "claimant", "respondent": "respondent", "respondents": "respondent",
+    "party": "party", "parties": "party", "chairperson": "chairperson", "arbitrator": "arbitrator",
+    "arbitrators": "arbitrator", "secretariat": "secretariat", "registrar": "registrar",
+}
+_ACTOR_ALT = "|".join(sorted(_ACTOR_WORDS, key=len, reverse=True))
+_MODAL = r"(?:may|shall|must|can|could|will|would|should|is free to|are free to|is required to|are required to|has to|have to|is entitled to|are entitled to)"
+_ACTIVE_RE = re.compile(rf"\b({_ACTOR_ALT})\s+{_MODAL}\s+(?:(?:also|either|then|not|only|still|further|now)\s+)*([a-z]+)", re.IGNORECASE)
+_PASSIVE_RE = re.compile(rf"\b(?:be|been|is|are|was|were)\s+([a-z]+(?:ed|able))\s+by\s+(?:the\s+|any\s+|each\s+|either\s+)?({_ACTOR_ALT})\b", re.IGNORECASE)
+_ADJ_BY_RE = re.compile(rf"\b([a-z]+able)\s+by\s+(?:the\s+|any\s+|each\s+|either\s+)?({_ACTOR_ALT})\b", re.IGNORECASE)
+# Further verbs an actor governs later in the same sentence: "may either
+# terminate ... or where ..., direct the Tribunal ...".
+_COORDINATED_RE = re.compile(r"(?:\bor\b|\band\b|,)\s+(?:where[^,.;]*,\s*|if[^,.;]*,\s*)?([a-z]+)\s+(?:the|a|an|its|their|such|any)\b", re.IGNORECASE)
+_SENTENCE_END_RE = re.compile(r"[.;](?:\s|$)")
+_GENERIC_PARTY = {"party"}  # "any party" in a rule covers the Claimant and the Respondent
+_PARTY_ROLES = {"claimant", "respondent", "party"}
+_NOT_VERBS = frozenset("the a an be been to not also either then only as in with where if case per".split())
+
+
+def _verb_key(word: str) -> str:
+    w = word.lower()
+    for suffix in ("able", "ing", "ed", "es", "s"):
+        if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+            w = w[: -len(suffix)]
+            break
+    return w[:5]
+
+
+def _actor_actions(text: str, coordinated: bool = False) -> set:
+    """(actor, verb-stem) pairs: "the Centre may terminate" -> (centre, termi);
+    "terminated by the Tribunal" / "payable by the Claimant" -> (tribunal,
+    termi) / (claimant, pay). With `coordinated` (rule text), verbs the same
+    actor governs later in the sentence are added too."""
+    pairs = set()
+    for m in _ACTIVE_RE.finditer(text):
+        actor, verb = _ACTOR_WORDS[m.group(1).lower()], m.group(2).lower()
+        if verb in _NOT_VERBS:
+            continue
+        pairs.add((actor, _verb_key(verb)))
+        if coordinated:
+            end = _SENTENCE_END_RE.search(text, m.end())
+            rest = text[m.end(): end.start() if end else len(text)]
+            nxt = _ACTIVE_RE.search(rest)
+            rest = rest[: nxt.start()] if nxt else rest
+            for c in _COORDINATED_RE.finditer(rest):
+                if c.group(1).lower() not in _NOT_VERBS and c.group(1).lower() not in _ACTOR_WORDS:
+                    pairs.add((actor, _verb_key(c.group(1))))
+    for rx in (_PASSIVE_RE, _ADJ_BY_RE):
+        for m in rx.finditer(text):
+            pairs.add((_ACTOR_WORDS[m.group(2).lower()], _verb_key(m.group(1))))
+    return pairs
+
+
+def _actions_supported(claimed: set, rule_pairs: set) -> bool:
+    for actor, verb in claimed:
+        ok = (actor, verb) in rule_pairs or (
+            actor in _PARTY_ROLES and any((g, verb) in rule_pairs for g in _GENERIC_PARTY))
+        if not ok:
+            return False
+    return True
+
+
+def _rule_refs(text: str) -> List[str]:
+    refs = []
+    for m in re.finditer(r"\bRules?\s+(\d{1,3}(?:\.\d{1,2})?(?:\s*(?:,|and|&|or)\s*\d{1,3}(?:\.\d{1,2})?)*)"
+                         r"|\((\d{1,3}\.\d{1,2})\)", text, re.IGNORECASE):
+        refs += re.findall(r"\d{1,3}(?:\.\d{1,2})?", m.group(1) or m.group(2))
+    return refs
+
+
+def _attribution_ok(sentence: str, refs: List[str], provisions: dict) -> bool:
+    texts = [provisions.get(r) for r in refs]
+    if not refs or any(t is None for t in texts):
+        return False  # cites a rule whose text wasn't retrieved
+    rule_text = "\n".join(texts)
+    rule_lower = rule_text.lower()
+    body = re.sub(r"\(?\b(?:Rules?)\s+[\d.,\sand&or]+\)?|\(\d{1,3}\.\d{1,2}\)", " ", sentence, flags=re.IGNORECASE)
+    if not _content_supported(body, rule_lower):
+        return False
+    if not _numbers(_LIST_MARKER_RE.sub("", body)) <= _numbers(rule_text):
+        return False
+    return _actions_supported(_actor_actions(body), _actor_actions(rule_text, coordinated=True))
+
+
+def validate_rule_attribution(answer: str, provisions: dict) -> Tuple[Optional[str], int]:
+    """Drops each sentence attributed to a rule that its rule's own text
+    doesn't support: wording, figures, and who does what. A sentence is
+    attributed by its own "(Rule X)", else by a rule cited elsewhere in its
+    paragraph, else by its section heading. Unattributed sentences are left
+    to validate_grounded_answer. Returns (answer or None, sentences dropped).
+    With no labelled provisions (raw chunks only) it changes nothing."""
+    if not answer or not provisions:
+        return answer, 0
+    lines = _lines(answer)
+    # Paragraph = consecutive non-blank, non-heading lines.
+    para_refs: List[List[str]] = []
+    current: List[str] = []
+    group: List[int] = []
+    for idx, (marker, sentences) in enumerate(lines):
+        if not sentences or _is_heading(marker):
+            for g in group:
+                para_refs[g] = current
+            current, group = [], []
+            para_refs.append([])
+            continue
+        para_refs.append([])
+        group.append(idx)
+        for s in sentences:
+            current = current + [r for r in _rule_refs(s) if r not in current]
+    for g in group:
+        para_refs[g] = current
+    out = []
+    section_refs: List[str] = []
+    kept = dropped = 0
+    for idx, (marker, sentences) in enumerate(lines):
+        if _is_heading(marker):
+            section_refs = _rule_refs(" ".join(sentences))
+            out.append((marker, sentences))
+            continue
+        keep = []
+        for s in sentences:
+            refs = _rule_refs(s) or para_refs[idx] or section_refs
+            if refs and not _attribution_ok(s, refs, provisions):
+                dropped += 1
+                continue
+            keep.append(s)
+        kept += len(keep)
+        out.append((marker, keep))
+    if not kept:
+        return None, dropped
+    return _rebuild(out), dropped
+
+
+# ---------------------------------------------------------------------------
 # General-knowledge answers (no retrieved evidence)
 # ---------------------------------------------------------------------------
 
