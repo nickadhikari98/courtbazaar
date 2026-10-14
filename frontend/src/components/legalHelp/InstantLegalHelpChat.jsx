@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { api, getErrorMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { ArrowUp, Loader2, Scale, User, SquarePen, Landmark, FileText, Users } from "lucide-react";
+import { ArrowUp, Loader2, Scale, User, SquarePen, Landmark, FileText, Users, BookOpen, Info } from "lucide-react";
+import ChatMarkdown from "./ChatMarkdown";
 
 // Multi-turn conversation via POST /ai/chat. Backend routing (ai_chat.py)
 // transparently grounds some replies in live public CourtBazaar data
@@ -55,20 +56,47 @@ function decodeEntitiesUntilStable(str, maxPasses = 4) {
   return cleaned;
 }
 
-function cleanAssistantText(str) {
+// Keeps the Markdown subset ChatMarkdown renders (## / ### headings, lists,
+// **bold**) and removes everything else that could show up as raw syntax:
+// entities, backslash escapes, single-asterisk italics, deeper headings.
+export function cleanAssistantText(str) {
   if (!str) return str;
   let cleaned = decodeEntitiesUntilStable(str);
-  cleaned = cleaned.replace(/ /g, " "); // non-breaking space -> normal space
-  // Backslash-unescape BEFORE stripping bold/italic, so "\*\*bold\*\*" first
-  // becomes "**bold**" and is then caught below too.
+  cleaned = cleaned.replace(/\u00a0/g, " "); // non-breaking space -> normal space
   cleaned = cleaned.replace(/\\([-*_#.>+![\]()~`\\])/g, "$1");
-  cleaned = cleaned.replace(/\*\*(.+?)\*\*/g, "$1");
-  cleaned = cleaned.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "$1");
-  cleaned = cleaned.replace(/^\s{0,3}#{1,6}\s+/gm, "");
-  cleaned = cleaned.replace(/^[ \t]*-[ \t]+/gm, "• "); // "- item" -> "• item"
+  cleaned = cleaned.replace(/(?<!\*)\*(?!\*)([^*\n]+?)(?<!\*)\*(?!\*)/g, "$1");
+  cleaned = cleaned.replace(/^\s{0,3}#{4,6}\s+/gm, "### ");
+  cleaned = cleaned.replace(/^\s{0,3}#\s+/gm, "## ");
   cleaned = cleaned.replace(/[ \t]{2,}/g, " ");
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
   return cleaned.trim();
+}
+
+/* "DIAC Rules · Rules 33.2, 33.5" under a document answer. Built by the
+   server from approved-source metadata (never from the reply text); a link
+   only when that source has an approved URL. */
+function SourceChips({ citations }) {
+  if (!citations?.length) return null;
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2" data-testid="instant-legal-help-citations">
+      <span className="text-xs font-semibold text-muted-foreground">Source</span>
+      {citations.map((c) => {
+        const label = c.rules?.length
+          ? `${c.title} · ${c.rules.length > 1 ? "Rules" : "Rule"} ${c.rules.join(", ")}`
+          : c.title;
+        const chipClass = "inline-flex items-center gap-1.5 rounded-full border border-border bg-white px-3 py-1 text-xs font-medium text-foreground";
+        return c.url ? (
+          <a key={c.title} href={c.url} target="_blank" rel="noopener noreferrer" className={`${chipClass} hover:border-accent hover:text-accent`}>
+            <BookOpen className="w-3.5 h-3.5 text-accent" />{label}
+          </a>
+        ) : (
+          <span key={c.title} className={chipClass}>
+            <BookOpen className="w-3.5 h-3.5 text-accent" />{label}
+          </span>
+        );
+      })}
+    </div>
+  );
 }
 
 const SESSION_EXPIRED_TEXT = "This chat session is no longer available. Please send your message again to start a new chat.";
@@ -129,7 +157,12 @@ export default function InstantLegalHelpChat({ initialMessage }) {
       if (sessionRef.current !== mySession) return; // superseded by "New chat" while this was in flight
       if (data?.conversation_id) setConversationId(data.conversation_id);
       if (data?.conversation_token) setConversationToken(data.conversation_token);
-      setMsgs((prev) => [...prev, { role: "assistant", text: data?.reply || GENERIC_ERROR_TEXT, sources: data?.sources || [] }]);
+      setMsgs((prev) => [...prev, {
+        role: "assistant",
+        text: data?.reply || GENERIC_ERROR_TEXT,
+        citations: data?.citations || [],
+        grounding: data?.grounding || null,
+      }]);
     } catch (err) {
       if (sessionRef.current !== mySession) return;
       if (err?.response?.status === 404) {
@@ -242,8 +275,20 @@ export default function InstantLegalHelpChat({ initialMessage }) {
               <div className="w-8 h-8 rounded-lg bg-accent text-white shrink-0 flex items-center justify-center" aria-hidden="true">
                 <Scale className="w-4 h-4" />
               </div>
-              <div className="min-w-0 flex-1 pt-0.5 text-[15px] leading-7 text-foreground whitespace-pre-wrap break-words">
-                {cleanAssistantText(m.text)}
+              <div className="min-w-0 flex-1 pt-0.5">
+                {m.grounding === "insufficient" ? (
+                  // Not a failure: the approved documents just don't cover it.
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex gap-3" data-testid="instant-legal-help-insufficient">
+                    <Info className="w-4 h-4 text-amber-700 shrink-0 mt-1" aria-hidden="true" />
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-amber-800 uppercase tracking-wide">Not covered by the available documents</div>
+                      <div className="mt-1"><ChatMarkdown text={cleanAssistantText(m.text)} /></div>
+                    </div>
+                  </div>
+                ) : (
+                  <ChatMarkdown text={cleanAssistantText(m.text)} />
+                )}
+                <SourceChips citations={m.citations} />
               </div>
             </div>
           )))}

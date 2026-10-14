@@ -711,6 +711,9 @@ def test_groq_generates_answer_with_openai_vector_store_context(monkeypatch):
         assert result == {
             "ok": True, "text": "The refund process starts after the cancellation is approved.",
             "sources": ["STANDARD OPERATING PROCEDURE (SOP).docx"],
+            # Additive: server-built citation (no rule numbers cited) and no partial-answer note.
+            "citations": [{"title": "Standard Operating Procedure (SOP)", "url": None, "rules": []}],
+            "partial": False,
         }
         assert search.kwargs["vector_store_id"] == "vs-test"
         assert search.kwargs["filters"] == {
