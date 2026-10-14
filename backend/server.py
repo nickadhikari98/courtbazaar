@@ -436,8 +436,8 @@ class AvailabilitySlotCreate(BaseModel):
     day_of_week: Optional[int] = None  # 0=Monday..6=Sunday, for recurring_weekly
     date: Optional[str] = None  # ISO date, for custom_date/holiday_block/emergency_unavailable
     court_id: Optional[str] = None
-    start_time: Optional[str] = None  # "HH:MM"
-    end_time: Optional[str] = None
+    start_time: Optional[str] = None  # time-of-day label, one of practice.AVAILABILITY_TIME_LABELS
+    end_time: Optional[str] = None  # legacy clock-time rows only; ignored on save
 
 class HearingRequestCreate(BaseModel):
     court_id: str
@@ -2569,6 +2569,12 @@ async def post_practice_availability(payload: AvailabilitySlotCreate, user=Depen
     _require_capability(user, "can_practice_proxy_counsel")
     return await practice_svc.add_slot(db, user["user_id"], payload.kind, payload.day_of_week,
                                         payload.date, payload.court_id, payload.start_time, payload.end_time)
+
+@api_router.put("/practice/availability/{slot_id}")
+async def put_practice_availability(slot_id: str, payload: AvailabilitySlotCreate, user=Depends(get_current_user)):
+    _require_capability(user, "can_practice_proxy_counsel")
+    return await practice_svc.update_slot(db, user["user_id"], slot_id, payload.kind, payload.day_of_week,
+                                           payload.date, payload.court_id, payload.start_time, payload.end_time)
 
 @api_router.delete("/practice/availability/{slot_id}")
 async def delete_practice_availability(slot_id: str, user=Depends(get_current_user)):

@@ -24,6 +24,11 @@ export async function addAvailabilitySlot(slot) {
   return data;
 }
 
+export async function updateAvailabilitySlot(slotId, slot) {
+  const { data } = await api.put(`/practice/availability/${slotId}`, slot);
+  return data;
+}
+
 export async function removeAvailabilitySlot(slotId) {
   const { data } = await api.delete(`/practice/availability/${slotId}`);
   return data;

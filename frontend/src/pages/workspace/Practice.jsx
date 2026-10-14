@@ -15,14 +15,15 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty, TableLoading,
 } from "@/components/ui/table";
-import { Briefcase, X, Plus, Trash2, Star, CheckCircle2, Clock, ArrowRight, Loader2 } from "lucide-react";
+import { Briefcase, X, Plus, Trash2, Star, CheckCircle2, Clock, ArrowRight, Loader2, Pencil } from "lucide-react";
 import {
   getPracticeProfile, updatePracticeProfile, listAvailabilitySlots,
-  addAvailabilitySlot, removeAvailabilitySlot, getPracticePerformance,
+  addAvailabilitySlot, updateAvailabilitySlot, removeAvailabilitySlot, getPracticePerformance,
 } from "@/lib/practiceApi";
 import { listHearingRequests } from "@/lib/hearingRequestsApi";
 import { getCourt, searchCourts } from "@/lib/referenceDataApi";
 import { formatINR, getErrorMessage } from "@/lib/api";
+import { resolveDateBound } from "@/lib/utils";
 import HearingDetailDialog from "@/components/shared/HearingDetailDialog";
 import HearingActivityPreview from "@/components/shared/HearingActivityPreview";
 import CapabilitiesCard from "@/components/shared/CapabilitiesCard";
@@ -524,70 +525,121 @@ function ProfileTab({ profile, onSaved }) {
   );
 }
 
-function AvailabilityTab() {
-  const [slots, setSlots] = useState(null);
-  const [kind, setKind] = useState("recurring_weekly");
-  const [dayOfWeek, setDayOfWeek] = useState(0);
-  const [date, setDate] = useState("");
-  const [courtId, setCourtId] = useState("");
-  // Bug fix: was two literal clock-time inputs (From/To) — switched to the
-  // same short time-of-day picker every such field in the app now uses (see
-  // TIME_OF_DAY_OPTIONS). A single slot string now, not a start/end pair.
-  const [timeSlot, setTimeSlot] = useState("");
-  const [addingSlot, setAddingSlot] = useState(false);
+// Rows saved before the Time Slot picker existed carry literal clock times
+// (start_time "09:03", end_time "18:03") instead of one of
+// TIME_OF_DAY_OPTIONS — show both ends rather than a bare "09:03".
+function formatSlotTime(slot) {
+  if (!slot.start_time) return "Full day";
+  if (!TIME_OF_DAY_OPTIONS.includes(slot.start_time) && slot.end_time) return `${slot.start_time} – ${slot.end_time}`;
+  return slot.start_time;
+}
 
-  const load = () => listAvailabilitySlots().then(setSlots);
+const EMPTY_SLOT_FORM = { kind: "recurring_weekly", dayOfWeek: 0, date: "", courtId: "", timeSlot: "" };
+
+export function AvailabilityTab() {
+  const [slots, setSlots] = useState(null);
+  const [loadError, setLoadError] = useState(false);
+  const [form, setForm] = useState(EMPTY_SLOT_FORM);
+  // slot_id being edited, or null when the card is adding a new slot.
+  const [editingId, setEditingId] = useState(null);
+  const [savingSlot, setSavingSlot] = useState(false);
+  const [removingId, setRemovingId] = useState(null);
+  const { kind, dayOfWeek, date, courtId, timeSlot } = form;
+  const setField = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+  const today = resolveDateBound("today");
+
+  const load = () => listAvailabilitySlots()
+    .then((rows) => { setSlots(rows); setLoadError(false); })
+    .catch(() => { setSlots([]); setLoadError(true); });
   useEffect(() => { load(); }, []);
 
-  // UX fix: required fields are Kind (always has a value — the Select has
-  // no blank state), Day of week or Date depending on Kind, and Time Slot
-  // (no longer silently optional — see the label below and practice.py's
-  // matching _validate_slot check). Court stays the one genuinely optional
-  // field. This also drives the Add button's fade/bright state directly —
-  // faded while the form is still incomplete (nothing real to add yet, the
-  // "0 availability" case), bright the moment it's actually ready to submit.
+  // Required fields are Kind (always has a value — the Select has no blank
+  // state), Day of week or Date depending on Kind, and Time Slot (see
+  // practice.py's _validated_slot_fields, which enforces the same rules plus
+  // a real, not-yet-passed date). Court stays the one optional field. Also
+  // drives the submit button's faded/bright state.
   const dayOrDateFilled = kind === "recurring_weekly" ? dayOfWeek != null : !!date;
-  const isFormReady = dayOrDateFilled && !!timeSlot;
+  const dateInPast = kind !== "recurring_weekly" && !!date && date < today;
+  const isFormReady = dayOrDateFilled && !dateInPast && !!timeSlot;
 
-  const add = async () => {
+  const resetForm = () => {
+    setForm(EMPTY_SLOT_FORM);
+    setEditingId(null);
+  };
+
+  const startEdit = (slot) => {
+    setEditingId(slot.slot_id);
+    setForm({
+      kind: slot.kind,
+      dayOfWeek: slot.day_of_week ?? 0,
+      date: slot.date || "",
+      courtId: slot.court_id || "",
+      // A legacy clock-time row has no matching option — force an explicit pick.
+      timeSlot: TIME_OF_DAY_OPTIONS.includes(slot.start_time) ? slot.start_time : "",
+    });
+  };
+
+  const submit = async () => {
     if (!isFormReady) {
-      toast.error(dayOrDateFilled ? "Select a time slot" : "Pick a day or date first");
+      if (!dayOrDateFilled) toast.error("Pick a day or date first");
+      else if (dateInPast) toast.error("That date has already passed. Pick today or a future date.");
+      else toast.error("Select a time slot");
       return;
     }
-    setAddingSlot(true);
+    const payload = {
+      kind,
+      day_of_week: kind === "recurring_weekly" ? dayOfWeek : undefined,
+      date: kind !== "recurring_weekly" ? date : undefined,
+      court_id: courtId.trim() || undefined,
+      start_time: timeSlot,
+    };
+    setSavingSlot(true);
     try {
-      await addAvailabilitySlot({
-        kind,
-        day_of_week: kind === "recurring_weekly" ? dayOfWeek : undefined,
-        date: kind !== "recurring_weekly" ? date : undefined,
-        court_id: courtId || undefined,
-        start_time: timeSlot,
-      });
-      toast.success("Availability added");
-      setTimeSlot(""); // force a fresh, explicit pick for the next slot rather than resubmitting the same one
+      if (editingId) {
+        await updateAvailabilitySlot(editingId, payload);
+        toast.success("Availability updated");
+        resetForm();
+      } else {
+        await addAvailabilitySlot(payload);
+        toast.success("Availability added");
+        setField("timeSlot", ""); // force a fresh, explicit pick for the next slot rather than resubmitting the same one
+      }
       load();
     } catch (err) {
-      toast.error(getErrorMessage(err, "Could not add slot"));
+      toast.error(getErrorMessage(err, editingId ? "Could not update slot" : "Could not add slot"));
     } finally {
-      setAddingSlot(false);
+      setSavingSlot(false);
     }
   };
 
   const remove = async (slotId) => {
-    await removeAvailabilitySlot(slotId);
-    load();
+    setRemovingId(slotId);
+    try {
+      await removeAvailabilitySlot(slotId);
+      toast.success("Availability removed");
+      if (editingId === slotId) resetForm();
+      load();
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Could not remove slot"));
+    } finally {
+      setRemovingId(null);
+    }
   };
+
+  // Current slots first, then dated ones that have already passed (they no
+  // longer affect search, but stay visible so they can be cleaned up).
+  const orderedSlots = slots && [...slots.filter((s) => !s.is_past), ...slots.filter((s) => s.is_past)];
 
   return (
     <div className="space-y-4">
       <Card className="dashboard-card border-none">
         <CardContent className="p-5">
-          <div className="font-display font-bold mb-3">Add availability</div>
+          <div className="font-display font-bold mb-3">{editingId ? "Edit availability" : "Add availability"}</div>
           <div className="grid sm:grid-cols-2 gap-3 mb-3">
             <div>
               <Label>Kind *</Label>
-              <Select value={kind} onValueChange={setKind}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+              <Select value={kind} onValueChange={(v) => setField("kind", v)}>
+                <SelectTrigger data-testid="availability-kind"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {KINDS.map((k) => <SelectItem key={k.value} value={k.value}>{k.label}</SelectItem>)}
                 </SelectContent>
@@ -596,7 +648,7 @@ function AvailabilityTab() {
             {kind === "recurring_weekly" ? (
               <div>
                 <Label>Day of week *</Label>
-                <Select value={String(dayOfWeek)} onValueChange={(v) => setDayOfWeek(Number(v))}>
+                <Select value={String(dayOfWeek)} onValueChange={(v) => setField("dayOfWeek", Number(v))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {DAYS.map((d, i) => <SelectItem key={d} value={String(i)}>{d}</SelectItem>)}
@@ -606,36 +658,52 @@ function AvailabilityTab() {
             ) : (
               <div>
                 <Label>Date *</Label>
-                <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                <Input
+                  type="date" value={date} min={today} onChange={(e) => setField("date", e.target.value)}
+                  aria-invalid={dateInPast || undefined}
+                  className={dateInPast ? "border-red-500 focus-visible:ring-red-500" : undefined}
+                  data-testid="availability-date"
+                />
+                {dateInPast && <p className="text-2xs text-red-600 mt-0.5">This date has already passed</p>}
               </div>
             )}
             <div>
               <Label>Court (optional)</Label>
-              <Input value={courtId} onChange={(e) => setCourtId(e.target.value)} placeholder="e.g. Delhi High Court" />
+              <Input value={courtId} onChange={(e) => setField("courtId", e.target.value)} placeholder="e.g. Delhi High Court" />
             </div>
             <div>
               <Label>Time Slot *</Label>
-              <Select value={timeSlot || undefined} onValueChange={setTimeSlot}>
-                <SelectTrigger><SelectValue placeholder="Select a time slot" /></SelectTrigger>
+              <Select value={timeSlot || undefined} onValueChange={(v) => setField("timeSlot", v)}>
+                <SelectTrigger data-testid="availability-time-slot"><SelectValue placeholder="Select a time slot" /></SelectTrigger>
                 <SelectContent>
                   {TIME_OF_DAY_OPTIONS.map((opt) => <SelectItem key={opt} value={opt}>{opt}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
           </div>
-          <Button
-            type="button" onClick={add} disabled={addingSlot}
-            className={isFormReady
-              ? "bg-accent hover:bg-accent/90 font-bold"
-              : "bg-accent/50 hover:bg-accent/60 font-bold"}
-          >
-            {addingSlot ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Plus className="w-4 h-4 mr-1.5" />}
-            Add
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button" onClick={submit} disabled={savingSlot}
+              className={isFormReady
+                ? "bg-accent hover:bg-accent/90 font-bold"
+                : "bg-accent/50 hover:bg-accent/60 font-bold"}
+              data-testid="availability-submit"
+            >
+              {savingSlot
+                ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+                : !editingId && <Plus className="w-4 h-4 mr-1.5" />}
+              {editingId ? "Save changes" : "Add"}
+            </Button>
+            {editingId && (
+              <Button type="button" variant="outline" onClick={resetForm} disabled={savingSlot} data-testid="availability-cancel-edit">
+                Cancel
+              </Button>
+            )}
+          </div>
         </CardContent>
       </Card>
 
-      <div className="rounded-xl border bg-white overflow-hidden">
+      <div className="rounded-xl border bg-white overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
@@ -648,17 +716,42 @@ function AvailabilityTab() {
           </TableHeader>
           <TableBody>
             {slots === null && <TableLoading colSpan={5} />}
-            {slots?.length === 0 && <TableEmpty colSpan={5}>No availability set yet</TableEmpty>}
-            {slots?.map((s) => (
-              <TableRow key={s.slot_id}>
+            {slots?.length === 0 && (
+              <TableEmpty colSpan={5}>
+                {loadError ? "Couldn't load your availability. Refresh the page to try again." : "No availability set yet"}
+              </TableEmpty>
+            )}
+            {orderedSlots?.map((s) => (
+              <TableRow
+                key={s.slot_id}
+                className={`${s.is_past ? "opacity-60" : ""} ${editingId === s.slot_id ? "bg-accent/5" : ""}`}
+                data-testid={`availability-row-${s.slot_id}`}
+              >
                 <TableCell><Badge variant="outline" className="text-2xs uppercase">{s.kind.replace(/_/g, " ")}</Badge></TableCell>
-                <TableCell>{s.kind === "recurring_weekly" ? DAYS[s.day_of_week] : s.date}</TableCell>
-                <TableCell>{s.court_id || "Any"}</TableCell>
-                <TableCell>{s.start_time || "Full day"}</TableCell>
                 <TableCell>
-                  <button type="button" onClick={() => remove(s.slot_id)} className="text-muted-foreground hover:text-red-600">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  {s.kind === "recurring_weekly" ? DAYS[s.day_of_week] : s.date}
+                  {s.is_past && <Badge variant="outline" className="ml-2 text-2xs">Past</Badge>}
+                </TableCell>
+                <TableCell>{s.court_id || "Any"}</TableCell>
+                <TableCell>{formatSlotTime(s)}</TableCell>
+                <TableCell>
+                  <div className="flex items-center justify-end gap-3">
+                    {!s.is_past && (
+                      <button
+                        type="button" onClick={() => startEdit(s)} aria-label="Edit availability"
+                        className="text-muted-foreground hover:text-accent" data-testid={`availability-edit-${s.slot_id}`}
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                    )}
+                    <button
+                      type="button" onClick={() => remove(s.slot_id)} disabled={removingId === s.slot_id}
+                      aria-label="Remove availability" className="text-muted-foreground hover:text-red-600 disabled:opacity-50"
+                      data-testid={`availability-remove-${s.slot_id}`}
+                    >
+                      {removingId === s.slot_id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
