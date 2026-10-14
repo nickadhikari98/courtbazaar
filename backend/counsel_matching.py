@@ -473,9 +473,24 @@ async def list_and_recommend(
         slots_by_user: Dict[str, List[dict]] = {}
         for s in slot_docs:
             slots_by_user.setdefault(s["user_id"], []).append(s)
+        # Bug fix (2026-10, custom dates): "weekend" is a day-type rate, not a
+        # time of day, but it was handed to the availability check as one —
+        # so on a Saturday/Sunday it only matched slots literally labelled
+        # "Weekends", never a custom date saved as "10 AM – 1 PM" or "Full
+        # Day", and a partial block that day didn't block it either. On a
+        # weekend date it now means "any time that day": any availability on
+        # the date matches, any block on the date excludes. Weekday dates
+        # are unchanged. The pricing filter above still requires a weekend rate.
+        availability_time_slot = time_slot
+        if time_slot == "weekend":
+            try:
+                if datetime.fromisoformat(hearing_date).weekday() >= 5:
+                    availability_time_slot = None
+            except (TypeError, ValueError):
+                pass  # unparseable date: is_available_on_date already stays permissive
         candidates = [
             c for c in candidates
-            if practice.is_available_on_date(slots_by_user.get(c["user_id"], []), hearing_date, time_slot)
+            if practice.is_available_on_date(slots_by_user.get(c["user_id"], []), hearing_date, availability_time_slot)
         ]
 
     if fee_min is not None or fee_max is not None:
