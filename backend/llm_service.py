@@ -28,6 +28,9 @@ AI_RAG_MAX_OUTPUT_TOKENS = int(os.environ.get("AI_RAG_MAX_OUTPUT_TOKENS", "1200"
 # provider default (1.0) let the same question drop whole provisions on some
 # runs and not others.
 AI_RAG_TEMPERATURE = float(os.environ.get("AI_RAG_TEMPERATURE", "0.2"))
+# How long an approved document's parsed text (used to rebuild complete
+# provisions around retrieved chunks, see rag_provisions) stays cached.
+AI_RAG_DOC_CACHE_SECONDS = float(os.environ.get("AI_RAG_DOC_CACHE_SECONDS", "21600"))
 AI_RAG_SCORE_THRESHOLD = float(os.environ.get("AI_RAG_SCORE_THRESHOLD", "0.25"))
 
 ERR_NOT_CONFIGURED = "not_configured"
@@ -267,6 +270,7 @@ async def _retrieve_context(query: str, selected_source: str | None = None) -> t
         diagnostic_args["max_num_results"] = 50
         result = await client.vector_stores.search(**diagnostic_args)
     passages, sources, matches = [], [], []
+    approved_chunks: list[tuple[str, str | None, str]] = []  # (filename, file_id, normalized chunk text)
     metadata_mismatches = 0
     items = getattr(result, "data", []) or []
     for item in items:
@@ -290,7 +294,9 @@ async def _retrieve_context(query: str, selected_source: str | None = None) -> t
             if value:
                 chunk_text.append(value)
         if chunk_text:
-            passages.append(_excerpt_header(filename) + "\n" + _readable_excerpt("\n".join(chunk_text)))
+            approved_chunks.append((filename, getattr(item, "file_id", None), _readable_excerpt("\n".join(chunk_text))))
+    if approved_chunks:
+        passages = await _provision_passages(client, approved_chunks)
     validation_passed = bool(passages and sources and (not selected_source or selected_source in sources))
     fallback_reason = None
     if not validation_passed:
@@ -310,6 +316,30 @@ async def _retrieve_context(query: str, selected_source: str | None = None) -> t
         validation_passed, fallback_reason, AI_RAG_SCORE_THRESHOLD,
     )
     return "\n\n".join(passages), sources, len(passages), matches
+
+
+async def _provision_passages(client, approved_chunks: list[tuple[str, str | None, str]]) -> list[str]:
+    """Context blocks for the retrieved chunks, rebuilt into complete,
+    rule-labelled provisions from the same approved file where possible (see
+    rag_provisions). Only files that already passed the approved-filename and
+    source-metadata checks above reach here, and only through the configured
+    vector store; any failure falls back to the raw chunks."""
+    import rag_provisions
+    by_file: dict[str, tuple[str | None, list[str]]] = {}
+    for filename, file_id, chunk in approved_chunks:
+        by_file.setdefault(filename, (file_id, []))[1].append(chunk)
+    passages: list[str] = []
+    for filename, (file_id, chunks) in by_file.items():
+        doc = None
+        if file_id and filename in APPROVED_KB_FILES:
+            try:
+                doc = await rag_provisions.approved_document_text(
+                    client, OPENAI_VECTOR_STORE_ID, file_id, _readable_excerpt, AI_RAG_DOC_CACHE_SECONDS)
+            except Exception as e:
+                logger.warning("Provision expansion unavailable for %s (%s): %s; using retrieved chunks only",
+                               filename, type(e).__name__, _safe_error_detail(e))
+        passages.extend(rag_provisions.expand_chunks(filename, chunks, doc))
+    return passages
 
 
 async def generate_response(messages: List[Dict[str, str]], use_file_search: bool = False,
@@ -468,7 +498,22 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
             return {"ok": False, "error_code": ERR_NO_CONTEXT,
                     "detail": "Generated answer was not supported by the retrieved evidence", "stage": "rag",
                     "exception_type": "UnsupportedAnswer", "fallback_reason": "unsupported_answer"}
-        text = validated
+        # ATTRIBUTION check: a sentence tied to a rule must match that rule's
+        # own text (wording, figures, who does what), not just the pool.
+        import rag_provisions
+        attributed, misattributed = answer_guard.validate_rule_attribution(
+            validated, rag_provisions.provision_map(answer_guard.evidence_without_directives(context)))
+        if attributed is None:
+            logger.warning("RAG answer failed rule attribution: selected_source=%s fallback_reason=misattributed_answer",
+                           selected_source or "all_approved_sources")
+            return {"ok": False, "error_code": ERR_NO_CONTEXT,
+                    "detail": "Generated answer attributed statements to the wrong rule", "stage": "rag",
+                    "exception_type": "UnsupportedAnswer", "fallback_reason": "misattributed_answer"}
+        if misattributed:
+            logger.info("RAG answer: %d sentence(s) dropped for rule misattribution", misattributed)
+            if answer_guard.PARTIAL_ANSWER_NOTE not in attributed:
+                attributed += "\n\n" + answer_guard.PARTIAL_ANSWER_NOTE
+        text = attributed
     result: Dict[str, Any] = {"ok": True, "text": text, "sources": sources}
     if use_file_search:
         import answer_guard
@@ -499,14 +544,19 @@ RAG_EVIDENCE_INSTRUCTIONS = (
     "consequences, and any exception or qualification. Organise them under short headings that start with "
     "\"## \", one provision or consequence per heading, each followed by a short paragraph or \"- \" bullets. "
     "A simple single-point answer needs no headings. Use **bold** sparingly, for key terms only.\n"
-    "- Cite a rule, section or article number in parentheses with its word, for example (Rule 12.3) or "
-    "(Section 4), only when that number "
-    "appears in the excerpts immediately before or alongside that provision. An excerpt can begin or end in the "
-    "middle of a provision: text before the first number in an excerpt belongs to a provision numbered "
-    "elsewhere, so attribute it to a number only when the continuation is clear (an unfinished sentence and "
-    "consecutive page numbers); otherwise cite the enclosing rule, or no number.\n"
+    "- Excerpts labelled \"| Rule N\" each hold one complete provision, and the label is its number (the next "
+    "part of the label names the set of rules it belongs to). Write about each relevant labelled sub-rule "
+    "separately and end each statement taken from one with that number in parentheses, for example (Rule 12.3). "
+    "Each statement must say only what its own rule says, with the same actor doing the same thing: never "
+    "combine the actor of one rule with the condition or consequence of another, and keep who decides, who "
+    "directs whom, and who may act exactly as that rule states. For an excerpt without a rule label, cite a "
+    "number only if it appears with that provision in the excerpt; otherwise cite none.\n"
     "- Paraphrase as little as possible: use the document's own verbs and terms for what a party must, may or "
-    "may not do.\n"
+    "may not do. Never soften a condition into a hedge such as \"typically\", \"usually\" or \"generally\": "
+    "state the condition itself, in the document's words (for example \"unless the Centre directs "
+    "otherwise\").\n"
+    "- Include every labelled sub-rule that says who must pay or act, what another party may do if someone "
+    "doesn't, or what follows from not doing it, each as its own statement with its own number.\n"
     "- Keep the document's own figures and wording for time limits, percentages and conditions (write "
     "\"thirty days\" if the document says \"thirty days\"). Never convert, round or add a figure.\n"
     "- Keep the qualifications the document attaches, such as \"unless ... directs otherwise\" or "
@@ -570,7 +620,8 @@ def _readable_excerpt(text: str) -> str:
     belongs to which rule number. A line that is only a number is a page
     number and is dropped: left in, "29" ends up in front of the next
     provision's text and reads as "Rule 29"."""
-    lines = [ln.strip() for ln in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    text = re.sub(r"<(?:IMAGE|PARSED TEXT) FOR PAGE:\s*\d+\s*/\s*\d+>", "\n", text or "")
+    lines = [ln.strip() for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     out: List[str] = []
     for line in lines:
         if _PAGE_NUMBER_LINE_RE.match(line):
