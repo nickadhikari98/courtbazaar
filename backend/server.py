@@ -436,8 +436,8 @@ class AvailabilitySlotCreate(BaseModel):
     day_of_week: Optional[int] = None  # 0=Monday..6=Sunday, for recurring_weekly
     date: Optional[str] = None  # ISO date, for custom_date/holiday_block/emergency_unavailable
     court_id: Optional[str] = None
-    start_time: Optional[str] = None  # "HH:MM"
-    end_time: Optional[str] = None
+    start_time: Optional[str] = None  # time-of-day label, one of practice.AVAILABILITY_TIME_LABELS
+    end_time: Optional[str] = None  # legacy clock-time rows only; ignored on save
 
 class HearingRequestCreate(BaseModel):
     court_id: str
@@ -2570,10 +2570,21 @@ async def post_practice_availability(payload: AvailabilitySlotCreate, user=Depen
     return await practice_svc.add_slot(db, user["user_id"], payload.kind, payload.day_of_week,
                                         payload.date, payload.court_id, payload.start_time, payload.end_time)
 
+@api_router.put("/practice/availability/{slot_id}")
+async def put_practice_availability(slot_id: str, payload: AvailabilitySlotCreate, user=Depends(get_current_user)):
+    _require_capability(user, "can_practice_proxy_counsel")
+    return await practice_svc.update_slot(db, user["user_id"], slot_id, payload.kind, payload.day_of_week,
+                                           payload.date, payload.court_id, payload.start_time, payload.end_time)
+
 @api_router.delete("/practice/availability/{slot_id}")
 async def delete_practice_availability(slot_id: str, user=Depends(get_current_user)):
     _require_capability(user, "can_practice_proxy_counsel")
     return await practice_svc.remove_slot(db, user["user_id"], slot_id)
+
+@api_router.get("/practice/visibility")
+async def get_practice_visibility(user=Depends(get_current_user)):
+    _require_capability(user, "can_practice_proxy_counsel")
+    return await practice_svc.client_visibility(db, user["user_id"])
 
 @api_router.get("/practice/performance")
 async def get_practice_performance(user=Depends(get_current_user)):
@@ -2711,7 +2722,7 @@ async def _advocate_profile_or_404(advocate_id: str) -> dict:
     profile = await db.proxy_counsel_profiles.find_one(
         {"user_id": advocate_id, **counsel_matching.verified_counsel_query()}, {"_id": 0},
     )
-    if not profile:
+    if not profile or await counsel_matching.deactivated_user_ids(db, [advocate_id]):
         raise HTTPException(404, "Counsel profile not found")
     name_doc = await db.users.find_one({"user_id": advocate_id}, {"_id": 0, "name": 1})
     court_ids = profile.get("courts") or []

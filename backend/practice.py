@@ -7,7 +7,7 @@ Performance/ratings here stay honest placeholders until the hearing-requests
 marketplace exists — real hearing counts, not fabricated activity.
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 
 from fastapi import HTTPException
@@ -224,23 +224,82 @@ async def verify_bar_council(db, user_id: str) -> dict:
     return await db.proxy_counsel_profiles.find_one({"user_id": user_id}, {"_id": 0})
 
 
-def _slot_overlaps_time(slot_label: Optional[str], wanted_label: Optional[str]) -> bool:
+# The four time-of-day labels Practice.jsx's Availability "Time Slot" picker
+# offers (TIME_OF_DAY_OPTIONS — every PRICING_SLOT_LABELS entry except
+# "urgent"). The only start_time values a slot may be saved with.
+AVAILABILITY_TIME_LABELS = [PRICING_SLOT_LABELS[s] for s in PRICING_SLOTS if s != "urgent"]
+_LABEL_TO_PRICING_SLOT = {PRICING_SLOT_LABELS[s]: s for s in PRICING_SLOTS}
+# Clock windows (minutes since midnight) behind the two timed labels, used
+# only to place legacy clock-time rows — see _slot_windows.
+_CLOCK_WINDOWS = {"morning": (10 * 60, 13 * 60), "afternoon": (14 * 60, 17 * 60)}
+# Courts and counsels are in India (no DST), so "today" for a dated slot is
+# the IST calendar date, not the server's UTC one.
+_IST = timezone(timedelta(hours=5, minutes=30))
+_DATED_KINDS = ("custom_date", "holiday_block", "emergency_unavailable")
+
+
+def _today_ist() -> str:
+    return datetime.now(_IST).date().isoformat()
+
+
+def _parse_clock(value: Optional[str]) -> Optional[int]:
+    try:
+        hours, minutes = (int(part) for part in str(value).split(":")[:2])
+    except (TypeError, ValueError):
+        return None
+    if 0 <= hours <= 23 and 0 <= minutes <= 59:
+        return hours * 60 + minutes
+    return None
+
+
+def _slot_windows(slot: dict) -> Optional[frozenset]:
+    """Which PRICING_SLOTS a saved availability row actually covers, or None
+    for "the whole day / any slot".
+
+    Bug fix (2026-10, My Availability): the Availability form used to save
+    literal clock times (start_time "09:03", end_time "18:03"), then switched
+    to the time-of-day labels above — but rows saved before the switch were
+    never migrated, and matching compared start_time to a label by exact
+    string. A legacy "09:03–18:03" holiday block therefore matched neither
+    "10 AM – 1 PM" nor "2 PM – 5 PM" and never blocked a timed search: the
+    counsel kept showing as bookable on a day they had blocked. Legacy rows
+    are now mapped onto the label windows they overlap (and count for a
+    weekend search too, since they name real hours on that day); a missing
+    or unreadable start_time stays permissive, as before."""
+    start = slot.get("start_time")
+    if not start:
+        return None
+    pricing_slot = _LABEL_TO_PRICING_SLOT.get(start)
+    if pricing_slot == "full_day":
+        return None
+    if pricing_slot:
+        return frozenset({pricing_slot})
+    start_min = _parse_clock(start)
+    if start_min is None:
+        return None
+    end_min = _parse_clock(slot.get("end_time"))
+    if end_min is None or end_min <= start_min:
+        end_min = 24 * 60
+    covered = {key for key, (lo, hi) in _CLOCK_WINDOWS.items() if start_min < hi and end_min > lo}
+    if covered:
+        covered.add("weekend")
+    return frozenset(covered)
+
+
+def _slot_overlaps_time(slot: dict, time_slot: Optional[str]) -> bool:
     """Bug fix (2026-09): is_available_on_date used to only compare
-    kind+date, completely ignoring each availability_slots row's own
-    start_time (one of PRICING_SLOT_LABELS' four non-urgent labels — see
-    Practice.jsx's Availability tab) — so a holiday_block scoped to just
-    "2 PM – 5 PM" was excluding a counsel from every search on that date,
-    including an unrelated 10 AM – 1 PM one. "Full Day" on either side
-    always overlaps (it covers/needs the whole day); a missing label on
-    either side (a legacy row with no start_time, or a browse search with
-    no time_slot filter — "Any time slot") stays permissive/conservative,
-    matching this function's behavior before time-of-day was considered at
-    all — only an explicit, differing time-of-day pair is now distinguished."""
-    if not slot_label or not wanted_label:
+    kind+date, ignoring each row's own time of day — so a holiday_block
+    scoped to just "2 PM – 5 PM" excluded a counsel from every search on
+    that date, including an unrelated 10 AM – 1 PM one. "Full Day" on either
+    side always overlaps (it covers/needs the whole day); no time_slot
+    filter ("Any time slot") or a row with no time stays permissive — only
+    an explicit, differing time-of-day pair is distinguished."""
+    windows = _slot_windows(slot)
+    if windows is None or not time_slot:
         return True
-    if slot_label == "Full Day" or wanted_label == "Full Day":
-        return True
-    return slot_label == wanted_label
+    if time_slot == "full_day":
+        return bool(windows)
+    return time_slot in windows
 
 
 def is_available_on_date(slots: List[dict], date_str: str, time_slot: Optional[str] = None) -> bool:
@@ -272,10 +331,9 @@ def is_available_on_date(slots: List[dict], date_str: str, time_slot: Optional[s
         weekday = datetime.fromisoformat(date_str).weekday()  # 0=Monday..6=Sunday, matches day_of_week's own convention
     except (TypeError, ValueError):
         return True  # unparseable date filter shouldn't hide every counsel
-    wanted_label = PRICING_SLOT_LABELS.get(time_slot) if time_slot else None
     if any(
         s.get("kind") in ("holiday_block", "emergency_unavailable") and s.get("date") == date_str
-        and _slot_overlaps_time(s.get("start_time"), wanted_label)
+        and _slot_overlaps_time(s, time_slot)
         for s in slots
     ):
         return False
@@ -285,49 +343,189 @@ def is_available_on_date(slots: List[dict], date_str: str, time_slot: Optional[s
     return any(
         ((s["kind"] == "custom_date" and s.get("date") == date_str)
          or (s["kind"] == "recurring_weekly" and s.get("day_of_week") == weekday))
-        and _slot_overlaps_time(s.get("start_time"), wanted_label)
+        and _slot_overlaps_time(s, time_slot)
         for s in positive
     )
 
 
-def _validate_slot(kind: str, day_of_week: Optional[int], date: Optional[str], start_time: Optional[str]) -> None:
+def _validated_slot_fields(kind: str, day_of_week: Optional[int], date: Optional[str],
+                           court_id: Optional[str], start_time: Optional[str]) -> dict:
+    """The one place a slot's fields are checked and normalized, for both
+    add_slot and update_slot. Only the field the kind actually uses is kept
+    (day_of_week for recurring_weekly, date otherwise), so switching a slot's
+    kind on edit can't leave a stale date/day behind that matching would
+    still read."""
     if kind not in AVAILABILITY_KINDS:
         raise HTTPException(400, f"Invalid availability kind. Allowed: {', '.join(AVAILABILITY_KINDS)}")
     if kind == "recurring_weekly":
         if day_of_week is None or not 0 <= day_of_week <= 6:
             raise HTTPException(400, "day_of_week (0=Monday..6=Sunday) is required for a recurring weekly slot")
-    elif not date:
-        raise HTTPException(400, "date is required for this availability kind")
-    # Founder direction (2026-09): Practice.jsx's "Time Slot" field is no
-    # longer optional-with-a-silent-full-day-default — a counsel must pick
-    # one of TIME_OF_DAY_OPTIONS explicitly (Court stays the one genuinely
-    # optional field). Enforced here too, not just in the form, so a direct
-    # API call can't slip a slotless row in any more than the UI can.
+        date = None
+    else:
+        if not date:
+            raise HTTPException(400, "date is required for this availability kind")
+        # Matching compares this string to the browse page's YYYY-MM-DD
+        # hearing date verbatim, so any other shape could never match.
+        try:
+            date = datetime.strptime(date, "%Y-%m-%d").date().isoformat()
+        except (TypeError, ValueError):
+            raise HTTPException(400, "date must be a valid date in YYYY-MM-DD format")
+        if date < _today_ist():
+            raise HTTPException(400, "That date has already passed. Pick today or a future date.")
+        day_of_week = None
+    # Founder direction (2026-09): a counsel must pick one of the time-of-day
+    # labels explicitly (Court stays the one genuinely optional field) —
+    # enforced here too, and restricted to the known labels, so a direct API
+    # call can't save a time that matching would never recognize.
     if not start_time:
         raise HTTPException(400, "A time slot is required")
-
-
-async def add_slot(db, user_id: str, kind: str, day_of_week: Optional[int], date: Optional[str],
-                    court_id: Optional[str], start_time: Optional[str], end_time: Optional[str]) -> dict:
-    _validate_slot(kind, day_of_week, date, start_time)
-    slot = {
-        "slot_id": f"slot_{uuid.uuid4().hex[:12]}",
-        "user_id": user_id,
+    if start_time not in AVAILABILITY_TIME_LABELS:
+        raise HTTPException(400, f"Invalid time slot. Allowed: {', '.join(AVAILABILITY_TIME_LABELS)}")
+    return {
         "kind": kind,
         "day_of_week": day_of_week,
         "date": date,
-        "court_id": court_id,  # null = any court
-        "start_time": start_time,  # "HH:MM", null = full day
-        "end_time": end_time,
+        "court_id": (court_id or "").strip() or None,  # null = any court
+        "start_time": start_time,  # one of AVAILABILITY_TIME_LABELS
+        "end_time": None,  # only legacy clock-time rows have one, see _slot_windows
+    }
+
+
+async def _reject_duplicate(db, user_id: str, fields: dict, exclude_slot_id: Optional[str] = None) -> None:
+    query = {"user_id": user_id, **{k: fields[k] for k in ("kind", "day_of_week", "date", "court_id", "start_time")}}
+    if exclude_slot_id:
+        query["slot_id"] = {"$ne": exclude_slot_id}
+    if await db.availability_slots.find_one(query, {"_id": 1}):
+        raise HTTPException(409, "You've already added this availability")
+
+
+async def _require_known_court(db, court_id: Optional[str]) -> None:
+    """A slot's court must be a real courts row (Practice.jsx now picks it
+    from court search). It used to be free text ("Delhi High Court"), which
+    looked like it scoped the slot to a court but was never comparable to
+    the court_id a client searches by."""
+    if court_id and not await db.courts.find_one({"court_id": court_id}, {"_id": 1}):
+        raise HTTPException(400, "Unknown court. Pick a court from the search results.")
+
+
+async def _court_names(db, court_ids: List[str]) -> Dict[str, str]:
+    ids = sorted({c for c in court_ids if c})
+    if not ids:
+        return {}
+    rows = await db.courts.find({"court_id": {"$in": ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(ids))
+    return {r["court_id"]: r["name"] for r in rows}
+
+
+def _with_status(slot: dict) -> dict:
+    """Adds `is_past` (a dated slot whose date is before today, IST) so the
+    Availability tab can mark it instead of listing it as current."""
+    slot["is_past"] = bool(slot.get("kind") in _DATED_KINDS and slot.get("date") and slot["date"] < _today_ist())
+    return slot
+
+
+async def add_slot(db, user_id: str, kind: str, day_of_week: Optional[int], date: Optional[str],
+                    court_id: Optional[str], start_time: Optional[str], end_time: Optional[str] = None) -> dict:
+    # end_time stays in the signature for request-shape compatibility only;
+    # new slots are time-of-day labels and never carry one.
+    fields = _validated_slot_fields(kind, day_of_week, date, court_id, start_time)
+    await _require_known_court(db, fields["court_id"])
+    await _reject_duplicate(db, user_id, fields)
+    slot = {
+        "slot_id": f"slot_{uuid.uuid4().hex[:12]}",
+        "user_id": user_id,
+        **fields,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.availability_slots.insert_one(slot)
     slot.pop("_id", None)
-    return slot
+    return _with_status(slot)
+
+
+async def update_slot(db, user_id: str, slot_id: str, kind: str, day_of_week: Optional[int], date: Optional[str],
+                      court_id: Optional[str], start_time: Optional[str], end_time: Optional[str] = None) -> dict:
+    """Edit an existing slot in place (same slot_id, same rules as add_slot).
+    Scoped to user_id, so one counsel can never edit another's slot."""
+    existing = await db.availability_slots.find_one({"slot_id": slot_id, "user_id": user_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Slot not found")
+    fields = _validated_slot_fields(kind, day_of_week, date, court_id, start_time)
+    await _require_known_court(db, fields["court_id"])
+    await _reject_duplicate(db, user_id, fields, exclude_slot_id=slot_id)
+    fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.availability_slots.update_one({"slot_id": slot_id, "user_id": user_id}, {"$set": fields})
+    return _with_status({**existing, **fields})
 
 
 async def list_slots(db, user_id: str) -> List[dict]:
-    return await db.availability_slots.find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    rows = await db.availability_slots.find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    names = await _court_names(db, [r.get("court_id") for r in rows])
+    for row in rows:
+        # court_known False = a legacy free-text court from before the picker.
+        row["court_name"] = names.get(row.get("court_id"), row.get("court_id"))
+        row["court_known"] = not row.get("court_id") or row["court_id"] in names
+    return [_with_status(row) for row in rows]
+
+
+async def client_visibility(db, user_id: str) -> dict:
+    """Why a counsel would or wouldn't appear in client search — the same
+    gates counsel_matching.list_and_recommend applies, read back for this one
+    counsel so My Practice can say so (Practice.jsx's ClientVisibilityCard).
+
+    Added after a counsel saved a Wednesday, Delhi High Court, 2 PM – 5 PM
+    slot, got "Availability added", and was still missing from that exact
+    client search — not because of the slot, which matched, but because the
+    profile was not yet approved, its Courts didn't include Delhi High Court
+    (the slot's own Court field is not what search filters on), and 2 PM –
+    5 PM had no price. None of that was visible anywhere on the page.
+
+    `blocking` checks hide the counsel from every client search; `warning`
+    checks only hide them from some (a court or time slot)."""
+    profile = await get_or_create_profile(db, user_id)
+    slots = [s for s in await list_slots(db, user_id) if not s.get("is_past")]
+    checks: List[dict] = []
+
+    def check(key: str, ok: bool, severity: str, message: str) -> None:
+        checks.append({"key": key, "ok": ok, "severity": severity, "message": message})
+
+    check("kyc_approved", profile.get("kyc_status") == "approved", "blocking",
+          "Your KYC is approved" if profile.get("kyc_status") == "approved"
+          else "Your KYC is still pending admin approval")
+    check("bar_council_verified", profile.get("bar_council_verified") is True, "blocking",
+          "Your Bar Council enrolment is verified" if profile.get("bar_council_verified") is True
+          else "Your Bar Council enrolment hasn't been verified yet")
+
+    profile_courts = profile.get("courts") or []
+    known = await _court_names(db, profile_courts)
+    unrecognized = [c for c in profile_courts if c not in known]
+    check("courts", bool(known), "blocking",
+          f"Clients searching {', '.join(known.values())} can find you" if known
+          else "Add the courts you appear in under Profile → Courts, picked from search")
+    if unrecognized:
+        check("courts_unrecognized", False, "warning",
+              f"Re-pick from search, these courts aren't recognized: {', '.join(unrecognized)}")
+
+    slot_court_ids = sorted({s["court_id"] for s in slots if s.get("court_id") and s.get("court_known")})
+    missing = [cid for cid in slot_court_ids if cid not in known]
+    if missing:
+        names = await _court_names(db, missing)
+        check("availability_courts", False, "warning",
+              f"Your availability mentions {', '.join(names.get(c, c) for c in missing)}, but it isn't in "
+              "Profile → Courts, so clients searching that court won't see you")
+
+    pricing = profile.get("pricing") or {}
+    slot_keys = {_LABEL_TO_PRICING_SLOT.get(s.get("start_time")) for s in slots} - {None}
+    unpriced = [k for k in PRICING_SLOTS if k in slot_keys
+                and not any(k in (pricing.get(ct) or {}) for ct in PRICING_COURT_TYPES)]
+    if unpriced:
+        check("availability_pricing", False, "warning",
+              f"No price set for {', '.join(PRICING_SLOT_LABELS[k] for k in unpriced)}, so clients filtering "
+              "by that time won't see you. Add it under Profile → Pricing")
+
+    if not profile.get("availability_mode"):
+        check("availability_mode", False, "warning",
+              "\"Available for hearings\" is off, so you won't be offered new hearing requests")
+
+    return {"visible": all(c["ok"] for c in checks if c["severity"] == "blocking"), "checks": checks}
 
 
 async def remove_slot(db, user_id: str, slot_id: str) -> dict:
