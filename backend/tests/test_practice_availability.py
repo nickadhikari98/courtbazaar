@@ -37,6 +37,19 @@ def _db():
     return client[os.environ.get("DB_NAME", "courtbazaar")]
 
 
+async def _insert_counsel_profile(db, profile):
+    """Counsels are only listed/matched while their account exists
+    (counsel_matching.deactivated_user_ids hides orphaned profiles), so each
+    fixture profile gets a matching live users row. Upsert: never touches a
+    users row a test created itself."""
+    await db.users.update_one(
+        {"user_id": profile["user_id"]},
+        {"$setOnInsert": {"user_id": profile["user_id"], "name": "Test Counsel", "role": "proxy_counsel"}},
+        upsert=True,
+    )
+    await db.proxy_counsel_profiles.insert_one(profile)
+
+
 def _today_ist() -> date:
     return datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
 
@@ -111,7 +124,7 @@ def test_search_excludes_counsel_with_legacy_holiday_block():
         user_id = f"test_counsel_{uuid.uuid4().hex[:10]}"
         day = _future_date()
         try:
-            await db.proxy_counsel_profiles.insert_one({
+            await _insert_counsel_profile(db, {
                 "user_id": user_id, "kyc_status": "approved", "bar_council_verified": True,
                 "courts": [court_id], "practice_areas": [], "languages": [],
                 "pricing": {"district": {"morning": 600}}, "availability_mode": True, "rating": 0, "cases_completed": 0,
