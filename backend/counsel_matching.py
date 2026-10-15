@@ -145,15 +145,21 @@ def verified_counsel_query() -> Dict[str, Any]:
 
 
 async def deactivated_user_ids(db, user_ids: List[str]) -> set:
-    """Which of `user_ids` belong to a deactivated account (users.deleted,
-    set by audit_log.deactivate_user, e.g. Admin -> Leads -> Delete on an
-    already-approved counsel)."""
+    """Which of `user_ids` must not be shown to clients: a deactivated
+    account (users.deleted, set by audit_log.deactivate_user, e.g. Admin ->
+    Users' trash icon or Admin -> Leads -> Delete on an approved counsel), or
+    one whose users row no longer exists at all. The second case is a
+    profile orphaned by a permanent delete that didn't take the profile
+    with it (the first version of Admin -> Users "Delete selected" on
+    Oct 15 2026 left exactly such rows) — nobody can sign in to accept a
+    booking for it, and its card had no name."""
     if not user_ids:
         return set()
-    rows = await db.users.find(
-        {"user_id": {"$in": list(user_ids)}, "deleted": True}, {"_id": 0, "user_id": 1},
-    ).to_list(len(user_ids))
-    return {r["user_id"] for r in rows}
+    ids = list(dict.fromkeys(user_ids))
+    live = await db.users.find(
+        {"user_id": {"$in": ids}, "deleted": {"$ne": True}}, {"_id": 0, "user_id": 1},
+    ).to_list(len(ids))
+    return set(ids) - {r["user_id"] for r in live}
 
 
 async def drop_deactivated(db, candidates: List[dict]) -> List[dict]:

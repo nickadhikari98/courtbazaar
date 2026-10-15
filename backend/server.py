@@ -611,6 +611,10 @@ async def register(req: RegisterRequest):
     if req.role not in ROLES:
         raise HTTPException(400, "Invalid role")
     _reject_self_register_blocked_role(req.role)
+    # A permanently deleted person may sign up again (founder rule, Oct 15
+    # 2026): their users row is gone, so `existing` is None below and this
+    # mints a brand-new user_id — nothing of the old account comes back, and
+    # any old token (bound to the old user_id) stays invalid.
     existing = await db.users.find_one({"email": req.email})
     # A deactivated account (admin "Delete User", i.e. audit_log.deactivate_user)
     # is a soft delete — it sets `deleted: True` and wipes password_hash, but
@@ -666,6 +670,12 @@ async def login(req: LoginRequest, request: Request):
     # the actual reason, not a misleading "wrong password".
     if user and user.get("deleted"):
         raise HTTPException(401, "Your account has been deactivated. Please contact the administrator.")
+    if not user:
+        # Admin bulk delete removed the row outright — say so (and that they
+        # can sign up again) rather than a misleading "wrong password".
+        from audit_log import is_permanently_deleted, DELETED_ACCOUNT_MESSAGE
+        if await is_permanently_deleted(db, email=req.email):
+            raise HTTPException(401, DELETED_ACCOUNT_MESSAGE)
     if not user or not verify_password(req.password, user.get("password_hash", "")):
         raise HTTPException(401, "Invalid credentials")
     token = make_jwt(user["user_id"], user["role"])
@@ -683,6 +693,11 @@ OTP_MAX_ATTEMPTS = 5
 
 @api_router.post("/auth/otp/request")
 async def otp_request(req: OtpRequest):
+    # otp_verify refuses deactivated accounts anyway — refusing here too means
+    # their phone never gets sent a code it can't use. (A permanently deleted
+    # account's phone is not refused: that person may sign up again.)
+    if await db.users.find_one({"$or": [{"phone": req.phone}, {"alt_phones": req.phone}], "deleted": True}, {"_id": 1}):
+        raise HTTPException(401, "Your account has been deactivated. Please contact the administrator.")
     now = datetime.now(timezone.utc)
     recent = await db.otp_codes.find_one(
         {"phone": req.phone}, sort=[("created_at", -1)]
@@ -735,6 +750,8 @@ async def otp_verify(req: OtpVerify):
     if user and user.get("deleted"):
         raise HTTPException(401, "Your account has been deactivated. Please contact the administrator.")
     if not user:
+        # Also the path for a permanently deleted person signing up again by
+        # phone: a brand-new user_id, never the old account.
         if req.role not in ROLES:
             raise HTTPException(400, "Invalid role")
         _reject_self_register_blocked_role(req.role)
@@ -811,6 +828,11 @@ async def google_callback(
     name = idinfo.get("name")
     picture = idinfo.get("picture")
     existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing and existing.get("deleted"):
+        # Previously this still minted a JWT (get_current_user then 401'd
+        # every request with it) and overwrote the deactivated row's
+        # name/avatar — now the same up-front refusal login() gives.
+        return RedirectResponse(f"{frontend_base}/login?error=account_deactivated", status_code=302)
     if existing:
         user_id = existing["user_id"]
         await db.users.update_one(
@@ -819,6 +841,8 @@ async def google_callback(
         )
         account_role = existing["role"]
     else:
+        # Also covers a permanently deleted person signing in with Google
+        # again: a brand-new account, never the old one.
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         # Security fix: `role` is a bare query param on a public redirect
         # URL — unlike /auth/register's `req.role not in ROLES` 400 and
@@ -858,6 +882,8 @@ async def set_password(req: SetPasswordRequest):
     user = await db.users.find_one({"set_password_token_hash": token_hash})
     if not user:
         raise HTTPException(400, "Invalid or expired link")
+    if user.get("deleted"):
+        raise HTTPException(401, "Your account has been deactivated. Please contact the administrator.")
     expires_at = user.get("set_password_token_expires_at")
     if expires_at and datetime.now(timezone.utc) > datetime.fromisoformat(expires_at):
         raise HTTPException(400, "This link has expired")
@@ -1000,6 +1026,18 @@ async def vendor_onboard(payload: VendorOnboard, user=Depends(get_current_user))
     doc.pop("_id", None)
     return doc
 
+async def _drop_deactivated_vendors(vendors: list) -> list:
+    """Client-facing vendor lists and auto-assignment skip vendors whose
+    account is deactivated or no longer exists — same rule as counsels
+    (counsel_matching.deactivated_user_ids). Every vendor row is created
+    from an account (POST /vendors/onboard), so one without a live account
+    is a leftover of a deleted user, never a legitimate listing."""
+    if not vendors:
+        return vendors
+    import counsel_matching
+    gone = await counsel_matching.deactivated_user_ids(db, [v.get("user_id") or "" for v in vendors])
+    return [v for v in vendors if (v.get("user_id") or "") not in gone] if gone else vendors
+
 @api_router.get("/vendors")
 async def list_vendors(court_id: Optional[str] = None, service_id: Optional[str] = None):
     query: Dict[str, Any] = {"kyc_status": "approved"}
@@ -1008,7 +1046,7 @@ async def list_vendors(court_id: Optional[str] = None, service_id: Optional[str]
     if service_id:
         query["service_ids"] = service_id
     vendors = await db.vendors.find(query, {"_id": 0}).sort("rating", -1).to_list(200)
-    return vendors
+    return await _drop_deactivated_vendors(vendors)
 
 @api_router.get("/vendors/me")
 async def my_vendor(user=Depends(get_current_user)):
@@ -1504,9 +1542,9 @@ async def create_order(req: OrderCreate, user=Depends(get_current_user)):
         raise HTTPException(400, "This court is not yet serviceable. Currently we operate in Delhi only.")
     pricing = await calculate_pricing(req.services, req.court_id, req.delivery_option, req.urgent)
     # Auto-match: sponsored vendors first (sponsored=True), then by rating
-    candidates = await db.vendors.find(
+    candidates = await _drop_deactivated_vendors(await db.vendors.find(
         {"court_ids": req.court_id, "kyc_status": "approved"}, {"_id": 0},
-    ).to_list(20)
+    ).to_list(20))
     candidates.sort(key=lambda v: (not v.get("sponsored", False), -float(v.get("rating", 0))))
     vendor = candidates[0] if candidates else None
     order_id = f"ORD{datetime.now().strftime('%y%m%d')}{uuid.uuid4().hex[:6].upper()}"
@@ -1916,6 +1954,22 @@ async def admin_deactivate_user(user_id: str, user=Depends(get_current_user), re
         "target_role": target.get("role"), "result": "success",
     }, request)
     return {"ok": True}
+
+class BulkDeleteUsersRequest(BaseModel):
+    user_ids: List[str]
+
+@api_router.post("/admin/users/bulk-delete")
+async def admin_bulk_delete_users(payload: BulkDeleteUsersRequest, user=Depends(get_current_user), request: Request = None):
+    """Admin → Users "Delete selected": permanent delete (see
+    audit_log.permanently_delete_users for what is skipped and why)."""
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    if not payload.user_ids:
+        raise HTTPException(400, "No users selected")
+    if len(payload.user_ids) > 200:
+        raise HTTPException(400, "Too many users in one request")
+    from audit_log import permanently_delete_users
+    return await permanently_delete_users(db, payload.user_ids, user, request, delete_object_fn=delete_object)
 
 @api_router.put("/admin/users/{user_id}/reactivate")
 async def admin_reactivate_user(user_id: str, user=Depends(get_current_user), request: Request = None):
@@ -2786,6 +2840,13 @@ async def _notify_hearing_event(user_id: str, title: str, body: str, hearing_id:
 @api_router.post("/hearing-requests")
 async def create_hearing_request(payload: HearingRequestCreate, user=Depends(get_current_user)):
     _require_capability(user, "can_hire_proxy_counsel")
+    if payload.target_advocate_id:
+        # A saved/shared profile link can still name a counsel who has since
+        # been deactivated or permanently deleted (no users row) — same 404
+        # their profile page now gives.
+        import counsel_matching
+        if await counsel_matching.deactivated_user_ids(db, [payload.target_advocate_id]):
+            raise HTTPException(404, "Counsel profile not found")
     hearing = await hearings_svc.create_hearing_request(
         db, user["user_id"], payload.court_id, payload.hearing_date, payload.case_details, payload.fee,
         payload.matter_id, payload.target_advocate_id, payload.service_type, payload.request_details,
@@ -3063,7 +3124,7 @@ async def get_hearing_counsel_profile(hearing_id: str, user=Depends(get_current_
     if not advocate_id:
         raise HTTPException(404, "This hearing has no targeted advocate")
     profile = await db.proxy_counsel_profiles.find_one({"user_id": advocate_id}, {"_id": 0})
-    if not profile:
+    if not profile or await counsel_matching.deactivated_user_ids(db, [advocate_id]):
         raise HTTPException(404, "Counsel profile not found")
     name_doc = await db.users.find_one({"user_id": advocate_id}, {"_id": 0, "name": 1})
     court_ids = profile.get("courts") or []
@@ -3614,7 +3675,8 @@ async def firm_bulk_import(file: UploadFile = File(...), user=Depends(get_curren
                 continue
             services = [{"service_id": s, "qty": qtys[i]} for i, s in enumerate(svc_ids)]
             pricing = await calculate_pricing(services, court_id, delivery, urgent)
-            candidates = await db.vendors.find({"court_ids": court_id, "kyc_status": "approved"}, {"_id": 0}).to_list(20)
+            candidates = await _drop_deactivated_vendors(
+                await db.vendors.find({"court_ids": court_id, "kyc_status": "approved"}, {"_id": 0}).to_list(20))
             candidates.sort(key=lambda v: (not v.get("sponsored", False), -float(v.get("rating", 0))))
             vendor = candidates[0] if candidates else None
             order_id = f"ORD{datetime.now().strftime('%y%m%d')}{uuid.uuid4().hex[:6].upper()}"
@@ -3910,7 +3972,7 @@ async def list_stenographers(court_id: Optional[str] = None):
     q = {"vendor_category": "stenographer", "kyc_status": "approved"}
     if court_id:
         q["court_ids"] = court_id
-    return await db.vendors.find(q, {"_id": 0}).sort("rating", -1).to_list(100)
+    return await _drop_deactivated_vendors(await db.vendors.find(q, {"_id": 0}).sort("rating", -1).to_list(100))
 
 
 @api_router.post("/stenographers/book")
@@ -3937,7 +3999,7 @@ async def book_stenographer(req: StenoBooking, user=Depends(get_current_user)):
     candidates_q = {"vendor_category": "stenographer", "kyc_status": "approved", "court_ids": req.court_id}
     if req.stenographer_id:
         candidates_q["vendor_id"] = req.stenographer_id
-    candidates = await db.vendors.find(candidates_q, {"_id": 0}).to_list(20)
+    candidates = await _drop_deactivated_vendors(await db.vendors.find(candidates_q, {"_id": 0}).to_list(20))
     candidates.sort(key=lambda v: (not v.get("sponsored", False), -float(v.get("rating", 0))))
     vendor = candidates[0] if candidates else None
 
