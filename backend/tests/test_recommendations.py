@@ -23,6 +23,19 @@ def _db():
     return client[os.environ.get("DB_NAME", "courtbazaar")]
 
 
+async def _insert_counsel_profile(db, profile):
+    """Counsels are only listed/matched while their account exists
+    (counsel_matching.deactivated_user_ids hides orphaned profiles), so each
+    fixture profile gets a matching live users row. Upsert: never touches a
+    users row a test created itself."""
+    await db.users.update_one(
+        {"user_id": profile["user_id"]},
+        {"$setOnInsert": {"user_id": profile["user_id"], "name": "Test Counsel", "role": "proxy_counsel"}},
+        upsert=True,
+    )
+    await db.proxy_counsel_profiles.insert_one(profile)
+
+
 def _profile(user_id, **overrides):
     profile = {
         "user_id": user_id,
@@ -40,6 +53,7 @@ def _profile(user_id, **overrides):
 async def _cleanup(db, user_ids=()):
     if user_ids:
         await db.proxy_counsel_profiles.delete_many({"user_id": {"$in": list(user_ids)}})
+        await db.users.delete_many({"user_id": {"$in": list(user_ids)}, "name": "Test Counsel"})
 
 
 # ---------------------------------------------------------------------------
@@ -67,8 +81,8 @@ def test_list_and_recommend_ranks_highest_score_first():
         low = f"test_counsel_{uuid.uuid4().hex[:8]}"
         high = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(low, rating=1, cases_completed=0, experience_years=0))
-            await db.proxy_counsel_profiles.insert_one(_profile(high, rating=5, cases_completed=50, experience_years=20))
+            await _insert_counsel_profile(db, _profile(low, rating=1, cases_completed=0, experience_years=0))
+            await _insert_counsel_profile(db, _profile(high, rating=5, cases_completed=50, experience_years=20))
             ranked, total = await counsel_matching.list_and_recommend(db)
             ids = [c["user_id"] for c in ranked]
             assert high in ids and low in ids
@@ -85,7 +99,7 @@ def test_list_and_recommend_excludes_unverified():
         db = _db()
         pending = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(pending, kyc_status="pending"))
+            await _insert_counsel_profile(db, _profile(pending, kyc_status="pending"))
             ranked, _ = await counsel_matching.list_and_recommend(db)
             assert not any(c["user_id"] == pending for c in ranked)
         finally:
@@ -101,7 +115,7 @@ def test_list_and_recommend_does_not_hard_gate_on_availability():
         db = _db()
         unavailable = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(unavailable, availability_mode=False))
+            await _insert_counsel_profile(db, _profile(unavailable, availability_mode=False))
             ranked, _ = await counsel_matching.list_and_recommend(db)
             assert any(c["user_id"] == unavailable for c in ranked)
             ranked_filtered, _ = await counsel_matching.list_and_recommend(db, available_only=True)
@@ -117,8 +131,8 @@ def test_list_and_recommend_specialization_filter_is_case_insensitive():
         criminal = f"test_counsel_{uuid.uuid4().hex[:8]}"
         civil = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(criminal, practice_areas=["Criminal"]))
-            await db.proxy_counsel_profiles.insert_one(_profile(civil, practice_areas=["Civil"]))
+            await _insert_counsel_profile(db, _profile(criminal, practice_areas=["Criminal"]))
+            await _insert_counsel_profile(db, _profile(civil, practice_areas=["Civil"]))
             ranked, total = await counsel_matching.list_and_recommend(db, specialization="criminal")
             ids = {c["user_id"] for c in ranked}
             assert criminal in ids
@@ -138,8 +152,8 @@ def test_list_and_recommend_experience_and_rating_filters():
         junior = f"test_counsel_{uuid.uuid4().hex[:8]}"
         senior = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(junior, experience_years=2, rating=2))
-            await db.proxy_counsel_profiles.insert_one(_profile(senior, experience_years=15, rating=4.8))
+            await _insert_counsel_profile(db, _profile(junior, experience_years=2, rating=2))
+            await _insert_counsel_profile(db, _profile(senior, experience_years=15, rating=4.8))
             ranked, _ = await counsel_matching.list_and_recommend(db, min_experience_years=10, min_rating=4)
             ids = {c["user_id"] for c in ranked}
             assert senior in ids
@@ -156,9 +170,9 @@ def test_list_and_recommend_fee_range_filter():
         pricey = f"test_counsel_{uuid.uuid4().hex[:8]}"
         unparseable = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(cheap, fee_structure="Rs.500 per appearance"))
-            await db.proxy_counsel_profiles.insert_one(_profile(pricey, fee_structure="Rs.10,000 per appearance"))
-            await db.proxy_counsel_profiles.insert_one(_profile(unparseable, fee_structure="Negotiable"))
+            await _insert_counsel_profile(db, _profile(cheap, fee_structure="Rs.500 per appearance"))
+            await _insert_counsel_profile(db, _profile(pricey, fee_structure="Rs.10,000 per appearance"))
+            await _insert_counsel_profile(db, _profile(unparseable, fee_structure="Negotiable"))
             ranked, _ = await counsel_matching.list_and_recommend(db, fee_min=1000, fee_max=20000)
             ids = {c["user_id"] for c in ranked}
             assert pricey in ids
@@ -179,9 +193,9 @@ def test_list_and_recommend_experience_bracket_filter():
         mid = f"test_counsel_{uuid.uuid4().hex[:8]}"
         senior = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(junior, experience_bracket="0-3"))
-            await db.proxy_counsel_profiles.insert_one(_profile(mid, experience_bracket="5-7"))
-            await db.proxy_counsel_profiles.insert_one(_profile(senior, experience_bracket="10+"))
+            await _insert_counsel_profile(db, _profile(junior, experience_bracket="0-3"))
+            await _insert_counsel_profile(db, _profile(mid, experience_bracket="5-7"))
+            await _insert_counsel_profile(db, _profile(senior, experience_bracket="10+"))
             ranked, _ = await counsel_matching.list_and_recommend(db, experience_bracket="5-7")
             ids = {c["user_id"] for c in ranked}
             assert mid in ids
@@ -204,9 +218,9 @@ def test_list_and_recommend_experience_bracket_filter_falls_back_to_years():
         eight_yr = f"test_counsel_{uuid.uuid4().hex[:8]}"
         five_yr = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(fifteen_yr, experience_years=15))
-            await db.proxy_counsel_profiles.insert_one(_profile(eight_yr, experience_years=8))
-            await db.proxy_counsel_profiles.insert_one(_profile(five_yr, experience_years=5))
+            await _insert_counsel_profile(db, _profile(fifteen_yr, experience_years=15))
+            await _insert_counsel_profile(db, _profile(eight_yr, experience_years=8))
+            await _insert_counsel_profile(db, _profile(five_yr, experience_years=5))
             ranked, _ = await counsel_matching.list_and_recommend(db, experience_bracket="5-7")
             ids = {c["user_id"] for c in ranked}
             assert five_yr in ids
@@ -239,9 +253,9 @@ def test_list_and_recommend_time_slot_filter():
         afternoon_only = f"test_counsel_{uuid.uuid4().hex[:8]}"
         high_court_morning = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(morning_only, pricing={"district": {"morning": 500}}))
-            await db.proxy_counsel_profiles.insert_one(_profile(afternoon_only, pricing={"district": {"afternoon": 500}}))
-            await db.proxy_counsel_profiles.insert_one(_profile(high_court_morning, pricing={"high_court": {"morning": 1000}}))
+            await _insert_counsel_profile(db, _profile(morning_only, pricing={"district": {"morning": 500}}))
+            await _insert_counsel_profile(db, _profile(afternoon_only, pricing={"district": {"afternoon": 500}}))
+            await _insert_counsel_profile(db, _profile(high_court_morning, pricing={"high_court": {"morning": 1000}}))
             ranked, _ = await counsel_matching.list_and_recommend(db, time_slot="morning")
             ids = {c["user_id"] for c in ranked}
             assert morning_only in ids
@@ -269,8 +283,8 @@ def test_list_and_recommend_court_id_filter():
         at_court = f"test_counsel_{uuid.uuid4().hex[:8]}"
         elsewhere = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(at_court, courts=["court_tishazari"]))
-            await db.proxy_counsel_profiles.insert_one(_profile(elsewhere, courts=["court_saket"]))
+            await _insert_counsel_profile(db, _profile(at_court, courts=["court_tishazari"]))
+            await _insert_counsel_profile(db, _profile(elsewhere, courts=["court_saket"]))
             ranked, _ = await counsel_matching.list_and_recommend(db, court_id="court_tishazari")
             ids = {c["user_id"] for c in ranked}
             assert at_court in ids
@@ -291,7 +305,7 @@ def test_list_and_recommend_court_id_combines_with_location_not_overrides_it():
         db = _db()
         counsel_id = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(counsel_id, courts=["court_saket"]))
+            await _insert_counsel_profile(db, _profile(counsel_id, courts=["court_saket"]))
             contradictory, _ = await counsel_matching.list_and_recommend(
                 db, state_id="state_delhi", district="Central", court_id="court_saket",
             )
@@ -312,7 +326,7 @@ def test_list_and_recommend_limit_truncates_but_total_reflects_all_matches():
         ids = [f"test_counsel_{uuid.uuid4().hex[:8]}" for _ in range(3)]
         try:
             for uid in ids:
-                await db.proxy_counsel_profiles.insert_one(_profile(uid))
+                await _insert_counsel_profile(db, _profile(uid))
             ranked, total = await counsel_matching.list_and_recommend(db, limit=1)
             assert len(ranked) == 1
             assert total >= 3

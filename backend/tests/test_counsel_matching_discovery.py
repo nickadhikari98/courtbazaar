@@ -25,6 +25,19 @@ def _db():
     return client[os.environ.get("DB_NAME", "courtbazaar")]
 
 
+async def _insert_counsel_profile(db, profile):
+    """Counsels are only listed/matched while their account exists
+    (counsel_matching.deactivated_user_ids hides orphaned profiles), so each
+    fixture profile gets a matching live users row. Upsert: never touches a
+    users row a test created itself."""
+    await db.users.update_one(
+        {"user_id": profile["user_id"]},
+        {"$setOnInsert": {"user_id": profile["user_id"], "name": "Test Counsel", "role": "proxy_counsel"}},
+        upsert=True,
+    )
+    await db.proxy_counsel_profiles.insert_one(profile)
+
+
 async def _make_hearing(db):
     hearing_id = f"test_hearing_{uuid.uuid4().hex[:10]}"
     await db.hearing_requests.insert_one({
@@ -48,6 +61,7 @@ async def _cleanup(db, hearing_ids=(), user_ids=()):
         await db.hearing_requests.delete_many({"hearing_id": {"$in": list(hearing_ids)}})
     if user_ids:
         await db.proxy_counsel_profiles.delete_many({"user_id": {"$in": list(user_ids)}})
+        await db.users.delete_many({"user_id": {"$in": list(user_ids)}, "name": "Test Counsel"})
 
 
 def test_discover_candidates_returns_fully_eligible_counsel():
@@ -56,7 +70,7 @@ def test_discover_candidates_returns_fully_eligible_counsel():
         hearing_id = await _make_hearing(db)
         counsel_id = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(counsel_id))
+            await _insert_counsel_profile(db, _profile(counsel_id))
             results = await counsel_matching.discover_candidates(db, hearing_id)
             assert any(c["user_id"] == counsel_id for c in results)
         finally:
@@ -70,7 +84,7 @@ def test_discover_candidates_excludes_kyc_pending():
         hearing_id = await _make_hearing(db)
         counsel_id = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(counsel_id, kyc_status="pending"))
+            await _insert_counsel_profile(db, _profile(counsel_id, kyc_status="pending"))
             results = await counsel_matching.discover_candidates(db, hearing_id)
             assert not any(c["user_id"] == counsel_id for c in results)
         finally:
@@ -84,7 +98,7 @@ def test_discover_candidates_excludes_bar_council_unverified():
         hearing_id = await _make_hearing(db)
         counsel_id = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(counsel_id, bar_council_verified=False))
+            await _insert_counsel_profile(db, _profile(counsel_id, bar_council_verified=False))
             results = await counsel_matching.discover_candidates(db, hearing_id)
             assert not any(c["user_id"] == counsel_id for c in results)
         finally:
@@ -98,7 +112,7 @@ def test_discover_candidates_excludes_unavailable():
         hearing_id = await _make_hearing(db)
         counsel_id = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(counsel_id, availability_mode=False))
+            await _insert_counsel_profile(db, _profile(counsel_id, availability_mode=False))
             results = await counsel_matching.discover_candidates(db, hearing_id)
             assert not any(c["user_id"] == counsel_id for c in results)
         finally:
@@ -113,8 +127,8 @@ def test_discover_candidates_returns_multiple_eligible():
         c1 = f"test_counsel_{uuid.uuid4().hex[:8]}"
         c2 = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
-            await db.proxy_counsel_profiles.insert_one(_profile(c1))
-            await db.proxy_counsel_profiles.insert_one(_profile(c2))
+            await _insert_counsel_profile(db, _profile(c1))
+            await _insert_counsel_profile(db, _profile(c2))
             results = await counsel_matching.discover_candidates(db, hearing_id)
             found = {c["user_id"] for c in results}
             assert c1 in found and c2 in found
@@ -130,7 +144,7 @@ def test_discover_candidates_empty_when_none_eligible():
         counsel_id = f"test_counsel_{uuid.uuid4().hex[:8]}"
         try:
             # Ineligible on all three counts
-            await db.proxy_counsel_profiles.insert_one(
+            await _insert_counsel_profile(db, 
                 _profile(counsel_id, kyc_status="pending", bar_council_verified=False, availability_mode=False)
             )
             results = await counsel_matching.discover_candidates(db, hearing_id)
@@ -153,8 +167,8 @@ def test_discover_candidates_targeted_hearing_returns_only_target_advocate():
             })
             # target advocate need not even pass the broadcast-pool eligibility
             # gates — manual selection bypasses discovery filtering entirely.
-            await db.proxy_counsel_profiles.insert_one(_profile(target_id, kyc_status="pending"))
-            await db.proxy_counsel_profiles.insert_one(_profile(other_id))
+            await _insert_counsel_profile(db, _profile(target_id, kyc_status="pending"))
+            await _insert_counsel_profile(db, _profile(other_id))
             results = await counsel_matching.discover_candidates(db, hearing_id)
             found = {c["user_id"] for c in results}
             assert found == {target_id}
