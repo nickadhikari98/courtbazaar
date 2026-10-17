@@ -22,6 +22,7 @@ const Pricing = lazy(() => import("@/pages/marketing/Pricing"));
 const VendorOnboarding = lazy(() => import("@/pages/marketing/VendorOnboarding"));
 const About = lazy(() => import("@/pages/marketing/About"));
 const Contact = lazy(() => import("@/pages/marketing/Contact"));
+const LegalHelp = lazy(() => import("@/pages/marketing/LegalHelp"));
 const Security = lazy(() => import("@/pages/marketing/Security"));
 const Trust = lazy(() => import("@/pages/marketing/Trust"));
 const LegalCenter = lazy(() => import("@/pages/legal/LegalCenter"));
@@ -189,6 +190,7 @@ function AppRouter() {
       <Route path="/vendor-signup" element={<VendorOnboarding />} />
       <Route path="/about" element={<About />} />
       <Route path="/contact" element={<Contact />} />
+      <Route path="/legal-help" element={<LegalHelp />} />
       <Route path="/security" element={<Security />} />
       <Route path="/trust" element={<Trust />} />
       <Route path="/legal" element={<LegalCenter />} />

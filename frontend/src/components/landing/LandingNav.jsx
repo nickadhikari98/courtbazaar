@@ -17,7 +17,7 @@ const navLinks = [
   { label: "Contact Us", to: "/contact" },
 ];
 
-export default function LandingNav({ onTakeTour }) {
+export default function LandingNav({ onTakeTour, showTourTab = true }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
@@ -100,7 +100,7 @@ export default function LandingNav({ onTakeTour }) {
         </div>
       )}
     </nav>
-    {!mobileOpen && <TourSideTab onTakeTour={onTakeTour} />}
+    {showTourTab && !mobileOpen && <TourSideTab onTakeTour={onTakeTour} />}
     </>
   );
 }
