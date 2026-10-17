@@ -8,7 +8,7 @@ import { getOrderAgentSummary } from "@/lib/orderAgentApi";
 /* Order Management Agent — "Needs Attention" panel. Read-only: calls
    GET /admin/order-agent/summary on demand (the "Analyze with AI" button
    below) and renders whatever comes back, including the degrade-gracefully
-   shape (available: false) when GROQ_API_KEY isn't configured or the model
+   shape (available: false) when OPENAI_API_KEY isn't configured or the model
    call failed/timed out — the panel never blocks on the AI layer, same
    convention the backend route itself follows (see order_management_agent.py).
    On-demand rather than auto-run on mount, same "never auto-runs, only when

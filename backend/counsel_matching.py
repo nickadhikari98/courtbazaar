@@ -127,10 +127,10 @@ async def discover_candidates(db, hearing_id: str) -> List[dict]:
         profile = await db.proxy_counsel_profiles.find_one(
             {"user_id": hearing["target_advocate_id"]}, {"_id": 0},
         )
-        return [profile] if profile else []
+        return await drop_deactivated(db, [profile] if profile else [])
 
     query = {**verified_counsel_query(), "availability_mode": True}
-    return await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500)
+    return await drop_deactivated(db, await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500))
 
 
 def verified_counsel_query() -> Dict[str, Any]:
@@ -142,6 +142,35 @@ def verified_counsel_query() -> Dict[str, Any]:
     on top of this — see its docstring for why that one stays hearing-time
     only."""
     return {"kyc_status": "approved", "bar_council_verified": True}
+
+
+async def deactivated_user_ids(db, user_ids: List[str]) -> set:
+    """Which of `user_ids` must not be shown to clients: a deactivated
+    account (users.deleted, set by audit_log.deactivate_user, e.g. Admin ->
+    Users' trash icon or Admin -> Leads -> Delete on an approved counsel), or
+    one whose users row no longer exists at all. The second case is a
+    profile orphaned by a permanent delete that didn't take the profile
+    with it (the first version of Admin -> Users "Delete selected" on
+    Oct 15 2026 left exactly such rows) — nobody can sign in to accept a
+    booking for it, and its card had no name."""
+    if not user_ids:
+        return set()
+    ids = list(dict.fromkeys(user_ids))
+    live = await db.users.find(
+        {"user_id": {"$in": ids}, "deleted": {"$ne": True}}, {"_id": 0, "user_id": 1},
+    ).to_list(len(ids))
+    return set(ids) - {r["user_id"] for r in live}
+
+
+async def drop_deactivated(db, candidates: List[dict]) -> List[dict]:
+    """Bug fix (2026-10): deactivation only ever flipped users.deleted and
+    left the counsel's proxy_counsel_profiles row approved + verified, and
+    nothing that lists or matches counsels looked at users at all, so a
+    deactivated counsel stayed visible and bookable. The trust gate itself
+    stays a profile query (verified_counsel_query); this is the account
+    check layered on top, everywhere counsels are surfaced to clients."""
+    gone = await deactivated_user_ids(db, [c["user_id"] for c in candidates])
+    return [c for c in candidates if c["user_id"] not in gone] if gone else candidates
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +493,7 @@ async def list_and_recommend(
     elif court_id:
         query["courts"] = court_id
 
-    candidates = await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500)
+    candidates = await drop_deactivated(db, await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500))
 
     if hearing_date is not None and candidates:
         slot_docs = await db.availability_slots.find(
@@ -473,9 +502,24 @@ async def list_and_recommend(
         slots_by_user: Dict[str, List[dict]] = {}
         for s in slot_docs:
             slots_by_user.setdefault(s["user_id"], []).append(s)
+        # Bug fix (2026-10, custom dates): "weekend" is a day-type rate, not a
+        # time of day, but it was handed to the availability check as one —
+        # so on a Saturday/Sunday it only matched slots literally labelled
+        # "Weekends", never a custom date saved as "10 AM – 1 PM" or "Full
+        # Day", and a partial block that day didn't block it either. On a
+        # weekend date it now means "any time that day": any availability on
+        # the date matches, any block on the date excludes. Weekday dates
+        # are unchanged. The pricing filter above still requires a weekend rate.
+        availability_time_slot = time_slot
+        if time_slot == "weekend":
+            try:
+                if datetime.fromisoformat(hearing_date).weekday() >= 5:
+                    availability_time_slot = None
+            except (TypeError, ValueError):
+                pass  # unparseable date: is_available_on_date already stays permissive
         candidates = [
             c for c in candidates
-            if practice.is_available_on_date(slots_by_user.get(c["user_id"], []), hearing_date, time_slot)
+            if practice.is_available_on_date(slots_by_user.get(c["user_id"], []), hearing_date, availability_time_slot)
         ]
 
     if fee_min is not None or fee_max is not None:

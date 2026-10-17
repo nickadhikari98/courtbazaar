@@ -24,8 +24,20 @@ export async function addAvailabilitySlot(slot) {
   return data;
 }
 
+export async function updateAvailabilitySlot(slotId, slot) {
+  const { data } = await api.put(`/practice/availability/${slotId}`, slot);
+  return data;
+}
+
 export async function removeAvailabilitySlot(slotId) {
   const { data } = await api.delete(`/practice/availability/${slotId}`);
+  return data;
+}
+
+/* Which client-search gates this counsel currently fails (approval, profile
+   courts, slot pricing). See practice.client_visibility. */
+export async function getPracticeVisibility() {
+  const { data } = await api.get("/practice/visibility");
   return data;
 }
 
