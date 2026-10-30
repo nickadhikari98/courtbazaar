@@ -109,6 +109,19 @@ KB_INSTRUMENTS = {
          "Delhi International Arbitration Centre (Administrative Costs & Arbitrators' Fees) Rules, 2018"),
     ),
 }
+# Official PDFs on dhcdiac.nic.in, each checked against its own text. Per set,
+# not per file: the approved PDF bundles all three, so one link would send a
+# reader to the wrong rules. The site's rules page and "-2018" PDFs hold the
+# 2018 proceedings rules, whose Rule 33 is a different provision: never use them.
+_DIAC_PDF_BASE = "https://dhcdiac.nic.in/wp-content/uploads/2026/04/"
+KB_INSTRUMENT_URLS = {
+    "Delhi International Arbitration Centre (Arbitration Proceedings) Rules, 2023":
+        _DIAC_PDF_BASE + "DIAC-Arbitration-Proceedings-Rules-2023-24-04-2026.pdf",
+    "Delhi International Arbitration Centre (Internal Management) Rules, 2012":
+        _DIAC_PDF_BASE + "DIAC-Internal-Management-Rules-2012-24-04-2026.pdf",
+    "Delhi International Arbitration Centre (Administrative Costs & Arbitrators' Fees) Rules, 2018":
+        _DIAC_PDF_BASE + "DIAC-Administrative-Cost-Arbitrators-Fees-Rules-2018-24-04-2026.pdf",
+}
 
 SOURCE_SOP = "STANDARD OPERATING PROCEDURE (SOP).docx"
 SOURCE_DIAC = "DIAC Rules conclusive_UsingOCR.pdf"
@@ -911,7 +924,7 @@ def build_citations(answer: str, context: str, sources: List[str]) -> List[Dict[
         for instrument, group_rules in groups:
             citations.append({
                 "title": instrument or display["label"],
-                "url": display["url"],
+                "url": KB_INSTRUMENT_URLS.get(instrument) or display["url"],
                 "rules": group_rules,
                 "document": display["label"],
                 # "4(i)" where the answer cites the clause, so the two read the same.
