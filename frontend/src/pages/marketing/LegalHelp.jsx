@@ -32,7 +32,10 @@ export default function LegalHelp() {
   return (
     <div className="h-[100dvh] flex flex-col bg-background">
       <LandingNav showTourTab={false} />
-      <main className="flex-1 min-h-0">
+      {/* A flex column, so the chat is sized by flex (not h-full, which some
+          Safari versions don't resolve in a flex item) and only its message
+          log scrolls. */}
+      <main className="flex-1 min-h-0 flex flex-col">
         <InstantLegalHelpChat initialMessage={initialMessage} />
       </main>
     </div>
