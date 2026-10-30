@@ -95,7 +95,8 @@ class FakeOpenAI:
         return SimpleNamespace(data=self.items)
 
     async def create(self, **kwargs):
-        self.generate_kwargs = kwargs
+        if kwargs.get("text", {}).get("format", {}).get("name") != "answer_verdict":
+            self.generate_kwargs = kwargs
         if self.generate_error:
             raise self.generate_error
         return SimpleNamespace(output_text=self.answer)
@@ -152,10 +153,14 @@ def test_benchmark_answer_keeps_its_structure_and_verified_citations(monkeypatch
     # The model's own "Sources:" line is removed; citations come from the server.
     assert "Sources:" not in reply
     # "Rule 33" (intro) and its sub-rules, all numbered provisions in the retrieved text.
-    assert result["citations"] == [{"title": "DIAC Rules", "url": None, "rules": ["33", "33.1", "33.2", "33.5"]}]
+    # The fake store returns raw chunks only (no rule-set labels), so the
+    # rules stay with the document as a whole, named in full.
+    diac_label = llm_service.KB_SOURCE_DISPLAY[DIAC]["label"]
+    assert result["citations"] == [{"title": diac_label, "url": None, "rules": ["33", "33.1", "33.2", "33.5"],
+                                     "document": diac_label}]
     assert result["sources"] == [DIAC]
     # Server-added caveat distinguishing the document's statements.
-    assert reply.endswith(ai_chat.DOCUMENT_VERIFY_NOTE.format(title="DIAC Rules"))
+    assert reply.endswith(ai_chat.DOCUMENT_VERIFY_NOTE.format(title=diac_label))
 
 
 def test_document_answer_request_uses_format_rules_and_larger_budget(monkeypatch):
@@ -186,7 +191,7 @@ def test_citations_never_include_page_numbers_other_acts_or_invented_rules():
 def test_general_answers_are_not_restructured_or_cited(monkeypatch):
     seen = {}
 
-    async def fake_generate(messages, use_file_search=False, selected_source=None):
+    async def fake_generate(messages, use_file_search=False, selected_source=None, on_status=None):
         seen["use_file_search"] = use_file_search
         return {"ok": True, "text": "## Bail\n**Anticipatory bail** is bail sought before arrest.", "sources": []}
 
@@ -207,7 +212,7 @@ def test_no_retrieved_context_is_insufficient_and_the_model_is_never_called(monk
     _install(monkeypatch, fake)
     result = _ask()
     assert result["grounding"] == "insufficient" and result["degraded"] is True
-    assert result["reply"] == ai_chat.DOCUMENT_NOT_FOUND_MESSAGE
+    assert result["reply"] == ai_chat.document_not_found_message(DIAC)
     assert fake.generate_kwargs is None and result["citations"] == []
 
 
@@ -243,7 +248,9 @@ def test_partial_answer_is_flagged_and_keeps_only_supported_sentences(monkeypatc
     assert result["grounding"] == "partial"
     assert "penalty" not in result["reply"].lower()
     assert "## Penalty" not in result["reply"]  # heading dropped with its unsupported section
-    assert answer_guard.PARTIAL_ANSWER_NOTE in result["reply"]
+    # The generic guard note is replaced by one naming the document.
+    assert answer_guard.PARTIAL_ANSWER_NOTE not in result["reply"]
+    assert "I've included only what is stated directly in the" in result["reply"]
 
 
 def test_a_truncated_conditional_is_dropped_not_left_as_a_fragment():

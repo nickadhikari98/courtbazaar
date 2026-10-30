@@ -14,6 +14,20 @@ test("bullet characters used by plain replies still form a list", () => {
   expect(parseBlocks("• first\n• second")).toEqual([{ type: "ul", start: 1, items: ["first", "second"] }]);
 });
 
+test("indented list lines become sub-items of the item above", () => {
+  const [list] = parseBlocks("1. one\n  - a\n  - b\n2. two");
+  expect(list).toMatchObject({ type: "ol", items: ["one", "two"], children: { 0: ["a", "b"] } });
+});
+
+test("an indented line with no list above stays a top-level list", () => {
+  expect(parseBlocks("  - a\n  - b")).toEqual([{ type: "ul", start: 1, items: ["a", "b"] }]);
+});
+
+test("--- is a divider; a dash bullet is not", () => {
+  expect(parseBlocks("x\n\n---\n\ny").map((b) => b.type)).toEqual(["p", "hr", "p"]);
+  expect(parseBlocks("- item")[0].type).toBe("ul");
+});
+
 test("a single-hash line or other syntax is left as plain text", () => {
   expect(parseBlocks("# not a heading")[0]).toMatchObject({ type: "p", lines: ["# not a heading"] });
 });

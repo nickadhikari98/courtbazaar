@@ -617,7 +617,8 @@ def test_file_search_uses_configured_model_and_returns_document_source(monkeypat
 
     class Responses:
         async def create(self, **kwargs):
-            self.kwargs = kwargs
+            if kwargs.get("text", {}).get("format", {}).get("name") != "answer_verdict":
+                self.kwargs = kwargs
             return SimpleNamespace(
                 output_text="Choose a service, upload documents, then review the order.",
                 output=[],
@@ -712,7 +713,8 @@ def test_groq_generates_answer_with_openai_vector_store_context(monkeypatch):
             "ok": True, "text": "The refund process starts after the cancellation is approved.",
             "sources": ["STANDARD OPERATING PROCEDURE (SOP).docx"],
             # Additive: server-built citation (no rule numbers cited) and no partial-answer note.
-            "citations": [{"title": "Standard Operating Procedure (SOP)", "url": None, "rules": []}],
+            "citations": [{"title": "Standard Operating Procedure (SOP)", "url": None, "rules": [],
+                           "document": "Standard Operating Procedure (SOP)"}],
             "partial": False,
         }
         assert search.kwargs["vector_store_id"] == "vs-test"

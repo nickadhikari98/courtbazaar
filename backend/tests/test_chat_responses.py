@@ -60,7 +60,7 @@ def test_no_match_reply_never_mentions_a_knowledge_base(fake_rag):
     fake_rag["items"] = []
     reply = _chat("What does the DIAC Rules say about space law?")["reply"]
     assert "knowledge base" not in reply.lower()
-    assert reply == ai_chat.DOCUMENT_NOT_FOUND_MESSAGE
+    assert reply == ai_chat.document_not_found_message(DIAC)
 
 
 def test_model_wording_about_retrieval_is_rephrased(fake_rag):
@@ -94,7 +94,7 @@ def test_no_fallback_or_clarification_uses_internal_terms(monkeypatch, fake_rag)
 
 def test_fallbacks_are_chosen_by_context_not_one_message(monkeypatch, fake_rag):
     replies = _fallback_replies(monkeypatch, fake_rag)
-    assert replies["document"] == ai_chat.DOCUMENT_NOT_FOUND_MESSAGE
+    assert replies["document"] == ai_chat.document_not_found_message(DIAC)
     assert replies["courtbazaar info"] == ai_chat.COURTBAZAAR_INFO_UNAVAILABLE_MESSAGE
     assert replies["courtbazaar fact"] == answer_guard.UNVERIFIED_COURTBAZAAR_MESSAGE
     assert replies["legal"] == answer_guard.UNVERIFIED_LEGAL_MESSAGE
@@ -116,8 +116,8 @@ def test_document_no_match_fallback(fake_rag):
     fake_rag["items"] = [_chunk(DIAC, "Rule 12: The emergency arbitrator shall be appointed within one day.")]
     fake_rag["answer"] = "The DIAC Rules set a 5% fee for space-law disputes."
     assert _chat("What does the DIAC Rules say about space law?")["reply"] == (
-        "I couldn’t find that information in the available documents. If you tell me what you’re looking for, I "
-        "can help with a related topic.")
+        "I couldn’t find anything in the Delhi International Arbitration Centre (DIAC) Rules that answers this. "
+        "If you know the rule number, or have the relevant rule or document, share it and I'll check it.")
 
 
 def test_legal_insufficient_information_fallback(monkeypatch):

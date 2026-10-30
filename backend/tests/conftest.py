@@ -28,6 +28,8 @@ import os
 import socket
 import uuid
 
+import pytest
+
 TEST_DB_NAME = f"courtbazaar_pytest_{uuid.uuid4().hex[:10]}"
 os.environ["DB_NAME"] = TEST_DB_NAME
 
@@ -43,6 +45,9 @@ _MESSAGING_KEYS = (
 )
 for _key in _MESSAGING_KEYS:
     os.environ[_key] = ""  # set (not deleted), so load_dotenv can't fill it back in
+# Paid OpenAI web search, on in a dev .env: tests that mock only
+# generate_response must never reach it. test_web_citations mocks it explicitly.
+os.environ["AI_WEB_SEARCH_ENABLED"] = "false"
 
 LIVE_BACKEND_TESTS = ["test_courtbazaar_api.py", "test_dpdp_token_fix.py"]
 collect_ignore = [] if os.environ.get("CB_LIVE_BACKEND_TESTS") == "1" else LIVE_BACKEND_TESTS
@@ -87,6 +92,17 @@ def _guarded_connect_ex(self, address):
 
 socket.socket.connect = _guarded_connect
 socket.socket.connect_ex = _guarded_connect_ex
+
+
+@pytest.fixture(autouse=True)
+def _no_score_routing(monkeypatch):
+    # A search before every general turn would hit the network from every chat
+    # test. test_answer_card.py covers llm_service.document_route directly.
+    import llm_service
+
+    async def no_match(query):
+        return None
+    monkeypatch.setattr(llm_service, "document_route", no_match)
 
 
 def pytest_sessionstart(session):
