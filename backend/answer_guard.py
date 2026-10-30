@@ -33,7 +33,9 @@ UNVERIFIED_LEGAL_MESSAGE = (
     "I don’t have enough verified information to answer that reliably. If you share more details, I can help "
     "explain the general legal concept."
 )
-PARTIAL_ANSWER_NOTE = "Some details couldn't be verified from the available information, so I've left them out."
+# Shown under a general answer that had something removed. Document answers
+# replace it with a note naming the document (ai_chat.DOCUMENT_PARTIAL_NOTE).
+PARTIAL_ANSWER_NOTE = "I've left out a point I couldn't confirm, so treat this as a partial answer."
 LEGAL_VERIFY_NOTE = (
     "Please verify any specific section, time limit or figure with a qualified advocate or an official "
     "source before relying on it."
@@ -75,8 +77,22 @@ _GENERALIZATION_RE = re.compile(
 _NAMED_STATUTE_RE = re.compile(
     r"\b((?:[A-Z][a-z]+\s+)(?:(?:and|of|&)\s+)?(?:[A-Z][a-z]+\s+){0,4}(?:Act|Code|Sanhita|Adhiniyam))\b(?:,?\s*(\d{4}))?"
 )
-# A Markdown section heading in a document answer ("## Who pays").
-_HEADING_MARKER_RE = re.compile(r"^\s{0,3}#{1,4}\s+")
+# A Markdown section heading in a document answer ("## Who pays"), with its
+# section number if it has one ("### 6. Refunds"): the number is part of the
+# marker, never a sentence of its own that could outlive the heading's text.
+_HEADING_MARKER_RE = re.compile(r"^\s{0,3}#{1,4}\s+(?:\d{1,3}[.)]\s+)?")
+# A "---" separator line between sections. Structure, not content.
+_DIVIDER_LINE_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+DIVIDER_MARKER = "---"
+# A clause that can stand on its own as a statement has a finite verb. After a
+# cut, a leading run like "The fees, costs" (just a list of nouns) has none.
+_FINITE_VERB_RE = re.compile(
+    r"\b(?:is|are|was|were|be|been|being|am|shall|may|must|will|would|can|could|should|might|"
+    r"has|have|had|does|do|did|applies|apply|applied|means|mean|includes|include|requires|require|"
+    r"pays?|paid|fix(?:es|ed)?|determines?|determined|maintains?|maintained|decides?|decided|"
+    r"terminates?|terminated|directs?|directed|becomes?|became|remains?|remained)\b",
+    re.IGNORECASE,
+)
 # A heading longer than this is checked like an ordinary sentence: headings
 # are labels, not a place to put claims.
 _HEADING_MAX_WORDS = 10
@@ -231,6 +247,9 @@ def _lines(text: str) -> List[Tuple[str, List[str]]]:
         if not raw.strip():
             lines.append(("", []))
             continue
+        if _DIVIDER_LINE_RE.match(raw):
+            lines.append((DIVIDER_MARKER, []))  # no sentences: never validated or counted
+            continue
         marker = _HEADING_MARKER_RE.match(raw) or _LIST_MARKER_RE.match(raw)
         prefix = marker.group(0) if marker else ""
         sentences: List[str] = []
@@ -250,11 +269,20 @@ def _is_heading(marker: str) -> bool:
 
 
 def _rebuild(lines: List[Tuple[str, List[str]]]) -> str:
-    """Joins kept lines back up: one blank line between paragraphs, and a
-    heading whose whole section was filtered out is dropped with it."""
+    """Joins kept lines back up: one blank line between paragraphs; a heading
+    whose whole section was filtered out is dropped with it; a list item
+    filtered down to nothing leaves no bare marker; and a "---" separator is
+    kept only between two pieces of content, never doubled, leading or
+    trailing."""
     out: List[str] = []
+    pending_divider = False
     for i, (prefix, sentences) in enumerate(lines):
+        if prefix == DIVIDER_MARKER and not sentences:
+            pending_divider = any(ln.strip() for ln in out)
+            continue
         if not sentences:
+            if prefix.strip() and not _is_heading(prefix):
+                continue  # a list item filtered to nothing: no gap left in the list
             if out and out[-1] != "":
                 out.append("")
             continue
@@ -262,6 +290,11 @@ def _rebuild(lines: List[Tuple[str, List[str]]]) -> str:
             following = next((ln for ln in lines[i + 1:] if ln[1]), None)
             if following is None or _is_heading(following[0]):
                 continue
+        if pending_divider:
+            while out and out[-1] == "":
+                out.pop()
+            out += ["", DIVIDER_MARKER, ""]
+            pending_divider = False
         out.append(prefix + " ".join(sentences))
     while out and out[-1] == "":
         out.pop()
@@ -284,6 +317,10 @@ def _supported_prefix(sentence: str, evidence_lower: str, evidence_numbers: set)
                 # whole sentence goes rather than a half that reads as a claim.
                 return None
             kept = sentence[:cuts[i]].rstrip(" ,;:-")
+            if not _FINITE_VERB_RE.search(_LIST_MARKER_RE.sub("", kept)):
+                # Only a list of nouns survived the cut ("The fees, costs"):
+                # not a statement, so the sentence goes rather than a fragment.
+                return None
             return kept if kept.endswith((".", "!", "?")) else kept + "."
     return sentence
 
@@ -306,7 +343,19 @@ def validate_grounded_answer(answer: str, evidence: str, document_evidence: bool
     evidence_numbers = _numbers(evidence or "")
     lines = []
     kept_count = dropped = truncated = 0
+    skipping = False
     for marker, sentences in _lines(answer):
+        if _is_heading(marker) or marker == DIVIDER_MARKER:
+            skipping = False
+        elif skipping:
+            # Under a heading that was itself unsupported, a verbless item
+            # ("- Administrative Costs.") only meant something as part of that
+            # heading's claim, so it goes too (and counts as dropped). A full
+            # statement is still checked on its own below, and the blank line
+            # left by the heading keeps it apart from the section above.
+            fragments = [s for s in sentences if not _FINITE_VERB_RE.search(s)]
+            dropped += len(fragments)
+            sentences = [s for s in sentences if _FINITE_VERB_RE.search(s)]
         kept: List[str] = []
         # A short heading is a structural label ("## Who pays"), so it isn't
         # held to the wording-overlap test; its numbers, qualifiers and any
@@ -326,6 +375,8 @@ def validate_grounded_answer(answer: str, evidence: str, document_evidence: bool
             kept.append(supported)
         if not label:
             kept_count += len(kept)  # headings alone never count as an answer
+        if _is_heading(marker) and sentences and not kept:
+            skipping = True
         lines.append((marker, kept))
     if not kept_count or dropped > kept_count:
         return None
@@ -418,7 +469,51 @@ def _rule_refs(text: str) -> List[str]:
     return refs
 
 
-def _attribution_ok(sentence: str, refs: List[str], provisions: dict) -> bool:
+_SPECIFIC_PARTY_RE = re.compile(r"\b(claimant|respondent)s?\b", re.IGNORECASE)
+_GENERIC_PARTY_RE = re.compile(r"\b(?:party|parties)\b", re.IGNORECASE)
+
+
+def _narrows_party(body: str, rule_text: str) -> bool:
+    """True when a sentence puts "the Claimant"/"the Respondent" where its
+    rule only says "a party": the rule applies to every party, and the
+    answer must keep the rule's own word. Saying both ("a party (including
+    the Claimant)") keeps it; so does a rule that itself names that role."""
+    if _GENERIC_PARTY_RE.search(body) or not _GENERIC_PARTY_RE.search(rule_text):
+        return False
+    rule_lower = rule_text.lower()
+    return any(m.group(1).lower() not in rule_lower for m in _SPECIFIC_PARTY_RE.finditer(body))
+
+
+# "the Claimant" / "a Respondent" as a whole noun phrase (not "the Claimant's").
+_SPECIFIC_PARTY_PHRASE_RE = re.compile(r"\b(the|a|an)\s+(claimant|respondent)\b(?!['’]s)", re.IGNORECASE)
+
+
+def _restore_party_wording(sentence: str, refs: List[str], provisions: dict) -> Optional[str]:
+    """For a sentence rejected only because it says "the Claimant" where its
+    rule says "a party": the same sentence in the rule's own word, with the
+    role kept in brackets ("If a party (including the Claimant) fails ...").
+    Returned only if that version passes the full attribution check against
+    the same rule; None otherwise. Nothing but the party wording changes."""
+    rule_text = "\n".join(provisions.get(r) or "" for r in refs)
+    if not _narrows_party(sentence, rule_text):
+        return None
+    # The original must already pass every other check: the inserted "a
+    # party" adds the rule's own words, so it must never be what makes an
+    # otherwise unsupported sentence pass.
+    if not _attribution_ok(sentence, refs, provisions, check_party_wording=False):
+        return None
+
+    def repl(m: "re.Match") -> str:
+        text = f"a party (including the {m.group(2).capitalize()})"
+        return text[0].upper() + text[1:] if m.group(1)[0].isupper() and m.start() == 0 else text
+
+    restored = _SPECIFIC_PARTY_PHRASE_RE.sub(repl, sentence)
+    if restored == sentence or not _attribution_ok(restored, refs, provisions):
+        return None
+    return restored
+
+
+def _attribution_ok(sentence: str, refs: List[str], provisions: dict, check_party_wording: bool = True) -> bool:
     texts = [provisions.get(r) for r in refs]
     if not refs or any(t is None for t in texts):
         return False  # cites a rule whose text wasn't retrieved
@@ -428,6 +523,8 @@ def _attribution_ok(sentence: str, refs: List[str], provisions: dict) -> bool:
     if not _content_supported(body, rule_lower):
         return False
     if not _numbers(_LIST_MARKER_RE.sub("", body)) <= _numbers(rule_text):
+        return False
+    if check_party_wording and _narrows_party(body, rule_text):
         return False
     return _actions_supported(_actor_actions(body), _actor_actions(rule_text, coordinated=True))
 
@@ -471,14 +568,150 @@ def validate_rule_attribution(answer: str, provisions: dict) -> Tuple[Optional[s
         for s in sentences:
             refs = _rule_refs(s) or para_refs[idx] or section_refs
             if refs and not _attribution_ok(s, refs, provisions):
-                dropped += 1
-                continue
+                restored = _restore_party_wording(s, refs, provisions)
+                if restored is None:
+                    dropped += 1
+                    continue
+                s = restored
             keep.append(s)
         kept += len(keep)
         out.append((marker, keep))
     if not kept:
         return None, dropped
     return _rebuild(out), dropped
+
+
+def _checked_card_text(markdown: str, evidence: str, provisions: dict) -> Optional[str]:
+    """One card field through both document checks, or None when nothing
+    trustworthy is left."""
+    validated = validate_grounded_answer(markdown, evidence, document_evidence=True)
+    validated, _ = validate_rule_attribution(validated, provisions)
+    return validated.replace(PARTIAL_ANSWER_NOTE, "").strip() if validated else None
+
+
+def validate_answer_card(card: dict, evidence: str, provisions: dict) -> Optional[dict]:
+    """The structured form of validate_grounded_answer + validate_rule_attribution:
+    each point is checked as its own "## title" section, so a dropped sentence
+    or point can't leave text under the wrong heading. A point that doesn't
+    survive whole-titled goes. The summary must keep its opening sentence
+    whole: without it, what's left no longer answers the question, so it comes
+    back as None for the caller to replace. Returns None when every point fails."""
+    one_line = lambda value: re.sub(r"\s+", " ", value or "").strip()
+    raw_summary = one_line(card["summary"])
+    summary = _checked_card_text(raw_summary, evidence, provisions)
+    if summary is not None and not summary.startswith(_SENTENCE_SPLIT_RE.split(raw_summary)[0]):
+        summary = None
+    direct = {"yes": "Yes. ", "no": "No. "}.get(card.get("direct"), "")
+    evidence_numbers = _numbers(evidence or "")
+    points = []
+    for point in card["points"]:
+        # "[n]" in the page is a verified source chip, never model text.
+        text = re.sub(r"\s*\[\d{1,2}\]", "", one_line(point["text"]))
+        checked = _checked_card_text(f"## {one_line(point['title'])}\n{text}", evidence, provisions)
+        title, _, body = (checked or "").partition("\n")
+        if not title.startswith("## ") or not body.strip():
+            continue
+        badge = one_line(point["badge"])
+        cited_as = clause_labels(f"{title} {body}").get(badge.removeprefix("Rule ").strip())
+        if cited_as:
+            badge = f"Rule {cited_as[0]}"  # same label as the title beside it
+        points.append({**point, "title": title[3:].strip(), "text": one_line(body),
+                       "badge": badge if badge and _numbers(badge) <= evidence_numbers else None})
+    if not points:
+        return None
+    follow_up = _specific_follow_up(one_line(card["follow_up"]), points, raw_summary, evidence_numbers, provisions)
+    # "partial" means the main ask went unanswered, which the verifier decides:
+    # a sentence cut here isn't that (llm_service._card_answer).
+    return {"status": "partial" if card["status"] == "partial" else "answered",
+            "summary": summary and direct + one_line(summary), "points": points, "follow_up": follow_up}
+
+
+_GENERIC_FOLLOW_UP_RE = re.compile(r"\b(?:know|learn) more\b|\b(?:more )?(?:information|details)\b", re.IGNORECASE)
+
+
+def _specific_follow_up(question: str, points: List[dict], summary: str, evidence_numbers: set,
+                        provisions: dict) -> Optional[str]:
+    """A follow-up must be a question (a statement would be an unchecked
+    claim) about a retrieved rule the answer didn't use. Otherwise there's none."""
+    if not question.endswith("?") or _GENERIC_FOLLOW_UP_RE.search(question) or not _numbers(question) <= evidence_numbers:
+        return None
+    if not provisions:
+        return question  # no rule numbers in this document to point at
+    used = set(_rule_refs(summary)).union(*(point_rule_refs(p) for p in points))
+    refs = set(_rule_refs(question))
+    return question if refs and refs <= set(provisions) and refs - used else None
+
+
+_CLAUSE_REF_RE = re.compile(r"\bRules?\s+(\d{1,3}(?:\.\d{1,3})?)(\([a-z]{1,4}\))", re.IGNORECASE)
+
+
+def clause_labels(text: str) -> dict:
+    """Rule number -> how the text cites it where that names a clause:
+    {"4": ["4(i)"]}, so a source can read the same as the answer."""
+    labels: dict = {}
+    for number, clause in _CLAUSE_REF_RE.findall(text or ""):
+        if number + clause not in labels.setdefault(number, []):
+            labels[number].append(number + clause)
+    return labels
+
+
+# What a question can ask a rule to allow. The rules can provide for something
+# close (termination) and a model will happily call that a "yes" (suspension).
+_ASKED_ACTIONS = (
+    ("suspen", "suspension"), ("adjourn", "adjournment"), ("dismiss", "dismissal"), ("withdraw", "withdrawal"),
+    ("cancel", "cancellation"), ("refund", "a refund"), ("waive", "a waiver"), ("extend", "an extension"),
+    ("extension", "an extension"), ("appeal", "an appeal"), ("transfer", "a transfer"), ("stay", "a stay"),
+)
+# On nearly every rule, so they can't show a rule is on the question's subject.
+_GENERIC_PROCEDURE_WORD_RE = re.compile(
+    r"^(?:tribunal|arbitra|part(?:y|ies)|proceeding|centre|claimant|respondent|rule)", re.IGNORECASE)
+_LEADING_YES_NO_RE = re.compile(r"^\W*(?:yes|no)\b[.,:;]?\s*", re.IGNORECASE)
+
+
+def starts_with_yes_or_no(text: str) -> bool:
+    return bool(_LEADING_YES_NO_RE.match(text or ""))
+
+
+def without_yes_or_no(text: str) -> str:
+    rest = _LEADING_YES_NO_RE.sub("", text or "", count=1)
+    return rest[:1].upper() + rest[1:]
+
+
+def unaddressed_action(question: str, provisions: List[str]) -> Optional[str]:
+    """The action a question asks about ("suspension") when no provision
+    provides for it on the question's subject, else None. Searches every
+    provision, because this backs a statement that the rules don't mention it:
+    with none to search, it says nothing. A provision using the word on another
+    subject doesn't count (Rule 15.2 suspends interim measures, not proceedings
+    over a deposit), so the check is that it shares the question's rarest term."""
+    lowered = [p.lower() for p in provisions]
+    question_lower = (question or "").lower()
+    asked = next(((stem, noun) for stem, noun in _ASKED_ACTIONS if stem in question_lower), None)
+    if asked is None or not lowered:
+        return None
+    stem, noun = asked
+    hits = [p for p in lowered if stem in p]
+    terms = [t for t in _content_words(question_lower)
+             if stem not in t and not _GENERIC_PROCEDURE_WORD_RE.match(t) and any(t in p for p in lowered)]
+    if not hits:
+        return noun
+    rarest = min(terms, key=lambda t: sum(t in p for p in lowered), default=None)
+    return noun if rarest and not any(rarest in p for p in hits) else None
+
+
+def point_rule_refs(point: dict) -> List[str]:
+    return _rule_refs(" ".join(filter(None, (point["title"], point["badge"], point["text"]))))
+
+
+def card_markdown(card: dict) -> str:
+    """The card as the plain reply text: what's stored in the transcript,
+    replayed to the model, and shown if the page can't render the card."""
+    parts = [card["summary"]] + [f"## {p['title']}\n{p['text']}" for p in card["points"]]
+    if card["follow_up"]:
+        parts.append(card["follow_up"])
+    if card["status"] == "partial":
+        parts.append(PARTIAL_ANSWER_NOTE)
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -721,24 +954,38 @@ def _check_provisions(sentence: str, context: dict) -> Tuple[Optional[str], List
     return sentence, []
 
 
-def guard_general_answer(answer: str, legal: bool, question: str = "") -> str:
+def guard_general_answer(answer: str, legal: bool, question: str = "",
+                         verified_markers: frozenset = frozenset()) -> str:
     """No retrieved evidence backs this answer, so: drop CourtBazaar-specific
     claims, unverifiable case citations, long quotations and claims of
     verification; mark repealed-code sections as old and correct known
     wrong provisions; qualify legal figures (sections, statutes, time limits,
-    amounts) and statistics as unverified."""
+    amounts) and statistics as unverified.
+
+    `verified_markers` are the "[n]" markers of a web answer's official-source
+    citations (llm_service.generate_web_answer): a sentence naming a case is
+    kept only when it carries one of them."""
     lines = []
     kept_count = dropped_courtbazaar = dropped_other = 0
     corrections: List[str] = []
     context = {"topics": set(), "orders": []}
+    skipping = False
     for marker, sentences in _lines(answer):
+        if _is_heading(marker) or marker == DIVIDER_MARKER:
+            skipping = False
+        elif skipping:
+            # Same rule as validate_grounded_answer: a removed heading takes
+            # the verbless items written under it.
+            dropped_other += sum(1 for s in sentences if not _FINITE_VERB_RE.search(s))
+            sentences = [s for s in sentences if _FINITE_VERB_RE.search(s)]
         kept: List[str] = []
         for sentence in sentences:
             if _COURTBAZAAR_TERM_RE.search(sentence) and _COURTBAZAAR_FACT_RE.search(sentence):
                 dropped_courtbazaar += 1
                 continue
-            if (_CASE_CITATION_RE.search(sentence) or _LONG_QUOTE_RE.search(sentence)
-                    or _VERIFICATION_CLAIM_RE.search(sentence)):
+            unsourced_case = (_CASE_CITATION_RE.search(sentence)
+                              and not any(m in sentence for m in verified_markers))
+            if unsourced_case or _LONG_QUOTE_RE.search(sentence) or _VERIFICATION_CLAIM_RE.search(sentence):
                 dropped_other += 1
                 continue
             checked, notes = _check_provisions(sentence, context)
@@ -748,6 +995,8 @@ def guard_general_answer(answer: str, legal: bool, question: str = "") -> str:
                 continue
             kept.append(checked)
         kept_count += len(kept)
+        if _is_heading(marker) and sentences and not kept:
+            skipping = True
         lines.append((marker, kept))
     corrections = [n for n in corrections if n != PARTIAL_ANSWER_NOTE] + (
         [PARTIAL_ANSWER_NOTE] if PARTIAL_ANSWER_NOTE in corrections else [])
@@ -774,6 +1023,30 @@ def guard_general_answer(answer: str, legal: bool, question: str = "") -> str:
     if not result:
         return " ".join(notes)
     return result + ("\n\n" + " ".join(notes) if notes else "")
+
+
+# A web-search answer must be a final answer: never the model's offer to search
+# again or more broadly, a question about which search to run, or talk about
+# its tools and domain filter.
+_SEARCH_META_RE = re.compile(
+    r"\b(?:would you like me to|do you want me to|shall I|should I|want me to)\b"
+    r"|\bI can (?:also )?(?:try|search|run|re-?run|fetch|pull|look|check|retrieve)\b"
+    r"|\bwhich (?:do|would) you prefer\b|\bwhich (?:option|approach) (?:do|would) you\b"
+    r"|\b(?:search tool|another search|(?:search|look) (?:more )?broadly|broader search|faster results"
+    r"|law[- ]reporting sites?|web search)\b"
+    # Bare "gov.in"/"nic.in" (the filter), not a site such as indiacode.nic.in.
+    r"|(?<![\w.])(?:gov|nic)\.in\b",
+    re.IGNORECASE,
+)
+_OPTIONS_LEAD_RE = re.compile(r"^(?:I can|Options?|You can choose)\s*:?$", re.IGNORECASE)
+
+
+def strip_search_meta(answer: str) -> str:
+    """Removes sentences about how to search (see _SEARCH_META_RE), keeping
+    the answer's line/list structure."""
+    lines = [(prefix, [s for s in sentences if not _SEARCH_META_RE.search(s) and not _OPTIONS_LEAD_RE.match(s)])
+             for prefix, sentences in _lines(answer)]
+    return _rebuild(lines)
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ it, with only page breaks in between. Anything that can't be located falls
 back to the raw chunk.
 """
 import logging
+import math
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -88,20 +89,38 @@ def parse_provisions(doc: str) -> List[Dict[str, Any]]:
     Other line-initial numbers (schedule rows, amounts) are ignored."""
     accepted: List[Dict[str, Any]] = []
     parent: Optional[int] = None
+    prev_parent: Optional[int] = None
+    parent_has_subs = False
     instrument = 0
     titles: Dict[int, str] = {}
     for m in _PROVISION_START_RE.finditer(doc):
         top, sub = int(m.group(1)), m.group(2)
         if sub is not None:
             if parent != top:
-                continue
+                if (top == prev_parent and not parent_has_subs and accepted
+                        and accepted[-1]["number"] == str(parent)):
+                    # The "parent" heading was a false start: OCR put a page
+                    # number at a line start ("the 9.\n9 Respondent shall
+                    # ...") and the previous rule carries on (8.6 after it).
+                    # Undo it, so its text stays with the rule it belongs to.
+                    accepted.pop()
+                    parent, prev_parent = prev_parent, None
+                    parent_has_subs = True
+                elif parent is not None and top == parent + 1 and int(sub) == 1:
+                    # The next rule's own heading line is missing (OCR ran it
+                    # into the previous text), but its first sub-rule is
+                    # there: "9.1" right after rule 8 opens rule 9.
+                    prev_parent, parent, parent_has_subs = parent, top, False
+                else:
+                    continue
             number = f"{top}.{int(sub)}"
+            parent_has_subs = True
         else:
             if parent is not None and top == 1 and parent > 1:
                 instrument += 1
             elif parent is not None and not (parent < top <= parent + 20):
                 continue  # numbering only moves forward (gaps allowed); anything else isn't a rule heading
-            parent = top
+            prev_parent, parent, parent_has_subs = parent, top, False
             number = str(top)
         if instrument not in titles:
             titles[instrument] = _instrument_title(doc, m.start())
@@ -126,17 +145,55 @@ def locate(chunk: str, doc: str) -> Optional[Tuple[int, int]]:
     return None
 
 
-def expand_chunks(filename: str, chunks: List[str], doc: Optional[str]) -> List[str]:
+_KEYWORD_RE = re.compile(r"[a-z]{3,}")
+_KEYWORD_STOPWORDS = frozenset("""
+the and for are was were who what when where why how can does did will shall may must not any all such with from
+this that these those which about under into have has had their its his her they them there then than but
+""".split())
+BM25_K1, BM25_B = 1.5, 0.75
+
+
+def _keywords(text: str) -> List[str]:
+    return [w.rstrip("s") for w in _KEYWORD_RE.findall(text.lower()) if w not in _KEYWORD_STOPWORDS]
+
+
+def keyword_matches(query: str, provisions: List[Dict[str, Any]], limit: int = 3) -> List[int]:
+    """Indices of the provisions that best match the query's words (BM25),
+    best first. Finds what embeddings miss: a rule that shares the question's
+    terms but not its meaning ("deposit not paid" -> Rule 33.5)."""
+    terms = set(_keywords(query))
+    docs = [_keywords(p["text"]) for p in provisions]
+    if not terms or not docs:
+        return []
+    average = sum(map(len, docs)) / len(docs)
+    frequency = {t: sum(t in d for d in docs) for t in terms}
+    scores = []
+    for i, doc in enumerate(docs):
+        score = 0.0
+        for t in terms:
+            hits = doc.count(t)
+            if hits:
+                idf = math.log(1 + (len(docs) - frequency[t] + 0.5) / (frequency[t] + 0.5))
+                score += idf * hits * (BM25_K1 + 1) / (hits + BM25_K1 * (1 - BM25_B + BM25_B * len(doc) / average))
+        if score:
+            scores.append((score, i))
+    return [i for _, i in sorted(scores, reverse=True)[:limit]]
+
+
+def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: str = "") -> List[str]:
     """Context blocks for one approved file: the complete provisions the
     retrieved chunks overlap (plus each one's parent heading), in document
     order and labelled with their rule numbers; raw chunks where no
-    provision could be located."""
+    provision could be located. Provisions matching the query's words come
+    first, so the block cap can't push them out."""
     provisions = parse_provisions(doc) if doc else []
     chosen: List[int] = []
     raw: List[str] = []
-    for chunk in chunks:
-        span = locate(chunk, doc) if provisions else None
-        hits = [i for i, p in enumerate(provisions) if span and p["start"] < span[1] and p["end"] > span[0]]
+    keyword_hits = [(i, None) for i in keyword_matches(query, provisions)]
+    for i, chunk in keyword_hits + [(None, c) for c in chunks]:
+        span = locate(chunk, doc) if provisions and chunk else None
+        hits = [i] if i is not None else [
+            k for k, p in enumerate(provisions) if span and p["start"] < span[1] and p["end"] > span[0]]
         if not hits:
             raw.append(chunk)
             continue
