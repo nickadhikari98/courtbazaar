@@ -273,10 +273,19 @@ def test_wrong_figure_wrong_actor_and_wrong_rule_are_dropped():
 def test_party_role_and_passive_forms_are_matched():
     p = _provisions()
     for right in (
-        "The Respondent is free to pay the whole of the deposits should the Claimant fail to pay its share (Rule 33.2).",
+        "Any party (including the Respondent) is free to pay the whole of the deposits should the other party "
+        "fail to pay its share (Rule 33.2).",
         "Unless the Centre directs otherwise, 50% of such deposits shall be payable by the Claimant (Rule 33.1).",
     ):
         assert answer_guard.validate_rule_attribution(right, p)[1] == 0, right
+    # Rule 33.2 says "any party" / "the other party": naming only the
+    # Respondent and the Claimant narrows it, so the sentence is put back in
+    # the rule's own word, keeping the roles in brackets (product decision
+    # 2026-10-16: keep the rule's wording).
+    narrowed = "The Respondent is free to pay the whole of the deposits should the Claimant fail to pay its share (Rule 33.2)."
+    restored, dropped = answer_guard.validate_rule_attribution(narrowed, p)
+    assert dropped == 0
+    assert restored.startswith("A party (including the Respondent) is free to pay the whole of the deposits")
 
 
 def test_paragraph_citation_applies_to_every_sentence_in_it():
@@ -296,7 +305,7 @@ def test_misattributed_sentence_marks_the_answer_partial_end_to_end(monkeypatch)
     _install(monkeypatch, store)
     r = _ask()
     assert "the Tribunal may itself decide" not in r["reply"]
-    assert r["grounding"] == "partial" and answer_guard.PARTIAL_ANSWER_NOTE in r["reply"]
+    assert r["grounding"] == "partial" and "I've included only what is stated directly in the" in r["reply"]
     assert "(Rule 33.1)" in r["reply"]  # the correct statements stay
 
 
