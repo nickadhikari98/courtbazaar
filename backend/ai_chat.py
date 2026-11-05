@@ -469,7 +469,15 @@ _COUNSEL_REFERENCE_RE = re.compile(
     r"\b(?:tell me about|details? (?:for|of)|show me) this counsel\b|\bthat counsel\b",
     re.IGNORECASE,
 )
-_GREETING_RE = re.compile(r"^(?:hi|hello|hey|good morning|good afternoon|good evening|namaste)[!. ]*$", re.IGNORECASE)
+# Whole-message greetings only ("Hii", "Hi there", "Good morning sir", "Hello, how are you?"):
+# anything with a real question after it still goes to routing/RAG.
+_GREETING_WORD = r"(?:hi+|hey+|hello+|helo|hiya|howdy|greetings|namaste|namaskar|gm|good\s+(?:morning|afternoon|evening|day))"
+_GREETING_RE = re.compile(
+    rf"^{_GREETING_WORD}(?:[\s,!.]+{_GREETING_WORD})*"
+    r"(?:\s+(?:there|all|everyone|sir|madam|ma'?am|team))?"
+    r"(?:[\s,!.]+how\s+are\s+you(?:\s+doing)?(?:\s+today)?)?[\s!.?]*$",
+    re.IGNORECASE,
+)
 _THANKS_RE = re.compile(r"^(?:thanks|thank you|thx|ty)[!. ]*$", re.IGNORECASE)
 _BYE_RE = re.compile(r"^(?:bye|bye bye|goodbye|good bye|see you|see ya|take care|ok bye|thanks,? bye)[!. ]*$", re.IGNORECASE)
 _YES_RE = re.compile(r"^(?:yes|yeah|yep|sure|please do|okay yes)[!. ]*$", re.IGNORECASE)

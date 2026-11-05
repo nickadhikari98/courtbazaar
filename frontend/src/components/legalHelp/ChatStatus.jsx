@@ -36,7 +36,8 @@ export default function ChatStatus({ steps }) {
           <span key={current.text} role="status" className="min-w-0 [overflow-wrap:anywhere] motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200" data-testid="instant-legal-help-status-text">
             {current.text}
           </span>
-          <span className="shrink-0 tabular-nums text-xs text-muted-foreground/80" aria-hidden="true" data-testid="instant-legal-help-status-timer">{seconds}s</span>
+          {/* Hidden under 1s so instant replies (greetings) never flash a "0s" timer. */}
+          {seconds > 0 && <span className="shrink-0 tabular-nums text-xs text-muted-foreground/80" aria-hidden="true" data-testid="instant-legal-help-status-timer">{seconds}s</span>}
           {done.length > 0 && (
             <button
               type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-label="Show completed steps"
