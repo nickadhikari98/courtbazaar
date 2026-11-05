@@ -180,6 +180,30 @@ def keyword_matches(query: str, provisions: List[Dict[str, Any]], limit: int = 3
     return [i for _, i in sorted(scores, reverse=True)[:limit]]
 
 
+MAX_SUBRULES_PER_HEADING = 8
+_HEADING_ONLY_CHARS = 80
+
+
+def _with_rule_body(provisions: List[Dict[str, Any]], hits: List[int]) -> List[int]:
+    """A keyword hit on a bare heading ("33. Advance on Costs") stands for its
+    sub-rules, where the actual text is (Rule 33.1's 50/50 split was being cut
+    by MAX_BLOCKS while the empty heading took a slot). A short top-level entry
+    with no sub-rules is a table-of-contents line ("33 Advance on Costs 28") and
+    is dropped; any other hit is kept as is."""
+    out: List[int] = []
+    for i in hits:
+        p = provisions[i]
+        if p["number"] != p["parent"] or len(p["text"]) >= _HEADING_ONLY_CHARS:
+            out.append(i)
+            continue
+        subs = [k for k in range(i + 1, len(provisions))
+                if provisions[k]["instrument"] == p["instrument"] and provisions[k]["parent"] == p["number"]
+                and provisions[k]["number"] != p["number"]][:MAX_SUBRULES_PER_HEADING]
+        if subs:
+            out.extend([i] + subs)
+    return list(dict.fromkeys(out))
+
+
 def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: str = "") -> List[str]:
     """Context blocks for one approved file: the complete provisions the
     retrieved chunks overlap (plus each one's parent heading), in document
@@ -189,7 +213,7 @@ def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: s
     provisions = parse_provisions(doc) if doc else []
     chosen: List[int] = []
     raw: List[str] = []
-    keyword_hits = [(i, None) for i in keyword_matches(query, provisions)]
+    keyword_hits = [(i, None) for i in _with_rule_body(provisions, keyword_matches(query, provisions))]
     for i, chunk in keyword_hits + [(None, c) for c in chunks]:
         span = locate(chunk, doc) if provisions and chunk else None
         hits = [i] if i is not None else [
