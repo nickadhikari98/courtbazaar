@@ -168,7 +168,8 @@ export default function Landing() {
 
   // Deep-link support for in-page anchors like /#services (used by the nav's
   // mega menu) — runs after ScrollToTop's top-reset, so it always scrolls
-  // down from the top rather than racing it.
+  // down from the top rather than racing it. Keyed on location.key too, so
+  // clicking the same section link again (same hash) still scrolls there.
   useEffect(() => {
     const hash = location.hash?.slice(1);
     if (!hash) return;
@@ -176,7 +177,7 @@ export default function Landing() {
       document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
     return () => cancelAnimationFrame(id);
-  }, [location.hash]);
+  }, [location.hash, location.key]);
 
   const handleTakeTour = useCallback(() => {
     setTourStep(0);

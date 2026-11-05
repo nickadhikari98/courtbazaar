@@ -1770,6 +1770,18 @@ async def ai_chat(req: ChatSendRequest, user: Optional[dict] = Depends(get_curre
         db, req.conversation_id, req.message, user, client_ip=client_ip, conversation_token=req.conversation_token,
     )
 
+@api_router.post("/ai/chat/stream")
+async def ai_chat_stream(req: ChatSendRequest, user: Optional[dict] = Depends(get_current_user_optional), request: Request = None):
+    import ai_chat as ai_chat_svc
+    client_ip = request.client.host if request and request.client else "unknown"
+    ai_chat_svc.check_chat_rate_limit(user["user_id"] if user else client_ip)
+    return StreamingResponse(
+        ai_chat_svc.stream_chat_events(db, req.conversation_id, req.message, user, client_ip=client_ip,
+                                       conversation_token=req.conversation_token),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},  # proxies must not hold events back
+    )
+
 @api_router.get("/ai/history/{conversation_id}")
 async def ai_history(conversation_id: str, user: Optional[dict] = Depends(get_current_user_optional),
                      request: Request = None,

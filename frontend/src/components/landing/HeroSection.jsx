@@ -1,11 +1,10 @@
 import React, { useState } from "react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CheckCircle2, ArrowRight } from "lucide-react";
 import HeroBadge from "./HeroBadge";
 import TrackingWidget from "./TrackingWidget";
-import InstantLegalHelpWidget from "./InstantLegalHelpWidget";
 
 const quickSteps = [
   { number: "1", label: "Select Service", desc: "Choose the service you need" },
@@ -20,13 +19,13 @@ const trustPoints = [
 ];
 
 export default function HeroSection() {
-  const [chatOpen, setChatOpen] = useState(false);
-  const [pendingMessage, setPendingMessage] = useState("");
+  const navigate = useNavigate();
   const [chatPrompt, setChatPrompt] = useState("");
+  // Opens the full-page chat (pages/marketing/LegalHelp.jsx); whatever was
+  // typed here travels as router state and becomes the first message.
   const openChat = () => {
-    setPendingMessage(chatPrompt.trim());
-    setChatPrompt("");
-    setChatOpen(true);
+    const message = chatPrompt.trim();
+    navigate("/legal-help", message ? { state: { initialMessage: message } } : undefined);
   };
   return (
     <section id="hero" className="relative overflow-hidden">
@@ -66,14 +65,6 @@ export default function HeroSection() {
 
             {/* CTAs */}
             <div className="flex flex-wrap gap-3">
-              <Link to="/register">
-                <Button
-                  size="lg"
-                  className="bg-primary hover:bg-primary/90 font-bold h-12 px-6"
-                >
-                  Explore Services
-                </Button>
-              </Link>
               <TrackingWidget />
             </div>
             <div className="mt-4 w-full max-w-sm space-y-2">
@@ -152,7 +143,6 @@ export default function HeroSection() {
           </div>
         </div>
       </div>
-      <InstantLegalHelpWidget open={chatOpen} onClose={() => setChatOpen(false)} initialMessage={pendingMessage} />
     </section>
   );
 }

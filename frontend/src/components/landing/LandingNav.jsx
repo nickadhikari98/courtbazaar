@@ -7,17 +7,19 @@ import NavbarLogo from "./NavbarLogo";
 import MegaMenu from "./MegaMenu";
 import TourSideTab from "./TourSideTab";
 
+// Section links point at the landing page ("/#how", not "#how") so they work
+// from every page that renders this nav; Landing.jsx scrolls to the hash.
 const navLinks = [
   { label: "Home", to: "/" },
-  { label: "How It Works", to: "#how" },
-  { label: "Package Plans", to: "#pricing" },
-  { label: "Counsel / Proxy Counsel", to: "#services" },
-  { label: "Courts Coverage", to: "#coverage" },
+  { label: "How It Works", to: "/#how" },
+  { label: "Package Plans", to: "/#pricing" },
+  { label: "Counsel / Proxy Counsel", to: "/#services" },
+  { label: "Courts Coverage", to: "/#coverage" },
   { label: "About Us", to: "/about" },
   { label: "Contact Us", to: "/contact" },
 ];
 
-export default function LandingNav({ onTakeTour }) {
+export default function LandingNav({ onTakeTour, showTourTab = true }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
@@ -47,13 +49,13 @@ export default function LandingNav({ onTakeTour }) {
           </div>
 
           {navLinks.slice(1).map((link) => (
-            <a
+            <Link
               key={link.label}
-              href={link.to}
+              to={link.to}
               className="landing-nav-link px-3 py-2"
             >
               {link.label}
-            </a>
+            </Link>
           ))}
         </div>
 
@@ -82,14 +84,14 @@ export default function LandingNav({ onTakeTour }) {
         <div className="lg:hidden border-t border-border bg-white p-4">
           <div className="space-y-2">
             {navLinks.map((link) => (
-              <a
+              <Link
                 key={link.label}
-                href={link.to}
+                to={link.to}
                 className="block py-2 font-semibold text-foreground"
                 onClick={() => setMobileOpen(false)}
               >
                 {link.label}
-              </a>
+              </Link>
             ))}
             <Link to="/login" onClick={() => setMobileOpen(false)}>
               <Button className="w-full bg-accent hover:bg-accent/90 active:bg-accent text-white font-bold rounded-lg shadow-sm hover:shadow-lg active:shadow-sm transition-all duration-200 mt-2">
@@ -100,7 +102,7 @@ export default function LandingNav({ onTakeTour }) {
         </div>
       )}
     </nav>
-    {!mobileOpen && <TourSideTab onTakeTour={onTakeTour} />}
+    {showTourTab && !mobileOpen && <TourSideTab onTakeTour={onTakeTour} />}
     </>
   );
 }
