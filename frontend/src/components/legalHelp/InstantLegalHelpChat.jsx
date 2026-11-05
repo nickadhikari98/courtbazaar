@@ -289,7 +289,7 @@ export default function InstantLegalHelpChat({ initialMessage }) {
               <div className="w-14 h-14 mx-auto bg-accent/10 rounded-2xl flex items-center justify-center mb-4">
                 <Landmark className="w-7 h-7 text-accent" />
               </div>
-              <h2 className="font-display font-bold text-xl sm:text-2xl">How can we help today?</h2>
+              <h2 className="font-display font-bold text-xl sm:text-2xl">How can I help today?</h2>
               <p className="text-sm text-muted-foreground mt-2 max-w-md mx-auto leading-6">
                 Tell me what's going on and I'll help you figure out the next step.
               </p>
