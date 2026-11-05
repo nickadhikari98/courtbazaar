@@ -244,12 +244,19 @@ def test_general_question_is_answered_normally(monkeypatch):
     assert llm.calls and llm.calls[0]["use_file_search"] is False
 
 
-@pytest.mark.parametrize("text", ["Hi", "hello", "Hey!"])
+@pytest.mark.parametrize("text", ["Hi", "hello", "Hey!", "Hii", "Hi there", "Good morning sir", "gm",
+                                  "Hello, how are you?", "hey there", "Good evening!"])
 def test_greeting(monkeypatch, text):
     llm = _fake_llm(monkeypatch, "unused")
     reply = _chat(text)["reply"]
     assert reply.startswith("Hi!") and "help" in reply
     assert llm.calls == []
+
+
+@pytest.mark.parametrize("text", ["Hi, who pays the advance on costs?", "Hello I need a proxy counsel in Delhi",
+                                  "Good morning, what is Rule 33?", "high court fees"])
+def test_greeting_with_a_question_is_not_casual(text):
+    assert not ai_chat._is_casual_message(text)
 
 
 @pytest.mark.parametrize("text", ["Thanks", "thank you", "thx!"])
