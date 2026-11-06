@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { api, setToken, getToken } from "../lib/api";
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
+import { flushSync } from "react-dom";
+import { api, setToken, getToken, adoptToken } from "../lib/api";
 
 const AuthContext = createContext(null);
 
@@ -50,7 +51,10 @@ export const AuthProvider = ({ children }) => {
       const { data } = await api.get("/auth/me");
       setUser(data);
     } catch {
-      setToken(null);
+      // No user data either way. A 401 means the token is bad and api.js has
+      // already dropped it (only if it's still the shared one). A network
+      // error or 5xx (e.g. a deploy restart) must not delete the shared login:
+      // that would sign every other tab out too. Reloading retries.
       setUser(null);
     } finally {
       setLoading(false);
@@ -58,6 +62,54 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   useEffect(() => { checkAuth(); }, [checkAuth]);
+
+  // Cross-tab sync. A login/logout in another tab rewrites the shared
+  // cb_token; this tab keeps using its own pinned token (api.js) until /auth/me
+  // confirms who the new one belongs to, then adopts it. A different account
+  // (or a logout) bumps sessionKey, remounting the app below so no page keeps
+  // the previous account's data on screen. The same account re-logging in
+  // just swaps the token quietly. `storage` never fires in the tab that wrote
+  // the value, and adoptToken doesn't write, so this can't loop.
+  const [sessionKey, setSessionKey] = useState(0);
+  const userIdRef = useRef(null);
+  userIdRef.current = user?.user_id || null;
+
+  useEffect(() => {
+    let seq = 0;
+    const onStorage = async (e) => {
+      if (e.key !== "cb_token" && e.key !== null) return; // null = localStorage.clear()
+      const next = localStorage.getItem("cb_token");
+      if (next === getToken()) return;
+      const mine = ++seq;
+      let nextUser = null;
+      if (next) {
+        try {
+          ({ data: nextUser } = await api.get("/auth/me", { headers: { Authorization: `Bearer ${next}` } }));
+        } catch {
+          nextUser = null; // unusable token: treat as logged out rather than keep the old identity
+        }
+      }
+      // Superseded while /auth/me was in flight (another tab, or this tab's own
+      // login/logout). A failed check may itself have cleared the shared token
+      // (api.js 401 handling) — that still means "signed out", not superseded.
+      const now = localStorage.getItem("cb_token");
+      if (mine !== seq || (nextUser ? now !== next : now !== null && now !== next)) return;
+      const nextId = nextUser?.user_id || null;
+      // Token first, then render synchronously: no click or timer can run in
+      // between, so the old account's UI is never live while requests carry
+      // the new token. flushSync also runs the new tree's effects, which is
+      // why the token must already be adopted before it.
+      adoptToken(nextUser ? next : null);
+      flushSync(() => {
+        if (nextId !== userIdRef.current) setSessionKey((k) => k + 1);
+        setUser(nextUser);
+        setLoading(false);
+      });
+      userIdRef.current = nextId;
+    };
+    window.addEventListener("storage", onStorage);
+    return () => { seq = Infinity; window.removeEventListener("storage", onStorage); };
+  }, []);
 
   const login = async (email, password) => {
     const { data } = await api.post("/auth/login", { email, password });
@@ -124,7 +176,7 @@ export const AuthProvider = ({ children }) => {
       logout, refresh, checkAuth, hasRole, hasCapability, googleOAuthEnabled, googleClientId,
       refreshPublicConfig,
     }}>
-      {children}
+      <React.Fragment key={sessionKey}>{children}</React.Fragment>
     </AuthContext.Provider>
   );
 };
