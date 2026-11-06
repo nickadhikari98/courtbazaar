@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
+import { flushSync } from "react-dom";
 import { api, setToken, getToken, adoptToken } from "../lib/api";
 
 const AuthContext = createContext(null);
@@ -50,7 +51,10 @@ export const AuthProvider = ({ children }) => {
       const { data } = await api.get("/auth/me");
       setUser(data);
     } catch {
-      setToken(null);
+      // No user data either way. A 401 means the token is bad and api.js has
+      // already dropped it (only if it's still the shared one). A network
+      // error or 5xx (e.g. a deploy restart) must not delete the shared login:
+      // that would sign every other tab out too. Reloading retries.
       setUser(null);
     } finally {
       setLoading(false);
@@ -90,12 +94,18 @@ export const AuthProvider = ({ children }) => {
       // (api.js 401 handling) — that still means "signed out", not superseded.
       const now = localStorage.getItem("cb_token");
       if (mine !== seq || (nextUser ? now !== next : now !== null && now !== next)) return;
-      adoptToken(nextUser ? next : null);
       const nextId = nextUser?.user_id || null;
-      if (nextId !== userIdRef.current) setSessionKey((k) => k + 1);
+      // Token first, then render synchronously: no click or timer can run in
+      // between, so the old account's UI is never live while requests carry
+      // the new token. flushSync also runs the new tree's effects, which is
+      // why the token must already be adopted before it.
+      adoptToken(nextUser ? next : null);
+      flushSync(() => {
+        if (nextId !== userIdRef.current) setSessionKey((k) => k + 1);
+        setUser(nextUser);
+        setLoading(false);
+      });
       userIdRef.current = nextId;
-      setUser(nextUser);
-      setLoading(false);
     };
     window.addEventListener("storage", onStorage);
     return () => { seq = Infinity; window.removeEventListener("storage", onStorage); };
