@@ -30,6 +30,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import hearings  # noqa: E402
 import server  # noqa: E402
+from tests._verified_counsel import verify_counsel  # noqa: E402
 
 COUNSEL_CAPS = ["can_practice_proxy_counsel"]
 
@@ -86,11 +87,16 @@ def _run(body):
     async def wrapper():
         db = _db()
         setup = _Setup()
+        # The open pool is shown only to currently eligible (verified) counsel.
+        counsel_ids = [c["user_id"] for c in (setup.notified_a, setup.notified_b, setup.unrelated)]
+        for user_id in counsel_ids:
+            await verify_counsel(db, user_id)
         with unittest.mock.patch.object(server, "db", db):
             try:
                 await body(db, setup)
             finally:
                 await setup.cleanup(db)
+                await db.proxy_counsel_profiles.delete_many({"user_id": {"$in": counsel_ids}})
     asyncio.run(wrapper())
 
 

@@ -15,6 +15,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import hearings  # noqa: E402
+from tests._verified_counsel import verify_counsel  # noqa: E402
 import escrow  # noqa: E402
 import counsel_matching  # noqa: E402
 import order_agent_tools  # noqa: E402
@@ -68,6 +69,7 @@ async def _drive_to_verification_pending(db, requester, counsel, fee=1500.0):
     await hearings.initiate_payment(db, hearing_id, requester)
     await _hold_escrow(db, hearing_id, requester, fee)
     await hearings.mark_payment_confirmed(db, hearing_id, requester)
+    await verify_counsel(db, counsel["user_id"])
     await hearings.accept_hearing_request(db, hearing_id, counsel)
     await hearings.add_document(db, _noop_put_object, _noop_validate_upload, hearing_id, counsel,
                                  "case_document", "brief.pdf", "application/pdf", b"x")

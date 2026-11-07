@@ -365,9 +365,15 @@ async def performance(db, user_id: str) -> dict:
     upcoming_hearings = await db.hearing_requests.count_documents({
         "proxy_counsel_user_id": user_id, "status": {"$in": ["accepted", "in_progress"]},
     })
-    pending_requests = await db.hearing_requests.count_documents({
-        "status": "broadcast", "declined_by": {"$ne": user_id},
-    })
+    import hearings  # lazy: avoids a module-level import cycle
+    # Same open pool list_hearing_requests shows this counsel: only while
+    # they're eligible, and never requests targeted at another counsel.
+    pending_requests = 0
+    if await hearings.is_eligible_counsel(db, user_id):
+        pending_requests = await db.hearing_requests.count_documents({
+            "status": "broadcast", "declined_by": {"$ne": user_id},
+            "$or": [{"target_advocate_id": None}, {"target_advocate_id": user_id}],
+        })
     return {
         "rating": profile.get("rating", 0),
         "cases_completed": profile.get("cases_completed", 0),
