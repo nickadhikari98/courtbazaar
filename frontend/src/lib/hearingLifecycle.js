@@ -213,10 +213,18 @@ export function cancelResultMessage(result) {
   return { tone: "warning", text: "Request cancelled — the refund couldn't be completed automatically and will be retried by CourtBazaar" };
 }
 
+// Mirrors backend hearings.is_escalated_unassigned.
+export function isEscalatedUnassignedHearing(h) {
+  return h?.status === "broadcast" && !!h.targeted_escalated_at && !h.proxy_counsel_user_id;
+}
+
 export function hearingNeedsMyAction(h, user) {
-  const paymentDue = h.requesting_user_id === user?.user_id && PAYABLE_HEARING_STATUSES.includes(h.status)
-    && hearingCommerciallyReadyForPayment(h);
+  const isRequester = h.requesting_user_id === user?.user_id;
+  const paymentDue = isRequester && PAYABLE_HEARING_STATUSES.includes(h.status)
+    && hearingCommerciallyReadyForPayment(h) && !h.target_unavailable;
   return paymentDue
+    // A replacement counsel awaiting the client's approval (D3).
+    || (isRequester && isEscalatedUnassignedHearing(h) && !!h.reassignment_proposal)
     // Live fee negotiation where the ball is in my court (make the opening
     // offer, or respond to a standing offer from the other side). Computed
     // server-side in hearings._attach_negotiation_action_flags because whose
@@ -292,16 +300,27 @@ export function getHearingPermissions(hearing, user, now = Date.now()) {
   // status line (see canAcceptListedRate/canReject above).
   const fixedPricePending = isRequester && hearing.status === "requested"
     && negotiationRequired && !canNegotiate && !negotiationAgreed;
-  const canPay = isRequester && PAYABLE_HEARING_STATUSES.includes(hearing.status) && hearingCommerciallyReadyForPayment(hearing);
+  // The chosen counsel is no longer eligible (backend flag, requester only):
+  // the backend refuses payment, so Pay is hidden and Cancel offered (D2).
+  const targetUnavailable = isRequester && !!hearing.target_unavailable;
+  const canPay = isRequester && PAYABLE_HEARING_STATUSES.includes(hearing.status) && hearingCommerciallyReadyForPayment(hearing)
+    && !targetUnavailable;
+  // Escalated to CourtBazaar and still unassigned (backend
+  // hearings.is_escalated_unassigned): the client may cancel for a refund
+  // even after the 1-hour window (D4), and may answer a replacement proposal (D3).
+  const isEscalatedUnassigned = isEscalatedUnassignedHearing(hearing);
+  const canRespondToReassignment = isRequester && isEscalatedUnassigned && !!hearing.reassignment_proposal;
   // Mirrors hearings.cancel_hearing_request: the commercial lock only blocks
-  // cancelling BEFORE payment; once paid, the requester can cancel (and is
-  // refunded) only within 1 hour of payment — after that, admin only.
+  // cancelling BEFORE payment (unless the chosen counsel lapsed); once paid,
+  // the requester can cancel (and is refunded) only within 1 hour of payment
+  // — after that, admin only, unless the request was escalated.
   const isPaidCancellableStatus = PAID_CANCELLABLE_HEARING_STATUSES.includes(hearing.status);
   const canCancel = isRequester && (
-    (isPaidCancellableStatus && isWithinClientCancelWindow(hearing, now))
-    || (UNPAID_CANCELLABLE_HEARING_STATUSES.includes(hearing.status) && !hearing.commercially_locked)
+    (isPaidCancellableStatus && (isWithinClientCancelWindow(hearing, now) || isEscalatedUnassigned))
+    || (UNPAID_CANCELLABLE_HEARING_STATUSES.includes(hearing.status) && (!hearing.commercially_locked || targetUnavailable))
   );
-  const cancelWindowExpired = isRequester && isPaidCancellableStatus && !isWithinClientCancelWindow(hearing, now);
+  const cancelWindowExpired = isRequester && isPaidCancellableStatus && !isWithinClientCancelWindow(hearing, now)
+    && !isEscalatedUnassigned;
   // Case brief can be shared once payment is confirmed (hearings.submit_case_details),
   // but not on a hearing that's already cancelled/rejected/expired, nor once
   // the hearing has taken place.
@@ -318,6 +337,7 @@ export function getHearingPermissions(hearing, user, now = Date.now()) {
   return {
     isRequester, isAssignedProxyCounsel, isTargetedAtMe, isEligibleAdvocate,
     canAccept, canDecline, canReject, canAcceptListedRate, canCancel, cancelWindowExpired, canShareCaseDetails, canMarkConducted, canRate, canPay,
+    targetUnavailable, isEscalatedUnassigned, canRespondToReassignment,
     negotiationRequired, canNegotiate, negotiationAgreed, negotiationPending, fixedPricePending, isEscrowParticipant,
     viewerRole: getViewerRole(hearing, userId),
     isClosed: isHearingClosed(hearing),

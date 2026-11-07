@@ -16,7 +16,7 @@ import {
   getHearingRequest, acceptHearingRequest, declineHearingRequest, rejectHearingRequest, cancelHearingRequest,
   acceptHearingAtListedRate, markHearingConducted, rateHearingRequest, addHearingNote, listHearingMessages,
   postHearingMessage, listHearingDocuments, uploadHearingDocument, getHearingDocumentUrl,
-  submitHearingCaseDetails,
+  submitHearingCaseDetails, respondToReassignment,
 } from "@/lib/hearingRequestsApi";
 import { payForHearing as payForHearingShared } from "@/lib/hearingPayment";
 import HearingTimeline from "@/components/shared/HearingTimeline";
@@ -103,7 +103,7 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
     isRequester, isAssignedProxyCounsel, canAccept, canDecline, canReject, canAcceptListedRate,
     negotiationRequired, canNegotiate, negotiationAgreed, negotiationPending, fixedPricePending,
     canPay, canCancel, cancelWindowExpired, canShareCaseDetails, canMarkConducted, canRate, isEscrowParticipant, viewerRole,
-    isClosed,
+    isClosed, targetUnavailable, isEscalatedUnassigned, canRespondToReassignment,
   } = getHearingPermissions(hearing, user);
 
   const run = async (fn) => {
@@ -349,6 +349,36 @@ export default function HearingDetailDialog({ hearingId, open, onOpenChange, onC
         {/* Requester-only — the advocate's own Accept/Reject/Negotiate trio
             (bottom action bar below) is their entry point instead, so this
             banner would just duplicate it for them. */}
+        {/* Paid targeted request escalation (D2–D4): the chosen counsel is
+            unavailable, or CourtBazaar is arranging a replacement. */}
+        {isRequester && (targetUnavailable || isEscalatedUnassigned) && (
+          <div className="border rounded-lg p-4 bg-amber-50 border-amber-200 space-y-2" data-testid="counsel-unavailable-notice">
+            <div className="font-display font-bold text-sm">
+              {isEscalatedUnassigned ? "We're arranging your counsel" : "Your selected counsel is no longer available"}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {isEscalatedUnassigned
+                ? "Your payment is safely held. CourtBazaar will propose a replacement counsel for your approval, or you can cancel this request for a full refund."
+                : "This request can't be paid for now. You can cancel it and choose another counsel."}
+            </p>
+            {canRespondToReassignment && (
+              <div className="flex flex-wrap items-center gap-2 pt-1" data-testid="reassignment-proposal">
+                <span className="text-sm">
+                  Proposed replacement: <b>{hearing.reassignment_proposal.counsel_name || "a verified counsel"}</b>
+                </span>
+                <Button type="button" disabled={busy} className="bg-emerald-600 hover:bg-emerald-700 font-bold" data-testid="approve-reassignment"
+                        onClick={() => run(async () => { await respondToReassignment(hearingId, true); toast.success("Counsel assigned"); })}>
+                  <CheckCircle2 className="w-4 h-4 mr-1.5" /> Approve
+                </Button>
+                <Button type="button" disabled={busy} variant="outline" className="font-bold" data-testid="decline-reassignment"
+                        onClick={() => run(async () => { await respondToReassignment(hearingId, false); toast.info("Declined — CourtBazaar will follow up"); })}>
+                  <X className="w-4 h-4 mr-1.5" /> Decline
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+
         {negotiationPending && (
           <div className="border rounded-lg p-4 bg-amber-50 border-amber-200 space-y-2">
             <div className="font-display font-bold text-sm">Fee negotiation isn't agreed yet</div>
