@@ -41,7 +41,7 @@ load_dotenv(ROOT_DIR / ".env")
 # audit on 2026-11-06. NOT confirmed application-sourced: review the dry run.
 ALLOWLIST = [
     ("user_a30f64eea1a9", "lead_bb22411f5019", "Jaydip Gavare"),
-    ("user_1043859e9824", "lead_1273623cebbe", "Temp-JD ProxyCouncel"),
+    # user_1043859e9824 (Temp-JD) excluded: profile created 5 days before lead approval, source unproven.
     ("user_d5a6ff2cbd29", "lead_646da4df651b", "Himanshu Adhikari"),
 ]
 ADMIN_VERIFY_ACTIONS = ["practice.approve_kyc", "practice.verify_bar_council"]
