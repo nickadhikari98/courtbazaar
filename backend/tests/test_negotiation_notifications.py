@@ -19,6 +19,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import negotiation  # noqa: E402
 import server  # noqa: E402
+from tests._verified_counsel import verify_counsel  # noqa: E402
 
 
 def _db():
@@ -75,6 +76,7 @@ def test_target_advocate_notified_immediately_on_hearing_creation_without_fee(mo
                 court_id="court_tishazari", hearing_date="2026-08-01", case_details="Test case",
                 fee=None, target_advocate_id=counsel["user_id"],
             )
+            await verify_counsel(db, counsel["user_id"])
             hearing = await server.create_hearing_request(payload, requester)
             hearing_id = hearing["hearing_id"]
             # Still "requested" — payment hasn't happened yet — but the
@@ -115,6 +117,7 @@ def test_target_advocate_gets_auto_created_first_offer_when_fee_given(monkeypatc
                 court_id="court_tishazari", hearing_date="2026-08-01", case_details="Test case",
                 fee=1500.0, target_advocate_id=counsel["user_id"],
             )
+            await verify_counsel(db, counsel["user_id"])
             hearing = await server.create_hearing_request(payload, requester)
             hearing_id = hearing["hearing_id"]
             assert hearing["status"] == "requested"
@@ -161,6 +164,7 @@ async def _make_hearing(db, requester, counsel):
     import hearings
     await _enable_negotiation(db, counsel)
     try:
+        await verify_counsel(db, counsel["user_id"])
         hearing = await hearings.create_hearing_request(
             db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
             target_advocate_id=counsel["user_id"],

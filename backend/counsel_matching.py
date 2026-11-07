@@ -124,12 +124,15 @@ async def discover_candidates(db, hearing_id: str) -> List[dict]:
         raise HTTPException(404, "Hearing not found")
 
     if hearing.get("target_advocate_id"):
+        # Verified gate only (no availability_mode, the client picked them
+        # directly). A counsel revoked after this request was created gets []
+        # here, so run_matching escalates to an admin instead of notifying them.
         profile = await db.proxy_counsel_profiles.find_one(
-            {"user_id": hearing["target_advocate_id"]}, {"_id": 0},
+            await eligible_counsel_query(db, user_id=hearing["target_advocate_id"]), {"_id": 0},
         )
         return [profile] if profile else []
 
-    query = {**verified_counsel_query(), "availability_mode": True}
+    query = await eligible_counsel_query(db, availability_mode=True)
     return await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500)
 
 
@@ -142,6 +145,24 @@ def verified_counsel_query() -> Dict[str, Any]:
     on top of this — see its docstring for why that one stays hearing-time
     only."""
     return {"kyc_status": "approved", "bar_council_verified": True}
+
+
+async def eligible_counsel_query(db, **extra) -> Dict[str, Any]:
+    """verified_counsel_query() plus "the account isn't deactivated" — the one
+    gate for every surface that offers a counsel to clients or matching
+    (public listing, public profile, broadcast/targeted/fallback matching).
+    Deactivation (audit_log.deactivate_user) lives on users.deleted, not on
+    the profile, so it's applied as a user_id exclusion: a missing or false
+    `deleted` field stays eligible, and no profile or account data changes.
+    `extra` is merged in; a plain user_id value is kept as an $eq alongside
+    the exclusion so single-counsel lookups still work."""
+    query: Dict[str, Any] = {**verified_counsel_query(), **extra}
+    deactivated = await db.users.distinct("user_id", {"deleted": True})
+    if deactivated:
+        uid = query.get("user_id")
+        cond = uid if isinstance(uid, dict) else ({} if uid is None else {"$eq": uid})
+        query["user_id"] = {**cond, "$nin": deactivated}
+    return query
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +442,7 @@ async def list_and_recommend(
     date (and, if set, a time slot) isn't shown, and can't select, someone
     who actually can't take it then."""
     import practice
-    query: Dict[str, Any] = verified_counsel_query()
+    query: Dict[str, Any] = await eligible_counsel_query(db)
     if specialization:
         query["practice_areas"] = {"$elemMatch": {"$regex": re.escape(specialization), "$options": "i"}}
     if min_experience_years is not None:
