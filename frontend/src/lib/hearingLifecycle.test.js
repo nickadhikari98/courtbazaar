@@ -138,3 +138,49 @@ describe("case details once the hearing has taken place", () => {
     expect(isCaseDetailsLockedAfterHearing({ status: "disputed" })).toBe(false);
   });
 });
+
+describe("paid targeted request escalation (D2-D4)", () => {
+  const LONG_AFTER = PAID_MS + 3 * 60 * 60 * 1000; // well past the 1-hour window
+  const escalated = (extra = {}) => paidHearing({
+    proxy_counsel_user_id: null, target_advocate_id: "user_target",
+    targeted_escalated_at: "2026-08-16T06:00:00+00:00", ...extra,
+  });
+
+  it("lets the client cancel an escalated, unassigned request after the 1-hour window", () => {
+    const p = getHearingPermissions(escalated(), client, LONG_AFTER);
+    expect(p.isEscalatedUnassigned).toBe(true);
+    expect(p.canCancel).toBe(true);
+    expect(p.cancelWindowExpired).toBe(false);
+  });
+
+  it("keeps the 1-hour window for paid requests that aren't escalated", () => {
+    const p = getHearingPermissions(paidHearing({ proxy_counsel_user_id: null }), client, LONG_AFTER);
+    expect(p.isEscalatedUnassigned).toBe(false);
+    expect(p.canCancel).toBe(false);
+    expect(p.cancelWindowExpired).toBe(true);
+  });
+
+  it("drops the escalated exception once a counsel is assigned", () => {
+    const p = getHearingPermissions(escalated({ proxy_counsel_user_id: counsel.user_id, status: "accepted" }), client, LONG_AFTER);
+    expect(p.isEscalatedUnassigned).toBe(false);
+    expect(p.canCancel).toBe(false);
+  });
+
+  it("offers approve/decline only to the requester while a proposal is pending", () => {
+    const proposal = { counsel_user_id: "user_new", counsel_name: "New Counsel" };
+    expect(getHearingPermissions(escalated({ reassignment_proposal: proposal }), client, LONG_AFTER).canRespondToReassignment).toBe(true);
+    expect(getHearingPermissions(escalated(), client, LONG_AFTER).canRespondToReassignment).toBe(false);
+    expect(getHearingPermissions(escalated({ reassignment_proposal: proposal }), admin, LONG_AFTER).canRespondToReassignment).toBe(false);
+  });
+
+  it("hides Pay and allows Cancel when the chosen counsel lapsed before payment", () => {
+    const locked = { requesting_user_id: client.user_id, target_advocate_id: "user_target", status: "requested",
+                     commercially_locked: true, fee: 1500, proxy_counsel_user_id: null };
+    const ok = getHearingPermissions(locked, client);
+    expect(ok.canCancel).toBe(false);
+    const lapsed = getHearingPermissions({ ...locked, target_unavailable: true }, client);
+    expect(lapsed.targetUnavailable).toBe(true);
+    expect(lapsed.canPay).toBe(false);
+    expect(lapsed.canCancel).toBe(true);
+  });
+});

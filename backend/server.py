@@ -2881,6 +2881,15 @@ async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)
             f"Your hearing at {hearing['court_id']} was cancelled by CourtBazaar support." + refund_note,
             hearing_id,
         )
+    # D5: a client cancelling an escalated request (D4) hears how the refund
+    # went. Normal in-window cancels are unchanged.
+    if not by_admin and refund_status and hearings_svc.is_escalated_unassigned(hearing):
+        outcome = ("Your payment has been refunded to your original payment method." if refund_status == "refunded"
+                   else "Your refund has been initiated and will reach your original payment method shortly.")
+        await _notify_hearing_event(
+            hearing["requesting_user_id"], "Request cancelled",
+            f"Your hearing request at {hearing['court_id']} was cancelled. {outcome}", hearing_id,
+        )
     return result
 
 async def _finalize_hearing_payment(hearing: dict, tx: dict, rzp_payment_id: str) -> bool:
@@ -3118,6 +3127,81 @@ async def admin_list_hearing_requests(user=Depends(get_current_user), status: Op
                 results.append({**hearing, "escalation_reason": session.get("final_decision")})
         return results
     return await hearings_svc.list_hearings_for_admin(db, status)
+
+async def _notify_admins_hearing(title: str, body: str, hearing_id: str) -> None:
+    """In-app + email to every active admin account (same channel as any
+    hearing event), so an escalation can't go unseen."""
+    async for admin_user in db.users.find({"role": "admin", "deleted": {"$ne": True}}, {"_id": 0, "user_id": 1}):
+        await _notify_hearing_event(admin_user["user_id"], title, body, hearing_id)
+
+
+async def _notify_targeted_escalation(hearing: dict, reason: str) -> None:
+    import counsel_matching
+    hearing_id = hearing["hearing_id"]
+    why = ("is no longer available" if reason == counsel_matching.TARGETED_INELIGIBLE
+           else "hasn't accepted within 24 hours of your payment")
+    await _notify_hearing_event(
+        hearing["requesting_user_id"], "We're arranging your counsel",
+        f"The counsel you selected for your hearing at {hearing['court_id']} {why}. Your payment is safely held. "
+        "Our team will propose a replacement counsel for your approval, or you can cancel this request for a full refund.",
+        hearing_id,
+    )
+    await _notify_admins_hearing(
+        "Paid request needs action",
+        f"Paid targeted request {hearing_id} ({hearing['court_id']}, {hearing.get('hearing_date')}) was escalated: "
+        f"the selected counsel {why.replace('your payment', 'payment')}. Propose a replacement counsel or cancel and refund.",
+        hearing_id,
+    )
+
+
+@api_router.post("/admin/hearing-requests/{hearing_id}/propose-reassignment")
+async def admin_propose_reassignment(hearing_id: str, payload: AdminAssignCounsel, user=Depends(get_current_user)):
+    """D3: admin proposes a replacement counsel for an escalated targeted
+    request. The client must approve before anything is assigned."""
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    import counsel_matching
+    hearing = await counsel_matching.propose_reassignment(db, hearing_id, payload.counsel_user_id, user)
+    name = hearing["reassignment_proposal"].get("counsel_name") or "another verified counsel"
+    await _notify_hearing_event(
+        hearing["requesting_user_id"], "Approve your replacement counsel",
+        f"CourtBazaar has proposed {name} for your hearing at {hearing['court_id']}. "
+        "Open your request to approve or decline. Nothing changes until you approve.",
+        hearing_id,
+    )
+    return hearing
+
+
+class ReassignmentResponse(BaseModel):
+    approve: bool
+
+
+@api_router.post("/hearing-requests/{hearing_id}/reassignment")
+async def respond_to_reassignment(hearing_id: str, payload: ReassignmentResponse, user=Depends(get_current_user)):
+    """D3: the client approves or declines the admin's proposed replacement."""
+    import counsel_matching
+    pending = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0, "reassignment_proposal": 1})
+    result = await counsel_matching.respond_to_reassignment(db, hearing_id, user, payload.approve)
+    if not payload.approve:
+        await _notify_admins_hearing(
+            "Replacement counsel declined",
+            f"The client declined the proposed replacement for request {hearing_id}. "
+            "Propose another counsel or cancel and refund.",
+            hearing_id,
+        )
+        return result
+    name = ((pending or {}).get("reassignment_proposal") or {}).get("counsel_name") or "your new counsel"
+    await _notify_hearing_event(
+        result["requesting_user_id"], "Counsel assigned",
+        f"Your hearing at {result['court_id']} is now assigned to {name}.", hearing_id,
+    )
+    await _notify_hearing_event(
+        result["proxy_counsel_user_id"], "New hearing assigned",
+        f"You've been assigned a hearing at {result['court_id']} on {result.get('hearing_date')}. Open it to review the details.",
+        hearing_id,
+    )
+    return result
+
 
 @api_router.post("/admin/hearing-requests/{hearing_id}/assign")
 async def admin_assign_hearing_counsel(hearing_id: str, payload: AdminAssignCounsel, user=Depends(get_current_user)):
@@ -4135,6 +4219,13 @@ async def schedule_matching_waterfall():
                 await counsel_matching.check_stalled_matches(db)
             except Exception as e:
                 logger.error(f"Scheduled matching waterfall error: {e}")
+            try:
+                # Paid targeted requests (D1): only requests THIS run escalated
+                # come back, so each escalation is notified exactly once.
+                for item in await counsel_matching.check_stalled_targeted_requests(db):
+                    await _notify_targeted_escalation(item["hearing"], item["reason"])
+            except Exception as e:
+                logger.error(f"Scheduled targeted escalation error: {e}")
         sched = AsyncIOScheduler()
         sched.add_job(_job, IntervalTrigger(seconds=10), max_instances=1)
         sched.start()

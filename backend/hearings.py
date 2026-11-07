@@ -144,6 +144,22 @@ CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE = (
     "Please contact admin for cancellation after this period."
 )
 
+# Paid targeted requests (founder decisions D1–D4, 2026-11): a request whose
+# chosen counsel is no longer eligible, or hasn't accepted within this long of
+# payment, is escalated to admin (counsel_matching.check_stalled_targeted_requests).
+TARGETED_ACCEPT_TIMEOUT = timedelta(hours=24)
+TARGET_UNAVAILABLE_MESSAGE = (
+    "The counsel you selected is no longer available for this request. "
+    "You can cancel it and choose another counsel."
+)
+
+
+def is_escalated_unassigned(hearing: dict) -> bool:
+    """A paid targeted request escalated to admin and still not taken by any
+    counsel — the one case where the client may cancel after the 1-hour window."""
+    return (hearing.get("status") == "broadcast" and bool(hearing.get("targeted_escalated_at"))
+            and not hearing.get("proxy_counsel_user_id"))
+
 
 def _utcnow() -> datetime:
     """Server clock for the client cancellation window — a function (not an
@@ -405,6 +421,7 @@ async def list_hearing_requests(db, user: dict) -> List[dict]:
     await _attach_negotiation_action_flags(db, hearings, user["user_id"])
     await _attach_decline_flags(db, hearings, user["user_id"])
     await _attach_listed_rates(db, hearings, user["user_id"])
+    await _attach_target_availability(db, hearings, user["user_id"])
     return hearings
 
 
@@ -469,6 +486,7 @@ async def get_hearing_request(db, hearing_id: str, user: dict) -> dict:
     _check_visible(hearing, user, eligible_counsel=eligible)
     await _attach_decline_flags(db, [hearing], user["user_id"])
     await _attach_listed_rates(db, [hearing], user["user_id"])
+    await _attach_target_availability(db, [hearing], user["user_id"])
     return hearing
 
 
@@ -497,6 +515,21 @@ async def _attach_decline_flags(db, hearings: List[dict], user_id: str) -> None:
     notified = await _notified_counsel_ids(db, candidates)
     for h in hearings:
         h["viewer_can_decline"] = user_id in notified.get(h["hearing_id"], set())
+
+
+async def _attach_target_availability(db, hearings: List[dict], user_id: str) -> None:
+    """Sets `target_unavailable` on the requester's own still-unassigned
+    targeted requests: whether their chosen counsel is no longer eligible, so
+    the UI hides Pay and offers Cancel instead (D2). Display only — the
+    backend enforces both rules itself. Requester-only, never to the counsel."""
+    cache: Dict[str, bool] = {}
+    for h in hearings:
+        target = h.get("target_advocate_id")
+        if (target and h.get("requesting_user_id") == user_id and not h.get("proxy_counsel_user_id")
+                and h.get("status") in ("requested", "payment_pending", "broadcast")):
+            if target not in cache:
+                cache[target] = not await is_eligible_counsel(db, target)
+            h["target_unavailable"] = cache[target]
 
 
 async def _attach_listed_rates(db, hearings: List[dict], user_id: str) -> None:
@@ -813,19 +846,32 @@ async def cancel_hearing_request(db, hearing_id: str, user: dict) -> dict:
     if (hearing["status"], "cancel") not in HEARING_TRANSITIONS:
         raise HTTPException(400, "This request can no longer be cancelled")
     paid = hearing["status"] in CANCEL_REQUIRES_REFUND
+    # D2: a fee locked with a targeted counsel who has since become ineligible
+    # can't be paid (initiate_payment), so it must stay cancellable. Nothing
+    # was paid, so there's nothing to refund.
+    target_lapsed = False
     if hearing.get("commercially_locked") and not paid:
-        raise HTTPException(400, "A fee has been agreed through negotiation — this request is "
-                                  "commercially locked and can no longer be cancelled. Proceed to payment.")
-    extra_guard: Optional[Dict[str, Any]] = None if paid else {"commercially_locked": {"$ne": True}}
+        target_lapsed = bool(hearing.get("target_advocate_id")) \
+            and not await is_eligible_counsel(db, hearing["target_advocate_id"])
+        if not target_lapsed:
+            raise HTTPException(400, "A fee has been agreed through negotiation — this request is "
+                                      "commercially locked and can no longer be cancelled. Proceed to payment.")
+    extra_guard: Optional[Dict[str, Any]] = None if (paid or target_lapsed) else {"commercially_locked": {"$ne": True}}
     if paid and not is_admin:
         now = _utcnow()
-        if not _within_client_cancel_window(hearing.get("payment_confirmed_at"), now):
-            raise HTTPException(400, CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE)
-        # Same boundary, re-checked atomically in the write itself.
-        # payment_confirmed_at is always datetime.isoformat() UTC, which sorts
-        # chronologically as a string; a null never matches $gt.
-        cutoff = (now - CLIENT_CANCEL_WINDOW).isoformat(timespec="microseconds")
-        extra_guard = {"payment_confirmed_at": {"$gt": cutoff}}
+        if is_escalated_unassigned(hearing):
+            # D4: escalated and still unassigned — the 1-hour window doesn't
+            # apply. Folded into the same atomic write, so a counsel being
+            # assigned in the meantime makes this cancel lose (409).
+            extra_guard = {"targeted_escalated_at": {"$ne": None}, "proxy_counsel_user_id": None}
+        else:
+            if not _within_client_cancel_window(hearing.get("payment_confirmed_at"), now):
+                raise HTTPException(400, CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE)
+            # Same boundary, re-checked atomically in the write itself.
+            # payment_confirmed_at is always datetime.isoformat() UTC, which sorts
+            # chronologically as a string; a null never matches $gt.
+            cutoff = (now - CLIENT_CANCEL_WINDOW).isoformat(timespec="microseconds")
+            extra_guard = {"payment_confirmed_at": {"$gt": cutoff}}
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
         await _transition(db, sm, hearing, hearing["status"], "cancel", user, extra_guard=extra_guard)
@@ -1150,6 +1196,9 @@ async def initiate_payment(db, hearing_id: str, user: dict) -> dict:
     # None) never negotiate, so they're exempt.
     if hearing.get("target_advocate_id") and not hearing.get("commercially_locked"):
         raise HTTPException(400, "A fee must be agreed before payment can be collected")
+    # D2: never take money for a counsel who can no longer accept it.
+    if hearing.get("target_advocate_id") and not await is_eligible_counsel(db, hearing["target_advocate_id"]):
+        raise HTTPException(400, TARGET_UNAVAILABLE_MESSAGE)
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
         await _transition(db, sm, hearing, hearing["status"], "initiate_payment", user)
