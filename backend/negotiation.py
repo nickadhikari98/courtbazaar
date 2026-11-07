@@ -60,6 +60,19 @@ def _check_negotiation_participant(hearing: dict, user: dict) -> None:
         raise HTTPException(403, "Only the requester and the targeted advocate can negotiate this hearing")
 
 
+async def _check_target_still_eligible(db, hearing: dict, user: dict) -> None:
+    """The targeted counsel may only see or negotiate while currently eligible
+    (same gate as hearings.get_hearing_request) — otherwise they could still
+    agree a fee the client then pays for, on a request they can't accept.
+    Requester and admin are never affected; rejecting stays available."""
+    if user.get("role") == "admin" or user["user_id"] == hearing.get("requesting_user_id"):
+        return
+    if user["user_id"] == hearing.get("target_advocate_id"):
+        import hearings  # lazy, same convention as the rest of this module
+        if not await hearings.is_eligible_counsel(db, user["user_id"]):
+            raise HTTPException(403, hearings.INELIGIBLE_COUNSEL_MESSAGE)
+
+
 def _role_of(hearing: dict, user_id: str) -> str:
     return "customer" if hearing.get("requesting_user_id") == user_id else "counsel"
 
@@ -133,6 +146,7 @@ async def get_negotiation_for_user(db, hearing_id: str, user: dict) -> dict:
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
     _check_negotiation_participant(hearing, user)
+    await _check_target_still_eligible(db, hearing, user)
     return await get_or_create_negotiation(db, hearing_id)
 
 
@@ -149,6 +163,7 @@ async def _load_hearing_for_negotiation(db, hearing_id: str, user: dict) -> dict
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
     _check_negotiation_participant(hearing, user)
+    await _check_target_still_eligible(db, hearing, user)
     if hearing["status"] in _TERMINAL_HEARING_STATUSES:
         raise HTTPException(400, "This request is no longer open for negotiation")
     return hearing

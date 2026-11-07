@@ -2815,8 +2815,12 @@ async def reject_hearing_request(hearing_id: str, user=Depends(get_current_user)
     """Targeted requests only — a global, terminal reject. Broadcast requests
     use /decline (personal, non-terminal) instead — see hearings.py."""
     _require_capability(user, "can_practice_proxy_counsel")
-    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    # reject_hearing_request does its own authorization (404, targeted advocate
+    # only, not fee-locked). Deliberately not get_hearing_request first: that
+    # hides a targeted request from a target whose verification lapsed, and
+    # rejecting must stay available to them so the client can choose again.
     result = await hearings_svc.reject_hearing_request(db, hearing_id, user)
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0, "requesting_user_id": 1, "court_id": 1})
     await _notify_hearing_event(hearing["requesting_user_id"], "Request declined",
                                  f"Your hearing request for {hearing['court_id']} was declined by the advocate.",
                                  hearing_id)

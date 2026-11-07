@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import counsel_matching  # noqa: E402
 import escrow  # noqa: E402
 import hearings  # noqa: E402
+import negotiation  # noqa: E402
 import practice  # noqa: E402
 import server  # noqa: E402
 from tests._verified_counsel import verify_counsel  # noqa: E402
@@ -346,4 +347,67 @@ def test_performance_counts_only_this_counsels_open_pool():
         assert (await practice.performance(db, counsel["user_id"]))["pending_requests"] == before
         await ctx.paid(requester)  # untargeted: counted
         assert (await practice.performance(db, counsel["user_id"]))["pending_requests"] == before + 1
+    _run(body)
+
+
+# Negotiation (targeted, pre-payment) ----------------------------------------
+async def _negotiable(db, ctx, requester, target):
+    """A targeted request whose counsel negotiates fees (snapshotted at creation)."""
+    await db.proxy_counsel_profiles.update_one(
+        {"user_id": target["user_id"]}, {"$set": {"negotiation_enabled": True}}, upsert=True)
+    await verify_counsel(db, target["user_id"])
+    hearing_id = await ctx.requested(requester, target)
+    assert (await db.hearing_requests.find_one({"hearing_id": hearing_id}))["negotiation_enabled"] is True
+    return hearing_id
+
+
+def test_eligible_target_and_requester_negotiate_normally():
+    async def body(db, ctx):
+        requester, target = ctx.track(_client(), _counsel("target"))
+        hearing_id = await _negotiable(db, ctx, requester, target)
+
+        await negotiation.propose_offer(db, hearing_id, requester, 3000.0, None)
+        assert (await negotiation.get_negotiation_for_user(db, hearing_id, target))["status"] == "open"
+        await negotiation.propose_offer(db, hearing_id, target, 3500.0, "Counter")
+        await negotiation.propose_offer(db, hearing_id, requester, 3200.0, None)
+        offer_id = (await negotiation.get_negotiation_for_user(db, hearing_id, requester))["current_offer_id"]
+        agreed = await negotiation.accept_offer(db, hearing_id, offer_id, target)
+        assert agreed["status"] == "agreed" and agreed["locked_amount"] == 3200.0
+        assert (await db.hearing_requests.find_one({"hearing_id": hearing_id}))["commercially_locked"] is True
+    _run(body)
+
+
+def test_ineligible_target_cannot_view_or_negotiate_but_requester_can():
+    async def body(db, ctx):
+        requester, target = ctx.track(_client(), _counsel("target"))
+        hearing_id = await _negotiable(db, ctx, requester, target)
+        await negotiation.propose_offer(db, hearing_id, requester, 3000.0, None)
+        offer_id = (await negotiation.get_negotiation(db, hearing_id))["current_offer_id"]
+        await practice.revoke_verification(db, target["user_id"])  # lapses after the request was sent
+
+        assert await _expect(403, negotiation.get_negotiation_for_user(db, hearing_id, target)) == MSG
+        assert await _expect(403, negotiation.propose_offer(db, hearing_id, target, 3500.0, None)) == MSG
+        assert await _expect(403, negotiation.accept_offer(db, hearing_id, offer_id, target)) == MSG
+        assert await _expect(403, server.get_negotiation(hearing_id, target)) == MSG  # route level
+
+        # Requester unaffected; nothing was agreed or locked.
+        neg = await negotiation.get_negotiation_for_user(db, hearing_id, requester)
+        assert neg["status"] == "open" and neg["current_offer_id"] == offer_id
+        await negotiation.propose_offer(db, hearing_id, requester, 3100.0, None)
+        assert not (await db.hearing_requests.find_one({"hearing_id": hearing_id})).get("commercially_locked")
+    _run(body)
+
+
+def test_ineligible_target_can_still_reject_and_others_cannot():
+    async def body(db, ctx):
+        requester, target, other = ctx.track(_client(), _counsel("target"), _counsel("other"))
+        await verify_counsel(db, other["user_id"])
+        hearing_id = await _negotiable(db, ctx, requester, target)
+        await practice.revoke_verification(db, target["user_id"])
+
+        await _expect(403, server.reject_hearing_request(hearing_id, other))  # not sent to them
+        await _expect(403, server.reject_hearing_request(hearing_id, requester))  # no counsel capability
+        result = await server.reject_hearing_request(hearing_id, target)
+        assert result["status"] == "rejected"
+        assert (await db.hearing_requests.find_one({"hearing_id": hearing_id}))["status"] == "rejected"
     _run(body)
