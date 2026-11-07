@@ -80,6 +80,7 @@ def test_full_happy_path_new_order():
             assert fetched["status"] == "broadcast"
             assert fetched["proxy_counsel_user_id"] is None
 
+            await verify_counsel(db, counsel["user_id"])
             accepted = await hearings.accept_hearing_request(db, hearing_id, counsel)
             assert accepted["status"] == "documents_shared"  # M12: auto-chains straight through, "accepted" is no longer the resting status
             assert accepted["proxy_counsel_user_id"] == counsel["user_id"]
@@ -175,6 +176,7 @@ def test_cancel_from_accepted_triggers_refund():
             await hearings.initiate_payment(db, hearing_id, requester)
             await _hold_escrow(db, hearing_id, requester, 1500.0, payee_user_id=None)
             await hearings.mark_payment_confirmed(db, hearing_id, requester)
+            await verify_counsel(db, counsel["user_id"])
             await hearings.accept_hearing_request(db, hearing_id, counsel)
 
             result = await hearings.cancel_hearing_request(db, hearing_id, requester)
@@ -200,6 +202,7 @@ def test_accept_before_payment_returns_400():
             )
             hearing_id = hearing["hearing_id"]
             try:
+                await verify_counsel(db, counsel["user_id"])
                 await hearings.accept_hearing_request(db, hearing_id, counsel)
                 assert False, "expected HTTPException"
             except HTTPException as e:
@@ -222,6 +225,7 @@ def test_accept_during_payment_pending_returns_400():
             hearing_id = hearing["hearing_id"]
             await hearings.initiate_payment(db, hearing_id, requester)
             try:
+                await verify_counsel(db, counsel["user_id"])
                 await hearings.accept_hearing_request(db, hearing_id, counsel)
                 assert False, "expected HTTPException"
             except HTTPException as e:
@@ -330,6 +334,7 @@ def test_targeted_request_under_new_order():
             assert session is None
 
             try:
+                await verify_counsel(db, other_counsel["user_id"])
                 await hearings.accept_hearing_request(db, hearing_id, other_counsel)
                 assert False, "expected HTTPException"
             except HTTPException as e:

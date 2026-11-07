@@ -368,20 +368,39 @@ async def _transition(db, sm: StateMachine, entity: dict, from_status: str, acti
     return to_status
 
 
+INELIGIBLE_COUNSEL_MESSAGE = "Your Proxy Counsel verification isn't active, so you can't accept requests."
+
+
+async def is_eligible_counsel(db, user_id: str) -> bool:
+    """Current-DB check that this counsel may be offered or take on new work:
+    the same gate as the public listing and matching (verified + not
+    deactivated, see counsel_matching.eligible_counsel_query). The
+    can_practice_proxy_counsel capability alone isn't enough — it comes from
+    professional_profile_types and survives a verification revocation."""
+    import counsel_matching  # lazy: counsel_matching imports this module lazily too
+    query = await counsel_matching.eligible_counsel_query(db, user_id=user_id)
+    return await db.proxy_counsel_profiles.find_one(query, {"_id": 1}) is not None
+
+
 async def list_hearing_requests(db, user: dict) -> List[dict]:
     capabilities = user.get("capabilities") or []
     clauses = [{"requesting_user_id": user["user_id"]}]
     if "can_practice_proxy_counsel" in capabilities:
-        clauses.append({
-            "status": "broadcast", "declined_by": {"$ne": user["user_id"]},
-            "$or": [{"target_advocate_id": None}, {"target_advocate_id": user["user_id"]}],
-        })
+        # Hearings already assigned to this counsel stay visible even if their
+        # verification lapses, so current work can be finished or handed over.
         clauses.append({"proxy_counsel_user_id": user["user_id"]})
-        # Negotiation Module: a hearing targeted at this advocate is invisible
-        # everywhere else above until it reaches "broadcast" (post-payment) —
-        # but negotiation happens BEFORE payment, so without this clause the
-        # advocate would have no way to even discover a pending negotiation.
-        clauses.append({"target_advocate_id": user["user_id"], "status": {"$in": ["requested", "payment_pending"]}})
+        # New work (the open pool and requests targeted at them) only while
+        # they're currently eligible.
+        if await is_eligible_counsel(db, user["user_id"]):
+            clauses.append({
+                "status": "broadcast", "declined_by": {"$ne": user["user_id"]},
+                "$or": [{"target_advocate_id": None}, {"target_advocate_id": user["user_id"]}],
+            })
+            # Negotiation Module: a hearing targeted at this advocate is invisible
+            # everywhere else above until it reaches "broadcast" (post-payment) —
+            # but negotiation happens BEFORE payment, so without this clause the
+            # advocate would have no way to even discover a pending negotiation.
+            clauses.append({"target_advocate_id": user["user_id"], "status": {"$in": ["requested", "payment_pending"]}})
     hearings = await db.hearing_requests.find({"$or": clauses}, {"_id": 0}).sort("created_at", -1).to_list(200)
     await _attach_negotiation_action_flags(db, hearings, user["user_id"])
     await _attach_decline_flags(db, hearings, user["user_id"])
@@ -440,7 +459,14 @@ async def get_hearing_request(db, hearing_id: str, user: dict) -> dict:
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
-    _check_visible(hearing, user)
+    # Eligibility only decides access to the open pool / targeted requests, so
+    # it's only looked up there — requester, assigned counsel and admin don't pay
+    # for the extra query and are never affected by it.
+    eligible = True
+    if (hearing["status"] in ("broadcast", "requested", "payment_pending") and user.get("role") != "admin"
+            and user["user_id"] not in (hearing["requesting_user_id"], hearing.get("proxy_counsel_user_id"))):
+        eligible = await is_eligible_counsel(db, user["user_id"])
+    _check_visible(hearing, user, eligible_counsel=eligible)
     await _attach_decline_flags(db, [hearing], user["user_id"])
     await _attach_listed_rates(db, [hearing], user["user_id"])
     return hearing
@@ -490,19 +516,22 @@ async def _attach_listed_rates(db, hearings: List[dict], user_id: str) -> None:
                 h["listed_rate"] = None
 
 
-def _check_visible(hearing: dict, user: dict) -> None:
+def _check_visible(hearing: dict, user: dict, eligible_counsel: bool = True) -> None:
+    """eligible_counsel: is_eligible_counsel(viewer), computed by the async
+    caller. It gates only the open pool and targeted-pending access — never
+    the requester, the assigned counsel or admin."""
     is_requester = hearing["requesting_user_id"] == user["user_id"]
     is_assigned = hearing.get("proxy_counsel_user_id") == user["user_id"]
     is_targeted_at_me = hearing.get("target_advocate_id") in (None, user["user_id"])
-    is_open_to_me = hearing["status"] == "broadcast" and "can_practice_proxy_counsel" in (user.get("capabilities") or []) \
-        and is_targeted_at_me
+    is_open_to_me = eligible_counsel and hearing["status"] == "broadcast" \
+        and "can_practice_proxy_counsel" in (user.get("capabilities") or []) and is_targeted_at_me
     # Negotiation Module: unlike the broadcast pool above, a hearing
     # specifically targeted at this advocate (not the None/broadcast-to-all
     # case) must be visible to them BEFORE payment too, while status is still
     # "requested"/"payment_pending" — that's the whole pre-payment negotiation
     # window. Deliberately narrower than is_open_to_me: only the exact
     # targeted advocate, never every can_practice_proxy_counsel account.
-    is_targeted_pending = hearing.get("target_advocate_id") == user["user_id"] \
+    is_targeted_pending = eligible_counsel and hearing.get("target_advocate_id") == user["user_id"] \
         and "can_practice_proxy_counsel" in (user.get("capabilities") or []) \
         and hearing["status"] in ("requested", "payment_pending")
     if not (is_requester or is_assigned or is_open_to_me or is_targeted_pending or user.get("role") == "admin"):
@@ -513,6 +542,9 @@ async def accept_hearing_request(db, hearing_id: str, user: dict) -> dict:
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
+    # Also covers counsel_matching.admin_assign_counsel, which accepts through here.
+    if not await is_eligible_counsel(db, user["user_id"]):
+        raise HTTPException(403, INELIGIBLE_COUNSEL_MESSAGE)
     # Conditional update on status=="broadcast" (+ target match) is what makes
     # this race-safe: two proxy counsel accepting at the same moment can't
     # both win — whichever commits first flips status away from "broadcast",
@@ -1077,6 +1109,8 @@ async def accept_at_listed_rate(db, hearing_id: str, user: dict) -> dict:
         raise HTTPException(404, "Hearing request not found")
     if hearing.get("target_advocate_id") != user["user_id"]:
         raise HTTPException(403, "Only the advocate this request was sent to can accept it")
+    if not await is_eligible_counsel(db, user["user_id"]):
+        raise HTTPException(403, INELIGIBLE_COUNSEL_MESSAGE)
     if hearing.get("commercially_locked"):
         raise HTTPException(400, "A fee has already been agreed for this request.")
     if hearing["status"] not in ("requested", "payment_pending"):

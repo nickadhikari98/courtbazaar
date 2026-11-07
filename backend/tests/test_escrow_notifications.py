@@ -75,6 +75,7 @@ def test_cancel_notifies_counsel_with_refund_note():
                     razorpay_order_id=f"order_{uuid.uuid4().hex[:10]}", razorpay_payment_id=f"pay_{uuid.uuid4().hex[:10]}",
                 )
                 await hearings.mark_payment_confirmed(db, hearing_id, requester)  # -> broadcast
+                await verify_counsel(db, counsel["user_id"])
                 await hearings.accept_hearing_request(db, hearing_id, counsel)  # -> documents_shared, escrow assigned
 
                 result = await server.cancel_hearing_request(hearing_id, requester)
@@ -142,6 +143,7 @@ def test_admin_cancel_attributes_to_support_and_notifies_requester():
                     razorpay_order_id=f"order_{uuid.uuid4().hex[:10]}", razorpay_payment_id=f"pay_sim_{uuid.uuid4().hex[:10]}",
                 )
                 await hearings.mark_payment_confirmed(db, hearing_id, requester)
+                await verify_counsel(db, counsel["user_id"])
                 await hearings.accept_hearing_request(db, hearing_id, counsel)
 
                 result = await server.cancel_hearing_request(hearing_id, admin)
@@ -324,6 +326,7 @@ def test_cancel_with_failed_refund_does_not_claim_refunded():
                     razorpay_order_id=f"order_{uuid.uuid4().hex[:10]}", razorpay_payment_id=f"pay_live_{uuid.uuid4().hex[:10]}",
                 )
                 await hearings.mark_payment_confirmed(db, hearing_id, requester)
+                await verify_counsel(db, counsel["user_id"])
                 await hearings.accept_hearing_request(db, hearing_id, counsel)
 
                 with _refund_gateway(RuntimeError("gateway down")):
