@@ -24,6 +24,7 @@ import hearings  # noqa: E402
 import escrow  # noqa: E402
 import negotiation  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
+from tests._verified_counsel import verify_counsel  # noqa: E402
 
 
 def _db():
@@ -299,6 +300,7 @@ def test_targeted_request_under_new_order():
             await db.proxy_counsel_profiles.insert_one(
                 {"user_id": target_counsel["user_id"], "negotiation_enabled": True}
             )
+            await verify_counsel(db, target_counsel["user_id"])
             hearing = await hearings.create_hearing_request(
                 db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
                 target_advocate_id=target_counsel["user_id"],
@@ -349,6 +351,7 @@ def test_targeted_advocate_can_reject_during_negotiation_before_payment():
         target_counsel = _user("target")
         hearing_id = None
         try:
+            await verify_counsel(db, target_counsel["user_id"])
             hearing = await hearings.create_hearing_request(
                 db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
                 target_advocate_id=target_counsel["user_id"],

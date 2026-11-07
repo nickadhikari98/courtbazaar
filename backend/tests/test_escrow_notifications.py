@@ -21,6 +21,7 @@ import hearings  # noqa: E402
 import negotiation  # noqa: E402
 import server  # noqa: E402
 from server import HearingDisputeResolve, HearingRatingCreate  # noqa: E402
+from tests._verified_counsel import verify_counsel  # noqa: E402
 
 
 def _db():
@@ -98,6 +99,7 @@ def test_cancel_before_payment_notifies_counsel_without_refund_note():
             try:
                 await _insert_user(db, requester)
                 await _insert_user(db, counsel)
+                await verify_counsel(db, counsel["user_id"])
                 hearing = await hearings.create_hearing_request(
                     db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
                     target_advocate_id=counsel["user_id"],
@@ -167,6 +169,7 @@ def test_rate_notifies_the_rated_party():
             try:
                 await _insert_user(db, requester)
                 await _insert_user(db, counsel)
+                await verify_counsel(db, counsel["user_id"])
                 hearing = await hearings.create_hearing_request(
                     db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
                     target_advocate_id=counsel["user_id"],
@@ -197,6 +200,7 @@ def test_resolve_dispute_resubmit_notifies_counsel():
             try:
                 await _insert_user(db, requester)
                 await _insert_user(db, counsel)
+                await verify_counsel(db, counsel["user_id"])
                 hearing = await hearings.create_hearing_request(
                     db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
                     target_advocate_id=counsel["user_id"],
@@ -227,6 +231,7 @@ def test_resolve_dispute_refund_notifies_both_parties_distinctly():
             try:
                 await _insert_user(db, requester)
                 await _insert_user(db, counsel)
+                await verify_counsel(db, counsel["user_id"])
                 hearing = await hearings.create_hearing_request(
                     db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
                     target_advocate_id=counsel["user_id"],
@@ -277,6 +282,7 @@ class _refund_gateway:
 
 
 async def _disputed_hearing_with_escrow(db, requester, counsel):
+    await verify_counsel(db, counsel["user_id"])
     hearing = await hearings.create_hearing_request(
         db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
         target_advocate_id=counsel["user_id"],

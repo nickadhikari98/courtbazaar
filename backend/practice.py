@@ -212,6 +212,29 @@ async def approve_kyc(db, user_id: str) -> dict:
     return await db.proxy_counsel_profiles.find_one({"user_id": user_id}, {"_id": 0})
 
 
+async def set_verification_source(db, user_id: str, source: Dict[str, Any]) -> None:
+    """Records why this counsel is verified: {"type": "lead", "lead_id": ...}
+    when an approved application verified them, {"type": "admin"} for the
+    admin approve-kyc/verify-bar-council actions. Lets a later rejection of
+    that application revoke only what the application itself granted.
+    Profiles verified before this field existed have no source."""
+    await db.proxy_counsel_profiles.update_one({"user_id": user_id}, {"$set": {"verification_source": source}})
+
+
+async def revoke_verification(db, user_id: str) -> bool:
+    """Withdraws public visibility and new-hearing matching (both gate on
+    counsel_matching.verified_counsel_query) without deleting anything: only
+    the two verification flags change, every other profile field (About,
+    pricing, availability, courts...) is kept so a re-approval restores the
+    counsel as they were. Returns whether a profile existed."""
+    result = await db.proxy_counsel_profiles.update_one(
+        {"user_id": user_id},
+        {"$set": {"kyc_status": "rejected", "bar_council_verified": False,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return result.matched_count > 0
+
+
 async def verify_bar_council(db, user_id: str) -> dict:
     """Admin action — same not-auto-create, 404-on-missing-profile semantics
     as approve_kyc."""

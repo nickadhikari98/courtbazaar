@@ -24,12 +24,19 @@ makes that impossible:
    disabled.
 """
 import ipaddress
+import asyncio.proactor_events
+import asyncio.selector_events
 import os
 import socket
 import uuid
 
-TEST_DB_NAME = f"courtbazaar_pytest_{uuid.uuid4().hex[:10]}"
+TEST_DB_PREFIX = "courtbazaar_pytest_"
+TEST_DB_NAME = f"{TEST_DB_PREFIX}{uuid.uuid4().hex[:10]}"
 os.environ["DB_NAME"] = TEST_DB_NAME
+# Always the local server: a MONGO_URL from .env or the shell (possibly a
+# remote/production cluster) is never used by the suite.
+TEST_MONGO_URL = "mongodb://127.0.0.1:27017"
+os.environ["MONGO_URL"] = TEST_MONGO_URL
 
 _MESSAGING_KEYS = (
     "BREVO_API_KEY", "RESEND_API_KEY", "SENDGRID_API_KEY", "EMAIL_FROM_ADDRESS", "ADMIN_ALERT_EMAILS",
@@ -41,7 +48,14 @@ _MESSAGING_KEYS = (
     # themselves (see test_razorpay_live_mode.py).
     "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET",
 )
-for _key in _MESSAGING_KEYS:
+# Other outside services: AI providers, file storage, captcha, the n8n
+# webhook and the live API base. Config such as AI_MAX_OUTPUT_TOKENS stays.
+_SERVICE_KEYS = (
+    "OPENAI_API_KEY", "OPENAI_VECTOR_STORE_ID", "GROQ_API_KEY", "EMERGENT_LLM_KEY",
+    "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET", "S3_ENDPOINT_URL",
+    "CAPTCHA_SECRET_KEY", "N8N_WEBHOOK_URL", "COURTBAZAAR_API_BASE",
+)
+for _key in _MESSAGING_KEYS + _SERVICE_KEYS:
     os.environ[_key] = ""  # set (not deleted), so load_dotenv can't fill it back in
 
 LIVE_BACKEND_TESTS = ["test_courtbazaar_api.py", "test_dpdp_token_fix.py"]
@@ -89,6 +103,24 @@ socket.socket.connect = _guarded_connect
 socket.socket.connect_ex = _guarded_connect_ex
 
 
+def _guard_loop_sock_connect(loop_cls):
+    """asyncio connects through loop.sock_connect. On Windows the Proactor loop
+    does that with overlapped ConnectEx, never calling socket.connect, so the
+    patch above alone would miss async clients (httpx/AsyncGroq, aiohttp)."""
+    real = loop_cls.sock_connect
+
+    async def sock_connect(self, sock, address):
+        if not _is_loopback(address):
+            BLOCKED_CONNECTIONS.append(address)
+            raise BlockedNetworkError(f"Backend tests may not open network connections outside this machine: {address!r}")
+        return await real(self, sock, address)
+    loop_cls.sock_connect = sock_connect
+
+
+_guard_loop_sock_connect(asyncio.proactor_events.BaseProactorEventLoop)
+_guard_loop_sock_connect(asyncio.selector_events.BaseSelectorEventLoop)
+
+
 def pytest_sessionstart(session):
     import notifications
     assert not notifications.is_email_enabled(), "email must be disabled in tests"
@@ -112,7 +144,7 @@ def _seed_reference_data():
     import server
 
     async def seed():
-        client = AsyncIOMotorClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+        client = AsyncIOMotorClient(TEST_MONGO_URL)
         try:
             with unittest.mock.patch.object(server, "client", client), \
                     unittest.mock.patch.object(server, "db", client[TEST_DB_NAME]):
@@ -129,7 +161,9 @@ def pytest_sessionfinish(session, exitstatus):
         # Anything that imported server must have picked up the throwaway DB.
         assert server.db.name == TEST_DB_NAME, f"server.db is {server.db.name!r}, expected {TEST_DB_NAME!r}"
     from pymongo import MongoClient
-    client = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+    # Only ever this session's own throwaway database, on the local server.
+    assert TEST_DB_NAME.startswith(TEST_DB_PREFIX) and len(TEST_DB_NAME) > len(TEST_DB_PREFIX), TEST_DB_NAME
+    client = MongoClient(TEST_MONGO_URL)
     try:
         client.drop_database(TEST_DB_NAME)
     finally:

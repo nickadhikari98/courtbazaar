@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import hearings  # noqa: E402
 import negotiation  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
+from tests._verified_counsel import verify_counsel  # noqa: E402
 
 
 def _db():
@@ -37,6 +38,7 @@ async def _make_hearing(db, requester, counsel):
     # the counsel needs a profile with the toggle on.
     await db.proxy_counsel_profiles.insert_one({"user_id": counsel["user_id"], "negotiation_enabled": True})
     try:
+        await verify_counsel(db, counsel["user_id"])
         hearing = await hearings.create_hearing_request(
             db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
             target_advocate_id=counsel["user_id"],

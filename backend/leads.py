@@ -711,16 +711,58 @@ async def _activate_professional(db, lead: dict) -> None:
 
     if account_role == "proxy_counsel":
         import practice as practice_svc
-        await practice_svc.get_or_create_profile(db, user_id)
-        profile_patch = _derive_practice_profile_patch(lead.get("form_data") or {})
-        if profile_patch.get("courts"):
-            profile_patch["courts"] = await _resolve_court_names_to_ids(db, profile_patch["courts"])
-        if profile_patch:
-            await practice_svc.update_profile(db, user_id, profile_patch)
+        existing_profile = await db.proxy_counsel_profiles.find_one({"user_id": user_id}, {"_id": 0})
+        before = existing_profile or await practice_svc.get_or_create_profile(db, user_id)
+        was_verified = before.get("kyc_status") == "approved" and before.get("bar_council_verified") is True
+        prior_source = before.get("verification_source") or {}
+        # The application form seeds the profile on first activation only. Any
+        # later approval (re-approval after reject/more-info, a repeated
+        # Approve, or an account that already had a profile) must not overwrite
+        # what the counsel has since edited in My Practice.
+        if existing_profile is None:
+            profile_patch = _derive_practice_profile_patch(lead.get("form_data") or {})
+            if profile_patch.get("courts"):
+                profile_patch["courts"] = await _resolve_court_names_to_ids(db, profile_patch["courts"])
+            if profile_patch:
+                await practice_svc.update_profile(db, user_id, profile_patch)
         await practice_svc.approve_kyc(db, user_id)
         await practice_svc.verify_bar_council(db, user_id)
+        # Claim the verification for this application only if the application
+        # granted it (or took over from an earlier application). A counsel an
+        # admin verified independently, or verified before sources were
+        # recorded, keeps that standing — rejecting this lead must not hide them.
+        if not was_verified or prior_source.get("type") == "lead":
+            await practice_svc.set_verification_source(db, user_id, {"type": "lead", "lead_id": lead["lead_id"]})
 
     await db.leads.update_one({"lead_id": lead["lead_id"]}, {"$set": {"converted_user_id": user_id}})
+
+
+LEAD_STATUSES_WITHDRAWING_APPROVAL = ("rejected", "more_info_requested")
+
+
+async def _withdraw_lead_verification(db, lead: dict) -> None:
+    """Counterpart to _activate_professional's verification step: rejecting
+    (or sending back for more info) a proxy counsel application that was
+    approved hides that counsel from the public listing, public profile and
+    new hearing matching (all gate on counsel_matching.verified_counsel_query).
+    Revokes only a verification this same application granted — see
+    practice.set_verification_source — never an admin's independent one, and
+    never deletes the profile or its data. The account and its role are left
+    alone; re-approving re-runs _activate_professional, which re-verifies."""
+    if lead.get("role_applied_for") != "proxy_counsel" or not lead.get("converted_user_id"):
+        return
+    user_id = lead["converted_user_id"]
+    profile = await db.proxy_counsel_profiles.find_one({"user_id": user_id}, {"_id": 0, "verification_source": 1})
+    if not profile:
+        return
+    source = profile.get("verification_source") or {}
+    if source.get("type") == "lead" and source.get("lead_id") == lead["lead_id"]:
+        import practice as practice_svc
+        await practice_svc.revoke_verification(db, user_id)
+    else:
+        # shortcut: profiles verified before verification_source existed can't be told apart from an admin's
+        # independent verification, so they are left visible; backfill their source if they should follow the lead.
+        logger.warning(f"lead.withdraw: verification NOT revoked lead_id={lead['lead_id']} user_id={user_id} source={source or 'unrecorded'}")
 
 
 async def admin_change_status(db, send_email_fn, lead_id: str, new_status: str,
@@ -747,6 +789,8 @@ async def admin_change_status(db, send_email_fn, lead_id: str, new_status: str,
             send_email_fn(entity["email"], tmpl["email_subject"], tmpl["email_html"])
         if to_status == "approved":
             await _activate_professional(db, entity)
+        elif to_status in LEAD_STATUSES_WITHDRAWING_APPROVAL:
+            await _withdraw_lead_verification(db, entity)
 
     sm = StateMachine(LEAD_ADMIN_TRANSITIONS, on_transition)
     try:

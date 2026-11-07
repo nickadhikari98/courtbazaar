@@ -209,8 +209,17 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
     # anything already in flight when this shipped.
     negotiation_enabled = True
     if target_advocate_id:
-        profile = await db.proxy_counsel_profiles.find_one({"user_id": target_advocate_id}, {"_id": 0, "negotiation_enabled": 1})
-        negotiation_enabled = bool(profile.get("negotiation_enabled")) if profile else False
+        import counsel_matching
+        # Same trust gate as the public listing and broadcast matching: a
+        # counsel who isn't (or is no longer) verified can't be sent a new
+        # request just because the caller knows their user_id.
+        profile = await db.proxy_counsel_profiles.find_one(
+            await counsel_matching.eligible_counsel_query(db, user_id=target_advocate_id),
+            {"_id": 0, "user_id": 1, "negotiation_enabled": 1},
+        )
+        if profile is None:  # not `not profile`: a match lacking negotiation_enabled projects to a falsy {}
+            raise HTTPException(400, "This counsel isn't available for new requests. Please choose another counsel.")
+        negotiation_enabled = bool(profile.get("negotiation_enabled"))
     now = datetime.now(timezone.utc)
     doc = {
         "hearing_id": new_hearing_id(),

@@ -2567,6 +2567,8 @@ async def admin_approve_practice_kyc(user_id: str, user=Depends(get_current_user
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
     profile = await practice_svc.approve_kyc(db, user_id)
+    # Independent of any application: a later lead rejection must not revoke it.
+    await practice_svc.set_verification_source(db, user_id, {"type": "admin"})
     try:
         from audit_log import log_audit
         await log_audit(db, "practice.approve_kyc", user, {"target_user_id": user_id})
@@ -2579,6 +2581,7 @@ async def admin_verify_practice_bar_council(user_id: str, user=Depends(get_curre
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
     profile = await practice_svc.verify_bar_council(db, user_id)
+    await practice_svc.set_verification_source(db, user_id, {"type": "admin"})
     try:
         from audit_log import log_audit
         await log_audit(db, "practice.verify_bar_council", user, {"target_user_id": user_id})
@@ -2688,7 +2691,7 @@ async def _advocate_profile_or_404(advocate_id: str) -> dict:
     verified_counsel_query() match, same trust gate as the browse list."""
     import counsel_matching
     profile = await db.proxy_counsel_profiles.find_one(
-        {"user_id": advocate_id, **counsel_matching.verified_counsel_query()}, {"_id": 0},
+        await counsel_matching.eligible_counsel_query(db, user_id=advocate_id), {"_id": 0},
     )
     if not profile:
         raise HTTPException(404, "Counsel profile not found")
