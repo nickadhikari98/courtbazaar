@@ -27,6 +27,7 @@ import ipaddress
 import asyncio.proactor_events
 import asyncio.selector_events
 import os
+import pytest
 import socket
 import uuid
 
@@ -177,3 +178,13 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         terminalreporter.write_line(f"not collected (live backend, set CB_LIVE_BACKEND_TESTS=1): {', '.join(collect_ignore)}")
     terminalreporter.write_line(f"blocked outbound connections: {len(BLOCKED_CONNECTIONS)}"
                                 + (f" -> {sorted({str(a[0]) for a in BLOCKED_CONNECTIONS})}" if BLOCKED_CONNECTIONS else ""))
+
+
+@pytest.fixture(autouse=True)
+def _pin_india_today(monkeypatch):
+    """Hearing tests use fixed dates ("2026-08-01", ...). Pin India's "today"
+    before them so create_hearing_request's past-date check doesn't fail them
+    as the real calendar moves on. Tests of that check set it themselves."""
+    from datetime import date
+    import hearings
+    monkeypatch.setattr(hearings, "india_today", lambda: date(2026, 1, 1))

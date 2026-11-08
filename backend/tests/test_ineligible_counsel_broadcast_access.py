@@ -76,11 +76,16 @@ class _Ctx:
         self.user_ids += [u["user_id"] for u in users]
         return users
 
+    def next_date(self):
+        """A new date per request: one requester can't hold two active
+        requests to the same counsel/court/date (hearings.dedupe_key)."""
+        return f"2026-08-{len(self.hearing_ids) + 1:02d}"
+
     async def paid(self, requester, target=None):
         """A paid request: status "broadcast" (targeted or not)."""
         db = self.db
         hearing = await hearings.create_hearing_request(
-            db, requester["user_id"], "court_tishazari", "2026-08-01", "H2 test case", 1500.0, None,
+            db, requester["user_id"], "court_tishazari", self.next_date(), "H2 test case", 1500.0, None,
             target_advocate_id=target["user_id"] if target else None,
         )
         hearing_id = hearing["hearing_id"]
@@ -99,7 +104,7 @@ class _Ctx:
 
     async def requested(self, requester, target):
         hearing = await hearings.create_hearing_request(
-            self.db, requester["user_id"], "court_tishazari", "2026-08-01", "H2 test case", 1500.0, None,
+            self.db, requester["user_id"], "court_tishazari", self.next_date(), "H2 test case", 1500.0, None,
             target_advocate_id=target["user_id"],
         )
         self.hearing_ids.append(hearing["hearing_id"])
@@ -108,7 +113,8 @@ class _Ctx:
     async def cleanup(self):
         db, ids = self.db, self.hearing_ids
         if ids:
-            for coll in ("hearing_requests", "escrow_transactions", "counsel_matching_log", "negotiations"):
+            for coll in ("hearing_requests", "escrow_transactions", "counsel_matching_log", "negotiations",
+                         "hearing_documents", "hearing_messages"):
                 key = "context_id" if coll == "escrow_transactions" else "hearing_id"
                 await db[coll].delete_many({key: {"$in": ids}})
             await db.audit_log.delete_many({"details.hearing_id": {"$in": ids}})
@@ -251,6 +257,47 @@ def test_assigned_counsel_keeps_access_after_revocation():
         assert await _listed(db, counsel, hearing_id)
         assert (await hearings.get_hearing_request(db, hearing_id, counsel))["proxy_counsel_user_id"] == counsel["user_id"]
         assert await server.get_hearing_documents(hearing_id, counsel) == []
+    _run(body)
+
+
+# 7b ------------------------------------------------------------------------
+# Every status an assigned hearing can move through after accept (accept itself
+# lands on documents_shared). Deactivated is left out: a deactivated account
+# can't authenticate at all (5b), which is intended.
+ASSIGNED_LATER_STATUSES = ("documents_shared", "preparation", "hearing_scheduled", "hearing_completed",
+                           "verification_pending", "disputed", "verified", "completed", "rated")
+
+
+@pytest.mark.parametrize("how", ["pending_kyc", "rejected_kyc", "bar_revoked"])
+def test_ineligible_counsel_keeps_assigned_hearing_documents_and_thread_through_later_statuses(how):
+    async def body(db, ctx):
+        requester, counsel = ctx.track(_client(), _counsel())
+        await verify_counsel(db, counsel["user_id"])
+        hearing_id = await ctx.paid(requester)
+        assert (await hearings.accept_hearing_request(db, hearing_id, counsel))["status"] == "documents_shared"
+        doc_id = f"doc_{uuid.uuid4().hex[:10]}"
+        await db.hearing_documents.insert_one({
+            "doc_id": doc_id, "hearing_id": hearing_id, "is_deleted": False, "kind": "case_document",
+            "storage_path": f"hearings/{hearing_id}/brief.pdf", "original_filename": "brief.pdf",
+        })
+        await hearings.add_message(db, hearing_id, requester, "Brief attached")
+        await _make_ineligible(db, counsel["user_id"], how)
+
+        with unittest.mock.patch.object(server, "presigned_download_url", lambda path, **kw: f"https://storage.test/{path}"):
+            for status in ASSIGNED_LATER_STATUSES:
+                # Status set directly: this checks read access per status; the
+                # transitions themselves are covered by the lifecycle tests.
+                await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$set": {"status": status}})
+                assert await _listed(db, counsel, hearing_id), status
+                assert (await hearings.get_hearing_request(db, hearing_id, counsel))["status"] == status
+                assert [d["doc_id"] for d in await server.get_hearing_documents(hearing_id, counsel)] == [doc_id]
+                assert (await server.get_hearing_document_url(hearing_id, doc_id, False, counsel))["filename"] == "brief.pdf"
+                assert [m["text"] for m in await server.list_hearing_messages(hearing_id, counsel)] == ["Brief attached"]
+        # Still no new work for them.
+        other_id = await ctx.paid(requester)
+        assert not await _listed(db, counsel, other_id)
+        assert await _expect(403, hearings.accept_hearing_request(db, other_id, counsel)) == MSG
+        assert (await practice.performance(db, counsel["user_id"]))["pending_requests"] == 0
     _run(body)
 
 

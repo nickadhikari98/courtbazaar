@@ -48,11 +48,12 @@ absent, the request behaves exactly as the broadcast case above always has.
 import inspect
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 
 from fastapi import HTTPException
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from workflow import StateMachine, IllegalTransition
 from file_meta import detect_page_count
@@ -154,6 +155,44 @@ TARGET_UNAVAILABLE_MESSAGE = (
 )
 
 
+# Hearing dates are Indian court dates: "today" is India's date, whatever the
+# server's or browser's timezone. Fixed offset (India has no DST), so no tzdata.
+INDIA_UTC_OFFSET = timedelta(hours=5, minutes=30)
+INVALID_HEARING_DATE_MESSAGE = "Please choose a valid hearing date (YYYY-MM-DD)."
+PAST_HEARING_DATE_MESSAGE = "Hearing date can't be in the past."
+DUPLICATE_HEARING_MESSAGE = ("You already have an active request with this counsel for this court and "
+                             "hearing date. Open it from your dashboard instead of sending a new one.")
+FALLBACK_SKIPPED_PAST_DATE_MESSAGE = "Hearing date has already passed, so no replacement requests were created."
+
+# dedupe_key (requester + target counsel + court + date) is set on create and
+# unset when the request reaches one of these, freeing the combination for a
+# new request. Every other status — including all post-accept work and
+# "disputed" — keeps it. "rated" only follows "completed", already released.
+DEDUPE_RELEASE_STATUSES = ("cancelled", "rejected", "expired", "completed")
+
+
+def dedupe_key_for(requesting_user_id: str, target_advocate_id: Optional[str], court_id: str,
+                   hearing_date: str) -> str:
+    """Duplicate identity: requester + target counsel ("" = broadcast) + court + date."""
+    return "|".join((requesting_user_id, target_advocate_id or "", court_id, hearing_date))
+
+
+def india_today() -> date:
+    return (_utcnow() + INDIA_UTC_OFFSET).date()
+
+
+def parse_hearing_date(value: Any) -> date:
+    """Strict YYYY-MM-DD. The round-trip check matters: on Python 3.11+
+    date.fromisoformat also accepts e.g. "20261108" or "2026-W45-1"."""
+    try:
+        parsed = date.fromisoformat(value)
+    except (TypeError, ValueError):
+        parsed = None
+    if parsed is None or parsed.isoformat() != value:
+        raise HTTPException(400, INVALID_HEARING_DATE_MESSAGE)
+    return parsed
+
+
 def is_escalated_unassigned(hearing: dict) -> bool:
     """A paid targeted request escalated to admin and still not taken by any
     counsel — the one case where the client may cancel after the 1-hour window."""
@@ -202,6 +241,14 @@ async def ensure_indexes(db) -> None:
         [("status", 1), ("proxy_counsel_user_id", 1), ("match_tier_deadline_at", 1)],
         name="match_tier_deadline",
     )
+    # Race-proof duplicate guard (see create_hearing_request). Partial on
+    # $type string, same idiom as leads.ensure_indexes: rows without the field
+    # (every request created before it existed, and released ones) aren't
+    # indexed, so building it needs no backfill and can't hit old duplicates.
+    await db.hearing_requests.create_index(
+        "dedupe_key", unique=True, partialFilterExpression={"dedupe_key": {"$type": "string"}},
+        name="uniq_active_dedupe_key",
+    )
     await db.hearing_messages.create_index([("hearing_id", 1), ("created_at", 1)], name="hearing_thread")
     await db.professional_ratings.create_index([("rated_user_id", 1)], name="rated_user")
 
@@ -215,6 +262,8 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
                                   fallback_group_id: Optional[str] = None) -> dict:
     if not court_id or not hearing_date:
         raise HTTPException(400, "Court and hearing date are required")
+    if parse_hearing_date(hearing_date) < india_today():
+        raise HTTPException(400, PAST_HEARING_DATE_MESSAGE)
     # Fee negotiation toggle (founder direction, 2026-09): a snapshot of the
     # target advocate's own proxy_counsel_profiles.negotiation_enabled at
     # creation time, not a live join — a counsel flipping the toggle later
@@ -253,6 +302,10 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
         "fallback_group_id": fallback_group_id,
         "court_id": court_id,
         "hearing_date": hearing_date,
+        # Enforced by the uniq_active_dedupe_key index; _transition unsets it
+        # on DEDUPE_RELEASE_STATUSES, counsel_matching.respond_to_reassignment
+        # moves it to the new counsel.
+        "dedupe_key": dedupe_key_for(requesting_user_id, target_advocate_id, court_id, hearing_date),
         # BlaBlaCar-style flow (founder direction): the intake form now only
         # collects location + hearing date to get matched and paid — the
         # actual case brief (title, type, instructions, work required, ...)
@@ -310,7 +363,13 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
     # stays at "requested" until the requester pays; see mark_payment_confirmed
     # for where broadcast (and the targeted-vs-broadcast timeline note that
     # used to live here) now happens.
-    await db.hearing_requests.insert_one(doc)
+    # Runs after the eligibility check above, so an ineligible counsel always
+    # gets that error rather than this one. The index (not a pre-read) is the
+    # guard: of two concurrent creates, exactly one insert succeeds.
+    try:
+        await db.hearing_requests.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(409, DUPLICATE_HEARING_MESSAGE)
     doc.pop("_id", None)
     return doc
 
@@ -370,9 +429,12 @@ async def _transition(db, sm: StateMachine, entity: dict, from_status: str, acti
         # the standard 409 below.
         query["payment_claim_order_id"] = None
     now = datetime.now(timezone.utc).isoformat()
-    updated = await db.hearing_requests.find_one_and_update(
-        query, {"$set": {"status": to_status, "updated_at": now}}, projection={"_id": 0},
-    )
+    update: Dict[str, Any] = {"$set": {"status": to_status, "updated_at": now}}
+    if to_status in DEDUPE_RELEASE_STATUSES:
+        # Every hearing status change goes through here, so this is the one
+        # place a closed request frees its duplicate slot.
+        update["$unset"] = {"dedupe_key": ""}
+    updated = await db.hearing_requests.find_one_and_update(query, update, projection={"_id": 0})
     if not updated:
         raise HTTPException(409, "This request's status changed — please refresh and try again.")
     if sm.on_transition:
@@ -701,8 +763,8 @@ async def reject_hearing_request(db, hearing_id: str, user: dict) -> dict:
     # so a fallback-fanout failure must never surface as this call failing.
     try:
         await _create_fallback_requests(db, hearing)
-    except Exception as e:
-        logger.error(f"fallback request creation failed for {hearing_id}: {e}")
+    except Exception:
+        logger.exception(f"fallback request creation failed for {hearing_id}")
     return {"ok": True, "status": "rejected"}
 
 
@@ -725,8 +787,6 @@ async def _create_fallback_requests(db, original_hearing: dict) -> None:
         return
     import counsel_matching
     from notifications import notify, record_notification_event, get_hearing_email_thread
-    exclude_ids = {original_hearing.get("target_advocate_id"), original_hearing.get("requesting_user_id")}
-    candidates = await counsel_matching.top_fallback_candidates(db, original_hearing, exclude_ids)
     requester = await db.users.find_one({"user_id": original_hearing["requesting_user_id"]})
 
     async def _notify(recipient: dict, hearing_id: str, title: str, body: str) -> None:
@@ -737,6 +797,22 @@ async def _create_fallback_requests(db, original_hearing: dict) -> None:
             )
         notify(recipient, "hearing_event", ctx)
         await record_notification_event(db, recipient["user_id"], "hearing_event", title, body, "hearing", hearing_id)
+
+    # A copy would fail create_hearing_request's past-date check anyway; say
+    # so once instead of five logged failures and silence for the requester.
+    # A malformed legacy date isn't "past": the copies then report it themselves.
+    try:
+        date_passed = parse_hearing_date(original_hearing.get("hearing_date")) < india_today()
+    except HTTPException:
+        date_passed = False
+    if date_passed:
+        if requester:
+            await _notify(requester, original_hearing["hearing_id"], "No replacement requests created",
+                           FALLBACK_SKIPPED_PAST_DATE_MESSAGE)
+        return
+
+    exclude_ids = {original_hearing.get("target_advocate_id"), original_hearing.get("requesting_user_id")}
+    candidates = await counsel_matching.top_fallback_candidates(db, original_hearing, exclude_ids)
 
     if not candidates:
         if requester:
@@ -761,8 +837,8 @@ async def _create_fallback_requests(db, original_hearing: dict) -> None:
             if recipient:
                 await _notify(recipient, fallback["hearing_id"], "New hearing request",
                                f"You've been requested for a hearing at {original_hearing['court_id']}. Open Negotiation to respond.")
-        except Exception as e:
-            logger.error(f"fallback request creation failed for candidate {candidate.get('user_id')}: {e}")
+        except Exception:
+            logger.exception(f"fallback request creation failed for candidate {candidate.get('user_id')}")
             continue
     if requester and created:
         await _notify(requester, original_hearing["hearing_id"], "Finding you alternative counsels",
