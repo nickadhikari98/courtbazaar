@@ -365,6 +365,77 @@ def test_reassignment_rejects_ineligible_counsel_and_invalid_states():
     _run(body)
 
 
+# --- D3 x duplicate guard: the dedupe_key follows the counsel ----------------
+async def _escalated_with_proposal(db, ctx, requester, target, replacement):
+    """Paid request whose (still eligible) target never accepted: timed out,
+    escalated, replacement proposed and awaiting the client's answer."""
+    await verify_counsel(db, replacement["user_id"])
+    hearing_id = await ctx.paid(requester, target, paid_ago=timedelta(hours=25))
+    assert (await _watchdog_ids(db))[hearing_id] == counsel_matching.TARGETED_TIMEOUT
+    await counsel_matching.propose_reassignment(db, hearing_id, replacement["user_id"], ADMIN)
+    return hearing_id
+
+
+async def _create(db, ctx, requester, counsel, hearing):
+    created = await hearings.create_hearing_request(
+        db, requester["user_id"], hearing["court_id"], hearing["hearing_date"], "Escalation test", None, None,
+        target_advocate_id=counsel["user_id"],
+    )
+    ctx.hearing_ids.append(created["hearing_id"])
+    return created
+
+
+def test_reassignment_moves_dedupe_key_from_old_to_new_counsel():
+    async def body(db, ctx):
+        requester, target, replacement = ctx.track(_client(), _counsel("target"), _counsel("replacement"))
+        hearing_id = await _escalated_with_proposal(db, ctx, requester, target, replacement)
+        before = await _hearing(db, hearing_id)
+        assert before["dedupe_key"] == hearings.dedupe_key_for(
+            requester["user_id"], target["user_id"], before["court_id"], before["hearing_date"])
+
+        assigned = await counsel_matching.respond_to_reassignment(db, hearing_id, requester, True)
+        assert assigned["proxy_counsel_user_id"] == replacement["user_id"]
+        h = await _hearing(db, hearing_id)
+        assert h["dedupe_key"] == hearings.dedupe_key_for(
+            requester["user_id"], replacement["user_id"], h["court_id"], h["hearing_date"])
+        # Old counsel's slot is free again; the new counsel's is held.
+        await _create(db, ctx, requester, target, h)
+        await _expect(409, _create(db, ctx, requester, replacement, h))
+    _run(body)
+
+
+def test_reassignment_clashing_with_clients_other_active_request_is_refused_unchanged():
+    async def body(db, ctx):
+        requester, target, replacement = ctx.track(_client(), _counsel("target"), _counsel("replacement"))
+        hearing_id = await _escalated_with_proposal(db, ctx, requester, target, replacement)
+        # The client already has their own active request to the replacement, same court and date.
+        other = await _create(db, ctx, requester, replacement, await _hearing(db, hearing_id))
+        before = await _hearing(db, hearing_id)
+
+        detail = await _expect(409, counsel_matching.respond_to_reassignment(db, hearing_id, requester, True))
+        assert detail == counsel_matching.REASSIGN_DUPLICATE
+        assert await _hearing(db, hearing_id) == before  # target, key, proposal, status: nothing changed
+        assert (await _escrow(db, hearing_id))["payee_user_id"] is None
+        assert not await db.audit_log.find_one({"action": "matching.reassigned", "details.hearing_id": hearing_id})
+
+        # Once that other request is closed, the same pending approval goes through.
+        await hearings.cancel_hearing_request(db, other["hearing_id"], requester)
+        assigned = await counsel_matching.respond_to_reassignment(db, hearing_id, requester, True)
+        assert assigned["proxy_counsel_user_id"] == replacement["user_id"]
+    _run(body)
+
+
+def test_reassignment_of_legacy_request_without_key_stays_keyless():
+    async def body(db, ctx):
+        requester, target, replacement = ctx.track(_client(), _counsel("target"), _counsel("replacement"))
+        hearing_id = await _escalated_with_proposal(db, ctx, requester, target, replacement)
+        await db.hearing_requests.update_one({"hearing_id": hearing_id}, {"$unset": {"dedupe_key": ""}})
+        assigned = await counsel_matching.respond_to_reassignment(db, hearing_id, requester, True)
+        assert assigned["proxy_counsel_user_id"] == replacement["user_id"]
+        assert "dedupe_key" not in await _hearing(db, hearing_id)
+    _run(body)
+
+
 # --- D5: notifications, exactly once -----------------------------------------
 def test_escalation_and_proposal_notifications_are_sent_once():
     async def body(db, ctx):

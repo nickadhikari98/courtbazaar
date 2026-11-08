@@ -13,6 +13,12 @@ export function resolveDateBound(bound) {
   return bound;
 }
 
+/* Today's date in India (YYYY-MM-DD), whatever the browser's timezone — the
+   backend rejects hearing dates before this (hearings.create_hearing_request). */
+export function indiaToday() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+
 /* Add/remove `value` from `arr` depending on whether it's already present —
    the toggle logic behind every "select multiple" checkbox group (was a
    byte-for-byte identical local closure in both LegalServiceRequestForm and

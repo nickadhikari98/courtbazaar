@@ -1196,6 +1196,8 @@ async def check_stalled_targeted_requests(db, now: Optional[datetime] = None) ->
 
 REASSIGN_NOT_OPEN = "Only an escalated, unassigned targeted request can be reassigned."
 REASSIGN_COUNSEL_INELIGIBLE = "This counsel isn't eligible for new requests."
+REASSIGN_DUPLICATE = ("You already have an active request with this counsel for this court and hearing date, "
+                      "so this replacement can't be approved. Decline it, or cancel that other request first.")
 
 
 async def propose_reassignment(db, hearing_id: str, counsel_user_id: str, admin_user: dict) -> dict:
@@ -1268,10 +1270,20 @@ async def respond_to_reassignment(db, hearing_id: str, user: dict, approve: bool
         await db.hearing_requests.update_one(pending, {"$set": {"reassignment_proposal": None, "updated_at": now}})
         raise HTTPException(409, "The proposed counsel is no longer available. Our team will propose someone "
                                  "else, or you can cancel this request for a full refund.")
-    result = await db.hearing_requests.update_one(pending, {"$set": {
+    retarget = {
         "target_advocate_id": counsel_id, "previous_target_advocate_id": hearing.get("target_advocate_id"),
         "reassigned_at": now, "reassignment_proposal": None, "updated_at": now,
-    }})
+    }
+    if hearing.get("dedupe_key"):  # legacy rows created before the key existed stay keyless
+        # Same write as the re-target: the old counsel's slot is freed and the
+        # new one reserved together. A clash with another active request of
+        # this client's fails the whole write, leaving the request as it was.
+        retarget["dedupe_key"] = hearings.dedupe_key_for(
+            hearing["requesting_user_id"], counsel_id, hearing["court_id"], hearing["hearing_date"])
+    try:
+        result = await db.hearing_requests.update_one(pending, {"$set": retarget})
+    except DuplicateKeyError:
+        raise HTTPException(409, REASSIGN_DUPLICATE)
     if not result.modified_count:
         raise HTTPException(409, changed)
     await log_audit(db, "matching.reassigned", user, {
