@@ -58,6 +58,9 @@ _SERVICE_KEYS = (
 )
 for _key in _MESSAGING_KEYS + _SERVICE_KEYS:
     os.environ[_key] = ""  # set (not deleted), so load_dotenv can't fill it back in
+# Paid OpenAI web search, on in a dev .env: tests that mock only
+# generate_response must never reach it. test_web_citations mocks it explicitly.
+os.environ["AI_WEB_SEARCH_ENABLED"] = "false"
 
 LIVE_BACKEND_TESTS = ["test_courtbazaar_api.py", "test_dpdp_token_fix.py"]
 collect_ignore = [] if os.environ.get("CB_LIVE_BACKEND_TESTS") == "1" else LIVE_BACKEND_TESTS
@@ -120,6 +123,17 @@ def _guard_loop_sock_connect(loop_cls):
 
 _guard_loop_sock_connect(asyncio.proactor_events.BaseProactorEventLoop)
 _guard_loop_sock_connect(asyncio.selector_events.BaseSelectorEventLoop)
+
+
+@pytest.fixture(autouse=True)
+def _no_score_routing(monkeypatch):
+    # A search before every general turn would hit the network from every chat
+    # test. test_answer_card.py covers llm_service.document_route directly.
+    import llm_service
+
+    async def no_match(query):
+        return None
+    monkeypatch.setattr(llm_service, "document_route", no_match)
 
 
 def pytest_sessionstart(session):

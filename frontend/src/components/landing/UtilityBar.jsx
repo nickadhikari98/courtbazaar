@@ -54,7 +54,7 @@ export default function UtilityBar({
             className="landing-utility-cta"
           >
             <Briefcase className="w-3.5 h-3.5" strokeWidth={2} />
-            <span>Join as Vendor / Delievery Partner / E-filling Agent</span>
+            <span>Join as Vendor / Delivery Partner / E-filing Agent</span>
           </button>
           <button
             type="button"

@@ -1,6 +1,7 @@
-import React from "react";
-import { Link } from "react-router-dom";
+import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { CheckCircle2, ArrowRight } from "lucide-react";
 import HeroBadge from "./HeroBadge";
 import TrackingWidget from "./TrackingWidget";
@@ -18,6 +19,14 @@ const trustPoints = [
 ];
 
 export default function HeroSection() {
+  const navigate = useNavigate();
+  const [chatPrompt, setChatPrompt] = useState("");
+  // Opens the full-page chat (pages/marketing/LegalHelp.jsx); whatever was
+  // typed here travels as router state and becomes the first message.
+  const openChat = () => {
+    const message = chatPrompt.trim();
+    navigate("/legal-help", message ? { state: { initialMessage: message } } : undefined);
+  };
   return (
     <section id="hero" className="relative overflow-hidden">
       {/* Subtle grain texture */}
@@ -56,15 +65,26 @@ export default function HeroSection() {
 
             {/* CTAs */}
             <div className="flex flex-wrap gap-3">
-              <Link to="/register">
-                <Button
-                  size="lg"
-                  className="bg-primary hover:bg-primary/90 font-bold h-12 px-6"
-                >
-                  Explore Services
-                </Button>
-              </Link>
               <TrackingWidget />
+            </div>
+            <div className="mt-4 w-full max-w-sm space-y-2">
+              <Input
+                value={chatPrompt}
+                onChange={(event) => setChatPrompt(event.target.value)}
+                onKeyDown={(event) => event.key === "Enter" && openChat()}
+                placeholder="Describe your situation, legal issue, or service need..."
+                aria-label="Describe your situation, legal issue, or service need"
+                className="h-10 w-full rounded-lg border-slate-200 bg-white px-3 text-sm shadow-none placeholder:text-slate-400 focus-visible:ring-accent/30"
+                data-testid="instant-legal-help-trigger-input"
+              />
+              <Button
+                type="button"
+                onClick={openChat}
+                className="h-10 w-full rounded-lg bg-accent px-4 text-sm font-semibold text-white shadow-none hover:bg-accent/90 sm:w-auto"
+                data-testid="instant-legal-help-launcher"
+              >
+                Chat with Instant Legal Help →
+              </Button>
             </div>
           </div>
 

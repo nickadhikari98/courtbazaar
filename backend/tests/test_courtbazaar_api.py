@@ -289,15 +289,14 @@ class TestOrders:
 
 # ---------- AI ----------
 class TestAI:
-    def test_ai_chat_stubbed(self, s, advocate_token):
-        # Not wired to a real LLM provider yet — expect a clear 503, not a 500.
-        sid = f"TEST_chat_{uuid.uuid4().hex[:6]}"
+    def test_ai_chat_unavailable_without_provider_configuration(self, s, advocate_token):
+        # Missing backend provider configuration degrades safely to a clear 503.
         r = s.post(f"{API}/ai/chat", headers=hdr(advocate_token),
-                   json={"session_id": sid, "message": "What documents are needed for filing a civil suit at Tis Hazari court?"},
+                   json={"message": "What are CourtBazaar's service workflows?"},
                    timeout=30)
         assert r.status_code == 503, r.text
 
-    def test_ai_history_empty_for_unknown_session(self, s, advocate_token):
+    def test_ai_history_empty_for_unknown_conversation(self, s, advocate_token):
         sid = f"TEST_chat_{uuid.uuid4().hex[:6]}"
         r = s.get(f"{API}/ai/history/{sid}", headers=hdr(advocate_token), timeout=15)
         assert r.status_code == 200
