@@ -2757,10 +2757,11 @@ async def get_advocate_profile(advocate_id: str, user=Depends(get_current_user))
 import hearings as hearings_svc
 import escrow as escrow_svc
 
-async def _notify_hearing_event(user_id: str, title: str, body: str, hearing_id: str) -> None:
+async def _notify_hearing_event(user_id: str, title: str, body: str, hearing_id: str, db=None) -> None:
     """Fire-and-forget in-app + SMS/WhatsApp/email notification for a hearing
     lifecycle event — same try/except-log, non-fatal pattern as every other
     notify() call site in this file."""
+    db = db if db is not None else globals()["db"]  # a caller that already holds a handle passes it
     try:
         from notifications import notify, record_notification_event, get_hearing_email_thread
         recipient = await db.users.find_one({"user_id": user_id})
@@ -2893,26 +2894,51 @@ async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)
             hearing_id,
         )
     if by_admin and hearing.get("requesting_user_id"):
-        refund_note = ""
-        if refund_status == "refunded":
-            refund_note = " Your payment has been refunded to your original payment method."
-        elif refund_status:
-            refund_note = " Your refund has been initiated and will reach your original payment method shortly."
         await _notify_hearing_event(
             hearing["requesting_user_id"], "Hearing cancelled",
-            f"Your hearing at {hearing['court_id']} was cancelled by CourtBazaar support." + refund_note,
-            hearing_id,
+            f"Your hearing at {hearing['court_id']} was cancelled by CourtBazaar support.", hearing_id,
         )
-    # D5: a client cancelling an escalated request (D4) hears how the refund
-    # went. Normal in-window cancels are unchanged.
-    if not by_admin and refund_status and hearings_svc.is_escalated_unassigned(hearing):
-        outcome = ("Your payment has been refunded to your original payment method." if refund_status == "refunded"
-                   else "Your refund has been initiated and will reach your original payment method shortly.")
-        await _notify_hearing_event(
-            hearing["requesting_user_id"], "Request cancelled",
-            f"Your hearing request at {hearing['court_id']} was cancelled. {outcome}", hearing_id,
-        )
+    # How the refund went (initiated, completed or delayed) reaches the client
+    # separately, for every paid cancel — see _notify_refund_status. This also
+    # covers D5 (a client cancelling an escalated request).
     return result
+
+# Where the client's refund stands, in the client's words. One notice per stage
+# and per escrow (claimed on the escrow row), so repeated retries, syncs and
+# duplicate webhooks never tell the client the same thing twice. "Completed"
+# is only ever sent for a stored status of refunded.
+REFUND_NOTICES = {
+    "refund_processing": ("Refund initiated",
+                          "Your refund of Rs.{amount:g} for the hearing at {court} has been initiated and is being "
+                          "processed. We will let you know when it is completed."),
+    "refunded": ("Refund completed",
+                 "Your refund of Rs.{amount:g} for the hearing at {court} has been completed and sent to your original "
+                 "payment method. It can take a few working days to show in your account."),
+    "refund_failed": ("Refund delayed",
+                      "Your refund of Rs.{amount:g} for the hearing at {court} could not be completed automatically. "
+                      "Our team is working on it and you do not need to do anything."),
+}
+
+
+async def _notify_refund_status(db, escrow: dict) -> None:
+    status = escrow.get("status")
+    if status not in REFUND_NOTICES or escrow.get("context_type") != "hearing" or not escrow.get("payer_user_id"):
+        return
+    claimed = await db.escrow_transactions.update_one(
+        {"escrow_id": escrow["escrow_id"], "refund_notified": {"$ne": status}},
+        {"$addToSet": {"refund_notified": status}},
+    )
+    if claimed.modified_count != 1:
+        return  # this stage was already announced
+    hearing = await db.hearing_requests.find_one({"hearing_id": escrow["context_id"]}, {"_id": 0}) or {}
+    court = ((hearing.get("request_details") or {}).get("common") or {}).get("court_name") or hearing.get("court_id") or "your court"
+    title, body = REFUND_NOTICES[status]
+    await _notify_hearing_event(escrow["payer_user_id"], title,
+                                body.format(amount=float(escrow.get("amount") or 0), court=court), escrow["context_id"], db=db)
+
+
+escrow_svc.refund_status_listener = _notify_refund_status
+
 
 async def _finalize_hearing_payment(hearing: dict, tx: dict, rzp_payment_id: str) -> bool:
     return await payment_svc.finalize_hearing_payment(
@@ -3302,16 +3328,15 @@ async def resolve_hearing_dispute(hearing_id: str, payload: HearingDisputeResolv
                                      + (f" Note: {payload.remark}" if payload.remark else ""),
                                      hearing_id)
     else:
-        # Only say "issued" once the refund actually completed (escrow.refund
-        # outcomes); a pending/failed refund is still owed and gets retried.
-        issued = result.get("refund_status") == "refunded"
-        await _notify_hearing_event(hearing["requesting_user_id"], "Refund issued" if issued else "Refund initiated",
-                                     f"Your dispute for the hearing at {hearing['court_id']} was resolved with a refund."
-                                     + ("" if issued else " The refund is being processed and may take a few working days.")
+        # The decision only. Where the refund itself stands (initiated,
+        # completed, delayed) is the separate notice from _notify_refund_status,
+        # which follows the gateway's actual answer.
+        await _notify_hearing_event(hearing["requesting_user_id"], "Dispute resolved — refund approved",
+                                     f"Your dispute for the hearing at {hearing['court_id']} was resolved in your favour and a refund was approved."
                                      + (f" Note: {payload.remark}" if payload.remark else ""),
                                      hearing_id)
         await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Dispute resolved — no payout",
-                                     f"The dispute for the hearing at {hearing['court_id']} was resolved in the requester's favor; the amount was refunded to them.",
+                                     f"The dispute for the hearing at {hearing['court_id']} was resolved in the requester's favor; the payment is being returned to them.",
                                      hearing_id)
     return result
 

@@ -31,6 +31,7 @@ escrow isn't a simulated payment, via the "held" -> "refund_pending" ->
 "refunded" claim sequence documented on refund() itself — the intermediate
 state is what makes a double-invocation (e.g. an admin double-click) safe.
 """
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -67,6 +68,20 @@ ESCROW_TRANSITIONS = {
 # processed, or an in-flight claim that never finished (process crash).
 REFUND_ATTENTION_STATUSES = ("refund_failed", "refund_processing", "refund_pending")
 STALE_REFUND_PENDING_MINUTES = 10
+
+
+# Set by server.py. Tells the payer where their refund stands; called only
+# after a refund status was actually stored (gateway answer, webhook or sync),
+# never because a refund was merely requested or retried.
+refund_status_listener = None
+
+
+async def _announce_refund_status(db, escrow: dict) -> None:
+    if refund_status_listener:
+        try:
+            await refund_status_listener(db, escrow)  # the caller's own db handle, never a second one
+        except Exception:  # a notification problem never undoes or blocks a refund
+            logging.getLogger(__name__).exception("refund status notice failed for %s", escrow.get("escrow_id"))
 
 
 def new_escrow_id() -> str:
@@ -415,6 +430,7 @@ async def _settle_refund_attempt(db, claimed: dict, *, reason: str, check_existi
     if outcome in ("refunded", "refund_processing"):
         await _reverse_payee_hold_once(db, claimed)
     claimed.update(fields)
+    await _announce_refund_status(db, claimed)
     if outcome == "refund_processing" and fields.get("gateway_refund_id"):
         replayed = await _replay_logged_refund_webhook(db, fields["gateway_refund_id"], claimed.get("razorpay_payment_id"))
         if replayed and replayed.get("refund_settled"):
@@ -575,6 +591,7 @@ async def settle_refund_from_gateway(db, *, refund_id: Optional[str], payment_id
     await _make_timeline_hook(db, escrow["escrow_id"])(before, before["status"], to_state, actor or {"user_id": "razorpay_webhook"})
     if to_state == "refunded":
         await _reverse_payee_hold_once(db, before)
+    await _announce_refund_status(db, {**before, **fields})
     return {**before, **fields, "refund_settled": True}
 
 
