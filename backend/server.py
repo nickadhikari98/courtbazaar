@@ -464,7 +464,7 @@ class HearingCaseDetailsUpdate(BaseModel):
     work_required_notes: Optional[str] = None
 
 class HearingDisputeResolve(BaseModel):
-    action: str  # "resubmit" | "refund"
+    action: Literal["resubmit", "refund"]
     remark: Optional[str] = None
 
 class HearingVerificationReject(BaseModel):
@@ -479,9 +479,15 @@ class HearingNoteCreate(BaseModel):
 class HearingMessageCreate(BaseModel):
     text: str
 
+# AWAITING BUSINESS APPROVAL: Rs. 1 crore is a developer-chosen safety ceiling
+# for one negotiation offer, not a founder-approved limit. Change this constant
+# once the business decides the real limit.
+NEGOTIATION_OFFER_MAX_INR = 10_000_000
+NEGOTIATION_NOTE_MAX_CHARS = 1000
+
 class NegotiationOfferCreate(BaseModel):
-    amount: float = Field(gt=0)
-    note: Optional[str] = None
+    amount: float = Field(gt=0, le=NEGOTIATION_OFFER_MAX_INR, allow_inf_nan=False)
+    note: Optional[str] = Field(default=None, max_length=NEGOTIATION_NOTE_MAX_CHARS)
 
 class HearingRatingCreate(BaseModel):
     rating: int
@@ -2974,7 +2980,9 @@ async def get_hearing_escrow(hearing_id: str, user=Depends(get_current_user)):
     the requester/advocate's own detail view and the admin verification
     queue (see escrow_svc.get_for_context)."""
     await hearings_svc.get_hearing_request(db, hearing_id, user)  # visibility check
-    return await escrow_svc.get_for_context(db, "hearing", hearing_id)
+    escrow = await escrow_svc.get_for_context(db, "hearing", hearing_id)
+    # Gateway ids, refund errors and retry history are admin-only.
+    return escrow if user.get("role") == "admin" else escrow_svc.party_view(escrow)
 
 @api_router.put("/hearing-requests/{hearing_id}/mark-conducted")
 async def mark_hearing_conducted(hearing_id: str, user=Depends(get_current_user)):
@@ -3071,7 +3079,11 @@ async def get_hearing_counsel_profile(hearing_id: str, user=Depends(get_current_
         c["court_id"]: c["name"]
         for c in (await db.courts.find({"court_id": {"$in": court_ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(court_ids)) if court_ids else [])
     }
-    return counsel_matching.build_advocate_card(profile, name_doc.get("name") if name_doc else None, court_names_by_id)
+    card = counsel_matching.build_advocate_card(profile, name_doc.get("name") if name_doc else None, court_names_by_id)
+    # This lookup also serves a counsel who has since lost verification, so the
+    # badge reports the present state instead of the card's default.
+    card["verified"] = await hearings_svc.is_eligible_counsel(db, advocate_id)
+    return card
 
 @api_router.get("/hearing-requests/{hearing_id}/documents")
 async def get_hearing_documents(hearing_id: str, user=Depends(get_current_user)):

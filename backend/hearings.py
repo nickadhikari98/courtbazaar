@@ -1156,15 +1156,18 @@ async def set_negotiated_fee(db, hearing_id: str, amount: float, activity_note: 
     return True
 
 
-async def unlock_commercially(db, hearing_id: str) -> None:
+async def unlock_commercially(db, hearing_id: str, locked_amount: float, previous_fee: Optional[float]) -> None:
     """Compensating rollback for the narrow window where set_negotiated_fee
     above already locked the hearing but negotiation.accept_offer's own
     optimistic-concurrency write then lost (a counter-offer raced in first,
     so no agreement actually landed) — without this the hearing would be
     stuck uncancellable with no agreed fee to show for it."""
+    # Undoes only this caller's own lock (still at the amount it wrote, payment
+    # not started) and puts the fee back, so the request never keeps the fee of
+    # an offer that was not actually accepted.
     await db.hearing_requests.update_one(
-        {"hearing_id": hearing_id},
-        {"$set": {"commercially_locked": False, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        {"hearing_id": hearing_id, "commercially_locked": True, "fee": locked_amount, "status": "requested"},
+        {"$set": {"commercially_locked": False, "fee": previous_fee, "updated_at": datetime.now(timezone.utc).isoformat()}},
     )
 
 
@@ -1437,6 +1440,9 @@ async def reject_order_sheet(db, hearing_id: str, user: dict, remark: Optional[s
     return {"ok": True, "status": "disputed"}
 
 
+DISPUTE_RESOLUTIONS = ("resubmit", "refund")
+
+
 async def resolve_dispute(db, hearing_id: str, user: dict, action: str, remark: Optional[str] = None) -> dict:
     """`action`: "resubmit" (back to verification_pending for another look)
     or "refund" (refund escrow, close the request as cancelled)."""
@@ -1444,6 +1450,8 @@ async def resolve_dispute(db, hearing_id: str, user: dict, action: str, remark: 
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
+    if action not in DISPUTE_RESOLUTIONS:  # never fall through to a refund on an unknown action
+        raise HTTPException(400, f"Unknown dispute resolution. Allowed: {', '.join(DISPUTE_RESOLUTIONS)}")
     sm_action = "resubmit" if action == "resubmit" else "refund_and_cancel"
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
