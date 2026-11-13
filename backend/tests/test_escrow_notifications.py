@@ -152,9 +152,9 @@ def test_admin_cancel_attributes_to_support_and_notifies_requester():
                 to_counsel = await db.notification_events.find_one({"user_id": counsel["user_id"]}, {"_id": 0})
                 assert "cancelled by CourtBazaar support" in to_counsel["body"]
                 assert "requester." not in to_counsel["body"]
-                to_requester = await db.notification_events.find_one({"user_id": requester["user_id"]}, {"_id": 0})
-                assert to_requester is not None and to_requester["title"] == "Hearing cancelled"
-                assert "has been refunded" in to_requester["body"]
+                to_requester = {e["title"]: e["body"] async for e in db.notification_events.find({"user_id": requester["user_id"]})}
+                assert "cancelled by CourtBazaar support" in to_requester["Hearing cancelled"]
+                assert "has been completed" in to_requester["Refund completed"]  # the refund's own notice
             finally:
                 await _cleanup(db, [requester["user_id"], counsel["user_id"], admin["user_id"]],
                                [hearing_id] if hearing_id else [])
@@ -252,9 +252,9 @@ def test_resolve_dispute_refund_notifies_both_parties_distinctly():
 
                 await server.resolve_hearing_dispute(hearing_id, HearingDisputeResolve(action="refund", remark=None), admin)
 
-                requester_event = await db.notification_events.find_one({"user_id": requester["user_id"]}, {"_id": 0})
+                requester_titles = sorted([e["title"] async for e in db.notification_events.find({"user_id": requester["user_id"]})])
                 counsel_event = await db.notification_events.find_one({"user_id": counsel["user_id"]}, {"_id": 0})
-                assert requester_event is not None and requester_event["title"] == "Refund issued"
+                assert requester_titles == ["Dispute resolved — refund approved", "Refund completed"]
                 assert counsel_event is not None and counsel_event["title"] == "Dispute resolved — no payout"
             finally:
                 await _cleanup(db, [requester["user_id"], counsel["user_id"]], [hearing_id] if hearing_id else [])
@@ -348,16 +348,17 @@ def test_cancel_with_failed_refund_does_not_claim_refunded():
 
 
 def test_resolve_dispute_refund_wording_follows_refund_outcome():
-    """Failed or still-processing refund -> "Refund initiated" (not
-    "issued"); only a completed refund says "Refund issued"."""
+    """The refund notice follows the gateway's answer: failed -> "Refund
+    delayed", accepted but pending -> "Refund initiated", and only a completed
+    refund says "Refund completed"."""
     async def body():
         db = _db()
         import unittest.mock
         with unittest.mock.patch.object(server, "db", db):
             outcomes = [
-                (RuntimeError("gateway down"), "refund_failed", "Refund initiated"),
+                (RuntimeError("gateway down"), "refund_failed", "Refund delayed"),
                 ({"razorpay_refund_id": "rfnd_p", "status": "pending", "simulated": False}, "refund_processing", "Refund initiated"),
-                ({"razorpay_refund_id": "rfnd_ok", "status": "processed", "simulated": False}, "refunded", "Refund issued"),
+                ({"razorpay_refund_id": "rfnd_ok", "status": "processed", "simulated": False}, "refunded", "Refund completed"),
             ]
             for gateway_result, expected_status, expected_title in outcomes:
                 requester, counsel, admin = _user("requester"), _user("counsel"), _user("admin")
@@ -371,10 +372,8 @@ def test_resolve_dispute_refund_wording_follows_refund_outcome():
                             hearing_id, HearingDisputeResolve(action="refund", remark=None), admin)
                     assert result["refund_status"] == expected_status
 
-                    ev = await db.notification_events.find_one({"user_id": requester["user_id"]}, {"_id": 0})
-                    assert ev["title"] == expected_title, (expected_status, ev["title"])
-                    if expected_status != "refunded":
-                        assert "being processed" in ev["body"]
+                    titles = sorted([e["title"] async for e in db.notification_events.find({"user_id": requester["user_id"]})])
+                    assert titles == sorted(["Dispute resolved — refund approved", expected_title]), (expected_status, titles)
                     counsel_ev = await db.notification_events.find_one({"user_id": counsel["user_id"]}, {"_id": 0})
                     assert counsel_ev["title"] == "Dispute resolved — no payout"
                 finally:
