@@ -986,6 +986,22 @@ async def vendor_onboard(payload: VendorOnboard, user=Depends(get_current_user))
     doc.pop("_id", None)
     return doc
 
+# These two lists need no login, so they return listing fields only — never the
+# KYC and payout details a vendor record also holds (phone, address, PAN, GST,
+# Aadhaar, bank account). Admin reads the full record via /admin/vendors.
+PUBLIC_VENDOR_FIELDS = ("vendor_id", "shop_name", "vendor_category", "court_ids", "service_ids",
+                        "rating", "bio", "hourly_rate", "sponsored")
+PUBLIC_VENDOR_PROJECTION = {"_id": 0, **{f: 1 for f in PUBLIC_VENDOR_FIELDS}}
+
+
+def _public_vendor(row: dict) -> dict:
+    """The projection picks the fields; this keeps only plain values in them
+    (text, number, flag, or a list of those), so an object stored under a
+    listed field can't carry anything else out."""
+    plain = (str, int, float, bool)
+    return {k: v for k, v in row.items()
+            if k in PUBLIC_VENDOR_FIELDS and (isinstance(v, plain) or (isinstance(v, list) and all(isinstance(i, plain) for i in v)))}
+
 @api_router.get("/vendors")
 async def list_vendors(court_id: Optional[str] = None, service_id: Optional[str] = None):
     query: Dict[str, Any] = {"kyc_status": "approved"}
@@ -993,8 +1009,8 @@ async def list_vendors(court_id: Optional[str] = None, service_id: Optional[str]
         query["court_ids"] = court_id
     if service_id:
         query["service_ids"] = service_id
-    vendors = await db.vendors.find(query, {"_id": 0}).sort("rating", -1).to_list(200)
-    return vendors
+    vendors = await db.vendors.find(query, PUBLIC_VENDOR_PROJECTION).sort("rating", -1).to_list(200)
+    return [_public_vendor(v) for v in vendors]
 
 @api_router.get("/vendors/me")
 async def my_vendor(user=Depends(get_current_user)):
@@ -3969,7 +3985,7 @@ async def list_stenographers(court_id: Optional[str] = None):
     q = {"vendor_category": "stenographer", "kyc_status": "approved"}
     if court_id:
         q["court_ids"] = court_id
-    return await db.vendors.find(q, {"_id": 0}).sort("rating", -1).to_list(100)
+    return [_public_vendor(v) for v in await db.vendors.find(q, PUBLIC_VENDOR_PROJECTION).sort("rating", -1).to_list(100)]
 
 
 @api_router.post("/stenographers/book")
