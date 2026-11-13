@@ -711,6 +711,17 @@ async def get_for_context(db, context_type: str, context_id: str) -> Optional[di
     )
 
 
+# What the two parties to a payment may read. Gateway ids, refund errors and
+# retry history are for admin only (GET /admin/escrow-transactions).
+PARTY_ESCROW_FIELDS = ("escrow_id", "context_type", "context_id", "status", "amount", "platform_commission_pct",
+                       "payee_amount", "payee_user_id", "created_at", "updated_at", "refund_requested_at",
+                       "refund_completed_at", "refunded_amount", "refund_partial")
+
+
+def party_view(escrow: Optional[dict]) -> Optional[dict]:
+    return {k: escrow[k] for k in PARTY_ESCROW_FIELDS if k in escrow} if escrow else escrow
+
+
 async def list_transactions(db, context_type: Optional[str] = None, status: Optional[str] = None) -> list:
     """Read-only listing behind GET /admin/escrow-transactions — the general
     reporting/finance/wallet read path referenced in the refinement ask; not

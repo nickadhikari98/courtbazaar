@@ -262,12 +262,12 @@ def test_accept_offer_rolls_back_lock_when_offer_goes_stale_after_locking(monkey
             real_set_negotiated_fee = hearings_module.set_negotiated_fee
 
             async def racing_set_negotiated_fee(db_, hid, amount):
-                result = await real_set_negotiated_fee(db_, hid, amount)
-                # Land a counter-offer right after the lock succeeds, before
-                # negotiation.accept_offer's own CAS runs — same effect as a
-                # second request racing in on the negotiations collection.
+                # Land a counter-offer after accept_offer has read the negotiation
+                # but before its own CAS runs — a second request racing in on the
+                # negotiations collection. (It goes in just before the lock: once
+                # the fee is locked, propose_offer itself refuses.)
                 await negotiation.propose_offer(db_, hid, requester, 3500.0, "Racing counter")
-                return result
+                return await real_set_negotiated_fee(db_, hid, amount)
 
             # negotiation.accept_offer does `import hearings` lazily inside the
             # function body — same module object as hearings_module (Python
@@ -284,6 +284,7 @@ def test_accept_offer_rolls_back_lock_when_offer_goes_stale_after_locking(monkey
 
             hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
             assert hearing["commercially_locked"] is False  # rolled back — still cancellable
+            assert hearing["fee"] == 1500.0  # and not left at the offer that was never accepted
 
             result = await hearings.cancel_hearing_request(db, hearing_id, requester)
             assert result["ok"] is True

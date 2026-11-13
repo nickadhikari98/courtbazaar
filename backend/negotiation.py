@@ -34,12 +34,6 @@ from typing import Optional
 from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
-# Hearing statuses a negotiation can no longer meaningfully happen against —
-# mirrors hearings.HEARING_STATUSES' terminal off-ramps for a pre-payment
-# hearing (see hearings.py's module docstring).
-_TERMINAL_HEARING_STATUSES = ("cancelled", "rejected", "expired")
-
-
 def new_negotiation_id() -> str:
     return f"neg_{uuid.uuid4().hex[:12]}"
 
@@ -71,6 +65,23 @@ async def _check_target_still_eligible(db, hearing: dict, user: dict) -> None:
         import hearings  # lazy, same convention as the rest of this module
         if not await hearings.is_eligible_counsel(db, user["user_id"]):
             raise HTTPException(403, hearings.INELIGIBLE_COUNSEL_MESSAGE)
+
+
+# Offers are made and accepted while the request is still unpaid and no fee
+# has been locked; afterwards the fee is final (see hearings.set_negotiated_fee).
+NEGOTIABLE_HEARING_STATUSES = ("requested", "payment_pending")
+PARTIES_ONLY_MESSAGE = "Only the requester and the counsel this request was sent to can make or accept offers"
+NOT_NEGOTIABLE_MESSAGE = "This request is no longer open for negotiation"
+FEE_ALREADY_AGREED_MESSAGE = "A fee has already been agreed for this request — no further offers are allowed"
+STALE_NEGOTIATION_MESSAGE = "This negotiation changed while you were responding — refresh and try again"
+
+
+def _check_negotiation_party(hearing: dict, user: dict) -> None:
+    """Making or accepting an offer commits one of the two parties to a fee,
+    so only they may do it. Admin can read a negotiation but is not a party."""
+    if not hearing.get("target_advocate_id") or user["user_id"] not in (
+            hearing.get("requesting_user_id"), hearing.get("target_advocate_id")):
+        raise HTTPException(403, PARTIES_ONLY_MESSAGE)
 
 
 def _role_of(hearing: dict, user_id: str) -> str:
@@ -162,10 +173,10 @@ async def _load_hearing_for_negotiation(db, hearing_id: str, user: dict) -> dict
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
-    _check_negotiation_participant(hearing, user)
+    _check_negotiation_party(hearing, user)
     await _check_target_still_eligible(db, hearing, user)
-    if hearing["status"] in _TERMINAL_HEARING_STATUSES:
-        raise HTTPException(400, "This request is no longer open for negotiation")
+    if hearing["status"] not in NEGOTIABLE_HEARING_STATUSES:
+        raise HTTPException(400, NOT_NEGOTIABLE_MESSAGE)
     return hearing
 
 
@@ -197,6 +208,13 @@ async def propose_offer(db, hearing_id: str, user: dict, amount: float, note: Op
     negotiation = await get_or_create_negotiation(db, hearing_id)
     if negotiation["status"] != "open":
         raise HTTPException(400, "This negotiation is already agreed — no further offers are allowed")
+    if hearing.get("commercially_locked"):  # agreed at the listed rate, outside this module
+        raise HTTPException(400, FEE_ALREADY_AGREED_MESSAGE)
+
+    current = next((o for o in negotiation["offers"] if o["offer_id"] == negotiation.get("current_offer_id")), None)
+    if (current and current["status"] == "active" and current["proposed_by_user_id"] == user["user_id"]
+            and current["amount"] == amount and (current.get("note") or None) == (note or None)):
+        return negotiation  # the same offer sent twice (double click, retry): nothing new to record
 
     is_counter = negotiation.get("current_offer_id") is not None
     now = datetime.now(timezone.utc).isoformat()
@@ -210,17 +228,20 @@ async def propose_offer(db, hearing_id: str, user: dict, amount: float, note: Op
         "created_at": now,
     }
 
-    # Supersede whatever was active before this one, atomically with the
-    # insert of the new offer, via the array positional operator — avoids a
-    # separate read-modify-write race between two near-simultaneous proposals.
-    await db.negotiations.update_one(
-        {"negotiation_id": negotiation["negotiation_id"], "offers.status": "active"},
-        {"$set": {"offers.$.status": "superseded"}},
+    # ONE conditional write: supersede the active offer and add this one, only
+    # if the negotiation is still open and still on the offer this caller saw.
+    # An agreement or another offer that landed meanwhile makes this lose (409)
+    # instead of adding an offer to an agreed negotiation or leaving two active.
+    superseded = {"$map": {"input": "$offers", "as": "o", "in": {"$cond": [
+        {"$eq": ["$$o.status", "active"]}, {"$mergeObjects": ["$$o", {"status": "superseded"}]}, "$$o"]}}}
+    written = await db.negotiations.update_one(
+        {"negotiation_id": negotiation["negotiation_id"], "status": "open",
+         "current_offer_id": negotiation.get("current_offer_id")},
+        [{"$set": {"offers": {"$concatArrays": [superseded, [{"$literal": offer}]]},  # $literal: a note is never read as a field path
+                   "current_offer_id": offer["offer_id"], "updated_at": now}}],
     )
-    await db.negotiations.update_one(
-        {"negotiation_id": negotiation["negotiation_id"]},
-        {"$push": {"offers": offer}, "$set": {"current_offer_id": offer["offer_id"], "updated_at": now}},
-    )
+    if written.modified_count != 1:
+        raise HTTPException(409, STALE_NEGOTIATION_MESSAGE)
     await _append_event(db, negotiation["negotiation_id"], "offer_proposed", {
         "offer_id": offer["offer_id"], "amount": amount, "note": note,
         "proposed_by_user_id": user["user_id"], "proposed_by_role": offer["proposed_by_role"],
@@ -280,7 +301,7 @@ async def accept_offer(db, hearing_id: str, offer_id: str, user: dict) -> dict:
         # The hearing is now locked but this specific accept lost (a counter
         # offer raced in first) — no agreement actually landed, so roll the
         # lock back rather than leaving the hearing stuck uncancellable.
-        await hearings.unlock_commercially(db, hearing_id)
+        await hearings.unlock_commercially(db, hearing_id, offer["amount"], hearing.get("fee"))
         raise HTTPException(409, "This offer is no longer the active one — refresh and try again")
 
     await _append_event(db, negotiation["negotiation_id"], "negotiation_agreed", {
