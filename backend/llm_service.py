@@ -165,6 +165,9 @@ _INSTITUTION_AS_SOURCE_RE = re.compile(
     rf"\b{_ATTRIBUTION}(?:rules?\s+of\s+(?:the\s+)?)?(?:{_INSTITUTION_ALIASES})", re.IGNORECASE)
 _ARBITRATION_PROCEDURE_RE = re.compile(
     r"\b(?:tribunals?|arbitrators?|claimants?|respondents?|deposits?|counter-?claims?)\b", re.IGNORECASE)
+_ACT_NAME_RE = re.compile(r"\barbitration (?:and conciliation )?act\b|\ba\s*&\s*c act\b", re.IGNORECASE)
+_OTHER_STATUTE_RE = re.compile(
+    r"\b(?:act|code|sanhita|adhiniyam|constitution|ipc|crpc|cpc|bns|bnss|bsa|gst)\b", re.IGNORECASE)
 _NAMED_STATUTE_RE = re.compile(r"\b(?:section\s+\d+|[A-Za-z]+ act\b|order\s+[ivxl\d]+)", re.IGNORECASE)
 
 
@@ -184,10 +187,13 @@ def explicit_document_sources(query: str) -> list[str]:
     """Approved documents the user names explicitly ("according to the SOP",
     "under the DIAC Rules"), in a fixed order. An explicit name always wins
     over topic inference — see ai_chat.route_message. Institutions come from
-    kb_registry; a bare "Section 11" is not an explicit Act reference here
-    (it is just as often another statute), only a retrieval hint."""
+    kb_registry. "Section 11" / "Sec. 11" / "S. 11" (or the Act's name) with
+    no institution and no other statute named means the Arbitration Act."""
     sources = [SOURCE_SOP] if _EXPLICIT_SOP_RE.search(query) else []
-    codes = kb_registry.detect_institutions(query) - {kb_registry.ACT}
+    detected = kb_registry.detect_institutions(query)
+    codes = detected - {kb_registry.ACT}
+    if kb_registry.ACT in detected and not codes and not _OTHER_STATUTE_RE.search(_ACT_NAME_RE.sub("", query)):
+        codes = {kb_registry.ACT}
     institutions = [f for c in sorted(codes) for f in kb_registry.files_for(c)]
     if sources and institutions:
         # "According to the SOP, how are matters referred to DIAC?" names the SOP as
@@ -350,9 +356,12 @@ async def _retrieve_context(query: str, selected_source: str | None = None) -> t
                else [{"type": "eq", "key": "source_id", "value": KB_SOURCE_METADATA[selected_source]["source_id"]}]
                if selected_source else [None])
     allowed_files = {f for c in codes for f in kb_registry.files_for(c)} if codes else None
-    searched = await asyncio.gather(*(
-        _filtered_search(client, query, flt, 8 if len(filters) == 1 else 4) for flt in filters))
-    items = [item for found, _ in searched for item in found]
+    # No institution named (Act + all institutions): 2 results each, the cap below keeps the best.
+    per_search = 8 if len(filters) == 1 else 2 if codes == kb_registry.all_codes() else 4
+    searched = await asyncio.gather(*(_filtered_search(client, query, flt, per_search) for flt in filters))
+    # Best score first, so the context cap keeps the strongest matches.
+    items = sorted((item for found, _ in searched for item in found),
+                   key=lambda i: -(getattr(i, "score", None) or 0))
     metadata_filter_fallback = any(fell_back for _, fell_back in searched)
     passages, sources, matches, documents = [], [], [], []
     approved_chunks: list[tuple[str, str | None, str]] = []  # (filename, file_id, normalized chunk text)
@@ -383,8 +392,19 @@ async def _retrieve_context(query: str, selected_source: str | None = None) -> t
                 chunk_text.append(value)
         if chunk_text:
             approved_chunks.append((filename, getattr(item, "file_id", None), _readable_excerpt("\n".join(chunk_text))))
+    # A provision the question names ("Section 11") whose file had no chunk:
+    # read it from that file's own text in the store.
+    chunk_files = {f for f, _, _ in approved_chunks}
+    named_only = {f for f in _named_files(query, allowed_files) if f not in chunk_files}
+    for filename in sorted(named_only):
+        file_id = await _store_file_id(client, filename)
+        if file_id:
+            approved_chunks.append((filename, file_id, None))
     if approved_chunks:
-        passages = await _provision_passages(client, approved_chunks, query, documents)
+        passages = await _provision_passages(client, approved_chunks, query, documents, named_only)
+        sources.extend(f for f in sorted(named_only) if f not in sources
+                       and any(p.startswith(f"[Source: {f} |") for p in passages))
+    passages = _cap_context(passages, _named_res(query))
     validation_passed = bool(passages and sources and (not selected_source or selected_source in sources))
     fallback_reason = None
     if not validation_passed:
@@ -409,9 +429,64 @@ async def _retrieve_context(query: str, selected_source: str | None = None) -> t
     # Sorting by "[Source: <file>" also groups the blocks by institution (one file each).
     passages = sorted(set(passages))
     # A provision the question names ("Section 11", "Article 9B") goes first.
-    named = [re.compile(rf"^\[Source: [^\]\n]*\| {w} {re.escape(n)}(?: \||\])") for w, n in rag_provisions.exact_refs(query)]
+    named = _named_res(query)
     passages.sort(key=lambda p: not any(rx.match(p) for rx in named))
     return "\n\n".join(passages), sources, len(passages), ranked_rules, "\n".join(documents)
+
+
+def _named_res(query: str) -> list:
+    """Block-label patterns for the provisions the question names."""
+    import rag_provisions
+    return [re.compile(rf"^\[Source: [^\]\n]*\| {w} {re.escape(n)}(?: \||\])")
+            for w, n in rag_provisions.exact_refs(query)]
+
+
+def _named_files(query: str, allowed_files: set | None) -> set:
+    """The one searched file each named provision can come from ("Section" ->
+    the Act; "Article" + ICC -> ICC). A label two searched files share
+    ("Article 5" with no institution named) names no file."""
+    import rag_provisions
+    out = set()
+    for word, _ in rag_provisions.exact_refs(query):
+        files = [f for f in (allowed_files or ()) if kb_registry.provision_label(f) == word]
+        if len(files) == 1:
+            out.add(files[0])
+    return out
+
+
+_store_file_ids: dict[str, str] = {}
+
+
+async def _store_file_id(client, filename: str) -> str | None:
+    """file_id of an approved file in the configured store, by its `title`
+    attribute (set to the filename at upload). Cached; None on any failure."""
+    if filename not in _store_file_ids:
+        try:
+            async for f in client.vector_stores.files.list(vector_store_id=OPENAI_VECTOR_STORE_ID):
+                title = (getattr(f, "attributes", None) or {}).get("title")
+                if title in APPROVED_KB_FILES:
+                    _store_file_ids[title] = f.id
+        except Exception as e:
+            logger.warning("Vector store file listing failed (%s): %s", type(e).__name__, _safe_error_detail(e))
+    return _store_file_ids.get(filename)
+
+
+def _cap_context(passages: list[str], named: list) -> list[str]:
+    """At most MAX_BLOCKS blocks / MAX_CONTEXT_CHARS for the merged context,
+    in the order given (best-scoring file first); named provisions always kept.
+    shortcut: ranks by file score, not per block; upgrade if one file's weak
+    blocks crowd out another file's strong ones."""
+    import rag_provisions
+    first = [p for p in passages if any(rx.match(p) for rx in named)]
+    kept, total = list(first), sum(map(len, first))
+    for p in passages:
+        if p in kept:
+            continue
+        if len(kept) >= rag_provisions.MAX_BLOCKS or total + len(p) > rag_provisions.MAX_CONTEXT_CHARS:
+            break
+        kept.append(p)
+        total += len(p)
+    return kept
 
 
 _ARBITRATION_QUESTION_RE = re.compile(r"\barbitra|\barbitral\b|\bseat of arbitration\b", re.IGNORECASE)
@@ -425,6 +500,8 @@ def _search_codes(query: str, selected_source: str | None) -> set:
     if selected_source == SOURCE_SOP:
         return set()
     codes = kb_registry.detect_institutions(query)
+    if _OTHER_STATUTE_RE.search(_ACT_NAME_RE.sub("", query or "")):
+        codes.discard(kb_registry.ACT)  # "Section 138 of the NI Act" is not the Arbitration Act
     if selected_source:
         codes.add(kb_registry.code_for_file(selected_source))
     if not codes and _ARBITRATION_QUESTION_RE.search(query or ""):
@@ -466,8 +543,8 @@ def _search_text(query: str, selected_source: str | None) -> str:
     return f"Searching {', '.join(kb_registry.search_name(f) for f in files) or 'the documents'}…"
 
 
-async def _provision_passages(client, approved_chunks: list[tuple[str, str | None, str]], query: str,
-                              documents: list[str]) -> list[str]:
+async def _provision_passages(client, approved_chunks: list[tuple[str, str | None, str | None]], query: str,
+                              documents: list[str], named_only: set = frozenset()) -> list[str]:
     """Context blocks for the retrieved chunks, rebuilt into complete,
     rule-labelled provisions from the same approved file where possible (see
     rag_provisions). Only files that already passed the approved-filename and
@@ -476,7 +553,9 @@ async def _provision_passages(client, approved_chunks: list[tuple[str, str | Non
     import rag_provisions
     by_file: dict[str, tuple[str | None, list[str]]] = {}
     for filename, file_id, chunk in approved_chunks:
-        by_file.setdefault(filename, (file_id, []))[1].append(chunk)
+        entry = by_file.setdefault(filename, (file_id, []))
+        if chunk is not None:  # None: a file read only for the provision the question names
+            entry[1].append(chunk)
     passages: list[str] = []
     for filename, (file_id, chunks) in by_file.items():
         doc = None
@@ -487,7 +566,10 @@ async def _provision_passages(client, approved_chunks: list[tuple[str, str | Non
             except Exception as e:
                 logger.warning("Provision expansion unavailable for %s (%s): %s; using retrieved chunks only",
                                filename, type(e).__name__, _safe_error_detail(e))
-        passages.extend(rag_provisions.expand_chunks(filename, chunks, doc, query))
+        blocks = rag_provisions.expand_chunks(filename, chunks, doc, query)
+        if filename in named_only:
+            blocks = [b for b in blocks if any(rx.match(b) for rx in _named_res(query))]
+        passages.extend(blocks)
         if doc:
             documents.append(doc)
     return passages
@@ -852,7 +934,8 @@ procedure document courtbazaar court bazaar
 
 # Rule/section references in an answer: "Rule 33.1", "Rules 33.1, 33.2 and 33.5", "(Rule 33)".
 _RULE_REF_RE = re.compile(
-    r"\b(?:Rules?|Sections?|Articles?|Clauses?)\s+(\d{1,3}(?:\.\d{1,3})?(?:\s*(?:,|and|&|or)\s*\d{1,3}(?:\.\d{1,3})?)*)"
+    r"\b(?:Rules?|Sections?|Articles?|Clauses?)\s+(\d{1,3}(?-i:[A-Z])?(?:\.\d{1,3})?"
+    r"(?:\s*(?:,|and|&|or)\s*\d{1,3}(?-i:[A-Z])?(?:\.\d{1,3})?)*)"
     r"|\((\d{1,3}\.\d{1,3})\)",
     re.IGNORECASE,
 )
@@ -871,7 +954,8 @@ _OTHER_INSTRUMENT_RE = re.compile(  # "Section 11 (6) / 29A(3) of the Act": suff
 # Where a number is a provision number in the source text: at the start of a
 # line ("33.5 If a party", "16. Default") or after the word Rule/Section.
 _SOURCE_PROVISION_RE = re.compile(
-    r"(?m)^\s*(\d{1,3}(?:\.\d{1,3})?)\.?\s+\S|\b(?:Rules?|Sections?|Articles?|Clauses?)\s+(\d{1,3}(?:\.\d{1,3})?)",
+    r"(?m)^\s*(\d{1,3}(?-i:[A-Z])?(?:\.\d{1,3})?)\.?\s+\S"
+    r"|\b(?:Rules?|Sections?|Articles?|Clauses?)\s+(\d{1,3}(?-i:[A-Z])?(?:\.\d{1,3})?)",
     re.IGNORECASE,
 )
 # A closing line that comments on the rules instead of stating them ("These
@@ -916,7 +1000,8 @@ def _excerpt_header(filename: str | None) -> str:
 
 
 def _rule_sort_key(ref: str):
-    return tuple(int(part) for part in ref.split("."))
+    """"11" < "11A" < "11.1" < "12"."""
+    return tuple((int(m.group(1)), m.group(2)) for m in (re.match(r"(\d+)(\D*)", p) for p in ref.split(".")))
 
 
 # "[Source: <file> | Rule 33.1 | <set title>]", written by rag_provisions.expand_chunks.
@@ -974,30 +1059,40 @@ def build_citations(answer: str, context: str, sources: List[str]) -> List[Dict[
         return []
     evidence_numbers = {a or b for a, b in _SOURCE_PROVISION_RE.findall(context or "")}
     context_lower = (context or "").lower()
-    cited: List[str] = []
+    act_is_source = any(f in sources for f in kb_registry.files_for(kb_registry.ACT))
+    cited: List[tuple] = []  # (ref, keyword the answer used)
     for match in _RULE_REF_RE.finditer(answer or ""):
         # "Section 34 of the Arbitration Act" points at another instrument,
-        # never at a provision of this document.
-        if _OTHER_INSTRUMENT_RE.match(answer, match.end()):
+        # never at a provision of this document, unless the Act is a source here.
+        other = _OTHER_INSTRUMENT_RE.match(answer, match.end())
+        if other and not (act_is_source and _ACT_NAME_RE.search(other.group(0))):
             continue
         keyword = (match.group(0).split()[0].rstrip("s").lower() if match.group(1) else "rule")
-        for ref in re.findall(r"\d{1,3}(?:\.\d{1,3})?", match.group(1) or match.group(2)):
-            if ref not in evidence_numbers or ref in cited:
+        for ref in re.findall(r"\d{1,3}[A-Z]?(?:\.\d{1,3})?", match.group(1) or match.group(2)):
+            if ref not in evidence_numbers or ref in [c for c, _ in cited]:
                 continue
             # A Section/Article/Clause number must be called that in the
             # source too; only "Rule" and bare "(33.5)" refs map onto the
             # document's own numbered provisions.
-            if keyword in ("section", "article", "clause") and f"{keyword} {ref}" not in context_lower:
+            if keyword in ("section", "article", "clause") and f"{keyword} {ref.lower()}" not in context_lower:
                 continue
-            cited.append(ref)
-    rules = sorted(cited, key=_rule_sort_key)
+            cited.append((ref, keyword))
+    # Each cited provision goes under the source whose labelled block holds it
+    # (same label word as the answer used, when one does); unlabelled -> first source.
+    labels = [(m.group(1).strip(), m.group(2), m.group(0).split(" | ")[1].split(" ")[0].lower())
+              for m in _CONTEXT_RULE_LABEL_RE.finditer(context or "")]
+    by_file: Dict[str, List[str]] = {}
+    for ref, keyword in cited:
+        hits = [(f, w) for f, n, w in labels if f in sources and (n == ref or n.startswith(ref + "."))]
+        files = [f for f, w in hits if w == keyword] or [f for f, _ in hits] or sources[:1]
+        for f in dict.fromkeys(files):
+            by_file.setdefault(f, []).append(ref)
     clauses = answer_guard.clause_labels(answer)
     citations = []
-    for index, filename in enumerate(sources):
+    for filename in sources:
         display = KB_SOURCE_DISPLAY.get(filename, {"label": filename, "url": None})
-        # One approved document is searched per turn (see generate_response),
-        # so the verified rule numbers belong to it.
-        groups = _group_rules_by_instrument(rules, context, filename) if index == 0 and rules else [(None, [])]
+        rules = sorted(by_file.get(filename, []), key=_rule_sort_key)
+        groups = _group_rules_by_instrument(rules, context, filename) if rules else [(None, [])]
         for instrument, group_rules in groups:
             citations.append({
                 "title": instrument or display["label"],

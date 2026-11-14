@@ -111,3 +111,53 @@ def test_icc_question_never_gets_siac_or_mediation_context(monkeypatch):
     assert sources == [ICC]
     assert "SIAC" not in context and "Mediation Rules govern" not in context
     assert context.startswith(f"[Source: {ICC} | Article 9B | ICC Arbitration Rules 2026]")
+
+
+def test_bare_section_routes_to_the_act_but_rule_and_other_statutes_do_not():
+    for q in ("What does Section 11 say?", "Grounds under Sec. 34?", "Timeline in S. 29A?"):
+        decision = ai_chat.route_message(q)
+        assert (decision["route"], decision["source"]) == (ai_chat.ROUTE_DOCUMENT_RAG, ACT), q
+    assert ai_chat.route_message("What does Section 138 of the NI Act say?")["source"] != ACT
+    assert llm_service.explicit_document_sources("What does Rule 14 say about deposits?") == []
+
+
+def test_citations_go_under_each_provisions_own_source_including_lettered_refs():
+    context = (
+        f"[Source: {ICC} | Article 9B | ICC Arbitration Rules 2026]\nArticle 9B Emergency Measures\nA party may apply.\n\n"
+        f"[Source: {SIAC} | Rule 12 | SIAC Arbitration Rules, 7th Edition]\n12. Emergency Arbitrator\nA party may apply.\n\n"
+        f"[Source: {ACT} | Section 11A | Arbitration and Conciliation Act, 1996]\n11A. Qualifications of arbitrator.")
+    answer = ("Under Article 9B a party may seek emergency measures; Rule 12 gives SIAC's emergency arbitrator; "
+              "Section 11A of the Arbitration Act sets arbitrator qualifications.")
+    cites = {c["document"]: c for c in llm_service.build_citations(answer, context, [ICC, SIAC, ACT])}
+    by_doc = {doc: (c["title"], c["rules"]) for doc, c in cites.items()}
+    assert by_doc[llm_service.KB_SOURCE_DISPLAY[ICC]["label"]] == ("ICC Arbitration Rules 2026", ["9B"])
+    assert by_doc[llm_service.KB_SOURCE_DISPLAY[SIAC]["label"]][1] == ["12"]
+    assert by_doc[llm_service.KB_SOURCE_DISPLAY[ACT]["label"]][1] == ["11A"]
+
+
+def test_named_section_is_read_from_the_act_when_search_returned_no_act_chunk(monkeypatch):
+    _install(monkeypatch, [], {"f-act": "<PARSED TEXT FOR PAGE: 5 / 46>\n" + ACT_DOC})
+
+    def list_files(vector_store_id):
+        async def gen():
+            yield SimpleNamespace(id="f-act", attributes={"title": ACT})
+        return gen()
+
+    monkeypatch.setattr(llm_service, "_store_file_ids", {})
+    monkeypatch.setattr(llm_service._get_retrieval_client().vector_stores.files, "list", list_files, raising=False)
+    context, sources, *_ = asyncio.run(llm_service._retrieve_context("What does Section 11A say?", ACT))
+    assert sources == [ACT]
+    assert context.startswith(f"[Source: {ACT} | Section 11A |") and "Section 12 |" not in context
+
+
+def test_unnamed_question_merged_context_is_capped_by_score(monkeypatch):
+    files = [f for f in llm_service.APPROVED_KB_FILES if f not in (ICC, llm_service.SOURCE_SOP)]
+    items = [SimpleNamespace(**{**vars(_item(files[i % len(files)], f"chunk{i} " + "tribunal powers " * 200)),
+                                "score": 0.3 + i / 100}) for i in range(20)]
+    searches = _install(monkeypatch, items)
+    context, *_ = asyncio.run(llm_service._retrieve_context("How is an arbitral tribunal constituted?", None))
+    assert {s["max_num_results"] for s in searches if "filters" in s} == {2}
+    blocks = context.split("\n\n[Source: ")
+    assert len(context) <= rag_provisions.MAX_CONTEXT_CHARS + 2 * len(blocks)
+    assert len(blocks) <= rag_provisions.MAX_BLOCKS
+    assert "chunk19 " in context and "chunk0 " not in context  # best score kept, worst dropped

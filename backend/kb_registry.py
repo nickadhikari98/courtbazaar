@@ -120,7 +120,7 @@ INSTITUTION_ALIASES = {
     "SIAC": r"\bsiac\b|singapore international arbitration cent(?:re|er)",
     "ICC": r"\bicc\b|international chamber of commerce",
     "LCIA": r"\blcia\b|london court of international arbitration",
-    ACT: r"\barbitration (?:and conciliation )?act\b|\ba\s*&\s*c act\b|\bsections?\s+\d{1,3}[a-z]?\b",
+    ACT: r"\barbitration (?:and conciliation )?act\b|\ba\s*&\s*c act\b|\b(?:sections?|sec\.?|s\.)\s*\d{1,3}[a-z]?\b",
 }
 _ALIAS_RES = {code: re.compile(rx, re.IGNORECASE) for code, rx in INSTITUTION_ALIASES.items()}
 
