@@ -23,6 +23,7 @@ from fastapi import HTTPException
 import answer_guard
 import court_bazaar_tools
 import llm_service
+import prompt_builder
 from rate_limiter import get_limiter
 
 logger = logging.getLogger(__name__)
@@ -128,7 +129,11 @@ COURTBAZAAR_INFO_UNAVAILABLE_MESSAGE = (
     "I don’t have verified information about that yet. Could you ask about a specific CourtBazaar service or "
     "feature?"
 )
-DOCUMENT_NOT_FOUND_MESSAGE = _FALLBACK_TEXT[llm_service.ERR_NO_CONTEXT]
+# Master Prompt section 2, shortened.
+DOCUMENT_NOT_FOUND_MESSAGE = (
+    "The CourtBazaar verified database doesn’t have enough authoritative material to answer this reliably. "
+    "Please verify it from the primary legal source, or share the relevant rule or document and I'll check it."
+)
 # Added by the server, never written by the model, under a document answer
 # that cites specific rule numbers: those are the document's statements, and
 # the document version on file may not be the one that applies.
@@ -151,8 +156,8 @@ DOCUMENT_PARTIAL_VERIFY_TAIL = (
 )
 # Nothing in the selected document answers the question.
 DOCUMENT_SOURCE_NOT_FOUND_MESSAGE = (
-    "I couldn’t find anything in the {title} that answers this. If you know the rule number, or have the "
-    "relevant rule or document, share it and I'll check it."
+    "The CourtBazaar verified database doesn’t have enough authoritative material in the {title} to answer this "
+    "reliably. If you know the rule number, or have the relevant rule or document, share it and I'll check it."
 )
 
 
@@ -1622,6 +1627,12 @@ MIXED_SOURCE_NOTE = (
     "the part the approved document covers. Do not state any live or current CourtBazaar data, and do not "
     "combine the document with any other source."
 )
+# Shown under a document answer to a request the chat can't fully serve yet.
+INTENT_COMING_SOON_NOTES = {
+    "draft": "Full drafting support is coming soon; for now this covers only what the rules say.",
+    "case_research": "Full case-law research is coming soon; for now this covers only what the rules say.",
+    "document_analysis": "Full document analysis is coming soon; for now this covers only what the rules say.",
+}
 MIXED_SOURCE_LIMITATION = (
     "I can't combine live CourtBazaar data with document information in one answer. "
     "Ask separately for current Proxy Counsel, court or service details."
@@ -1631,7 +1642,7 @@ MIXED_SOURCE_LIMITATION = (
 def _protected_texts() -> List[str]:
     """Hidden instructions the reply must never reproduce (see
     answer_guard.check_output)."""
-    return [SYSTEM_PROMPT, MIXED_SOURCE_NOTE, FORMAT_REQUEST_NOTE, WEB_SEARCH_LEGAL_NOTE, WEB_SEARCH_RETRY_NOTE,
+    return [SYSTEM_PROMPT, *prompt_builder.protected_texts(), MIXED_SOURCE_NOTE, FORMAT_REQUEST_NOTE, WEB_SEARCH_LEGAL_NOTE, WEB_SEARCH_RETRY_NOTE,
             llm_service.RAG_EVIDENCE_INSTRUCTIONS, llm_service.RAG_CARD_INSTRUCTIONS,
             _tool_result_system_message({"tool": None})["content"], *_ROUTE_NOTES.values()]
 
@@ -2005,7 +2016,8 @@ def _sanitize_markdown_reply(cleaned: str) -> str:
 async def handle_chat_message(db, conversation_id: Optional[str], message: str, user: Optional[dict],
                                client_ip: Optional[str] = None,
                                conversation_token: Optional[str] = None,
-                               on_status: Optional[llm_service.StatusCallback] = None) -> Dict[str, Any]:
+                               on_status: Optional[llm_service.StatusCallback] = None,
+                               mode: str = "layman") -> Dict[str, Any]:
     """Main entry point for POST /ai/chat. Raises HTTPException for genuine
     client errors (bad input, conversation ownership); everything else —
     including every LLM-side failure mode — degrades to a normal 200
@@ -2028,14 +2040,17 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
     user_id = user.get("user_id") if user else None
     convo = await _get_or_create_conversation(db, conversation_id, user_id, conversation_token)
     issued_token = convo.pop("conversation_token", None)
-    result = await _answer_turn(db, convo, text, user, client_ip, on_status)
+    if convo.get("mode") != mode:
+        await db.ai_conversations.update_one({"conversation_id": convo["conversation_id"]}, {"$set": {"mode": mode}})
+    result = await _answer_turn(db, convo, text, user, client_ip, on_status, mode)
     if issued_token:
         result["conversation_token"] = issued_token
     return result
 
 
 async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_ip: Optional[str],
-                       on_status: Optional[llm_service.StatusCallback] = None) -> Dict[str, Any]:
+                       on_status: Optional[llm_service.StatusCallback] = None,
+                       mode: str = "layman") -> Dict[str, Any]:
     """One chat turn inside a conversation whose ownership
     handle_chat_message has already checked."""
     conv_id = convo["conversation_id"]
@@ -2246,6 +2261,13 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
             await _append_message(db, conv_id, "assistant", reply)
             return {"conversation_id": conv_id, "reply": reply, "degraded": not citations, "sources": [],
                     "citations": citations, "grounding": None, "error_stage": None}
+    intent_note = None
+    if use_rag and decision["route"] == ROUTE_DOCUMENT_RAG and decision["source"] != llm_service.SOURCE_SOP:
+        # Arbitration-source answers use the server-only Master Prompt instead of the product prompt.
+        intent = prompt_builder.detect_intent(text)
+        llm_messages = prompt_builder.build_legal_system_messages(
+            prompt_builder.subject_for(decision["source"]), mode, intent) + llm_messages[1:]
+        intent_note = INTENT_COMING_SOON_NOTES.get(intent)
     result = await llm_service.generate_response(
         llm_messages, use_file_search=use_rag, selected_source=decision["source"] if use_rag else None,
         on_status=on_status,
@@ -2290,6 +2312,9 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         if mixed_live_request:
             reply = f"{reply}\n\n{MIXED_SOURCE_LIMITATION}"
             card_note = f"{card_note} {MIXED_SOURCE_LIMITATION}" if card_note else MIXED_SOURCE_LIMITATION
+        if intent_note:
+            reply = f"{reply}\n\n{intent_note}"
+            card_note = f"{card_note} {intent_note}" if card_note else intent_note
         if use_rag or format_requested:
             # After the guards: a removed section can leave "1, 3, 4" behind.
             reply = renumber_heading_sequences(reply)
@@ -2299,8 +2324,9 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         # The reply holds every card field, so its output check covers the
         # card; anything flagged shows only the checked reply.
         if result.get("answer") and grounding != "insufficient" and not flags:
-            answer = _display_card(result["answer"], card_note, citations, keep_note=mixed_live_request)
-        elif use_rag and card_note and not flags and not mixed_live_request and reply.endswith(card_note):
+            answer = _display_card(result["answer"], card_note, citations, keep_note=mixed_live_request or bool(intent_note))
+        elif (use_rag and card_note and not flags and not mixed_live_request and not intent_note
+              and reply.endswith(card_note)):
             # A plain document answer carries the same note as a card, under the text.
             note, note_detail = _short_note(card_note, citations, grounding == "supported")
             plain_note = {"body": reply[:-len(card_note)].rstrip(), "note": note, "note_detail": note_detail}
@@ -2342,7 +2368,8 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
 
 async def stream_chat_events(db, conversation_id: Optional[str], message: str, user: Optional[dict],
                              client_ip: Optional[str] = None,
-                             conversation_token: Optional[str] = None) -> AsyncIterator[str]:
+                             conversation_token: Optional[str] = None,
+                             mode: str = "layman") -> AsyncIterator[str]:
     """POST /ai/chat/stream: handle_chat_message as Server-Sent Events, one
     "status" per real step, then "answer" (its usual response) or "error"
     (with the HTTP status the page would otherwise get). Client gone = task
@@ -2353,7 +2380,7 @@ async def stream_chat_events(db, conversation_id: Optional[str], message: str, u
         try:
             await llm_service.emit_status(queue.put, "understanding", "Understanding your question…")
             data = await handle_chat_message(db, conversation_id, message, user, client_ip=client_ip,
-                                             conversation_token=conversation_token, on_status=queue.put)
+                                             conversation_token=conversation_token, on_status=queue.put, mode=mode)
             await queue.put({"type": "answer", "data": data})
         except HTTPException as e:
             await queue.put({"type": "error", "status": e.status_code, "text": str(e.detail)})
@@ -2396,6 +2423,8 @@ def _display_card(card: Dict[str, Any], note: Optional[str], citations: List[Dic
         return None
     note, detail = _short_note(note, citations, card["status"] == "answered" and not keep_note)
     return {**card, "summary": summary, "points": points, "follow_up": clean(card["follow_up"]),
+            "practical_implications": clean(card.get("practical_implications")),
+            "limitations": clean(card.get("limitations")),
             "note": note, "note_detail": detail}
 
 

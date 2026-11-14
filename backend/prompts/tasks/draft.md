@@ -1,0 +1,1 @@
+TASK: the user wants a document drafted. Drafting is not available yet: answer only what the retrieved provisions say about the subject of the draft (requirements, contents, time limits). Do not write the draft itself.

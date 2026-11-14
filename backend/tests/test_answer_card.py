@@ -34,7 +34,8 @@ def _card(**overrides):
     return json.dumps({
         "status": "answered", "direct": None,
         "summary": "If a party fails to make the deposits, the Centre may terminate the arbitration (Rule 33.5).",
-        "points": [GOOD_POINT], "follow_up": "Do you want to know who pays the deposits?", **overrides,
+        "points": [GOOD_POINT], "follow_up": "Do you want to know who pays the deposits?",
+        "practical_implications": None, "limitations": None, **overrides,
     })
 
 
@@ -120,6 +121,14 @@ def test_unsupported_point_is_dropped_without_marking_the_card_partial(ask):
 def test_badge_with_an_invented_number_is_removed(ask):
     result, _ = ask(_card(points=[{**GOOD_POINT, "badge": "Rule 99.9"}]))
     assert result["answer"]["points"][0]["badge"] is None
+
+
+def test_practical_implications_and_limitations_pass_the_evidence_checks(ask):
+    supported = "If a party fails to make the deposits, the Centre may terminate the arbitration (Rule 33.5)."
+    result, _ = ask(_card(practical_implications=supported, limitations="You will also owe 18% interest."))
+    assert result["answer"]["practical_implications"] == supported
+    assert result["answer"]["limitations"] is None
+    assert "## Practical implications" in result["reply"] and "18%" not in result["reply"]
 
 
 def test_statement_as_follow_up_is_removed(ask):

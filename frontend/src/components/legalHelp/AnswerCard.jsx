@@ -39,6 +39,8 @@ export function normalizeAnswer(raw) {
     summary,
     points,
     followUp: text(raw.follow_up),
+    practicalImplications: text(raw.practical_implications),
+    limitations: text(raw.limitations),
     note: text(raw.note),
     noteDetail: text(raw.note_detail),
   };
@@ -106,6 +108,12 @@ export default function AnswerCard({ answer, citeLinks, clean }) {
             );
           })}
         </ul>
+        {[["practicalImplications", "Practical implications"], ["limitations", "Limitations"]].map(([key, label]) => answer[key] && (
+          <div key={key} className="border-t border-border px-4 py-3 text-sm leading-6" data-testid={`instant-legal-help-answer-${key === "limitations" ? "limitations" : "implications"}`}>
+            <h4 className="font-semibold text-foreground">{label}</h4>
+            <p className="mt-0.5 text-muted-foreground [overflow-wrap:anywhere]">{clean(answer[key])}</p>
+          </div>
+        ))}
         {answer.followUp && (
           <p className="border-t border-border bg-accent/5 px-4 py-2.5 text-sm leading-6 text-foreground">{clean(answer.followUp)}</p>
         )}

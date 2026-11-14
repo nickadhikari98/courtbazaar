@@ -60,7 +60,8 @@ def test_internal_wording_never_appears_in_the_new_notes():
 
 def test_no_answer_reply_names_the_document_and_invites_the_rule():
     reply = ai_chat.document_not_found_message(llm_service.SOURCE_DIAC)
-    assert reply.startswith(f"I couldn’t find anything in the {DIAC_LABEL} that answers this.")
+    assert reply.startswith(f"The CourtBazaar verified database doesn’t have enough authoritative material in the "
+                            f"{DIAC_LABEL} to answer this reliably.")
     assert "rule number" in reply
 
 

@@ -103,7 +103,7 @@ test("launcher opens the dedicated chat page and sends the typed text exactly on
   expect(currentLocation.search).toBe(""); // never in the URL
   expect($("instant-legal-help-panel")).not.toBeNull();
   expect(api.post).toHaveBeenCalledTimes(1);
-  expect(api.post).toHaveBeenCalledWith("/ai/chat", { conversation_id: null, message: "I need help with a court service" }, CHAT_OPTS);
+  expect(api.post).toHaveBeenCalledWith("/ai/chat", { conversation_id: null, message: "I need help with a court service", mode: "layman" }, CHAT_OPTS);
   expect(container.textContent).toContain("How can I help?");
   // Cleared from history so a refresh doesn't resend it.
   expect(currentLocation.state).toBeNull();
@@ -126,7 +126,7 @@ test("Enter in the launcher input opens the chat page too", async () => {
   await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
   await flush();
   expect(currentLocation.pathname).toBe("/legal-help");
-  expect(api.post).toHaveBeenCalledWith("/ai/chat", { conversation_id: null, message: "What is bail?" }, CHAT_OPTS);
+  expect(api.post).toHaveBeenCalledWith("/ai/chat", { conversation_id: null, message: "What is bail?", mode: "layman" }, CHAT_OPTS);
 });
 
 // ---------------------------------------------------------------------------
@@ -140,7 +140,7 @@ test("chat sends a message and displays only the reply without a source footer",
   } });
   renderChat();
   await sendMessage("How does ordering work?");
-  expect(api.post).toHaveBeenCalledWith("/ai/chat", { conversation_id: null, message: "How does ordering work?" }, CHAT_OPTS);
+  expect(api.post).toHaveBeenCalledWith("/ai/chat", { conversation_id: null, message: "How does ordering work?", mode: "layman" }, CHAT_OPTS);
   expect(container.textContent).not.toContain("courtbazaar-product-guide.md");
   expect(container.textContent).not.toContain("Sources:");
   expect($("instant-legal-help-msg-user-0").textContent).toBe("How does ordering work?");
@@ -623,7 +623,7 @@ test("an API error clears the indicator and Try again resends the same question"
   expect(container.textContent).toContain("having trouble responding");
   await act(async () => $("instant-legal-help-retry").click());
   await flush();
-  expect(api.post).toHaveBeenLastCalledWith("/ai/chat", { conversation_id: null, message: "What is bail?" }, CHAT_OPTS);
+  expect(api.post).toHaveBeenLastCalledWith("/ai/chat", { conversation_id: null, message: "What is bail?", mode: "layman" }, CHAT_OPTS);
   // The failed exchange is replaced, not duplicated.
   expect(container.querySelectorAll('[data-testid^="instant-legal-help-msg-user-"]')).toHaveLength(1);
   expect(container.textContent).not.toContain("having trouble responding");
@@ -739,7 +739,7 @@ test("Enter sends, Shift+Enter does not", async () => {
   expect(api.post).not.toHaveBeenCalled();
   await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
   await flush();
-  expect(api.post).toHaveBeenCalledWith("/ai/chat", { conversation_id: null, message: "line one" }, CHAT_OPTS);
+  expect(api.post).toHaveBeenCalledWith("/ai/chat", { conversation_id: null, message: "line one", mode: "layman" }, CHAT_OPTS);
 });
 
 test("the conversation token issued with the first reply is sent back to continue the chat", async () => {
@@ -750,8 +750,30 @@ test("the conversation token issued with the first reply is sent back to continu
   await sendMessage("What is bail?");
   await sendMessage("And anticipatory bail?");
   expect(api.post).toHaveBeenLastCalledWith("/ai/chat", {
-    conversation_id: "conv_anon", conversation_token: "secret-token", message: "And anticipatory bail?",
+    conversation_id: "conv_anon", conversation_token: "secret-token", message: "And anticipatory bail?", mode: "layman",
   }, CHAT_OPTS);
+});
+
+test("the Layman | Lawyer toggle defaults to Layman, sends the mode and is remembered", async () => {
+  localStorage.clear();
+  api.post.mockResolvedValue({ data: { conversation_id: "c", reply: "Ok." } });
+  renderChat();
+  expect($("instant-legal-help-mode-layman").getAttribute("aria-pressed")).toBe("true");
+  await act(async () => $("instant-legal-help-mode-lawyer").click());
+  expect($("instant-legal-help-mode-lawyer").getAttribute("aria-pressed")).toBe("true");
+  expect(localStorage.getItem("instantLegalHelpMode")).toBe("lawyer");
+  await sendMessage("What is Section 34?");
+  expect(api.post).toHaveBeenLastCalledWith("/ai/chat", { conversation_id: null, message: "What is Section 34?", mode: "lawyer" }, CHAT_OPTS);
+  localStorage.clear();
+});
+
+test("a card shows practical implications and limitations only when present", async () => {
+  const answer = { ...CARD, practical_implications: "Pay on time or the case may end.", limitations: null };
+  api.post.mockResolvedValue({ data: { conversation_id: "c", reply: "x", citations: CARD_CITATIONS, grounding: "supported", answer } });
+  renderChat();
+  await sendMessage("Who pays?");
+  expect($("instant-legal-help-answer-implications").textContent).toContain("Pay on time or the case may end.");
+  expect($("instant-legal-help-answer-limitations")).toBeNull();
 });
 
 test("a conversation the backend won't continue (404) is dropped and the next message starts fresh", async () => {
@@ -764,7 +786,7 @@ test("a conversation the backend won't continue (404) is dropped and the next me
   await sendMessage("Continue");
   expect(container.textContent).toContain("This chat session is no longer available.");
   await sendMessage("Try again");
-  expect(api.post).toHaveBeenLastCalledWith("/ai/chat", { conversation_id: null, message: "Try again" }, CHAT_OPTS);
+  expect(api.post).toHaveBeenLastCalledWith("/ai/chat", { conversation_id: null, message: "Try again", mode: "layman" }, CHAT_OPTS);
 });
 
 test("service unavailable (503) shows the unavailable message", async () => {
@@ -785,5 +807,5 @@ test("New chat clears the conversation and starts a fresh one", async () => {
   expect(container.textContent).not.toContain("First.");
   expect($("instant-legal-help-empty")).not.toBeNull();
   await sendMessage("Again");
-  expect(api.post).toHaveBeenLastCalledWith("/ai/chat", { conversation_id: null, message: "Again" }, CHAT_OPTS);
+  expect(api.post).toHaveBeenLastCalledWith("/ai/chat", { conversation_id: null, message: "Again", mode: "layman" }, CHAT_OPTS);
 });
