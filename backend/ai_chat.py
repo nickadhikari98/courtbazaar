@@ -868,7 +868,10 @@ def route_message(text: str, convo: Optional[dict] = None) -> Dict[str, Any]:
 
     explicit_sources = llm_service.explicit_document_sources(value)
     if len(explicit_sources) > 1:
-        return _decision(ROUTE_CLARIFY, "multiple_documents_named")
+        if llm_service.SOURCE_SOP in explicit_sources:
+            return _decision(ROUTE_CLARIFY, "multiple_documents_named")
+        # Several institutions ("ICC vs SIAC"): llm_service searches each one separately.
+        return _decision(ROUTE_DOCUMENT_RAG, "explicit_documents")
     if explicit_sources:
         return _decision(ROUTE_DOCUMENT_RAG, "explicit_document", source=explicit_sources[0])
 
