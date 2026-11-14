@@ -110,7 +110,19 @@ const HELP_TOPICS = [
   { icon: Users, title: "Get court support", text: "When a proxy counsel or advocate can help, and how to hire one." },
 ];
 
+const MODE_KEY = "instantLegalHelpMode";
+const MODES = [{ value: "layman", label: "Layman" }, { value: "lawyer", label: "Lawyer" }];
+
+function savedMode() {
+  try {
+    return localStorage.getItem(MODE_KEY) === "lawyer" ? "lawyer" : "layman";
+  } catch {
+    return "layman"; // storage blocked: default
+  }
+}
+
 export default function InstantLegalHelpChat({ initialMessage }) {
+  const [mode, setMode] = useState(savedMode);
   const [conversationId, setConversationId] = useState(null);
   // Secret the backend issues with an anonymous conversation's first reply;
   // it must be sent back to continue that conversation (the id alone isn't
@@ -121,6 +133,10 @@ export default function InstantLegalHelpChat({ initialMessage }) {
   const [loading, setLoading] = useState(false);
   const [steps, setSteps] = useState([]);
   const scrollRef = useRef(null);
+  const chooseMode = (value) => {
+    setMode(value);
+    try { localStorage.setItem(MODE_KEY, value); } catch { /* not remembered; still applies now */ }
+  };
   const inputRef = useRef(null);
   const initialSentRef = useRef(false);
   // Bumped on every "New chat" so an in-flight request from the conversation
@@ -179,6 +195,7 @@ export default function InstantLegalHelpChat({ initialMessage }) {
       const data = await streamChat({
         conversation_id: conversationId,
         message: content,
+        mode,
         ...(conversationToken ? { conversation_token: conversationToken } : {}),
       }, {
         idleMs: CHAT_TIMEOUT_MS,
@@ -264,6 +281,23 @@ export default function InstantLegalHelpChat({ initialMessage }) {
               <p className="text-xs text-muted-foreground truncate">Public legal guidance from CourtBazaar</p>
             </div>
           </div>
+          <div className="flex items-center gap-2 shrink-0">
+          <div
+            role="group" aria-label="Answer style"
+            className="inline-flex rounded-lg border border-border bg-muted p-0.5"
+            data-testid="instant-legal-help-mode"
+          >
+            {MODES.map((m) => (
+              <button
+                key={m.value} type="button" aria-pressed={mode === m.value} onClick={() => chooseMode(m.value)}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  mode === m.value ? "bg-white text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                data-testid={`instant-legal-help-mode-${m.value}`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
           <Button
             type="button" variant="outline" size="sm" onClick={handleNewChat}
             disabled={msgs.length === 0 && !loading}
@@ -274,6 +308,7 @@ export default function InstantLegalHelpChat({ initialMessage }) {
             <SquarePen className="w-4 h-4 sm:mr-1.5" />
             <span className="hidden sm:inline">New chat</span>
           </Button>
+          </div>
         </div>
       </div>
 

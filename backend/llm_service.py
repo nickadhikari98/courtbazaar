@@ -890,6 +890,10 @@ RAG_CARD_INSTRUCTIONS = (
     "sets of rules number clauses \"(i)\": that is Rule 4(i), and writing Rule 4.1 for it cites a rule that doesn't "
     "exist. Sub-rules with their own number stay as they are (Rule 33.1, Rule 31.1(b)).\n"
     "- cite: the number of each source below that supports the point. A point you can't cite must be left out.\n"
+    "- practical_implications: one or two sentences on what the provisions mean in practice for the parties, "
+    "stated only from the excerpts. Null if the excerpts don't support any.\n"
+    "- limitations: one sentence on what the excerpts don't cover or where the reader should verify further. "
+    "Null if there is nothing to add.\n"
     "- follow_up: one short question a reader would ask next, about a specific labelled rule in the excerpts that "
     "your answer didn't use, naming its number and what it deals with, for example \"What happens under Rule 33.5 "
     "if the deposit isn't paid within thirty days?\". Never \"Would you like to know more ...\". Null if there is none."
@@ -1126,6 +1130,9 @@ class AnswerCard(BaseModel):
     direct: Optional[Literal["yes", "no"]]
     summary: str
     points: List[AnswerPoint]
+    # Master Prompt A-I: A summary, B/E/F points, G and H below, I sources (build_citations).
+    practical_implications: Optional[str]
+    limitations: Optional[str]
     follow_up: Optional[str]
 
 

@@ -622,8 +622,11 @@ def validate_answer_card(card: dict, evidence: str, provisions: dict) -> Optiona
     follow_up = _specific_follow_up(one_line(card["follow_up"]), points, raw_summary, evidence_numbers, provisions)
     # "partial" means the main ask went unanswered, which the verifier decides:
     # a sentence cut here isn't that (llm_service._card_answer).
+    # The verifier never sees these, so each must pass the same evidence checks or is dropped.
+    extra = {key: _checked_card_text(one_line(card.get(key)), evidence, provisions) if card.get(key) else None
+             for key in ("practical_implications", "limitations")}
     return {"status": "partial" if card["status"] == "partial" else "answered",
-            "summary": summary and direct + one_line(summary), "points": points, "follow_up": follow_up}
+            "summary": summary and direct + one_line(summary), "points": points, **extra, "follow_up": follow_up}
 
 
 _GENERIC_FOLLOW_UP_RE = re.compile(r"\b(?:know|learn) more\b|\b(?:more )?(?:information|details)\b", re.IGNORECASE)
@@ -707,6 +710,8 @@ def card_markdown(card: dict) -> str:
     """The card as the plain reply text: what's stored in the transcript,
     replayed to the model, and shown if the page can't render the card."""
     parts = [card["summary"]] + [f"## {p['title']}\n{p['text']}" for p in card["points"]]
+    parts += [f"## {title}\n{card[key]}" for key, title in (
+        ("practical_implications", "Practical implications"), ("limitations", "Limitations")) if card.get(key)]
     if card["follow_up"]:
         parts.append(card["follow_up"])
     if card["status"] == "partial":
