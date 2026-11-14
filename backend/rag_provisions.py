@@ -38,7 +38,9 @@ _PROVISION_START_RE = re.compile(
 _BLOCK_LABEL_RE = re.compile(
     r"(?m)^\[Source: [^\]|]+\| (?:Rule|Article|Section) (\d{1,3}[A-Z]?(?:\.\d{1,2})?)(?: \| [^\]\n]*)?\]\n")
 # "Section 11", "Rule 14.2", "Article 9B" named in a question.
-EXACT_REF_RE = re.compile(r"\b(Rule|Article|Section)s?\s+(\d{1,3}[A-Za-z]?(?:\.\d{1,2})?)\b", re.IGNORECASE)
+EXACT_REF_RE = re.compile(
+    r"\b(Rule|Article|Section|Sec\b\.?|S\.)s?\s*(\d{1,3}[A-Za-z]?(?:\.\d{1,2})?)\b", re.IGNORECASE)
+_LABEL_WORDS = {"rule": "Rule", "article": "Article"}  # anything else matched is a Section spelling
 
 MAX_BLOCKS = 14
 MAX_CONTEXT_CHARS = 20000
@@ -55,7 +57,8 @@ def clear_cache() -> None:
 
 def exact_refs(query: str) -> List[Tuple[str, str]]:
     """[("Section", "11A"), ...] the question names, label capitalised."""
-    return [(m.group(1).capitalize(), m.group(2).upper()) for m in EXACT_REF_RE.finditer(query or "")]
+    return [(_LABEL_WORDS.get(m.group(1).lower(), "Section"), m.group(2).upper())
+            for m in EXACT_REF_RE.finditer(query or "")]
 
 
 def _index_pages(raw: str, text: str, normalize) -> List[Tuple[int, int]]:
