@@ -38,9 +38,10 @@ def _card(**overrides):
     })
 
 
-def _verdict(points=("SUPPORTED",), summary="SUPPORTED", main_ask=True, action_ok=True):
+def _verdict(points=("SUPPORTED",), summary="SUPPORTED", main_ask=True, action_ok=True, uncovered=()):
     return json.dumps({"analysis": "x", "direct_matches_action": action_ok, "summary": summary, "main_ask_answered": main_ask,
-                       "points": [{"index": i, "verdict": v} for i, v in enumerate(points)]})
+                       "points": [{"index": i, "verdict": v} for i, v in enumerate(points)],
+                       "uncovered_rules": list(uncovered)})
 
 
 class ScriptedOpenAI(FakeOpenAI):
