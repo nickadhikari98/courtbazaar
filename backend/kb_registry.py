@@ -106,5 +106,96 @@ def instruments(filename: str) -> tuple:
         m = re.search(r"\(([^)]*)\)", rec["title"])
         words = (m.group(1) if m else rec["title"].split(" ", 1)[-1]).split()
         key = re.sub(r"[^A-Z]", "", " ".join(words[:2]).upper())
-        out.append((key, _full_title(rec["title"], rec.get("institution"))))
+        out.append((key, rule_set_title(rec)))
     return tuple(out)
+
+
+# ---- Institutions: the one place their names/aliases live ----------------
+ACT = "ACT"
+# code -> words that name it in a question. ACT is the Arbitration and Conciliation Act.
+INSTITUTION_ALIASES = {
+    "DIAC": r"\bdiac\b|delhi international arbitration cent(?:re|er)",
+    "ICA": r"\bica\b|indian council of arbitration",
+    "MCIA": r"\bmcia\b|mumbai cent(?:re|er) for international arbitration",
+    "SIAC": r"\bsiac\b|singapore international arbitration cent(?:re|er)",
+    "ICC": r"\bicc\b|international chamber of commerce",
+    "LCIA": r"\blcia\b|london court of international arbitration",
+    ACT: r"\barbitration (?:and conciliation )?act\b|\ba\s*&\s*c act\b|\bsections?\s+\d{1,3}[a-z]?\b",
+}
+_ALIAS_RES = {code: re.compile(rx, re.IGNORECASE) for code, rx in INSTITUTION_ALIASES.items()}
+
+
+def detect_institutions(query: str) -> set:
+    """Every institution (and ACT) the question names."""
+    return {code for code, rx in _ALIAS_RES.items() if rx.search(query or "")}
+
+
+def record_code(rec: dict) -> Optional[str]:
+    m = re.search(r"\((\w+)\)$", rec.get("institution") or "")
+    if m:
+        return m.group(1)
+    return ACT if rec.get("doc_type") == "statute" else None
+
+
+def files_for(code: str) -> list:
+    return [f for f, recs in _records_by_file().items() if record_code(recs[0]) == code]
+
+
+def code_for_file(filename: str) -> Optional[str]:
+    recs = records_for_file(filename)
+    return record_code(recs[0]) if recs else None
+
+
+def all_codes() -> set:
+    return {c for c in map(code_for_file, _records_by_file()) if c}
+
+
+def search_filter(code: str) -> Optional[dict]:
+    """OpenAI attribute filter for one institution. Bundled PDFs (DIAC, ICC)
+    carry only their first set's doc_id, so institutions filter on
+    `institution`; only the Act (no institution) filters on doc_id. Never
+    matches a file not tagged in_force."""
+    recs = [r for f in files_for(code) for r in records_for_file(f)]
+    if not recs:
+        return None
+    first = recs[0]
+    key, value = ("doc_id", first["doc_id"]) if code == ACT else ("institution", first["institution"])
+    return {"type": "and", "filters": [{"type": "eq", "key": key, "value": value},
+                                       {"type": "eq", "key": "status", "value": "in_force"}]}
+
+
+def search_name(filename: str) -> str:
+    """Status-line name: "DIAC Rules", "the SOP", the Act's title."""
+    if filename == SOP_FILE:
+        return "the SOP"
+    code = code_for_file(filename)
+    if code and code != ACT:
+        return f"{code} Rules"
+    recs = records_for_file(filename)
+    return recs[0]["title"] if recs else filename
+
+
+def rule_set_title(rec: dict) -> str:
+    """Full rule-set title with its year: "ICC Arbitration Rules 2026"."""
+    # Only "DIAC (X) Rules" is spelled out (KB_INSTRUMENT_URLS keys); "ICC Arbitration Rules" stays short.
+    title = _full_title(rec["title"], rec.get("institution")) if "(" in rec["title"] else rec["title"]
+    version = str(rec.get("document_version") or "")
+    return f"{title} {version}" if re.fullmatch(r"\d{4}", version) and version not in title else title
+
+
+def rule_set_for_page(filename: str, page: int) -> Optional[dict]:
+    for rec in records_for_file(filename) or []:
+        lo, hi = (rec.get("page_range") or [0, 10 ** 6])[:2]
+        if lo <= page <= hi:
+            return rec
+    return None
+
+
+def excluded(rec: Optional[dict], query: str) -> bool:
+    """A rule set that must not answer this question: not in force, or a
+    mediation set answering a question that isn't about mediation."""
+    if rec is None:
+        return False
+    if rec.get("status") != "in_force":
+        return True
+    return "mediation" in (rec.get("doc_type") or "") and not re.search(r"mediat", query or "", re.IGNORECASE)

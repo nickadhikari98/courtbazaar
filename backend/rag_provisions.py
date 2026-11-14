@@ -22,25 +22,66 @@ import logging
 import math
 import re
 import time
+
+import kb_registry
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 # "<IMAGE FOR PAGE: 33 / 51>" / "<PARSED TEXT FOR PAGE: 34 / 51>"
-PAGE_MARKER_RE = re.compile(r"<(?:IMAGE|PARSED TEXT) FOR PAGE:\s*\d+\s*/\s*\d+>")
-# A numbered provision at the start of a line: "33. Advance on Costs", "33.1 The Centre".
-_PROVISION_START_RE = re.compile(r"(?m)^(\d{1,3})(?:\.(\d{1,2}))?\.?\s+(?=[A-Z(\"'])")
-# "[Source: <file> | Rule 33.1]" block label written by expand_chunks.
-_BLOCK_LABEL_RE = re.compile(r"(?m)^\[Source: [^\]|]+\| Rule (\d{1,3}(?:\.\d{1,2})?)(?: \| [^\]\n]*)?\]\n")
+PAGE_MARKER_RE = re.compile(r"<(?:IMAGE|PARSED TEXT) FOR PAGE:\s*(\d+)\s*/\s*\d+>")
+# A numbered provision at the start of a line: "33. Advance on Costs", "33.1 The Centre",
+# "11A. Qualifications" (the Act), "Article 9B" / "Rule 14.2" (rules that print the word).
+_PROVISION_START_RE = re.compile(
+    r"(?m)^(?:(?:Article|Rule)\s+)?(\d{1,3})([A-Z]?)(?:\.(\d{1,2}))?\.?\s+(?=[A-Z(\"'])")
+# "[Source: <file> | Rule 33.1]" / "| Article 9B" / "| Section 11A" block label written by expand_chunks.
+_BLOCK_LABEL_RE = re.compile(
+    r"(?m)^\[Source: [^\]|]+\| (?:Rule|Article|Section) (\d{1,3}[A-Z]?(?:\.\d{1,2})?)(?: \| [^\]\n]*)?\]\n")
+# "Section 11", "Rule 14.2", "Article 9B" named in a question.
+EXACT_REF_RE = re.compile(r"\b(Rule|Article|Section)s?\s+(\d{1,3}[A-Za-z]?(?:\.\d{1,2})?)\b", re.IGNORECASE)
 
 MAX_BLOCKS = 14
 MAX_CONTEXT_CHARS = 20000
 
 _doc_cache: Dict[Tuple[str, str], Tuple[float, str]] = {}
+# doc text -> [(offset, page number)], to match a provision to its rule set's page_range.
+_page_index: Dict[str, List[Tuple[int, int]]] = {}
 
 
 def clear_cache() -> None:
     _doc_cache.clear()
+    _page_index.clear()
+
+
+def exact_refs(query: str) -> List[Tuple[str, str]]:
+    """[("Section", "11A"), ...] the question names, label capitalised."""
+    return [(m.group(1).capitalize(), m.group(2).upper()) for m in EXACT_REF_RE.finditer(query or "")]
+
+
+def _index_pages(raw: str, text: str, normalize) -> List[Tuple[int, int]]:
+    """Where each page starts in the normalized text, found from the page's
+    first long line. shortcut: a page whose first lines are all short is
+    placed at its first long line (a few lines late); fine for page_range."""
+    out: List[Tuple[int, int]] = []
+    marks = list(PAGE_MARKER_RE.finditer(raw))
+    pos = 0
+    for i, m in enumerate(marks):
+        page_text = normalize(raw[m.end():marks[i + 1].start() if i + 1 < len(marks) else len(raw)])
+        probe = next((ln[:120] for ln in page_text.split("\n") if len(ln) >= 30), None)
+        at = text.find(probe, pos) if probe else -1
+        if at >= 0:
+            out.append((at, int(m.group(1))))
+            pos = at
+    return out
+
+
+def page_at(pages: List[Tuple[int, int]], offset: int) -> Optional[int]:
+    page = None
+    for start, number in pages:
+        if start > offset:
+            break
+        page = number
+    return page
 
 
 async def approved_document_text(client, vector_store_id: str, file_id: str, normalize,
@@ -60,8 +101,10 @@ async def approved_document_text(client, vector_store_id: str, file_id: str, nor
             parts.append(value)
     if not parts:
         return None
-    text = normalize(PAGE_MARKER_RE.sub("\n", "\n".join(parts)))
+    raw = "\n".join(parts)
+    text = normalize(PAGE_MARKER_RE.sub("\n", raw))
     _doc_cache[key] = (time.monotonic(), text)
+    _page_index[text] = _index_pages(raw, text, normalize)
     return text
 
 
@@ -81,6 +124,10 @@ def _instrument_title(doc: str, start: int) -> str:
     return re.sub(r"[\]|]", "", " ".join(reversed(collected)))[:160]
 
 
+def _num(key: Tuple[int, str]) -> str:
+    return f"{key[0]}{key[1]}"
+
+
 def parse_provisions(doc: str) -> List[Dict[str, Any]]:
     """Numbered provisions in document order: number, parent, instrument,
     start, end, text. A sub-rule ("33.1") counts only under its own parent
@@ -88,17 +135,18 @@ def parse_provisions(doc: str) -> List[Dict[str, Any]]:
     instrument (the PDF holds more than one set of rules, so numbers repeat).
     Other line-initial numbers (schedule rows, amounts) are ignored."""
     accepted: List[Dict[str, Any]] = []
-    parent: Optional[int] = None
-    prev_parent: Optional[int] = None
+    parent: Optional[Tuple[int, str]] = None  # (11, "A") for "11A": sorts between 11 and 12
+    prev_parent: Optional[Tuple[int, str]] = None
     parent_has_subs = False
     instrument = 0
     titles: Dict[int, str] = {}
     for m in _PROVISION_START_RE.finditer(doc):
-        top, sub = int(m.group(1)), m.group(2)
+        top, sub = int(m.group(1)), m.group(3)
+        key = (top, m.group(2))
         if sub is not None:
-            if parent != top:
-                if (top == prev_parent and not parent_has_subs and accepted
-                        and accepted[-1]["number"] == str(parent)):
+            if parent != key:
+                if (key == prev_parent and not parent_has_subs and accepted
+                        and accepted[-1]["number"] == _num(parent)):
                     # The "parent" heading was a false start: OCR put a page
                     # number at a line start ("the 9.\n9 Respondent shall
                     # ...") and the previous rule carries on (8.6 after it).
@@ -106,25 +154,25 @@ def parse_provisions(doc: str) -> List[Dict[str, Any]]:
                     accepted.pop()
                     parent, prev_parent = prev_parent, None
                     parent_has_subs = True
-                elif parent is not None and top == parent + 1 and int(sub) == 1:
+                elif parent is not None and not key[1] and top == parent[0] + 1 and int(sub) == 1:
                     # The next rule's own heading line is missing (OCR ran it
                     # into the previous text), but its first sub-rule is
                     # there: "9.1" right after rule 8 opens rule 9.
-                    prev_parent, parent, parent_has_subs = parent, top, False
+                    prev_parent, parent, parent_has_subs = parent, key, False
                 else:
                     continue
-            number = f"{top}.{int(sub)}"
+            number = f"{_num(key)}.{int(sub)}"
             parent_has_subs = True
         else:
-            if parent is not None and top == 1 and parent > 1:
+            if parent is not None and key == (1, "") and parent[0] > 1:
                 instrument += 1
-            elif parent is not None and not (parent < top <= parent + 20):
+            elif parent is not None and not (parent < key and top <= parent[0] + 20):
                 continue  # numbering only moves forward (gaps allowed); anything else isn't a rule heading
-            prev_parent, parent, parent_has_subs = parent, top, False
-            number = str(top)
+            prev_parent, parent, parent_has_subs = parent, key, False
+            number = _num(key)
         if instrument not in titles:
             titles[instrument] = _instrument_title(doc, m.start())
-        accepted.append({"number": number, "parent": str(top), "instrument": instrument,
+        accepted.append({"number": number, "parent": _num(key), "instrument": instrument,
                          "title": titles[instrument], "start": m.start()})
     for i, p in enumerate(accepted):
         p["end"] = accepted[i + 1]["start"] if i + 1 < len(accepted) else len(doc)
@@ -204,23 +252,56 @@ def _with_rule_body(provisions: List[Dict[str, Any]], hits: List[int]) -> List[i
     return list(dict.fromkeys(out))
 
 
-def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: str = "") -> List[str]:
+def _blocked_indices(filename: str, provisions: List[Dict[str, Any]], doc: Optional[str], query: str,
+                     pages: Optional[List[Tuple[int, int]]]) -> Tuple[set, bool]:
+    """Titles each provision with its rule set (by page_range in a bundled
+    PDF, else the file's one set) and returns the provisions that must not be
+    used (kb_registry.excluded), plus whether unplaceable text is unsafe (the
+    file holds a set this question must not see)."""
+    recs = kb_registry.records_for_file(filename) or []
+    unsafe = any(kb_registry.excluded(r, query) for r in recs)
+    pages = pages if pages is not None else _page_index.get(doc or "", [])
+    blocked = set()
+    for k, p in enumerate(provisions):
+        if len(recs) == 1:
+            rec = recs[0]
+        else:
+            page = page_at(pages, p["start"]) if pages else None
+            rec = kb_registry.rule_set_for_page(filename, page) if page else None
+        if rec:
+            p["title"] = kb_registry.rule_set_title(rec)
+        if kb_registry.excluded(rec, query) or (rec is None and unsafe):
+            blocked.add(k)
+    return blocked, unsafe
+
+
+def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: str = "",
+                  pages: Optional[List[Tuple[int, int]]] = None) -> List[str]:
     """Context blocks for one approved file: the complete provisions the
     retrieved chunks overlap (plus each one's parent heading), in document
-    order and labelled with their rule numbers; raw chunks where no
-    provision could be located. Provisions matching the query's words come
-    first, so the block cap can't push them out."""
+    order and labelled with their provision numbers ("Rule 33.1", "Section
+    11A", "Article 9B"); raw chunks where no provision could be located.
+    A provision the question names exactly, then those matching its words,
+    come first, so the block cap can't push them out. `pages` is
+    [(offset, page)] for `doc`; by default the index built when it was fetched."""
     provisions = parse_provisions(doc) if doc else []
+    blocked, unsafe = _blocked_indices(filename, provisions, doc, query, pages)
+    label = kb_registry.provision_label(filename) or "Rule"
+    named = {num for word, num in exact_refs(query) if word == label}
+    exact = [k for k, p in enumerate(provisions) if p["number"] in named]
     chosen: List[int] = []
     raw: List[str] = []
-    keyword_hits = [(i, None) for i in _with_rule_body(provisions, keyword_matches(query, provisions))]
+    keyword_hits = [(i, None) for i in _with_rule_body(provisions, exact + keyword_matches(query, provisions))
+                    if i not in blocked]
     for i, chunk in keyword_hits + [(None, c) for c in chunks]:
         span = locate(chunk, doc) if provisions and chunk else None
         hits = [i] if i is not None else [
             k for k, p in enumerate(provisions) if span and p["start"] < span[1] and p["end"] > span[0]]
         if not hits:
-            raw.append(chunk)
+            if not unsafe:
+                raw.append(chunk)
             continue
+        hits = [k for k in hits if k not in blocked]
         for i in hits:
             # The rule's own heading ("33. Advance on Costs") gives sub-rules their context.
             head = next((j for j in range(i, -1, -1) if provisions[j]["number"] == provisions[i]["parent"]
@@ -233,7 +314,7 @@ def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: s
     for i in sorted(chosen[:MAX_BLOCKS]):
         p = provisions[i]
         title = f" | {p['title']}" if p.get("title") else ""
-        block = f"[Source: {filename} | Rule {p['number']}{title}]\n{p['text']}"
+        block = f"[Source: {filename} | {label} {p['number']}{title}]\n{p['text']}"
         if total + len(block) > MAX_CONTEXT_CHARS:
             break
         blocks.append(block)

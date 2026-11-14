@@ -118,7 +118,6 @@ KB_INSTRUMENT_URLS = {
 
 SOURCE_SOP = "STANDARD OPERATING PROCEDURE (SOP).docx"
 SOURCE_DIAC = "DIAC Rules conclusive_UsingOCR.pdf"
-_SEARCH_NAMES = {SOURCE_DIAC: "DIAC Rules", SOURCE_SOP: "the SOP"}
 
 # SOP-specific process topics. Deliberately phrase-level, not bare words: a
 # bare "complaint", "refund", "retention", or "dispute resolution" is just as
@@ -158,10 +157,12 @@ _SOP_REFUND_CONTEXT_RE = re.compile(
 _NON_PLATFORM_REFUND_RE = re.compile(r"\b(?:court fees?|stamp duty|income tax|tax|gst)\b", re.IGNORECASE)
 
 _EXPLICIT_SOP_RE = re.compile(r"\b(?:sop|standard operating procedure)\b", re.IGNORECASE)
-_EXPLICIT_DIAC_RE = re.compile(r"\bdiac\b", re.IGNORECASE)
 _ATTRIBUTION = r"(?:according to|as per|per|under|in|from)\s+(?:the\s+)?"
 _SOP_AS_SOURCE_RE = re.compile(rf"\b{_ATTRIBUTION}(?:sop|standard operating procedure)\b", re.IGNORECASE)
-_DIAC_AS_SOURCE_RE = re.compile(rf"\b{_ATTRIBUTION}(?:rules?\s+of\s+(?:the\s+)?)?diac\b", re.IGNORECASE)
+_INSTITUTION_ALIASES = "|".join(
+    f"(?:{rx})" for code, rx in kb_registry.INSTITUTION_ALIASES.items() if code != kb_registry.ACT)
+_INSTITUTION_AS_SOURCE_RE = re.compile(
+    rf"\b{_ATTRIBUTION}(?:rules?\s+of\s+(?:the\s+)?)?(?:{_INSTITUTION_ALIASES})", re.IGNORECASE)
 _ARBITRATION_PROCEDURE_RE = re.compile(
     r"\b(?:tribunals?|arbitrators?|claimants?|respondents?|deposits?|counter-?claims?)\b", re.IGNORECASE)
 _NAMED_STATUTE_RE = re.compile(r"\b(?:section\s+\d+|[A-Za-z]+ act\b|order\s+[ivxl\d]+)", re.IGNORECASE)
@@ -182,20 +183,20 @@ def is_sop_knowledge_question(query: str) -> bool:
 def explicit_document_sources(query: str) -> list[str]:
     """Approved documents the user names explicitly ("according to the SOP",
     "under the DIAC Rules"), in a fixed order. An explicit name always wins
-    over topic inference — see ai_chat.route_message."""
-    sources = []
-    if _EXPLICIT_SOP_RE.search(query):
-        sources.append(SOURCE_SOP)
-    if _EXPLICIT_DIAC_RE.search(query):
-        sources.append(SOURCE_DIAC)
-    if len(sources) == 2:
+    over topic inference — see ai_chat.route_message. Institutions come from
+    kb_registry; a bare "Section 11" is not an explicit Act reference here
+    (it is just as often another statute), only a retrieval hint."""
+    sources = [SOURCE_SOP] if _EXPLICIT_SOP_RE.search(query) else []
+    codes = kb_registry.detect_institutions(query) - {kb_registry.ACT}
+    institutions = [f for c in sorted(codes) for f in kb_registry.files_for(c)]
+    if sources and institutions:
         # "According to the SOP, how are matters referred to DIAC?" names the SOP as
         # the source and DIAC only as the subject; only a tie needs the clarify.
         sop_is_source = bool(_SOP_AS_SOURCE_RE.search(query))
-        diac_is_source = bool(_DIAC_AS_SOURCE_RE.search(query))
-        if sop_is_source != diac_is_source:
-            return [SOURCE_SOP if sop_is_source else SOURCE_DIAC]
-    return sources
+        institution_is_source = bool(_INSTITUTION_AS_SOURCE_RE.search(query))
+        if sop_is_source != institution_is_source:
+            return sources if sop_is_source else institutions
+    return sources + institutions
 
 
 async def document_route(query: str) -> str | None:
@@ -340,36 +341,29 @@ async def _retrieve_context(query: str, selected_source: str | None = None) -> t
     """Search only the explicitly configured OpenAI vector store."""
     if not OPENAI_API_KEY or not OPENAI_VECTOR_STORE_ID:
         raise RuntimeError("OPENAI_API_KEY and OPENAI_VECTOR_STORE_ID are required for RAG")
+    import rag_provisions
     client = _get_retrieval_client()
-    search_args = {
-        "vector_store_id": OPENAI_VECTOR_STORE_ID,
-        "query": query,
-        "max_num_results": 8,
-        "ranking_options": {"score_threshold": AI_RAG_SCORE_THRESHOLD},
-    }
-    if selected_source:
-        search_args["filters"] = {
-            "type": "eq",
-            "key": "source_id",
-            "value": KB_SOURCE_METADATA[selected_source]["source_id"],
-        }
-    result = await client.vector_stores.search(**search_args)
-    metadata_filter_fallback = False
-    if selected_source and not (getattr(result, "data", []) or []):
-        # Existing stores may predate source metadata. Diagnose that state
-        # without weakening the ranking threshold or accepting another file.
-        metadata_filter_fallback = True
-        diagnostic_args = dict(search_args)
-        diagnostic_args.pop("filters", None)
-        diagnostic_args["max_num_results"] = 50
-        result = await client.vector_stores.search(**diagnostic_args)
+    codes = _search_codes(query, selected_source)
+    # One search per institution (each filtered to it), so one institution's
+    # rules can never crowd out, or stand in for, another's.
+    filters = ([kb_registry.search_filter(c) for c in sorted(codes)] if codes
+               else [{"type": "eq", "key": "source_id", "value": KB_SOURCE_METADATA[selected_source]["source_id"]}]
+               if selected_source else [None])
+    allowed_files = {f for c in codes for f in kb_registry.files_for(c)} if codes else None
+    searched = await asyncio.gather(*(
+        _filtered_search(client, query, flt, 8 if len(filters) == 1 else 4) for flt in filters))
+    items = [item for found, _ in searched for item in found]
+    metadata_filter_fallback = any(fell_back for _, fell_back in searched)
     passages, sources, matches, documents = [], [], [], []
     approved_chunks: list[tuple[str, str | None, str]] = []  # (filename, file_id, normalized chunk text)
     metadata_mismatches = 0
-    items = getattr(result, "data", []) or []
     for item in items:
         filename = getattr(item, "filename", None)
         if filename not in APPROVED_KB_FILES:
+            continue
+        if allowed_files is not None and filename not in allowed_files:
+            continue  # another institution's file: never answers this question
+        if not _in_force(filename):
             continue
         score = getattr(item, "score", None)
         attributes = getattr(item, "attributes", None) or {}
@@ -378,7 +372,7 @@ async def _retrieve_context(query: str, selected_source: str | None = None) -> t
         if attributes.get("source_id") != expected_metadata["source_id"] or attributes.get("title") != expected_metadata["title"]:
             metadata_mismatches += 1
             continue
-        if selected_source and filename != selected_source:
+        if allowed_files is None and selected_source and filename != selected_source:
             continue
         if filename and filename not in sources:
             sources.append(filename)
@@ -412,8 +406,64 @@ async def _retrieve_context(query: str, selected_source: str | None = None) -> t
     # Best match first, read before the sort below loses the ranking.
     ranked_rules = list(dict.fromkeys(m.group(2) for p in passages for m in _CONTEXT_RULE_LABEL_RE.finditer(p)))
     # Search order varies between identical queries; the answer must not.
+    # Sorting by "[Source: <file>" also groups the blocks by institution (one file each).
     passages = sorted(set(passages))
+    # A provision the question names ("Section 11", "Article 9B") goes first.
+    named = [re.compile(rf"^\[Source: [^\]\n]*\| {w} {re.escape(n)}(?: \||\])") for w, n in rag_provisions.exact_refs(query)]
+    passages.sort(key=lambda p: not any(rx.match(p) for rx in named))
     return "\n\n".join(passages), sources, len(passages), ranked_rules, "\n".join(documents)
+
+
+_ARBITRATION_QUESTION_RE = re.compile(r"\barbitra|\barbitral\b|\bseat of arbitration\b", re.IGNORECASE)
+
+
+def _search_codes(query: str, selected_source: str | None) -> set:
+    """Institutions (kb_registry codes, ACT = the Act) a RAG turn searches:
+    those the question names plus the routed one; an arbitration question
+    naming none searches the Act and every institution. Empty for the SOP or
+    a non-arbitration question (one unfiltered/source_id search, as before)."""
+    if selected_source == SOURCE_SOP:
+        return set()
+    codes = kb_registry.detect_institutions(query)
+    if selected_source:
+        codes.add(kb_registry.code_for_file(selected_source))
+    if not codes and _ARBITRATION_QUESTION_RE.search(query or ""):
+        codes = kb_registry.all_codes()
+    codes.discard(None)
+    return codes
+
+
+def _in_force(filename: str) -> bool:
+    """Registry status check, independent of the vector-store tags (legacy files may lack them)."""
+    recs = kb_registry.records_for_file(filename)
+    return not recs or any(r.get("status") == "in_force" for r in recs)
+
+
+async def _filtered_search(client, query: str, flt: dict | None, max_results: int) -> tuple[list, bool]:
+    """(items, fell_back). A filter that matches nothing may mean the store
+    predates these tags: retry unfiltered (diagnosis only, same threshold);
+    the caller still accepts only the institution's own files."""
+    args = {"vector_store_id": OPENAI_VECTOR_STORE_ID, "query": query, "max_num_results": max_results,
+            "ranking_options": {"score_threshold": AI_RAG_SCORE_THRESHOLD}}
+    if flt:
+        args["filters"] = flt
+    result = await client.vector_stores.search(**args)
+    items = getattr(result, "data", []) or []
+    if items or not flt:
+        return items, False
+    args.pop("filters")
+    args["max_num_results"] = 50
+    result = await client.vector_stores.search(**args)
+    return getattr(result, "data", []) or [], True
+
+
+def _search_text(query: str, selected_source: str | None) -> str:
+    """"Searching DIAC Rules…" / "Searching ICC Rules, SIAC Rules…"."""
+    codes = _search_codes(query, selected_source)
+    if codes and codes == kb_registry.all_codes():
+        return "Searching the Arbitration Act and institutional rules…"
+    files = [f for c in sorted(codes) for f in kb_registry.files_for(c)] or ([selected_source] if selected_source else [])
+    return f"Searching {', '.join(kb_registry.search_name(f) for f in files) or 'the documents'}…"
 
 
 async def _provision_passages(client, approved_chunks: list[tuple[str, str | None, str]], query: str,
@@ -524,7 +574,7 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
     stage = "RAG retrieval" if use_file_search else f"{AI_PROVIDER} generation"
     try:
         if use_file_search:
-            await emit_status(on_status, "searching", f"Searching {_SEARCH_NAMES.get(selected_source, 'the documents')}…")
+            await emit_status(on_status, "searching", _search_text(query, selected_source))
             context, sources, rag_chunk_count, ranked_rules, document_text = await asyncio.wait_for(
                 _retrieve_context(query, selected_source), timeout=AI_TIMEOUT_SECONDS
             )
@@ -810,7 +860,7 @@ _RULE_REF_RE = re.compile(
 # soft line break before it must be kept: "33.1 The Centre", "(ii) whether",
 # "16. Default", "SCHEDULE E", "PART-II: SECRETARIAT".
 _NEW_PROVISION_LINE_RE = re.compile(
-    r"^\s*(?:\d{1,3}(?:\.\d{1,3})*\.?\s+\S|\([a-z0-9]{1,5}\)\s|[A-Z][A-Z0-9 ,.:'&()/-]{5,}$)"
+    r"^\s*(?:\d{1,3}[A-Z]?(?:\.\d{1,3})*\.?\s+\S|(?:Article|Rule)\s+\d{1,3}[A-Z]?\b|\([a-z0-9]{1,5}\)\s|[A-Z][A-Z0-9 ,.:'&()/-]{5,}$)"
 )
 
 
@@ -871,11 +921,13 @@ def _rule_sort_key(ref: str):
 
 # "[Source: <file> | Rule 33.1 | <set title>]", written by rag_provisions.expand_chunks.
 _CONTEXT_RULE_LABEL_RE = re.compile(
-    r"(?m)^\[Source: ([^\]|\n]+?) \| Rule (\d{1,3}(?:\.\d{1,3})?)(?: \| ([^\]\n]*))?\]"
+    r"(?m)^\[Source: ([^\]|\n]+?) \| (?:Rule|Article|Section) (\d{1,3}[A-Z]?(?:\.\d{1,3})?)(?: \| ([^\]\n]*))?\]"
 )
 
 
 def _instrument_for_label(filename: str, label_title: Optional[str]) -> Optional[str]:
+    if label_title in {name for _, name in KB_INSTRUMENTS.get(filename, ())}:
+        return label_title  # labelled from the set's page_range (rag_provisions)
     letters = re.sub(r"[^A-Z]", "", (label_title or "").upper())
     if _DIAC_TITLE_KEY not in letters:
         return None

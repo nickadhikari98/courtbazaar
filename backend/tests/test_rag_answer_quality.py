@@ -132,7 +132,10 @@ def test_benchmark_question_retrieves_only_the_approved_diac_document(monkeypatc
     _install(monkeypatch, fake)
     _ask()
     assert fake.search_kwargs["vector_store_id"] == "vs-test"
-    assert fake.search_kwargs["filters"] == {"type": "eq", "key": "source_id", "value": "diac_rules"}
+    # The DIAC PDF bundles three rule sets, so it is filtered by institution, never by doc_id.
+    assert fake.search_kwargs["filters"] == {"type": "and", "filters": [
+        {"type": "eq", "key": "institution", "value": "Delhi International Arbitration Centre (DIAC)"},
+        {"type": "eq", "key": "status", "value": "in_force"}]}
 
 
 def test_benchmark_answer_keeps_its_structure_and_verified_citations(monkeypatch):
