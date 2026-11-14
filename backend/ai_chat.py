@@ -527,6 +527,75 @@ ROUTE_CLARIFY = "CLARIFY"
 RAG_ROUTES = (ROUTE_DOCUMENT_RAG, ROUTE_COURTBAZAAR_GENERAL)
 
 DOCUMENT_CLARIFY_MESSAGE = "Which document should I answer from: the CourtBazaar SOP or the DIAC Rules?"
+UNDERSPECIFIED_QUESTION_MESSAGE = (
+    "Which matter do you mean? Tell me the kind of case, application or step — and the document, if it's "
+    "about the DIAC Rules or the SOP — and I'll answer for that."
+)
+
+# A question made only of generic words ("What is the time limit?", "What are the
+# fees?") has no subject to answer for: the system prompt says ask first, and the
+# model doesn't reliably do so, so it's decided here.
+_GENERIC_ASK_WORDS = frozenset("""
+time limit limits deadline deadlines limitation period periods fee fees cost costs charge charges penalty
+penalties procedure process punishment section notice form forms rule rules law amount timeline duration days
+""".split())
+_QUESTION_FILLER_WORDS = frozenset("""
+what whats which is are was were the a an of for how much long many does do there any please tell me about
+""".split())
+
+
+def _is_underspecified_question(text: str) -> bool:
+    words = re.findall(r"[a-z]+", text.lower().replace("what's", "what"))
+    subject = [w for w in words if w not in _QUESTION_FILLER_WORDS]
+    return bool(words) and len(words) <= 8 and bool(subject) and all(w in _GENERIC_ASK_WORDS for w in subject)
+
+
+# Follow-ups to a document answer ("Can that time limit be extended? By whom?",
+# "What happens next?") are answered from the same document again — never from
+# general knowledge — with the earlier question and rules folded into the
+# retrieval query, since the follow-up alone retrieves nothing useful.
+_DOC_FOLLOWUP_REFERENCE_RE = re.compile(
+    r"\b(?:that|this|it|its|they|them|those|these|such|same|above|then|next|whom)\b", re.IGNORECASE)
+_DOC_FOLLOWUP_START_RE = re.compile(
+    r"^\s*(?:and|also|so|but|what about|what if|how about|is there|are there|any exceptions?)\b", re.IGNORECASE)
+_SUBJECT_STOPWORDS = frozenset("""
+what which does did were with about when where why could should would will shall might says said tell explain
+there that this those these them they their then next whom whose have been being happens happen also into from
+after before other someone anyone
+""".split())
+
+
+def _subject_words(text: str) -> List[str]:
+    return [w for w in re.findall(r"[a-z][a-z-]{3,}", text.lower()) if w not in _SUBJECT_STOPWORDS]
+
+
+def _document_followup(text: str, convo: dict, last_assistant: str,
+                       generic: bool = False) -> Optional[Dict[str, Any]]:
+    """The previous document answer's context when this message follows up on
+    it: it refers back ("that", "it", "what about ...") — or is a generic ask
+    like "What is the time limit?" — and brings no new subject of its own:
+    all but at most one of its subject words, the last exchange already used."""
+    context = convo.get("doc_context") or {}
+    refers_back = generic or _DOC_FOLLOWUP_REFERENCE_RE.search(text) or _DOC_FOLLOWUP_START_RE.match(text)
+    if not context.get("source") or not refers_back:
+        return None
+    if _STATUTE_RE.search(text) and not re.search(r"\brule\b", text, re.IGNORECASE):
+        return None  # "What about Section 34 of the Arbitration Act?" is a new subject
+    earlier = f"{context.get('question', '')} {last_assistant}".lower()
+    # One new word is a different form of an earlier one ("made" after "make");
+    # a new subject brings more ("Who pays the stamp duty on that?").
+    if sum(w[:5] not in earlier for w in _subject_words(text)) <= 1:
+        return context
+    return None
+
+
+def _standalone_document_question(text: str, context: dict) -> str:
+    """The follow-up as a question that stands on its own, for retrieval and
+    for the answer and verifier models. The earlier answer itself is never
+    included — only the user's earlier question and the rules it cited."""
+    rules = ", ".join(f"Rule {r}" for r in (context.get("rules") or [])[:6])
+    cited = f", answered from {rules}" if rules else ""
+    return f'{text} (This follows up the earlier question "{context.get("question", "")}"{cited}.)'
 
 _AVAILABILITY_RE = re.compile(
     r"\b(?:currently|current|right now|today|available|availability|abhi|serviceable)\b", re.IGNORECASE,
@@ -817,6 +886,8 @@ def route_message(text: str, convo: Optional[dict] = None) -> Dict[str, Any]:
     live = _live_intent(value)
     if live:
         return _decision(ROUTE_COURTBAZAAR_LIVE, "explicit_live_request", live_intent=live)
+    if _is_underspecified_question(value):
+        return _decision(ROUTE_CLARIFY, "underspecified_question")
 
     if llm_service.is_sop_knowledge_question(value):
         return _decision(ROUTE_DOCUMENT_RAG, "sop_topic", source=llm_service.SOURCE_SOP)
@@ -1980,6 +2051,17 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         tool_result = {"status": "error", "tool": "routing",
                        "message": LIVE_TOOL_FAILURE_MESSAGE, "error_stage": "routing"}
 
+    # A follow-up to a document answer stays on that document (see _document_followup).
+    doc_followup = None
+    if decision is not None and (
+        decision["reason"] in ("legal_information_question", "general_question", "underspecified_question")
+        or (decision["reason"] == "explicit_document" and decision["source"] == (convo.get("doc_context") or {}).get("source"))
+    ):
+        doc_followup = _document_followup(text, convo, last_assistant,
+                                          generic=decision["reason"] == "underspecified_question")
+        if doc_followup:
+            decision = _decision(ROUTE_DOCUMENT_RAG, "document_followup", source=doc_followup["source"])
+
     # Unnamed document questions ("who pays the advance on costs?"): the search
     # score decides. Casual, live and follow-up turns never reach this.
     if decision is not None and decision["reason"] in ("legal_information_question", "general_question"):
@@ -2013,7 +2095,8 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
                            "message": LIVE_TOOL_FAILURE_MESSAGE, "error_stage": "live_tool_routing"}
 
     if decision is not None and decision["route"] == ROUTE_CLARIFY:
-        reply = DOCUMENT_CLARIFY_MESSAGE
+        reply = (UNDERSPECIFIED_QUESTION_MESSAGE if decision["reason"] == "underspecified_question"
+                 else DOCUMENT_CLARIFY_MESSAGE)
         await _append_message(db, conv_id, "user", text)
         await _append_message(db, conv_id, "assistant", reply)
         return {"conversation_id": conv_id, "reply": reply, "degraded": False}
@@ -2141,7 +2224,9 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         llm_messages.append({"role": "system", "content": MIXED_SOURCE_NOTE})
     if format_requested:
         llm_messages.append({"role": "system", "content": FORMAT_REQUEST_NOTE})
-    llm_messages.append({"role": "user", "content": text})
+    # Retrieval, the answer and the verifier all read this last user message.
+    llm_messages.append({"role": "user", "content": _standalone_document_question(text, doc_followup)
+                         if doc_followup else text})
 
     # Document/product questions are grounded only in the one approved
     # document the router selected — retrieval never falls back to another,
@@ -2235,6 +2320,15 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
 
     if grounding == "insufficient":
         await llm_service.emit_status(on_status, "no_match", "No matching rule found…")
+    # What a later follow-up refers back to: the user's question (the original
+    # one across a chain of follow-ups) and the rules this answer cited.
+    if use_rag and grounding in ("supported", "partial") and decision["source"]:
+        doc_context = {"source": decision["source"],
+                       "question": (doc_followup or {}).get("question") or text,
+                       "rules": [r for c in citations for r in c.get("rules") or []]}
+        await db.ai_conversations.update_one({"conversation_id": conv_id}, {"$set": {"doc_context": doc_context}})
+    elif convo.get("doc_context") and not doc_followup:
+        await db.ai_conversations.update_one({"conversation_id": conv_id}, {"$unset": {"doc_context": ""}})
     await _append_message(db, conv_id, "user", text)
     await _append_message(db, conv_id, "assistant", reply)
     return {"conversation_id": conv_id, "reply": reply, "degraded": degraded,
