@@ -1,10 +1,14 @@
-"""Create an OpenAI vector store from only the two approved CourtBazaar sources.
+"""Create or top up the OpenAI vector store from only the approved sources.
 
-The allowlist is deliberately explicit. Files outside it, including .env,
-credentials, and arbitrary user documents, are never selected for upload.
+The allowlist comes from kb_registry (kb/arbitration_kb_metadata.json + SOP).
+Files outside it, including .env, credentials, and arbitrary user documents,
+are never selected for upload. Only files missing from the store are uploaded;
+nothing is ever deleted from it. `--dry-run` only prints what it would do.
 """
 from pathlib import Path
+import argparse
 import os
+import sys
 
 from dotenv import load_dotenv, set_key
 from openai import OpenAI
@@ -12,21 +16,12 @@ from openai import OpenAI
 
 ROOT = Path(__file__).resolve().parents[1]
 KNOWLEDGE_DIR = ROOT / "ai_knowledge"
-SOURCE_NAMES = (
-    "DIAC Rules conclusive_UsingOCR.pdf",
-    "STANDARD OPERATING PROCEDURE (SOP).docx",
-)
+sys.path.insert(0, str(ROOT))
+import kb_registry  # noqa: E402
+
+SOURCE_NAMES = tuple(sorted(kb_registry.approved_files()))
 SOURCES = tuple(KNOWLEDGE_DIR / name for name in SOURCE_NAMES)
-SOURCE_ATTRIBUTES = {
-    "DIAC Rules conclusive_UsingOCR.pdf": {
-        "source_id": "diac_rules",
-        "title": "DIAC Rules conclusive_UsingOCR.pdf",
-    },
-    "STANDARD OPERATING PROCEDURE (SOP).docx": {
-        "source_id": "court_bazaar_sop",
-        "title": "STANDARD OPERATING PROCEDURE (SOP).docx",
-    },
-}
+SOURCE_ATTRIBUTES = {name: kb_registry.vector_store_attributes(name) for name in SOURCE_NAMES}
 
 
 def vector_store_files(client, vector_store_id):
@@ -41,13 +36,16 @@ def vector_store_files(client, vector_store_id):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dry-run", action="store_true", help="print what would be uploaded, change nothing")
+    dry_run = parser.parse_args().dry_run
     env_path = ROOT / ".env"
     load_dotenv(env_path)
     if not os.environ.get("OPENAI_API_KEY"):
         raise SystemExit("OPENAI_API_KEY is required (backend only).")
     current_files = {p.name for p in KNOWLEDGE_DIR.iterdir() if p.is_file()}
     if current_files != set(SOURCE_NAMES):
-        raise SystemExit("Knowledge folder must contain exactly the two approved source files.")
+        raise SystemExit("Knowledge folder must contain exactly the approved source files.")
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     vector_store_id = os.environ.get("OPENAI_VECTOR_STORE_ID", "").strip()
     if vector_store_id:
@@ -57,6 +55,9 @@ def main():
         if unexpected:
             raise SystemExit("Configured vector store contains files outside the approved allowlist; no files were uploaded.")
         already_present = set(existing)
+    elif dry_run:
+        existing, already_present = {}, set()
+        vector_store_id = "<new store>"
     else:
         store = client.vector_stores.create(name="CourtBazaar official knowledge base")
         vector_store_id = store.id
@@ -66,6 +67,9 @@ def main():
         if path.name in already_present:
             item = existing[path.name]
             if getattr(item, "attributes", None) != SOURCE_ATTRIBUTES[path.name]:
+                if dry_run:
+                    print(f"WOULD UPDATE ATTRIBUTES {path.name} -> {SOURCE_ATTRIBUTES[path.name]}")
+                    continue
                 client.vector_stores.files.update(
                     vector_store_id=vector_store_id,
                     file_id=item.id,
@@ -74,6 +78,9 @@ def main():
             continue
         if not path.is_file():
             raise SystemExit(f"Approved source is missing: {path.name}")
+        if dry_run:
+            print(f"WOULD UPLOAD {path.name} attributes={SOURCE_ATTRIBUTES[path.name]}")
+            continue
         with path.open("rb") as source:
             vector_file = client.vector_stores.files.upload_and_poll(
                 vector_store_id=vector_store_id,
@@ -84,9 +91,13 @@ def main():
         if getattr(vector_file, "status", None) != "completed":
             raise SystemExit(f"File Search indexing did not complete for {path.name}.")
 
+    if dry_run:
+        print(f"Dry run against {vector_store_id}: nothing changed.")
+        return
+
     actual = vector_store_files(client, vector_store_id)
     if len(actual) != len(SOURCE_NAMES) or set(actual) != set(SOURCE_NAMES):
-        raise SystemExit("Vector store verification failed: it must contain exactly the two approved source files.")
+        raise SystemExit("Vector store verification failed: it must contain exactly the approved source files.")
     for name, item in actual.items():
         if getattr(item, "attributes", None) != SOURCE_ATTRIBUTES[name]:
             raise SystemExit(f"Vector store source metadata verification failed for {name}.")
