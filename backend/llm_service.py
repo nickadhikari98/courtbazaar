@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 import answer_guard
+import kb_registry
 
 logger = logging.getLogger(__name__)
 
@@ -72,43 +73,21 @@ ERR_RAG_UNAVAILABLE = "rag_unavailable"
 OFFICIAL_SOURCE_DOMAINS = ("gov.in", "nic.in")
 
 # Never let pre-existing/extra vector-store files become chatbot knowledge.
-APPROVED_KB_FILES = {
-    "DIAC Rules conclusive_UsingOCR.pdf",
-    "STANDARD OPERATING PROCEDURE (SOP).docx",
-}
-KB_SOURCE_METADATA = {
-    "DIAC Rules conclusive_UsingOCR.pdf": {
-        "source_id": "diac_rules",
-        "title": "DIAC Rules conclusive_UsingOCR.pdf",
-    },
-    "STANDARD OPERATING PROCEDURE (SOP).docx": {
-        "source_id": "court_bazaar_sop",
-        "title": "STANDARD OPERATING PROCEDURE (SOP).docx",
-    },
-}
+# The allowlist and per-file metadata live in kb_registry (kb/*.json + SOP).
+APPROVED_KB_FILES = kb_registry.approved_files()
+KB_SOURCE_METADATA = {f: kb_registry.file_meta(f) for f in APPROVED_KB_FILES}
 # What the chat shows for each approved file. `url` stays None until an
 # official link is approved for that document; the UI then renders the
 # citation as a link instead of a plain label.
-KB_SOURCE_DISPLAY = {
-    "DIAC Rules conclusive_UsingOCR.pdf": {"label": "Delhi International Arbitration Centre (DIAC) Rules", "url": None},
-    "STANDARD OPERATING PROCEDURE (SOP).docx": {"label": "Standard Operating Procedure (SOP)", "url": None},
-}
-# The DIAC PDF bundles three separately numbered sets of rules (its cover page
-# lists them), so "Rule 4" alone is ambiguous. rag_provisions labels each
-# provision with the upper-case title the document prints above that set;
-# a label is matched to a set by the words that tell the sets apart, and the
-# name shown is the set's title as the document's cover page prints it.
+KB_SOURCE_DISPLAY = {f: {"label": kb_registry.display_label(f), "url": None} for f in APPROVED_KB_FILES}
+# Some PDFs bundle several separately numbered rule sets (DIAC: three), so
+# "Rule 4" alone is ambiguous. rag_provisions labels each provision with the
+# upper-case title the document prints above that set; a label is matched to
+# a set by the words that tell the sets apart (kb_registry.instruments).
 # A label that matches none, or more than one (the cover/index pages list
 # all three), names no set.
 _DIAC_TITLE_KEY = "DELHIINTERNATIONALARBITRATIONCENTRE"
-KB_INSTRUMENTS = {
-    "DIAC Rules conclusive_UsingOCR.pdf": (
-        ("ARBITRATIONPROCEEDINGS", "Delhi International Arbitration Centre (Arbitration Proceedings) Rules, 2023"),
-        ("INTERNALMANAGEMENT", "Delhi International Arbitration Centre (Internal Management) Rules, 2012"),
-        ("ADMINISTRATIVECOSTS",
-         "Delhi International Arbitration Centre (Administrative Costs & Arbitrators' Fees) Rules, 2018"),
-    ),
-}
+KB_INSTRUMENTS = {f: kb_registry.instruments(f) for f in APPROVED_KB_FILES if kb_registry.instruments(f)}
 # Official PDFs on dhcdiac.nic.in, each checked against its own text. Per set,
 # not per file: the approved PDF bundles all three, so one link would send a
 # reader to the wrong rules. The site's rules page and "-2018" PDFs hold the
