@@ -158,7 +158,7 @@ def search_filter(code: str) -> Optional[dict]:
     recs = [r for f in files_for(code) for r in records_for_file(f)]
     if not recs:
         return None
-    first = recs[0]
+    first = next((r for r in recs if r.get("status") == "in_force"), recs[0])  # never a superseded doc_id
     key, value = ("doc_id", first["doc_id"]) if code == ACT else ("institution", first["institution"])
     return {"type": "and", "filters": [{"type": "eq", "key": key, "value": value},
                                        {"type": "eq", "key": "status", "value": "in_force"}]}
