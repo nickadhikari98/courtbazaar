@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Check, Loader2, Scale } from "lucide-react";
+import { Check, Loader2 } from "lucide-react";
 
 /* What the chat shows while an answer is on its way: one bordered panel with
    the server's steps (ai_chat.stream_chat_events sends each when the pipeline
@@ -53,9 +53,9 @@ export default function ChatStatus({ steps }) {
   const shown = all.filter((s) => s.step !== "writing");
   return (
     <div className="flex items-start gap-3" data-testid="instant-legal-help-loading">
-      <div className="relative shrink-0" aria-hidden="true">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-white"><Scale className="h-4 w-4" /></div>
-        <WritingQuill className="absolute -right-2.5 -top-2" />
+      {/* The quill takes the avatar's slot (same 32px box) until the answer renders. */}
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center" aria-hidden="true">
+        <WritingQuill className="h-6 w-6" />
       </div>
     <div className="min-w-0 flex-1 rounded-2xl border border-border bg-white p-4">
       <ul className="space-y-1.5 text-sm" data-testid="instant-legal-help-status-steps">

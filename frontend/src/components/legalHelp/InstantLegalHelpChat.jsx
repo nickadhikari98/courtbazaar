@@ -421,7 +421,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
             </div>
           ) : (
             <div key={i} className="flex gap-3 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-300" data-testid={`instant-legal-help-msg-assistant-${i}`}>
-              <div className="w-8 h-8 rounded-lg bg-accent text-white shrink-0 flex items-center justify-center" aria-hidden="true">
+              <div className="w-8 h-8 rounded-lg bg-accent text-white shrink-0 flex items-center justify-center" aria-hidden="true" data-testid="instant-legal-help-avatar">
                 <Scale className="w-4 h-4" />
               </div>
               <div className="min-w-0 flex-1 pt-0.5">

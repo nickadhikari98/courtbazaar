@@ -603,6 +603,9 @@ test("Send shows the thinking indicator before the reply, blocks a second send, 
   expect(loading).not.toBeNull();
   expect(loading.textContent).toContain("Understanding your question…");
   expect($("instant-legal-help-msg-user-0").textContent).toBe("Hello");
+  // While generating, the quill holds the avatar's slot and no avatar is rendered.
+  expect(loading.querySelector('[data-testid="instant-legal-help-quill"]')).not.toBeNull();
+  expect($("instant-legal-help-avatar")).toBeNull();
   expect($("instant-legal-help-send")).toBeNull(); // the stop button replaces it while generating
   expect($("instant-legal-help-stop")).not.toBeNull();
   expect($("instant-legal-help-input").placeholder).toBe("Generating answer...");
@@ -618,6 +621,7 @@ test("Send shows the thinking indicator before the reply, blocks a second send, 
   await flush();
   expect($("instant-legal-help-loading")).toBeNull();
   expect($("instant-legal-help-quill")).toBeNull(); // the writing indicator stops with the answer
+  expect($("instant-legal-help-msg-assistant-1").querySelector('[data-testid="instant-legal-help-avatar"]')).not.toBeNull();
   expect($("instant-legal-help-msg-assistant-1").textContent).toContain("Step one");
   expect($("instant-legal-help-msg-assistant-1").textContent).toContain("Delhi High Court Rules");
   expect(container.textContent).not.toContain("Understanding your question…");
