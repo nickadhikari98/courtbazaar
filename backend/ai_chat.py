@@ -408,7 +408,7 @@ def _chat_title(text: str) -> str:
 
 
 async def list_chats(db, user: Optional[dict], archived: bool = False,
-                     limit: int = CHAT_LIST_LIMIT, offset: int = 0) -> List[Dict[str, Any]]:
+                     limit: int = CHAT_LIST_LIMIT, offset: int = 0, matter_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Backing GET /ai/chats. Only a logged-in user's own conversations, pinned
     first then most recent; archived ones only when asked for. Paged by
     limit/offset (a page shorter than `limit` is the last). Anonymous callers
@@ -421,10 +421,13 @@ async def list_chats(db, user: Optional[dict], archived: bool = False,
         return []
     # Chats created before pinned/archived existed have neither field.
     query = {"user_id": user_id, "archived": True if archived else {"$ne": True}}
+    if matter_id:
+        query["matter_id"] = matter_id
     rows = await db.ai_conversations.find(
-        query, {"_id": 0, "conversation_id": 1, "title": 1, "updated_at": 1, "pinned": 1, "archived": 1},
+        query, {"_id": 0, "conversation_id": 1, "title": 1, "updated_at": 1, "pinned": 1, "archived": 1, "matter_id": 1},
     ).sort([("pinned", -1), ("updated_at", -1), ("conversation_id", 1)]).skip(offset).limit(limit).to_list(limit)
-    return [{**r, "pinned": bool(r.get("pinned")), "archived": bool(r.get("archived"))} for r in rows]
+    return [{**r, "pinned": bool(r.get("pinned")), "archived": bool(r.get("archived")), "matter_id": r.get("matter_id")}
+            for r in rows]
 
 
 async def _owned_chat(db, conversation_id: str, user: Optional[dict]) -> None:
@@ -2370,10 +2373,20 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         llm_messages = prompt_builder.build_legal_system_messages(
             prompt_builder.subject_for(decision["source"]), mode, intent, language) + llm_messages[1:]
         intent_note = INTENT_COMING_SOON_NOTES.get(intent)
-    result = await llm_service.generate_response(
-        llm_messages, use_file_search=use_rag, selected_source=decision["source"] if use_rag else None,
-        on_status=on_status, **({"language": language} if language != "auto" else {}),
-    )
+    # A matter's custom instructions: user-role DATA after every system message
+    # (chat_matters), and their length comes out of the retrieval context budget.
+    import chat_matters
+    import rag_provisions
+    matter_text = await chat_matters.instructions_for(db, convo)
+    llm_messages = chat_matters.with_instructions(llm_messages, matter_text)
+    reserved = rag_provisions.RESERVED_CHARS.set(len(matter_text))
+    try:
+        result = await llm_service.generate_response(
+            llm_messages, use_file_search=use_rag, selected_source=decision["source"] if use_rag else None,
+            on_status=on_status, **({"language": language} if language != "auto" else {}),
+        )
+    finally:
+        rag_provisions.RESERVED_CHARS.reset(reserved)
     citations: List[Dict[str, Any]] = []
     grounding: Optional[str] = None
     answer: Optional[Dict[str, Any]] = None

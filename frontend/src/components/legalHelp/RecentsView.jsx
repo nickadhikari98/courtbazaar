@@ -23,7 +23,7 @@ export function relativeTime(iso, now = new Date()) {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(d.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}) });
 }
 
-function RecentsRow({ chat, selecting, selected, onToggle, onOpen, onUpdate, onDelete }) {
+export function RecentsRow({ chat, selecting = false, selected = false, onToggle, onOpen, onUpdate, onDelete, onMove }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const save = () => {
@@ -62,7 +62,7 @@ function RecentsRow({ chat, selecting, selected, onToggle, onOpen, onUpdate, onD
       )}
       {!selecting && (
         <ChatMenu
-          chat={chat} onUpdate={onUpdate} onDelete={onDelete}
+          chat={chat} onUpdate={onUpdate} onDelete={onDelete} onMove={onMove}
           onRename={() => { setDraft(chat.title || ""); setEditing(true); }}
           triggerClassName="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
@@ -76,7 +76,7 @@ function RecentsRow({ chat, selecting, selected, onToggle, onOpen, onUpdate, onD
 /* Every chat, paged from GET /ai/chats as the list scrolls, with Active /
    Archived tabs and a select mode for bulk archive / delete
    (POST /ai/chats/bulk). Shown in the chat's main area at /legal-help/chats. */
-export default function RecentsView({ onOpen, onNewChat, onSearch, onUpdate, onDelete, onBulkDone, refreshKey }) {
+export default function RecentsView({ onOpen, onNewChat, onSearch, onUpdate, onDelete, onMove, onBulkDone, refreshKey }) {
   const [tab, setTab] = useState("active");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -187,7 +187,7 @@ export default function RecentsView({ onOpen, onNewChat, onSearch, onUpdate, onD
             {ordered.map((c) => (
               <RecentsRow
                 key={c.conversation_id} chat={c} selecting={selecting} selected={selected.has(c.conversation_id)}
-                onToggle={toggle} onOpen={onOpen} onUpdate={onUpdate} onDelete={onDelete}
+                onToggle={toggle} onOpen={onOpen} onUpdate={onUpdate} onDelete={onDelete} onMove={onMove}
               />
             ))}
           </ul>

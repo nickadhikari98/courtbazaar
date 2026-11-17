@@ -78,7 +78,7 @@ async function openRowMenu(index) {
 test("pinned chats sit under a Pinned header above the date groups; Archived (n) opens the archived list", () => {
   renderSidebar();
   const headers = [...container.querySelectorAll('[data-testid="chat-sidebar-list"] .uppercase')].map((h) => h.textContent);
-  expect(headers).toEqual(["Pinned", "Recents"]); // date headers live in the palette
+  expect(headers).toEqual(["Matters", "Pinned", "Recents"]); // date headers live in the palette
   expect(all("chat-row").map((r) => r.textContent)).toEqual(["Seat of arbitration", "Cheque bounce notice"]);
   expect($("chat-sidebar-archived").textContent).toBe("Archived (1)");
   act(() => $("chat-sidebar-archived").click());
@@ -341,7 +341,7 @@ test("the header shows the open chat's title with a menu: rename in place, pin, 
   key($("chat-title-menu"), "Enter"); // opens from the keyboard
   await flush();
   const items = [...document.querySelectorAll('[role="menuitem"]')].map((i) => i.textContent);
-  expect(items).toEqual(["Pin", "Rename", "Archive", "Delete"]);
+  expect(items).toEqual(["Pin", "Rename", "Archive", "Move to matter", "Delete"]);
   act(() => $("chat-row-rename-item").click());
   await flush();
   const input = $("chat-title-rename");

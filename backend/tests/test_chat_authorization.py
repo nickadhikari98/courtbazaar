@@ -498,7 +498,7 @@ def test_chat_list_is_per_user_and_empty_for_anonymous(monkeypatch):
             listed = await server.ai_chats(user=user_a)
             assert [c["conversation_id"] for c in listed] == [a1]
             assert listed[0]["title"] == " ".join(long_q.split())[:48].strip()
-            assert set(listed[0]) == {"conversation_id", "title", "updated_at", "pinned", "archived"}
+            assert set(listed[0]) == {"conversation_id", "title", "updated_at", "pinned", "archived", "matter_id"}
             assert await server.ai_chats(user=None) == []
 
             # B cannot rename or delete A's chat; same generic 404 as an unknown id.

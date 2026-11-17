@@ -10,6 +10,7 @@ import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import SupportTicketModal from "@/components/legal/SupportTicketModal";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import RecentsView from "./RecentsView";
+import { MatterView, MoveToMatterDialog, NameDialog } from "./Matters";
 import SettingsDialog from "./SettingsDialog";
 import { formatUsage } from "./usage";
 import ChatStatus, { FIRST_STEP } from "./ChatStatus";
@@ -228,6 +229,8 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const navigate = useNavigate();
   // /legal-help/chats: the full Recents list replaces the transcript; the sidebar stays.
   const recentsOpen = /\/chats\/?$/.test(location.pathname);
+  // /legal-help/matters/:id: one matter in the main area.
+  const matterId = (/\/matters\/([^/]+)\/?$/.exec(location.pathname) || [])[1] || null;
   const [recentsKey, setRecentsKey] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false); // hides the phone bottom bar for the keyboard
@@ -279,6 +282,9 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const [helpOpen, setHelpOpen] = useState(false);
   const [chats, setChats] = useState([]);
   const [archivedChats, setArchivedChats] = useState([]);
+  const [matters, setMatters] = useState([]);
+  const [movingChat, setMovingChat] = useState(null);
+  const [newMatterOpen, setNewMatterOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null); // the chat awaiting delete confirmation
   const [deleting, setDeleting] = useState(false);
@@ -303,6 +309,56 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
     api.get("/ai/chats", { params: { archived: true } }).then(({ data }) => setArchivedChats(list(data))).catch(() => {});
   }, [user]);
   useEffect(loadChats, [loadChats]);
+
+  const loadMatters = useCallback(async () => {
+    if (!user) { setMatters([]); return; }
+    try {
+      const { data } = await api.get("/ai/matters");
+      setMatters(Array.isArray(data) ? data.filter((m) => m && typeof m.matter_id === "string" && typeof m.name === "string") : []);
+    } catch { /* the section just stays as it was */ }
+  }, [user]);
+  useEffect(() => { loadMatters(); }, [loadMatters]);
+  const refreshLists = () => { loadChats(); loadMatters(); setRecentsKey((k) => k + 1); };
+
+  const createMatter = async (name) => {
+    try {
+      const { data } = await api.post("/ai/matters", { name });
+      loadMatters();
+      return data;
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't create that matter."));
+      return null;
+    }
+  };
+  const moveChat = async (chat, toMatter) => {
+    try {
+      await api.put(`/ai/chats/${encodeURIComponent(chat.conversation_id)}/matter`, { matter_id: toMatter });
+      setMovingChat(null);
+      const name = matters.find((m) => m.matter_id === toMatter)?.name;
+      toast.success(toMatter ? `Moved to ${name || "the matter"}` : "Removed from the matter");
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't move that chat."));
+    }
+    refreshLists();
+  };
+  const updateMatter = async (matter, patch) => {
+    try {
+      await api.patch(`/ai/matters/${encodeURIComponent(matter.matter_id)}`, patch);
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't save that change."));
+    }
+    loadMatters();
+  };
+  const deleteMatter = async (matter) => {
+    try {
+      await api.delete(`/ai/matters/${encodeURIComponent(matter.matter_id)}`);
+      navigate("/legal-help/chats");
+      toast.success("Matter deleted. Its chats are in your chat list.");
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't delete that matter."));
+    }
+    refreshLists();
+  };
 
   // Never shows a number the endpoint didn't return: anything unexpected clears it.
   const loadUsage = useCallback(async () => {
@@ -545,7 +601,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   useEffect(() => () => document.body.classList.remove("dark"), []);
 
   // Opening or starting a chat from anywhere leaves the Recents view.
-  const leaveRecents = () => { if (recentsOpen) navigate("/legal-help"); };
+  const leaveRecents = () => { if (recentsOpen || matterId) navigate("/legal-help"); };
   const selectChat = (id) => { leaveRecents(); openChat(id); };
   const startNewChat = () => { leaveRecents(); handleNewChat(); };
 
@@ -559,7 +615,8 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
 
   const usageView = formatUsage(usage);
   const currentChat = conversationId ? [...chats, ...archivedChats].find((c) => c.conversation_id === conversationId) : null;
-  const headerTitle = recentsOpen ? "Recents"
+  const currentMatter = matters.find((m) => m.matter_id === (matterId || currentChat?.matter_id));
+  const headerTitle = matterId ? (currentMatter?.name || "Matter") : recentsOpen ? "Recents"
     : currentChat?.title || chatTitleFrom(msgs.find((m) => m.role === "user")?.text) || "New chat";
   const saveHeaderTitle = () => {
     const title = titleDraft.trim();
@@ -581,10 +638,20 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         />
       )}
       {helpOpen && <SupportTicketModal open onOpenChange={setHelpOpen} />}
+      <MoveToMatterDialog
+        chat={movingChat} matters={matters} onOpenChange={(open) => { if (!open) setMovingChat(null); }}
+        onMove={moveChat} onCreate={createMatter}
+      />
+      <NameDialog
+        open={newMatterOpen} onOpenChange={setNewMatterOpen} title="New matter" confirmLabel="Create"
+        onSubmit={async (name) => { const m = await createMatter(name); if (m) navigate(`/legal-help/matters/${m.matter_id}`); }}
+      />
       <ChatPalette open={paletteOpen} onOpenChange={setPaletteOpen} chats={chats} onSelect={selectChat} />
       <ChatSidebar
         fullScreen={fullScreen} user={user} chats={chats} archivedChats={archivedChats} onUpdateChat={updateChat} onDeleteChat={setPendingDelete} usage={usage}
-        onOpenSettings={openSettings} onGetHelp={() => setHelpOpen(true)} onViewAll={() => navigate("/legal-help/chats")} onSearch={() => setPaletteOpen(true)} onLogout={() => auth?.logout?.()} activeId={conversationId} onSelect={selectChat}
+        onOpenSettings={openSettings} onGetHelp={() => setHelpOpen(true)} onViewAll={() => navigate("/legal-help/chats")} onSearch={() => setPaletteOpen(true)}
+        matters={matters} activeMatterId={matterId} onOpenMatter={(id) => { setDrawerOpen(false); navigate(`/legal-help/matters/${id}`); }}
+        onNewMatter={() => setNewMatterOpen(true)} onMoveChat={setMovingChat} onLogout={() => auth?.logout?.()} activeId={conversationId} onSelect={selectChat}
         onNewChat={startNewChat} newChatDisabled={!recentsOpen && msgs.length === 0 && !loading}
         collapsed={collapsed} onToggleCollapsed={() => setCollapsed((c) => !c)}
         drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}
@@ -615,12 +682,17 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
             ) : (
               <>
                 {/* Truncates (harder on phones) instead of pushing the icons off screen; full title on hover. */}
-                <h1 className="min-w-0 truncate font-display text-sm font-bold leading-tight sm:text-base" title={headerTitle} data-testid="chat-title">
-                  {headerTitle}
-                </h1>
-                {user && currentChat && !recentsOpen && (
+                <div className="min-w-0">
+                  <h1 className="truncate font-display text-sm font-bold leading-tight sm:text-base" title={headerTitle} data-testid="chat-title">
+                    {headerTitle}
+                  </h1>
+                  {!matterId && !recentsOpen && currentChat?.matter_id && currentMatter && (
+                    <p className="truncate text-2xs text-muted-foreground" title={currentMatter.name} data-testid="chat-title-matter">{currentMatter.name}</p>
+                  )}
+                </div>
+                {user && currentChat && !recentsOpen && !matterId && (
                   <ChatMenu
-                    chat={currentChat} onUpdate={updateChat} onDelete={setPendingDelete}
+                    chat={currentChat} onUpdate={updateChat} onDelete={setPendingDelete} onMove={setMovingChat}
                     onRename={() => { setTitleDraft(currentChat.title || ""); setEditingTitle(true); }}
                     triggerLabel="Chat options" testId="chat-title-menu" align="start"
                     triggerClassName="inline-flex h-10 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -640,10 +712,18 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         </div>
       </div>
 
-      {recentsOpen ? (
+      {matterId ? (
+        <MatterView
+          matter={matters.find((m) => m.matter_id === matterId)} refreshKey={recentsKey}
+          onOpen={selectChat} onUpdate={updateChat} onDelete={setPendingDelete} onMove={setMovingChat}
+          onRenameMatter={(m, name) => updateMatter(m, { name })}
+          onSaveInstructions={(m, custom_instructions) => updateMatter(m, { custom_instructions })}
+          onDeleteMatter={deleteMatter}
+        />
+      ) : recentsOpen ? (
         <RecentsView
           refreshKey={recentsKey} onOpen={selectChat} onNewChat={startNewChat} onSearch={() => setPaletteOpen(true)}
-          onUpdate={updateChat} onDelete={setPendingDelete}
+          onUpdate={updateChat} onDelete={setPendingDelete} onMove={setMovingChat}
           onBulkDone={(action, ids) => {
             loadChats();
             if (action === "delete" && ids.includes(conversationId)) handleNewChat();
@@ -812,8 +892,8 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
       )}
       {!composerFocused && (
         <MobileNav
-          active={recentsOpen ? "history" : "chat"} signedIn={!!user}
-          onChat={() => { if (recentsOpen) navigate("/legal-help"); }}
+          active={recentsOpen || matterId ? "history" : "chat"} signedIn={!!user}
+          onChat={leaveRecents}
           onNew={startNewChat} onSearch={() => setPaletteOpen(true)} onHistory={() => navigate("/legal-help/chats")}
         />
       )}

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
-import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, LogIn, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Trash2, Settings, LifeBuoy, LogOut, Gauge, Languages, Search } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, LogIn, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Trash2, Settings, LifeBuoy, LogOut, Gauge, Languages, Search, FolderOpen, FolderInput } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { formatUsage } from "./usage";
 import Logo from "@/components/shared/Logo";
@@ -41,7 +41,7 @@ function initials(name) {
 /* The per-chat menu (Pin, Rename, Archive, Delete), shared by sidebar rows,
    the Recents view and the header's title chevron. `children` is the
    trigger's content. Rename is the caller's inline editor. */
-export function ChatMenu({ chat, onUpdate, onDelete, onRename, children, triggerClassName, triggerLabel, testId = "chat-row-menu", align = "end" }) {
+export function ChatMenu({ chat, onUpdate, onDelete, onRename, onMove, children, triggerClassName, triggerLabel, testId = "chat-row-menu", align = "end" }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -62,6 +62,11 @@ export function ChatMenu({ chat, onUpdate, onDelete, onRename, children, trigger
         <DropdownMenuItem onSelect={() => onUpdate(chat.conversation_id, { archived: !chat.archived })} data-testid="chat-row-archive">
           {chat.archived ? <ArchiveRestore className="mr-2 h-4 w-4" /> : <Archive className="mr-2 h-4 w-4" />}{chat.archived ? "Unarchive" : "Archive"}
         </DropdownMenuItem>
+        {onMove && (
+          <DropdownMenuItem onSelect={() => setTimeout(() => onMove(chat), 0)} data-testid="chat-row-move">
+            <FolderInput className="mr-2 h-4 w-4" />Move to matter
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         {/* Deferred so the closing menu hands focus over cleanly to the confirm dialog. */}
         <DropdownMenuItem
@@ -78,7 +83,7 @@ export function ChatMenu({ chat, onUpdate, onDelete, onRename, children, trigger
 
 /* One chat in the list: open it, or from "..." pin, rename inline
    (Enter saves, Esc cancels) or archive. */
-function ChatRow({ chat, active, onSelect, onUpdate, onDelete }) {
+function ChatRow({ chat, active, onSelect, onUpdate, onDelete, onMove }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const startRename = () => { setDraft(chat.title || ""); setEditing(true); };
@@ -113,7 +118,7 @@ function ChatRow({ chat, active, onSelect, onUpdate, onDelete }) {
         {chat.title || "New chat"}
       </button>
       <ChatMenu
-        chat={chat} onUpdate={onUpdate} onDelete={onDelete} onRename={startRename}
+        chat={chat} onUpdate={onUpdate} onDelete={onDelete} onRename={startRename} onMove={onMove}
         triggerClassName="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-100 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 data-[state=open]:opacity-100"
       >
         <MoreHorizontal className="h-4 w-4" />
@@ -122,14 +127,14 @@ function ChatRow({ chat, active, onSelect, onUpdate, onDelete }) {
   );
 }
 
-function ChatGroup({ label, chats, activeId, onSelect, onUpdate, onDelete }) {
+function ChatGroup({ label, chats, activeId, onSelect, onUpdate, onDelete, onMove }) {
   return (
     <div className="mb-3">
       <div className="px-2 pb-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
       <ul>
         {chats.map((c) => (
           <li key={c.conversation_id}>
-            <ChatRow chat={c} active={c.conversation_id === activeId} onSelect={onSelect} onUpdate={onUpdate} onDelete={onDelete} />
+            <ChatRow chat={c} active={c.conversation_id === activeId} onSelect={onSelect} onUpdate={onUpdate} onDelete={onDelete} onMove={onMove} />
           </li>
         ))}
       </ul>
@@ -142,14 +147,14 @@ function ChatGroup({ label, chats, activeId, onSelect, onUpdate, onDelete }) {
 const DRAWER_AREA = { app: "inset-y-0 z-50", site: "top-[65px] bottom-0 z-30" };
 
 export default function ChatSidebar({
-  fullScreen, user, chats, archivedChats = [], onUpdateChat, onDeleteChat, usage, onOpenSettings, onGetHelp, onLogout, onViewAll, onSearch, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
+  fullScreen, user, chats, archivedChats = [], onUpdateChat, onDeleteChat, usage, onOpenSettings, onGetHelp, onLogout, onViewAll, onSearch, matters = [], activeMatterId, onOpenMatter, onNewMatter, onMoveChat, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
 }) {
   // The rail (collapsed) only applies from md up; the mobile drawer is always full width.
   const rail = collapsed ? "md:w-16" : "md:w-[272px]";
   const hideOnRail = collapsed ? "md:hidden" : "";
   const actionRow = "flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm hover:bg-secondary disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   const [showArchived, setShowArchived] = useState(false);
-  const groupProps = { activeId, onSelect, onUpdate: onUpdateChat, onDelete: onDeleteChat };
+  const groupProps = { activeId, onSelect, onUpdate: onUpdateChat, onDelete: onDeleteChat, onMove: onMoveChat };
   const pinned = shortList(chats.filter((c) => c.pinned), activeId);
   const recents = shortList(chats.filter((c) => !c.pinned), activeId);
   const usageView = formatUsage(usage);
@@ -219,6 +224,34 @@ export default function ChatSidebar({
             </>
           ) : user ? (
             <>
+              <div className="mb-3" data-testid="chat-sidebar-matters">
+                <div className="px-2 pb-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Matters</div>
+                <ul>
+                  {matters.map((m) => (
+                    <li key={m.matter_id}>
+                      <button
+                        type="button" onClick={() => onOpenMatter(m.matter_id)}
+                        aria-current={m.matter_id === activeMatterId ? "page" : undefined}
+                        className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                          m.matter_id === activeMatterId ? "bg-card font-semibold shadow-sm dark:bg-popover" : "hover:bg-secondary"}`}
+                        data-testid="chat-sidebar-matter"
+                      >
+                        <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                        <span className="min-w-0 flex-1 truncate" title={m.name}>{m.name}</span>
+                        <span className="shrink-0 text-xs text-muted-foreground tabular-nums" aria-label={`${m.chat_count} chats`}>{m.chat_count}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                {!matters.length && <p className="px-2 pb-1 text-xs text-muted-foreground" data-testid="chat-sidebar-no-matters">No matters yet.</p>}
+                <button
+                  type="button" onClick={onNewMatter}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="chat-sidebar-new-matter"
+                >
+                  <Plus className="h-4 w-4 shrink-0" />New matter
+                </button>
+              </div>
               {pinned.shown.length > 0 && <ChatGroup label="Pinned" chats={pinned.shown} {...groupProps} />}
               {recents.shown.length > 0 && <ChatGroup label="Recents" chats={recents.shown} {...groupProps} />}
               {(pinned.cut || recents.cut) && (

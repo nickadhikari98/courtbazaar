@@ -551,6 +551,8 @@ async def seed_initial_data():
     await ai_chat_svc.ensure_indexes(db)
     import chat_usage
     await chat_usage.ensure_indexes(db)
+    import chat_matters
+    await chat_matters.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -1872,9 +1874,47 @@ async def ai_usage(user: Optional[dict] = Depends(get_current_user_optional), re
 
 @api_router.get("/ai/chats")
 async def ai_chats(user: Optional[dict] = Depends(get_current_user_optional), archived: bool = False,
-                   limit: Annotated[int, Query(ge=1, le=100)] = 50, offset: Annotated[int, Query(ge=0)] = 0):
+                   limit: Annotated[int, Query(ge=1, le=100)] = 50, offset: Annotated[int, Query(ge=0)] = 0,
+                   matter_id: Annotated[Optional[str], Query(max_length=64)] = None):
     import ai_chat as ai_chat_svc
-    return await ai_chat_svc.list_chats(db, user, archived=archived, limit=limit, offset=offset)
+    return await ai_chat_svc.list_chats(db, user, archived=archived, limit=limit, offset=offset, matter_id=matter_id)
+
+# ---------- Matters: owner-only chat folders with custom instructions (chat_matters) ----------
+class MatterCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    custom_instructions: str = Field("", max_length=2000)
+
+class MatterUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=80)
+    custom_instructions: Optional[str] = Field(None, max_length=2000)
+
+class ChatMatterRequest(BaseModel):
+    matter_id: Optional[str] = Field(None, max_length=64)  # null moves the chat out of its matter
+
+@api_router.get("/ai/matters")
+async def ai_matters_list(user=Depends(get_current_user)):
+    import chat_matters
+    return await chat_matters.list_matters(db, user)
+
+@api_router.post("/ai/matters")
+async def ai_matters_create(req: MatterCreateRequest, user=Depends(get_current_user)):
+    import chat_matters
+    return await chat_matters.create_matter(db, user, req.name, req.custom_instructions)
+
+@api_router.patch("/ai/matters/{matter_id}")
+async def ai_matters_update(matter_id: str, req: MatterUpdateRequest, user=Depends(get_current_user)):
+    import chat_matters
+    return await chat_matters.update_matter(db, user, matter_id, name=req.name, custom_instructions=req.custom_instructions)
+
+@api_router.delete("/ai/matters/{matter_id}")
+async def ai_matters_delete(matter_id: str, user=Depends(get_current_user)):
+    import chat_matters
+    return await chat_matters.delete_matter(db, user, matter_id)
+
+@api_router.put("/ai/chats/{conversation_id}/matter")
+async def ai_chat_move(conversation_id: str, req: ChatMatterRequest, user=Depends(get_current_user)):
+    import chat_matters
+    return await chat_matters.move_chat(db, user, conversation_id, req.matter_id)
 
 class ChatBulkRequest(BaseModel):
     action: Literal["archive", "unarchive", "delete"]

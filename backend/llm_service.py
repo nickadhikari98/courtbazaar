@@ -486,7 +486,7 @@ def _cap_context(passages: list[str], named: list) -> list[str]:
     for p in passages:
         if p in kept:
             continue
-        if len(kept) >= rag_provisions.MAX_BLOCKS or total + len(p) > rag_provisions.MAX_CONTEXT_CHARS:
+        if len(kept) >= rag_provisions.MAX_BLOCKS or total + len(p) > rag_provisions.context_char_budget():
             break
         kept.append(p)
         total += len(p)
