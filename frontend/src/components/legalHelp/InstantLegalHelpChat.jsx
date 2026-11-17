@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { api, getErrorMessage } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -127,7 +127,7 @@ function LimitCard({ reason, text }) {
     <div className="rounded-xl border border-accent/40 bg-accent/5 px-4 py-3" data-testid="instant-legal-help-limit">
       <p className="text-sm leading-6">{text}</p>
       {action && (
-        <Link to={action.to} className="mt-2 inline-flex h-9 items-center rounded-lg bg-accent px-4 text-sm font-semibold text-white hover:bg-accent/90"
+        <Link to={action.to} className="mt-2 inline-flex h-9 items-center rounded-lg bg-accent px-4 text-sm font-semibold text-accent-foreground hover:bg-accent/90"
           data-testid="instant-legal-help-limit-action">
           {action.label}
         </Link>
@@ -138,7 +138,22 @@ function LimitCard({ reason, text }) {
 
 // This browser's chat preferences per signed-in user (no settings endpoint
 // exists): transcript width and the answer language sent with each message.
-const PREF_OPTIONS = { width: ["narrow", "wide"], language: ["auto", "en", "hi", "hinglish"] };
+const PREF_OPTIONS = { width: ["narrow", "wide"], language: ["auto", "en", "hi", "hinglish"], theme: ["system", "light", "dark"] };
+// Settings key -> /ai/preferences field.
+const PREF_FIELDS = { width: "transcript_width", language: "answer_language", theme: "theme" };
+const THEME_KEY = "cb_chat_theme"; // read by public/index.html before first paint
+
+function useSystemDark() {
+  const query = typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  const [dark, setDark] = useState(() => !!query?.matches);
+  useEffect(() => {
+    if (!query) return undefined;
+    const onChange = (e) => setDark(e.matches);
+    query.addEventListener?.("change", onChange);
+    return () => query.removeEventListener?.("change", onChange);
+  }, [query]);
+  return dark;
+}
 function readPrefs(key) {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(key) || "{}") || {}; } catch { /* storage blocked: defaults */ }
@@ -192,6 +207,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const [titleDraft, setTitleDraft] = useState("");
   const auth = useAuth();
   const user = auth?.user || null;
+  const systemDark = useSystemDark();
   const [usage, setUsage] = useState(null);
   const [settings, setSettings] = useState({ open: false, pane: null });
   const openSettings = (pane = null) => setSettings({ open: true, pane });
@@ -209,10 +225,8 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
       try {
         const { data } = await api.get("/ai/preferences");
         if (!live || !data || typeof data !== "object") return;
-        const next = {
-          width: PREF_OPTIONS.width.includes(data.transcript_width) ? data.transcript_width : PREF_OPTIONS.width[0],
-          language: PREF_OPTIONS.language.includes(data.answer_language) ? data.answer_language : PREF_OPTIONS.language[0],
-        };
+        const next = Object.fromEntries(Object.entries(PREF_FIELDS).map(([k, field]) => [
+          k, PREF_OPTIONS[k].includes(data[field]) ? data[field] : PREF_OPTIONS[k][0]]));
         setPrefs(next);
         savePrefsLocally(next);
       } catch { /* keep this browser's copy */ }
@@ -229,7 +243,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
     if (!user) return;
     (async () => {
       try {
-        await api.patch("/ai/preferences", { [k === "width" ? "transcript_width" : "answer_language"]: v });
+        await api.patch("/ai/preferences", { [PREF_FIELDS[k]]: v });
       } catch (err) {
         toast.error(getErrorMessage(err, "Couldn't save that setting to your account."));
       }
@@ -490,6 +504,19 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
     }
   };
 
+  // Dark theme (signed-in only: the guest page shares the screen with the light site nav).
+  // The class goes on <body>, not <html>, so dialogs, menus and toasts (portals) follow it,
+  // and it's removed when the chat unmounts, so no other page turns dark.
+  const dark = !!user && (prefs.theme === "dark" || (prefs.theme === "system" && systemDark));
+  useLayoutEffect(() => {
+    if (auth?.loading) return; // keep what index.html applied until we know who this is
+    document.body.classList.toggle("dark", dark);
+    try {
+      if (user) localStorage.setItem(THEME_KEY, prefs.theme); else localStorage.removeItem(THEME_KEY);
+    } catch { /* first paint just won't be themed */ }
+  }, [dark, user, prefs.theme, auth?.loading]);
+  useEffect(() => () => document.body.classList.remove("dark"), []);
+
   // Opening or starting a chat from anywhere leaves the Recents view.
   const leaveRecents = () => { if (recentsOpen) navigate("/legal-help"); };
   const selectChat = (id) => { leaveRecents(); openChat(id); };
@@ -536,7 +563,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}
       />
     <div className="flex flex-col flex-1 min-w-0 min-h-0">
-      <div className="border-b border-border bg-white shrink-0">
+      <div className="border-b border-border bg-card shrink-0">
         <div className="w-full px-4 py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
             <button
@@ -555,7 +582,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
                   if (e.key === "Escape") { e.preventDefault(); setEditingTitle(false); }
                 }}
                 onBlur={() => setEditingTitle(false)}
-                className="min-w-0 flex-1 rounded-lg border border-accent/60 bg-white px-2 py-1.5 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-accent/30"
+                className="min-w-0 flex-1 rounded-lg border border-accent/60 bg-card px-2 py-1.5 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-accent/30"
                 data-testid="chat-title-rename"
               />
             ) : (
@@ -635,7 +662,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
                 {SUGGESTIONS.map((text, i) => (
                   <button
                     key={text} type="button" onClick={() => send(text)}
-                    className="rounded-xl border border-border bg-white p-4 text-sm leading-6 hover:border-accent/50 hover:bg-accent/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="rounded-xl border border-border bg-card p-4 text-sm leading-6 hover:border-accent/50 hover:bg-accent/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     data-testid={`instant-legal-help-suggestion-${i}`}
                   >
                     {text}
@@ -646,7 +673,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
           )}
           {msgs.map((m, i) => (m.role === "user" ? (
             <div key={i} className="flex justify-end gap-3" data-testid={`instant-legal-help-msg-user-${i}`}>
-              <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-br-md bg-primary text-white px-4 py-2.5 text-[15px] leading-7 whitespace-pre-wrap break-words">
+              <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-br-md bg-primary text-primary-foreground px-4 py-2.5 text-[15px] leading-7 whitespace-pre-wrap break-words">
                 {m.text}
               </div>
               <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary shrink-0 hidden sm:flex items-center justify-center" aria-hidden="true">
@@ -655,7 +682,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
             </div>
           ) : (
             <div key={i} className="cb-msg flex gap-3 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-300" data-testid={`instant-legal-help-msg-assistant-${i}`}>
-              <div className="w-8 h-8 rounded-lg bg-accent text-white shrink-0 flex items-center justify-center" aria-hidden="true" data-testid="instant-legal-help-avatar">
+              <div className="w-8 h-8 rounded-lg bg-accent text-accent-foreground shrink-0 flex items-center justify-center" aria-hidden="true" data-testid="instant-legal-help-avatar">
                 <Scale className="w-4 h-4" />
               </div>
               <div className="min-w-0 flex-1 pt-0.5">
@@ -663,10 +690,10 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
                   <LimitCard reason={m.limit} text={m.text} />
                 ) : m.grounding === "insufficient" ? (
                   // Not a failure: the approved documents just don't cover it.
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex gap-3" data-testid="instant-legal-help-insufficient">
-                    <Info className="w-4 h-4 text-amber-700 shrink-0 mt-1" aria-hidden="true" />
+                  <div className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 flex gap-3" data-testid="instant-legal-help-insufficient">
+                    <Info className="w-4 h-4 text-warning-foreground shrink-0 mt-1" aria-hidden="true" />
                     <div className="min-w-0">
-                      <div className="text-xs font-semibold text-amber-800 uppercase tracking-wide">Not covered by the available documents</div>
+                      <div className="text-xs font-semibold text-warning-foreground uppercase tracking-wide">Not covered by the available documents</div>
                       <div className="mt-1"><ChatMarkdown text={cleanAssistantText(m.text)} citeLinks={webCitationLinks(m.citations)} /></div>
                     </div>
                   </div>
@@ -708,7 +735,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
 
       <div className="shrink-0 bg-background pb-[max(env(safe-area-inset-bottom),0.75rem)]">
         <div className="max-w-[760px] mx-auto w-full px-4 pt-2">
-          <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/20 transition-shadow">
+          <div className="rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/20 transition-shadow">
             <textarea
               ref={inputRef}
               rows={1}
@@ -718,7 +745,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
               placeholder={loading ? "Generating answer..." : msgs.length ? "Ask a follow-up..." : "Describe your situation, legal issue, or service need..."}
               aria-label="Message Instant Legal Help"
               autoFocus
-              className="block w-full resize-none bg-transparent px-2 py-2 text-[15px] leading-6 max-h-40 overflow-y-auto cb-scroll placeholder:text-slate-400 focus:outline-none"
+              className="block w-full resize-none bg-transparent px-2 py-2 text-[15px] leading-6 max-h-40 overflow-y-auto cb-scroll placeholder:text-subtle focus:outline-none"
               data-testid="instant-legal-help-input"
             />
             <div className="flex items-center gap-2 pt-1">
@@ -738,7 +765,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
                   <button
                     key={m.value} type="button" aria-pressed={mode === m.value} onClick={() => chooseMode(m.value)}
                     className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                      mode === m.value ? "bg-white text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                      mode === m.value ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                     data-testid={`instant-legal-help-mode-${m.value}`}
                   >
                     {m.label}

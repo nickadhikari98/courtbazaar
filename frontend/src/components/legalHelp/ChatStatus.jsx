@@ -57,14 +57,14 @@ export default function ChatStatus({ steps }) {
       <div className="flex h-8 w-8 shrink-0 items-center justify-center" aria-hidden="true">
         <WritingQuill className="h-6 w-6" />
       </div>
-    <div className="min-w-0 flex-1 rounded-2xl border border-border bg-white p-4">
+    <div className="min-w-0 flex-1 rounded-2xl border border-border bg-card p-4">
       <ul className="space-y-1.5 text-sm" data-testid="instant-legal-help-status-steps">
         {shown.map((s, i) => {
           const done = s !== current;
           return (
             <li key={`${i}-${s.step}`} className={`flex items-start gap-2 ${done ? "text-muted-foreground" : "text-foreground"}`}>
               {done
-                ? <Check className="mt-1 h-3.5 w-3.5 shrink-0 text-emerald-600" aria-hidden="true" />
+                ? <Check className="mt-1 h-3.5 w-3.5 shrink-0 text-success" aria-hidden="true" />
                 : <Loader2 className="mt-1 h-3.5 w-3.5 shrink-0 motion-safe:animate-spin text-accent" aria-hidden="true" />}
               <span
                 className="min-w-0 flex-1 [overflow-wrap:anywhere]"
@@ -80,7 +80,7 @@ export default function ChatStatus({ steps }) {
       </ul>
       {CARD_STEPS.includes(current.step) && (
         <div className="mt-4 space-y-2" data-testid="instant-legal-help-skeleton">
-          {["w-full", "w-11/12", "w-2/3"].map((w) => <div key={w} className={`h-3 ${w} rounded bg-slate-200 motion-safe:animate-pulse`} />)}
+          {["w-full", "w-11/12", "w-2/3"].map((w) => <div key={w} className={`h-3 ${w} rounded bg-border motion-safe:animate-pulse`} />)}
           <p className="pt-1 text-xs text-muted-foreground">The full answer card appears here once it is verified.</p>
         </div>
       )}

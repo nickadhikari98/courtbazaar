@@ -46,7 +46,7 @@ function RecentsRow({ chat, selecting, selected, onToggle, onOpen, onUpdate, onD
             if (e.key === "Escape") { e.preventDefault(); setEditing(false); }
           }}
           onBlur={() => setEditing(false)}
-          className="min-w-0 flex-1 rounded-lg border border-accent/60 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30"
+          className="min-w-0 flex-1 rounded-lg border border-accent/60 bg-card px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30"
           data-testid="recents-row-rename"
         />
       ) : (
@@ -176,7 +176,7 @@ export default function RecentsView({ onOpen, onNewChat, onSearch, onUpdate, onD
 
         {loading && !rows.length ? (
           <ul className="mt-2 space-y-3" aria-label="Loading chats" data-testid="recents-loading">
-            {[0, 1, 2, 3, 4].map((i) => <li key={i} className="h-10 rounded-lg bg-slate-200/70 motion-safe:animate-pulse" />)}
+            {[0, 1, 2, 3, 4].map((i) => <li key={i} className="h-10 rounded-lg bg-border motion-safe:animate-pulse" />)}
           </ul>
         ) : !rows.length ? (
           <p className="py-16 text-center text-sm text-muted-foreground" data-testid="recents-empty">
@@ -196,7 +196,7 @@ export default function RecentsView({ onOpen, onNewChat, onSearch, onUpdate, onD
       </div>
 
       {selecting && (
-        <div className="sticky bottom-0 border-t border-border bg-white/95 px-4 py-3 backdrop-blur" data-testid="recents-actions">
+        <div className="sticky bottom-0 border-t border-border bg-card/95 px-4 py-3 backdrop-blur" data-testid="recents-actions">
           <div className="mx-auto flex max-w-3xl items-center gap-2">
             <span className="flex-1 text-sm font-semibold" data-testid="recents-count">{selected.size} selected</span>
             <Button type="button" variant="outline" className="h-10" disabled={!selected.size || busy}

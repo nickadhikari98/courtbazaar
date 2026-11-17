@@ -12,9 +12,9 @@ import ChatMarkdown from "./ChatMarkdown";
 
 const ICONS = { rule: BookOpen, check: CheckCircle2, warning: TriangleAlert, info: Info };
 const BADGE_TONES = {
-  success: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  warning: "bg-amber-50 text-amber-800 border-amber-200",
-  neutral: "bg-slate-100 text-slate-600 border-slate-200",
+  success: "bg-success/10 text-success-foreground border-success/30",
+  warning: "bg-warning/10 text-warning-foreground border-warning/40",
+  neutral: "bg-secondary text-muted-foreground border-border",
 };
 const text = (value) => (typeof value === "string" ? value.trim() : "");
 
@@ -85,7 +85,7 @@ export default function AnswerCard({ answer, citeLinks, clean }) {
     <div className="space-y-3">
       <article className="space-y-4 text-[15px] leading-7" data-testid="instant-legal-help-answer-card">
         {answer.partial && (
-          <p className="flex items-start gap-1.5 text-xs leading-5 text-amber-800" data-testid="instant-legal-help-partial-note">
+          <p className="flex items-start gap-1.5 text-xs leading-5 text-warning-foreground" data-testid="instant-legal-help-partial-note">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span>Partial answer: only part of this is covered by the available documents.</span>
           </p>

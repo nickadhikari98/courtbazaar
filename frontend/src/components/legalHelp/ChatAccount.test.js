@@ -212,7 +212,7 @@ test("Language and transcript width are this user's preferences; the language go
   await openMenuItem("chat-user-language");
   act(() => $("settings-language-hi").click());
   await flush();
-  expect(JSON.parse(localStorage.getItem("cb_chat_prefs:u1"))).toEqual({ width: "narrow", language: "hi" });
+  expect(JSON.parse(localStorage.getItem("cb_chat_prefs:u1"))).toEqual({ width: "narrow", language: "hi", theme: "system" });
   await tab("appearance");
   act(() => $("settings-width-wide").click());
   await flush();
@@ -299,4 +299,43 @@ test("the welcome heading greets by the display name", async () => {
   mockGets(FREE_USAGE);
   await render();
   expect($("instant-legal-help-empty").textContent).toContain("How can I help today, JD?");
+});
+
+test("dark theme: from the account, on <body> only while the chat is mounted, System follows the OS live", async () => {
+  mockAuth.user = USER;
+  let osDark = false;
+  const listeners = [];
+  window.matchMedia = () => ({ get matches() { return osDark; }, addEventListener: (_e, cb) => listeners.push(cb), removeEventListener: () => {} });
+  api.get.mockImplementation((url) => Promise.resolve({
+    data: url === "/ai/usage" ? FREE_USAGE : url === "/ai/preferences" ? { answer_language: "auto", transcript_width: "narrow", theme: "dark" } : [],
+  }));
+  api.patch.mockResolvedValue({ data: {} });
+  await render();
+  expect(document.body.classList.contains("dark")).toBe(true);
+  expect(document.documentElement.classList.contains("dark")).toBe(false);
+  expect(localStorage.getItem("cb_chat_theme")).toBe("dark"); // for the next first paint
+
+  await openMenuItem("chat-user-settings");
+  await tab("appearance");
+  act(() => $("settings-theme-system").click());
+  await flush();
+  expect(api.patch).toHaveBeenCalledWith("/ai/preferences", { theme: "system" });
+  expect(document.body.classList.contains("dark")).toBe(false); // OS is light
+  await act(async () => { osDark = true; listeners.forEach((cb) => cb({ matches: true })); });
+  expect(document.body.classList.contains("dark")).toBe(true); // no reload needed
+
+  act(() => root.unmount());
+  root = createRoot(container);
+  expect(document.body.classList.contains("dark")).toBe(false); // other pages stay light
+  delete window.matchMedia;
+  localStorage.clear();
+});
+
+test("guests always get the light chat", async () => {
+  localStorage.setItem("cb_chat_theme", "dark");
+  document.body.classList.add("dark");
+  mockGets(FREE_USAGE);
+  await render();
+  expect(document.body.classList.contains("dark")).toBe(false);
+  expect(localStorage.getItem("cb_chat_theme")).toBeNull();
 });

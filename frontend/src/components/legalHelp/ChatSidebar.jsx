@@ -97,13 +97,13 @@ function ChatRow({ chat, active, onSelect, onUpdate, onDelete }) {
           if (e.key === "Escape") { e.preventDefault(); setEditing(false); }
         }}
         onBlur={() => setEditing(false)}
-        className="w-full rounded-lg border border-accent/60 bg-white px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30"
+        className="w-full rounded-lg border border-accent/60 bg-card px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30"
         data-testid="chat-row-rename"
       />
     );
   }
   return (
-    <div className={`group flex items-center rounded-lg ${active ? "bg-white shadow-sm" : "hover:bg-slate-200/60"}`} data-testid="chat-row">
+    <div className={`group flex items-center rounded-lg ${active ? "bg-card shadow-sm dark:bg-popover" : "hover:bg-secondary"}`} data-testid="chat-row">
       <button
         type="button" onClick={() => onSelect(chat.conversation_id)}
         aria-current={active ? "page" : undefined}
@@ -114,7 +114,7 @@ function ChatRow({ chat, active, onSelect, onUpdate, onDelete }) {
       </button>
       <ChatMenu
         chat={chat} onUpdate={onUpdate} onDelete={onDelete} onRename={startRename}
-        triggerClassName="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-100 hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 data-[state=open]:opacity-100"
+        triggerClassName="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-100 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 data-[state=open]:opacity-100"
       >
         <MoreHorizontal className="h-4 w-4" />
       </ChatMenu>
@@ -147,7 +147,7 @@ export default function ChatSidebar({
   // The rail (collapsed) only applies from md up; the mobile drawer is always full width.
   const rail = collapsed ? "md:w-16" : "md:w-[272px]";
   const hideOnRail = collapsed ? "md:hidden" : "";
-  const actionRow = "flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm hover:bg-slate-200/60 disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  const actionRow = "flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm hover:bg-secondary disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   const [showArchived, setShowArchived] = useState(false);
   const groupProps = { activeId, onSelect, onUpdate: onUpdateChat, onDelete: onDeleteChat };
   const pinned = shortList(chats.filter((c) => c.pinned), activeId);
@@ -161,18 +161,20 @@ export default function ChatSidebar({
           data-testid="chat-sidebar-overlay" />
       )}
       <aside
-        className={`fixed left-0 ${DRAWER_AREA[fullScreen ? "app" : "site"]} w-[272px] ${rail} flex flex-col border-r border-border bg-slate-50 transition-[transform,width] duration-200
+        className={`fixed left-0 ${DRAWER_AREA[fullScreen ? "app" : "site"]} w-[272px] ${rail} flex flex-col border-r border-border bg-muted transition-[transform,width] duration-200
           md:static md:z-auto md:translate-x-0 ${drawerOpen ? "translate-x-0" : "-translate-x-full"}`}
         aria-label="Chats"
         data-testid="chat-sidebar"
       >
         <div className={`flex items-center gap-2 px-3 pt-3 pb-2 ${fullScreen ? "justify-between" : "justify-end"}`}>
           {/* Guests already see the site nav's logo: only one is ever shown. */}
-          {fullScreen && <div className={hideOnRail} data-testid="chat-sidebar-logo"><Logo to="/" size="sm" /></div>}
+          {/* The logo PNG has black "Court" and grey tagline on transparency, unreadable on the dark
+              background; in dark mode it sits on a light plate (asset unchanged). */}
+          {fullScreen && <div className={`${hideOnRail} dark:rounded-md dark:bg-primary dark:px-2 dark:py-1`} data-testid="chat-sidebar-logo"><Logo to="/" size="sm" /></div>}
           <button
             type="button" onClick={onToggleCollapsed}
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!collapsed}
-            className="hidden md:inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-slate-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="hidden md:inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             data-testid="chat-sidebar-collapse"
           >
             <PanelLeft className="w-4 h-4" />
@@ -206,7 +208,7 @@ export default function ChatSidebar({
             <>
               <button
                 type="button" onClick={() => setShowArchived(false)}
-                className="mb-2 flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-semibold hover:bg-slate-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="mb-2 flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-semibold hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 data-testid="chat-sidebar-archived-back"
               >
                 <ArrowLeft className="h-4 w-4" />All chats
@@ -223,7 +225,7 @@ export default function ChatSidebar({
                 // The full lists live in the search palette (with its date groups), not a second view here.
                 <button
                   type="button" onClick={onViewAll}
-                  className="mb-1 w-full rounded-lg px-2 py-2 text-left text-sm text-muted-foreground hover:bg-slate-200/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="mb-1 w-full rounded-lg px-2 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   data-testid="chat-sidebar-view-all"
                 >
                   View all
@@ -232,7 +234,7 @@ export default function ChatSidebar({
               {archivedChats.length > 0 && (
                 <button
                   type="button" onClick={() => setShowArchived(true)}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-muted-foreground hover:bg-slate-200/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   data-testid="chat-sidebar-archived"
                 >
                   <Archive className="h-4 w-4" />Archived ({archivedChats.length})
@@ -240,7 +242,7 @@ export default function ChatSidebar({
               )}
             </>
           ) : (
-            <div className="mx-1 rounded-xl border border-border bg-white p-4 text-sm" data-testid="chat-sidebar-login">
+            <div className="mx-1 rounded-xl border border-border bg-card p-4 text-sm" data-testid="chat-sidebar-login">
               <p className="font-semibold">Log in to save your chats</p>
               <p className="mt-1 text-xs text-muted-foreground leading-5">Your conversations will appear here so you can pick them up later.</p>
               <Link to="/login" className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline">
@@ -253,12 +255,12 @@ export default function ChatSidebar({
         <div className={`border-t border-border p-3 space-y-3 ${collapsed ? "md:mt-auto" : ""}`}>
           {/* GET /ai/usage only; nothing is shown until it answers. */}
           {usageView && (
-            <div className={`rounded-lg bg-white border border-border p-3 ${hideOnRail}`} data-testid="chat-sidebar-usage">
+            <div className={`rounded-lg bg-card border border-border p-3 ${hideOnRail}`} data-testid="chat-sidebar-usage">
               <div className="flex justify-between gap-2 text-xs">
                 <span className="font-semibold">{usageView.label}</span>
                 <span className="text-muted-foreground tabular-nums">{usageView.used.toLocaleString()} / {usageView.limit.toLocaleString()}</span>
               </div>
-              <div className="mt-2 h-1.5 rounded-full bg-slate-200" role="progressbar" aria-label={usageView.label}
+              <div className="mt-2 h-1.5 rounded-full bg-border" role="progressbar" aria-label={usageView.label}
                 aria-valuemin={0} aria-valuemax={usageView.limit} aria-valuenow={Math.min(usageView.used, usageView.limit)}>
                 <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, (usageView.used / (usageView.limit || 1)) * 100)}%` }} />
               </div>
@@ -268,7 +270,7 @@ export default function ChatSidebar({
           {fullScreen && (
             <Link
               to={user ? "/dashboard" : "/"} title={user ? "Back to dashboard" : "Back to CourtBazaar"}
-              className="flex items-center gap-2 rounded-lg px-1 py-1.5 text-sm text-muted-foreground hover:bg-slate-200/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex items-center gap-2 rounded-lg px-1 py-1.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               data-testid="chat-sidebar-back"
             >
               <ArrowLeft className="h-4 w-4 shrink-0" /><span className={hideOnRail}>{user ? "Back to dashboard" : "Back to CourtBazaar"}</span>
@@ -277,10 +279,10 @@ export default function ChatSidebar({
           {user && (
             <DropdownMenu>
               <DropdownMenuTrigger
-                className="w-full flex items-center gap-2 rounded-lg px-1 py-1.5 hover:bg-slate-200/60 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="w-full flex items-center gap-2 rounded-lg px-1 py-1.5 hover:bg-secondary text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label="Account menu" data-testid="chat-sidebar-user"
               >
-                <span className="h-8 w-8 shrink-0 rounded-full bg-primary text-white text-xs font-semibold flex items-center justify-center">{initials(user.name)}</span>
+                <span className="h-8 w-8 shrink-0 rounded-full bg-primary text-primary-foreground text-xs font-semibold flex items-center justify-center">{initials(user.name)}</span>
                 <span className={`flex-1 text-left truncate ${hideOnRail}`}>{initials(user.name)}{planLabel ? ` · ${planLabel}` : ""}</span>
                 <ChevronDown className={`w-4 h-4 text-muted-foreground ${hideOnRail}`} />
               </DropdownMenuTrigger>

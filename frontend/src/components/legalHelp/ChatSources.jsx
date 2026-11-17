@@ -129,7 +129,7 @@ export function ruleLabel(rules, label = "Rule") {
 function WebSource({ source }) {
   return (
     <li
-      className="flex items-start gap-2.5 rounded-lg border border-border bg-white px-3 py-2"
+      className="flex items-start gap-2.5 rounded-lg border border-border bg-card px-3 py-2"
       data-testid="instant-legal-help-web-source"
     >
       <span className="mt-0.5 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-accent/10 px-1 text-2xs font-bold text-accent" aria-hidden="true">

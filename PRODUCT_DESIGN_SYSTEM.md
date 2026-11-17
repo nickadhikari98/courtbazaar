@@ -410,15 +410,39 @@ Large:      1440px max-width (max-w-screen-2xl)
 - Dividers: use border
 - Backgrounds: use background or card
 
-### 7.2 Dark Mode Preparation
+### 7.2 Dark Mode
 
-**Token structure (for future):**
-```css
---primary: light 0F172A / dark F1F5F9
---foreground: light 0A1128 / dark F8FAFC
---card: light FFFFFF / dark 1E293B
---border: light E2E8F0 / dark 334155
-```
+**Status:** built for the Instant Legal Help chat only (Nov 2026). The same CSS variables as the light set
+(`frontend/src/index.css`), redefined under a `.dark` class; Tailwind maps them in `tailwind.config.js`
+(`darkMode: ["class"]`). The chat puts `dark` on `<body>` (never `<html>`) only while it is mounted, so
+dialogs, menus and toasts (portals) follow it and every other page stays light. Another surface adopts it
+by setting the same class; no new tokens are needed.
+
+| Token | Light | Dark | Notes |
+|---|---|---|---|
+| `background` | #FAFAFA | #0B1220 | page |
+| `foreground` / `card-foreground` / `popover-foreground` | #0A1128 | #E6EAF2 | text-primary |
+| `card` | #FFFFFF | #111A2B | |
+| `popover` / `secondary` | #FFFFFF / #F1F5F9 | #16213A | |
+| `muted` | slate-50 | #111A2B | sidebar surface |
+| `muted-foreground` | #64748B | #9AA7BD | text-secondary |
+| `subtle` (new) | #94A3B8 | #7A89A3 | text-muted; the proposed #6B7A93 was below AA (3.68:1 on popover), raised |
+| `primary` / `primary-foreground` | #0F172A / #FFFFFF | #E6EAF2 / #0B1220 | inverts in dark |
+| `accent` / `accent-foreground` | #D97706 / #FFFFFF | #F59E0B / #0B1220 | white on #F59E0B is 2.15:1, so dark text |
+| `destructive` (error) | #DC2626 | #F87171 | dark foreground #0B1220 |
+| `success` / `success-foreground` (new) | #059669 / #047857 | #34D399 | |
+| `warning` / `warning-foreground` (new) | #F59E0B / #92400E | #FBBF24 | |
+| `info` / `info-foreground` (new) | #0EA5E9 / #0369A1 | #38BDF8 | |
+| `border` | #E2E8F0 | #1F2C45 | dividers |
+| `border-strong` (new) / `input` | #CBD5E1 / #E2E8F0 | #2B3B59 | |
+| `ring` | #D97706 | #F59E0B | |
+
+**Contrast (dark):** every text colour above reaches AA 4.5:1 on `background`, `card` and `popover`
+(lowest: `subtle` on `popover`, 4.52:1). Borders are decorative and below 3:1, as in the light set; form
+fields are identified by their labels and the focus ring.
+
+**Logo:** `cbLogo-navbar.png` has black "Court" and a grey tagline on transparency, unreadable on dark. The
+chat shows it on a light `primary` plate in dark mode; a light-on-dark logo variant is still needed.
 
 ---
 

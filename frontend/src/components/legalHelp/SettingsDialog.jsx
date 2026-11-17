@@ -29,6 +29,7 @@ export const LANGUAGES = [
   ["auto", "Auto (match my message)"], ["en", "English"], ["hi", "Hindi"], ["hinglish", "Hinglish"],
 ];
 const WIDTHS = [["narrow", "Narrow"], ["wide", "Wide"]];
+const THEMES = [["system", "System"], ["light", "Light"], ["dark", "Dark"]];
 
 function Heading({ children }) {
   return <h2 className="mb-4 font-display text-xl font-bold">{children}</h2>;
@@ -297,7 +298,9 @@ export default function SettingsDialog({ open, onOpenChange, pane, usage, prefs,
               <TabsContent value="usage" className="mt-0"><UsagePane usage={usage} /></TabsContent>
               <TabsContent value="appearance" className="mt-0">
                 <Heading>Appearance</Heading>
-                <p className="mb-2 text-sm font-semibold">Transcript width</p>
+                <p className="mb-2 text-sm font-semibold">Theme</p>
+                <Choice name="Theme" options={THEMES} value={prefs.theme} onChange={(v) => setPref("theme", v)} testId="settings-theme" />
+                <p className="mb-2 mt-6 text-sm font-semibold">Transcript width</p>
                 <Choice name="Transcript width" options={WIDTHS} value={prefs.width} onChange={(v) => setPref("width", v)} testId="settings-width" />
               </TabsContent>
               <TabsContent value="language" className="mt-0">
