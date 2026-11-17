@@ -399,16 +399,23 @@ async def _get_or_create_conversation(db, conversation_id: Optional[str], user_i
 
 CHAT_TITLE_MAX = 48
 CHAT_LIST_LIMIT = 50
+CHAT_PAGE_MAX = 100
+BULK_MAX_IDS = 200
 
 
 def _chat_title(text: str) -> str:
     return " ".join((text or "").split())[:CHAT_TITLE_MAX].strip() or "New chat"
 
 
-async def list_chats(db, user: Optional[dict], archived: bool = False) -> List[Dict[str, Any]]:
+async def list_chats(db, user: Optional[dict], archived: bool = False,
+                     limit: int = CHAT_LIST_LIMIT, offset: int = 0) -> List[Dict[str, Any]]:
     """Backing GET /ai/chats. Only a logged-in user's own conversations, pinned
-    first then most recent; archived ones only when asked for. Anonymous
-    callers always get [] (their chats are reachable only by token)."""
+    first then most recent; archived ones only when asked for. Paged by
+    limit/offset (a page shorter than `limit` is the last). Anonymous callers
+    always get [] (their chats are reachable only by token)."""
+    # shortcut: offset paging can skip or repeat a row if chats change between pages; fine for a chat list.
+    limit = max(1, min(int(limit), CHAT_PAGE_MAX))
+    offset = max(0, int(offset))
     user_id = user.get("user_id") if user else None
     if not isinstance(user_id, str) or not user_id:
         return []
@@ -416,7 +423,7 @@ async def list_chats(db, user: Optional[dict], archived: bool = False) -> List[D
     query = {"user_id": user_id, "archived": True if archived else {"$ne": True}}
     rows = await db.ai_conversations.find(
         query, {"_id": 0, "conversation_id": 1, "title": 1, "updated_at": 1, "pinned": 1, "archived": 1},
-    ).sort([("pinned", -1), ("updated_at", -1)]).limit(CHAT_LIST_LIMIT).to_list(CHAT_LIST_LIMIT)
+    ).sort([("pinned", -1), ("updated_at", -1), ("conversation_id", 1)]).skip(offset).limit(limit).to_list(limit)
     return [{**r, "pinned": bool(r.get("pinned")), "archived": bool(r.get("archived"))} for r in rows]
 
 
@@ -439,6 +446,28 @@ async def update_chat(db, conversation_id: str, user: Optional[dict], title: Opt
         raise HTTPException(400, "Nothing to update.")
     await db.ai_conversations.update_one({"conversation_id": conversation_id}, {"$set": changes})
     return {"conversation_id": conversation_id, **changes}
+
+
+async def bulk_update_chats(db, user: Optional[dict], action: str, ids: List[str]) -> Dict[str, Any]:
+    """Backing POST /ai/chats/bulk: archive, unarchive or delete many chats at
+    once. Only the caller's own chats change; unknown ids and other users'
+    ids are ignored. Returns how many changed."""
+    user_id = user.get("user_id") if user else None
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(401, "Not authenticated")
+    if action not in ("archive", "unarchive", "delete"):
+        raise HTTPException(400, "Unknown action.")
+    wanted = [i for i in dict.fromkeys(ids or []) if isinstance(i, str)][:BULK_MAX_IDS]
+    owned = await db.ai_conversations.distinct("conversation_id", {"user_id": user_id, "conversation_id": {"$in": wanted}})
+    if not owned:
+        return {"changed": 0}
+    if action == "delete":
+        await db.ai_chat_messages.delete_many({"conversation_id": {"$in": owned}})
+        result = await db.ai_conversations.delete_many({"user_id": user_id, "conversation_id": {"$in": owned}})
+        return {"changed": result.deleted_count}
+    result = await db.ai_conversations.update_many(
+        {"user_id": user_id, "conversation_id": {"$in": owned}}, {"$set": {"archived": action == "archive"}})
+    return {"changed": result.modified_count}
 
 
 async def delete_all_chats(db, user: Optional[dict]) -> Dict[str, Any]:

@@ -190,7 +190,8 @@ function AppRouter() {
       <Route path="/vendor-signup" element={<VendorOnboarding />} />
       <Route path="/about" element={<About />} />
       <Route path="/contact" element={<Contact />} />
-      <Route path="/legal-help" element={<LegalHelp />} />
+      {/* "/*": the Recents list (/legal-help/chats) is the same page, so the chat stays mounted. */}
+      <Route path="/legal-help/*" element={<LegalHelp />} />
       <Route path="/security" element={<Security />} />
       <Route path="/trust" element={<Trust />} />
       <Route path="/legal" element={<LegalCenter />} />

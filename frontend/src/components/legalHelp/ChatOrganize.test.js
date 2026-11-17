@@ -258,7 +258,7 @@ test("shortList keeps the first five and the open chat", () => {
   expect(shortList(list.slice(0, 5), null).cut).toBe(false);
 });
 
-test("the sidebar shows at most 5 pinned and 5 recents, keeps the open chat, and View all opens the full palette", async () => {
+test("the sidebar shows at most 5 pinned and 5 recents, keeps the open chat, and View all opens the Recents list", async () => {
   const pinned = [1, 2, 3, 4, 5, 6].map((n) => chat(n, { pinned: true }));
   const recents = [7, 8, 9, 10, 11, 12, 13].map((n) => chat(n));
   api.get.mockImplementation((url, opts) => Promise.resolve({
@@ -271,14 +271,15 @@ test("the sidebar shows at most 5 pinned and 5 recents, keeps the open chat, and
   expect(all("chat-row-menu")).toHaveLength(10); // every row keeps its menu
   expect($("chat-sidebar-archived").textContent).toBe("Archived (1)");
 
-  // Open "Chat 13" from the palette: it then stays in the sidebar although it's 7th.
+  // View all opens the full Recents list in the main area; opening "Chat 13" (7th) keeps it in the sidebar.
   act(() => $("chat-sidebar-view-all").click());
   await flush();
-  expect($("chat-palette-input").value).toBe("");
-  expect(all("chat-palette-item")).toHaveLength(13);
-  const target = all("chat-palette-item").find((i) => i.textContent === "Chat 13");
+  expect($("chat-recents")).not.toBeNull();
+  expect($("chat-palette-input")).toBeNull(); // not the palette
+  const target = all("recents-row-open").find((r) => r.textContent.startsWith("Chat 13"));
   act(() => target.click());
   await flush();
+  expect($("chat-recents")).toBeNull(); // back to the chat
   expect(rowTitles()).toContain("Chat 13");
   expect(rowTitles()).toHaveLength(11);
 });

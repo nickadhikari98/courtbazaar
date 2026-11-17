@@ -8,7 +8,8 @@ import ChatSidebar from "./ChatSidebar";
 import ChatPalette from "./ChatPalette";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import SupportTicketModal from "@/components/legal/SupportTicketModal";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import RecentsView from "./RecentsView";
 import SettingsDialog from "./SettingsDialog";
 import { formatUsage } from "./usage";
 import ChatStatus, { FIRST_STEP } from "./ChatStatus";
@@ -178,6 +179,11 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [steps, setSteps] = useState([]);
+  const location = useLocation();
+  const navigate = useNavigate();
+  // /legal-help/chats: the full Recents list replaces the transcript; the sidebar stays.
+  const recentsOpen = /\/chats\/?$/.test(location.pathname);
+  const [recentsKey, setRecentsKey] = useState(0);
   const auth = useAuth();
   const user = auth?.user || null;
   const [usage, setUsage] = useState(null);
@@ -237,6 +243,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
       toast.error(getErrorMessage(err, "Couldn't update that chat."));
     }
     loadChats();
+    setRecentsKey((k) => k + 1);
   };
 
   const confirmDelete = async () => {
@@ -248,6 +255,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
       const without = (list) => list.filter((c) => c.conversation_id !== id);
       setChats(without);
       setArchivedChats(without);
+      setRecentsKey((k) => k + 1);
       if (id === conversationId) handleNewChat();
     } catch (err) {
       toast.error(getErrorMessage(err, "Couldn't delete that chat. Please try again."));
@@ -444,6 +452,11 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
     }
   };
 
+  // Opening or starting a chat from anywhere leaves the Recents view.
+  const leaveRecents = () => { if (recentsOpen) navigate("/legal-help"); };
+  const selectChat = (id) => { leaveRecents(); openChat(id); };
+  const startNewChat = () => { leaveRecents(); handleNewChat(); };
+
   const handleKeyDown = (e) => {
     // Enter sends, Shift+Enter is a new line; never send mid-IME-composition.
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -468,11 +481,11 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         />
       )}
       {helpOpen && <SupportTicketModal open onOpenChange={setHelpOpen} />}
-      <ChatPalette open={paletteOpen} onOpenChange={setPaletteOpen} chats={chats} onSelect={openChat} />
+      <ChatPalette open={paletteOpen} onOpenChange={setPaletteOpen} chats={chats} onSelect={selectChat} />
       <ChatSidebar
         fullScreen={fullScreen} user={user} chats={chats} archivedChats={archivedChats} onUpdateChat={updateChat} onDeleteChat={setPendingDelete} usage={usage}
-        onOpenSettings={openSettings} onGetHelp={() => setHelpOpen(true)} onViewAll={() => setPaletteOpen(true)} onLogout={() => auth?.logout?.()} activeId={conversationId} onSelect={openChat}
-        onNewChat={handleNewChat} newChatDisabled={msgs.length === 0 && !loading}
+        onOpenSettings={openSettings} onGetHelp={() => setHelpOpen(true)} onViewAll={() => navigate("/legal-help/chats")} onLogout={() => auth?.logout?.()} activeId={conversationId} onSelect={selectChat}
+        onNewChat={startNewChat} newChatDisabled={!recentsOpen && msgs.length === 0 && !loading}
         collapsed={collapsed} onToggleCollapsed={() => setCollapsed((c) => !c)}
         drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}
       />
@@ -507,7 +520,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
               </button>
             )}
             <button
-              type="button" onClick={handleNewChat} disabled={msgs.length === 0 && !loading} aria-label="New chat" title="New chat"
+              type="button" onClick={startNewChat} disabled={!recentsOpen && msgs.length === 0 && !loading} aria-label="New chat" title="New chat"
               className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               data-testid="chat-header-new"
             >
@@ -517,6 +530,17 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         </div>
       </div>
 
+      {recentsOpen ? (
+        <RecentsView
+          refreshKey={recentsKey} onOpen={selectChat} onNewChat={startNewChat} onSearch={() => setPaletteOpen(true)}
+          onUpdate={updateChat} onDelete={setPendingDelete}
+          onBulkDone={(action, ids) => {
+            loadChats();
+            if (action === "delete" && ids.includes(conversationId)) handleNewChat();
+          }}
+        />
+      ) : (
+      <>
       <div
         ref={scrollRef}
         className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain cb-scroll"
@@ -669,6 +693,8 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
           </p>
         </div>
       </div>
+      </>
+      )}
     </div>
     </div>
   );

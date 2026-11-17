@@ -2,6 +2,7 @@
 CourtBazaar - Legal Operations & Court Services Marketplace
 Main FastAPI application
 """
+from typing import Annotated
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
 from dotenv import load_dotenv
@@ -1806,9 +1807,19 @@ async def ai_usage(user: Optional[dict] = Depends(get_current_user_optional), re
     return await chat_usage.summary(db, user, client_ip)
 
 @api_router.get("/ai/chats")
-async def ai_chats(user: Optional[dict] = Depends(get_current_user_optional), archived: bool = False):
+async def ai_chats(user: Optional[dict] = Depends(get_current_user_optional), archived: bool = False,
+                   limit: Annotated[int, Query(ge=1, le=100)] = 50, offset: Annotated[int, Query(ge=0)] = 0):
     import ai_chat as ai_chat_svc
-    return await ai_chat_svc.list_chats(db, user, archived=archived)
+    return await ai_chat_svc.list_chats(db, user, archived=archived, limit=limit, offset=offset)
+
+class ChatBulkRequest(BaseModel):
+    action: Literal["archive", "unarchive", "delete"]
+    ids: List[str] = Field(..., min_length=1, max_length=200)
+
+@api_router.post("/ai/chats/bulk")
+async def ai_chats_bulk(req: ChatBulkRequest, user=Depends(get_current_user)):
+    import ai_chat as ai_chat_svc
+    return await ai_chat_svc.bulk_update_chats(db, user, req.action, req.ids)
 
 class ChatUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=200)

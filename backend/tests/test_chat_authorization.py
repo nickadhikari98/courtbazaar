@@ -573,3 +573,51 @@ def test_delete_all_chats_removes_only_the_callers_chats(monkeypatch):
         finally:
             await _cleanup(mine + [theirs])
     _run(body())
+
+
+def test_chat_list_pages_with_limit_and_offset(monkeypatch):
+    _fake_llm(monkeypatch)
+    owner = _user(_tag())
+
+    async def body():
+        ids = [(await _chat(owner, f"Question {n}?"))["conversation_id"] for n in range(5)]
+        try:
+            first = await server.ai_chats(user=owner, limit=2, offset=0)
+            second = await server.ai_chats(user=owner, limit=2, offset=2)
+            last = await server.ai_chats(user=owner, limit=2, offset=4)
+            paged = [c["conversation_id"] for c in first + second + last]
+            assert paged == list(reversed(ids)) and len(last) == 1  # a short page is the end
+            assert await server.ai_chats(user=owner, limit=2, offset=10) == []
+        finally:
+            await _cleanup(ids)
+    _run(body())
+
+
+def test_bulk_archive_and_delete_change_only_the_callers_chats(monkeypatch):
+    _fake_llm(monkeypatch)
+    owner, other = _user(_tag()), _user(_tag())
+
+    async def body():
+        mine = [(await _chat(owner, q))["conversation_id"] for q in ("A?", "B?", "C?")]
+        theirs = (await _chat(other, "Theirs?"))["conversation_id"]
+        try:
+            req = server.ChatBulkRequest(action="archive", ids=[mine[0], mine[1], theirs, "conv_unknown"])
+            assert await server.ai_chats_bulk(req, user=owner) == {"changed": 2}
+            assert {c["conversation_id"] for c in await server.ai_chats(user=owner, archived=True)} == {mine[0], mine[1]}
+            assert [c["archived"] for c in await server.ai_chats(user=other)] == [False]  # untouched
+
+            req = server.ChatBulkRequest(action="delete", ids=[mine[0], theirs, "conv_unknown"])
+            assert await server.ai_chats_bulk(req, user=owner) == {"changed": 1}
+            assert await server.db.ai_conversations.count_documents({"conversation_id": mine[0]}) == 0
+            assert await server.db.ai_chat_messages.count_documents({"conversation_id": mine[0]}) == 0
+            assert await server.db.ai_conversations.count_documents({"conversation_id": theirs}) == 1
+
+            req = server.ChatBulkRequest(action="unarchive", ids=[mine[1]])
+            assert await server.ai_chats_bulk(req, user=owner) == {"changed": 1}
+            assert await server.ai_chats_bulk(server.ChatBulkRequest(action="delete", ids=[theirs]), user=owner) == {"changed": 0}
+            with pytest.raises(HTTPException) as exc:
+                await ai_chat.bulk_update_chats(server.db, None, "delete", mine)
+            assert exc.value.status_code == 401
+        finally:
+            await _cleanup(mine + [theirs])
+    _run(body())

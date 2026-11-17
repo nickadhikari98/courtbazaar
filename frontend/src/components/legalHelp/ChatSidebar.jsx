@@ -38,6 +38,44 @@ function initials(name) {
   return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase() || "?";
 }
 
+/* The per-chat menu (Pin, Rename, Archive, Delete), shared by sidebar rows,
+   the Recents view and the header's title chevron. `children` is the
+   trigger's content. Rename is the caller's inline editor. */
+export function ChatMenu({ chat, onUpdate, onDelete, onRename, children, triggerClassName, triggerLabel, testId = "chat-row-menu", align = "end" }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label={triggerLabel || `Options for ${chat.title || "chat"}`}
+        className={triggerClassName}
+        data-testid={testId}
+      >
+        {children}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align={align} className="w-40">
+        <DropdownMenuItem onSelect={() => onUpdate(chat.conversation_id, { pinned: !chat.pinned })} data-testid="chat-row-pin">
+          {chat.pinned ? <PinOff className="mr-2 h-4 w-4" /> : <Pin className="mr-2 h-4 w-4" />}{chat.pinned ? "Unpin" : "Pin"}
+        </DropdownMenuItem>
+        {/* Deferred so the menu's focus return doesn't blur the new input. */}
+        <DropdownMenuItem onSelect={() => setTimeout(onRename, 0)} data-testid="chat-row-rename-item">
+          <Pencil className="mr-2 h-4 w-4" />Rename
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onUpdate(chat.conversation_id, { archived: !chat.archived })} data-testid="chat-row-archive">
+          {chat.archived ? <ArchiveRestore className="mr-2 h-4 w-4" /> : <Archive className="mr-2 h-4 w-4" />}{chat.archived ? "Unarchive" : "Archive"}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        {/* Deferred so the closing menu hands focus over cleanly to the confirm dialog. */}
+        <DropdownMenuItem
+          onSelect={() => setTimeout(() => onDelete(chat), 0)}
+          className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+          data-testid="chat-row-delete"
+        >
+          <Trash2 className="mr-2 h-4 w-4" />Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 /* One chat in the list: open it, or from "..." pin, rename inline
    (Enter saves, Esc cancels) or archive. */
 function ChatRow({ chat, active, onSelect, onUpdate, onDelete }) {
@@ -74,36 +112,12 @@ function ChatRow({ chat, active, onSelect, onUpdate, onDelete }) {
       >
         {chat.title || "New chat"}
       </button>
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          aria-label={`Options for ${chat.title || "chat"}`}
-          className="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-100 hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 data-[state=open]:opacity-100"
-          data-testid="chat-row-menu"
-        >
-          <MoreHorizontal className="h-4 w-4" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-40">
-          <DropdownMenuItem onSelect={() => onUpdate(chat.conversation_id, { pinned: !chat.pinned })} data-testid="chat-row-pin">
-            {chat.pinned ? <PinOff className="mr-2 h-4 w-4" /> : <Pin className="mr-2 h-4 w-4" />}{chat.pinned ? "Unpin" : "Pin"}
-          </DropdownMenuItem>
-          {/* Deferred so the menu's focus return doesn't blur the new input. */}
-          <DropdownMenuItem onSelect={() => setTimeout(startRename, 0)} data-testid="chat-row-rename-item">
-            <Pencil className="mr-2 h-4 w-4" />Rename
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => onUpdate(chat.conversation_id, { archived: !chat.archived })} data-testid="chat-row-archive">
-            {chat.archived ? <ArchiveRestore className="mr-2 h-4 w-4" /> : <Archive className="mr-2 h-4 w-4" />}{chat.archived ? "Unarchive" : "Archive"}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          {/* Deferred so the closing menu hands focus over cleanly to the confirm dialog. */}
-          <DropdownMenuItem
-            onSelect={() => setTimeout(() => onDelete(chat), 0)}
-            className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-            data-testid="chat-row-delete"
-          >
-            <Trash2 className="mr-2 h-4 w-4" />Delete
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <ChatMenu
+        chat={chat} onUpdate={onUpdate} onDelete={onDelete} onRename={startRename}
+        triggerClassName="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-100 hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 data-[state=open]:opacity-100"
+      >
+        <MoreHorizontal className="h-4 w-4" />
+      </ChatMenu>
     </div>
   );
 }
