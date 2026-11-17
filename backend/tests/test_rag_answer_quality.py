@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ai_chat  # noqa: E402
 import answer_guard  # noqa: E402
 import llm_service  # noqa: E402
+import prompt_builder  # noqa: E402
 
 QUESTION = "Tell me about DIAC rules if the claimant does not pay the Arbitral fee."
 DIAC = llm_service.SOURCE_DIAC
@@ -175,7 +176,10 @@ def test_document_answer_request_uses_format_rules_and_larger_budget(monkeypatch
     assert sent["temperature"] == llm_service.AI_RAG_TEMPERATURE
     developer = " ".join(m["content"] for m in sent["input"] if m["role"] == "developer")
     assert "DOCUMENT ANSWER FORMAT" in developer
-    assert "applies to every answer except one written from approved document excerpts" in sent["instructions"]
+    # A document answer is led by the master legal prompt, not the general chat
+    # prompt, so the chat's brevity rules never compete with the document format.
+    assert sent["instructions"] == prompt_builder.master_prompt()
+    assert "RESPONSE LENGTH AND STYLE" not in sent["instructions"]
     evidence = next(m["content"] for m in sent["input"] if m["role"] == "user" and "<untrusted_document_excerpts>" in m["content"])
     # OCR soft breaks rejoined, provisions kept on their own lines, page numbers gone.
     assert "33.2 Parties are jointly and severally liable for the deposits as directed by the Centre." in evidence
