@@ -103,6 +103,11 @@ export function assistantMessageFrom(data) {
   };
 }
 
+// Actions only on real answers: ones with sources, or longer than a one-line reply.
+const ACTIONS_MIN_CHARS = 200;
+export const hasActions = (m) => !m.retryText
+  && ((Array.isArray(m.citations) && m.citations.length > 0) || (m.text || "").length > ACTIONS_MIN_CHARS);
+
 const STOPPED_TEXT = "Stopped. The answer was not generated.";
 const SESSION_EXPIRED_TEXT = "This chat session is no longer available. Please send your message again to start a new chat.";
 
@@ -420,7 +425,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
               </div>
             </div>
           ) : (
-            <div key={i} className="flex gap-3 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-300" data-testid={`instant-legal-help-msg-assistant-${i}`}>
+            <div key={i} className="cb-msg flex gap-3 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-300" data-testid={`instant-legal-help-msg-assistant-${i}`}>
               <div className="w-8 h-8 rounded-lg bg-accent text-white shrink-0 flex items-center justify-center" aria-hidden="true" data-testid="instant-legal-help-avatar">
                 <Scale className="w-4 h-4" />
               </div>
@@ -443,8 +448,9 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
                   </div>
                 )}
                 <ChatSources citations={m.citations} idPrefix={`${chatId}-msg-${i}`} />
-                {!m.retryText && (
-                  <div className="mt-2 flex items-center gap-1">
+                {hasActions(m) && (
+                  // Hover/focus reveal on pointer devices (index.css .cb-msg-actions); the latest answer keeps them shown.
+                  <div className="cb-msg-actions mt-2 flex items-center gap-1" data-always={i === msgs.length - 1 ? "" : undefined} data-testid="instant-legal-help-msg-actions">
                     <button
                       type="button" onClick={() => copyAnswer(m)} aria-label="Copy answer" title="Copy"
                       className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

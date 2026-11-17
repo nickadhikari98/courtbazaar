@@ -914,3 +914,33 @@ test("a superscript number in the summary scrolls to and highlights its source r
   expect(row.scrollIntoView).toHaveBeenCalled();
   expect(row.classList.contains("ring-2")).toBe(true);
 });
+
+test("message actions only on answers with sources or real length; the latest answer always shows them", async () => {
+  const long = "A".repeat(201);
+  api.post
+    .mockResolvedValueOnce({ data: { conversation_id: "c", reply: "Hi! How can I help?" } })
+    .mockResolvedValueOnce({ data: { conversation_id: "c", reply: long } })
+    .mockResolvedValueOnce({ data: { conversation_id: "c", reply: "Short but sourced.",
+      citations: [{ title: "DIAC Rules", url: null, rules: ["8"] }] } });
+  renderChat();
+  await sendMessage("hi");
+  expect($("instant-legal-help-msg-assistant-1").querySelector('[data-testid="instant-legal-help-msg-actions"]')).toBeNull();
+  await sendMessage("tell me more");
+  const longActions = $("instant-legal-help-msg-assistant-3").querySelector('[data-testid="instant-legal-help-msg-actions"]');
+  expect(longActions).not.toBeNull();
+  expect(longActions.hasAttribute("data-always")).toBe(true); // latest answer
+  await sendMessage("source?");
+  expect($("instant-legal-help-msg-assistant-5").querySelector('[data-testid="instant-legal-help-copy"]')).not.toBeNull();
+  // An older answer falls back to hover/focus reveal, but keeps its (reserved) place.
+  expect(longActions.hasAttribute("data-always")).toBe(false);
+  expect(longActions.className).toContain("cb-msg-actions");
+});
+
+test("hasActions: no actions on a failed turn, a short reply, or a reply with no sources", () => {
+  const { hasActions } = require("./InstantLegalHelpChat");
+  expect(hasActions({ text: "x".repeat(500), retryText: "q" })).toBe(false);
+  expect(hasActions({ text: "Okay.", citations: [] })).toBe(false);
+  expect(hasActions({ text: "x".repeat(200), citations: [] })).toBe(false);
+  expect(hasActions({ text: "x".repeat(201) })).toBe(true);
+  expect(hasActions({ text: "Okay.", citations: [{ title: "SOP" }] })).toBe(true);
+});

@@ -121,6 +121,14 @@ code { font-family: 'JetBrains Mono', Menlo, Monaco, Consolas, monospace; }
     height: 1px; background: linear-gradient(to right, transparent, hsl(var(--border)), transparent);
 }
 
+/* Instant Legal Help message actions: on devices that can hover, hidden until
+   the message is hovered or an action is focused (opacity, so the space stays
+   reserved); always shown on touch and on the latest answer (data-always). */
+@media (hover: hover) and (pointer: fine) {
+    .cb-msg-actions:not([data-always]) { opacity: 0; transition: opacity 150ms ease; }
+    .cb-msg:hover .cb-msg-actions, .cb-msg-actions:focus-within { opacity: 1; }
+}
+
 /* Modular subtle scrollbar — add `cb-scroll` to any overflow container so
    nested scroll areas (dialog body, chat, activity history, feeds) render as
    quiet hairlines instead of the browser's heavy default track+thumb. One
