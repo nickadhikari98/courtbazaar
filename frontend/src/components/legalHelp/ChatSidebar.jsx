@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
-import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, LogIn, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Trash2, Settings, LifeBuoy, LogOut, Gauge, Languages } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, LogIn, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Trash2, Settings, LifeBuoy, LogOut, Gauge, Languages, Search } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { formatUsage } from "./usage";
 import Logo from "@/components/shared/Logo";
@@ -142,11 +142,12 @@ function ChatGroup({ label, chats, activeId, onSelect, onUpdate, onDelete }) {
 const DRAWER_AREA = { app: "inset-y-0 z-50", site: "top-[65px] bottom-0 z-30" };
 
 export default function ChatSidebar({
-  fullScreen, user, chats, archivedChats = [], onUpdateChat, onDeleteChat, usage, onOpenSettings, onGetHelp, onLogout, onViewAll, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
+  fullScreen, user, chats, archivedChats = [], onUpdateChat, onDeleteChat, usage, onOpenSettings, onGetHelp, onLogout, onViewAll, onSearch, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
 }) {
   // The rail (collapsed) only applies from md up; the mobile drawer is always full width.
   const rail = collapsed ? "md:w-16" : "md:w-[272px]";
   const hideOnRail = collapsed ? "md:hidden" : "";
+  const actionRow = "flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm hover:bg-slate-200/60 disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   const [showArchived, setShowArchived] = useState(false);
   const groupProps = { activeId, onSelect, onUpdate: onUpdateChat, onDelete: onDeleteChat };
   const pinned = shortList(chats.filter((c) => c.pinned), activeId);
@@ -178,15 +179,26 @@ export default function ChatSidebar({
           </button>
         </div>
 
-        <div className="px-3">
+        {/* Compact rows in the chat-row style; icon buttons on the collapsed rail. */}
+        <div className="space-y-0.5 px-2">
           <button
             type="button" onClick={onNewChat} disabled={newChatDisabled}
-            aria-label="Start a new chat" title="Start a new chat"
-            className="w-full inline-flex items-center justify-center gap-2 h-10 rounded-lg border border-border bg-white text-sm font-semibold hover:bg-slate-100 disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="New chat" title="New chat"
+            className={`${actionRow} ${collapsed ? "md:mx-auto md:h-10 md:w-10 md:justify-center md:px-0" : ""}`}
             data-testid="instant-legal-help-new-chat"
           >
-            <Plus className="w-4 h-4" /><span className={hideOnRail}>New chat</span>
+            <Plus className="h-4 w-4 shrink-0" /><span className={hideOnRail}>New</span>
           </button>
+          {/* Guests have no saved chats to search. */}
+          {user && (
+            <button
+              type="button" onClick={onSearch} aria-label="Search chats" title="Search chats"
+              className={`${actionRow} ${collapsed ? "md:mx-auto md:h-10 md:w-10 md:justify-center md:px-0" : ""}`}
+              data-testid="chat-sidebar-search"
+            >
+              <Search className="h-4 w-4 shrink-0" /><span className={hideOnRail}>Search</span>
+            </button>
+          )}
         </div>
 
         <nav className={`flex-1 min-h-0 overflow-y-auto cb-scroll px-2 py-3 ${hideOnRail}`} data-testid="chat-sidebar-list">

@@ -50,6 +50,10 @@ const $ = (testId) => document.querySelector(`[data-testid="${testId}"]`);
 const key = (el, k, extra = {}) => act(() => {
   el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...extra }));
 });
+function setValue2(el, value) {
+  Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
 function setValue(el, value) {
   Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(el, value);
   el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -282,4 +286,69 @@ test("the sidebar shows at most 5 pinned and 5 recents, keeps the open chat, and
   expect($("chat-recents")).toBeNull(); // back to the chat
   expect(rowTitles()).toContain("Chat 13");
   expect(rowTitles()).toHaveLength(11);
+});
+
+test("sidebar has compact New and Search rows; Search opens the palette", async () => {
+  api.get.mockImplementation((url, opts) => Promise.resolve({ data: url === "/ai/chats" ? (opts?.params?.archived ? [] : [RECENT]) : [] }));
+  await act(async () => root.render(<MemoryRouter><InstantLegalHelpChat /></MemoryRouter>));
+  await flush();
+  expect($("instant-legal-help-new-chat").textContent).toBe("New");
+  expect($("chat-sidebar-search").textContent).toBe("Search");
+  act(() => $("chat-sidebar-search").click());
+  await flush();
+  expect($("chat-palette-input")).not.toBeNull();
+});
+
+test("the header shows the open chat's title with a menu: rename in place, pin, delete through the confirm", async () => {
+  api.get.mockImplementation((url, opts) => Promise.resolve({
+    data: url === "/ai/chats" ? (opts?.params?.archived ? [] : [RECENT, OTHER])
+      : [{ role: "user", content: "Hi" }, { role: "assistant", content: "Hello there." }],
+  }));
+  api.patch.mockResolvedValue({ data: {} });
+  await act(async () => root.render(<MemoryRouter><InstantLegalHelpChat /></MemoryRouter>));
+  await flush();
+  expect($("chat-title").textContent).toBe("New chat");
+  expect($("chat-title-menu")).toBeNull(); // nothing to manage yet
+
+  act(() => all("chat-row")[1].querySelector("button").click()); // open "Emergency arbitrator"
+  await flush();
+  expect($("chat-title").textContent).toBe("Emergency arbitrator");
+  expect($("chat-title").getAttribute("title")).toBe("Emergency arbitrator");
+  expect($("chat-title").className).toContain("truncate");
+
+  key($("chat-title-menu"), "Enter"); // opens from the keyboard
+  await flush();
+  const items = [...document.querySelectorAll('[role="menuitem"]')].map((i) => i.textContent);
+  expect(items).toEqual(["Pin", "Rename", "Archive", "Delete"]);
+  act(() => $("chat-row-rename-item").click());
+  await flush();
+  const input = $("chat-title-rename");
+  act(() => setValue(input, "Emergency relief"));
+  key(input, "Enter");
+  await flush();
+  expect(api.patch).toHaveBeenCalledWith("/ai/chats/c_other", { title: "Emergency relief" });
+
+  key($("chat-title-menu"), "Enter");
+  await flush();
+  act(() => $("chat-row-rename-item").click());
+  await flush();
+  key($("chat-title-rename"), "Escape");
+  expect($("chat-title-rename")).toBeNull();
+
+  key($("chat-title-menu"), "Enter");
+  await flush();
+  act(() => $("chat-row-delete").click());
+  await flush();
+  expect(document.querySelector('[role="dialog"]').textContent).toContain("Delete chat?");
+});
+
+test("before the list knows a chat, the header titles it from the first message the way the server does", async () => {
+  api.post.mockResolvedValue({ data: { conversation_id: "anon", reply: "Answer." } });
+  api.get.mockImplementation(() => Promise.resolve({ data: [] }));
+  await act(async () => root.render(<MemoryRouter><InstantLegalHelpChat /></MemoryRouter>));
+  await flush();
+  await act(async () => setValue2($("instant-legal-help-input"), "  What   is the limitation period for a cheque bounce complaint?"));
+  await act(async () => $("instant-legal-help-send").click());
+  await flush();
+  expect($("chat-title").textContent).toBe("What is the limitation period for a cheque bounc");
 });

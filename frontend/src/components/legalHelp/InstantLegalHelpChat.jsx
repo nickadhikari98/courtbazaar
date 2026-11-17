@@ -3,8 +3,8 @@ import { api, getErrorMessage } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { ArrowUp, Scale, User, Info, RotateCcw, Menu, Paperclip, Square, Copy, Search, SquarePen } from "lucide-react";
-import ChatSidebar from "./ChatSidebar";
+import { ArrowUp, Scale, User, Info, RotateCcw, Menu, Paperclip, Square, Copy, Search, SquarePen, ChevronDown } from "lucide-react";
+import ChatSidebar, { ChatMenu } from "./ChatSidebar";
 import ChatPalette from "./ChatPalette";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import SupportTicketModal from "@/components/legal/SupportTicketModal";
@@ -145,6 +145,10 @@ function readPrefs(key) {
   return Object.fromEntries(Object.entries(PREF_OPTIONS).map(([k, opts]) => [k, opts.includes(saved[k]) ? saved[k] : opts[0]]));
 }
 
+// The same short title the server gives a chat (ai_chat._chat_title): the first
+// message, whitespace collapsed, 48 characters. Used before the list knows the chat.
+const chatTitleFrom = (text) => (text || "").split(/\s+/).join(" ").trim().slice(0, 48).trim();
+
 const STOPPED_TEXT = "Stopped. The answer was not generated.";
 const SESSION_EXPIRED_TEXT = "This chat session is no longer available. Please send your message again to start a new chat.";
 
@@ -184,6 +188,8 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   // /legal-help/chats: the full Recents list replaces the transcript; the sidebar stays.
   const recentsOpen = /\/chats\/?$/.test(location.pathname);
   const [recentsKey, setRecentsKey] = useState(0);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
   const auth = useAuth();
   const user = auth?.user || null;
   const [usage, setUsage] = useState(null);
@@ -466,6 +472,14 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   };
 
   const usageView = formatUsage(usage);
+  const currentChat = conversationId ? [...chats, ...archivedChats].find((c) => c.conversation_id === conversationId) : null;
+  const headerTitle = recentsOpen ? "Recents"
+    : currentChat?.title || chatTitleFrom(msgs.find((m) => m.role === "user")?.text) || "New chat";
+  const saveHeaderTitle = () => {
+    const title = titleDraft.trim();
+    setEditingTitle(false);
+    if (currentChat && title && title !== currentChat.title) updateChat(currentChat.conversation_id, { title });
+  };
   return (
     <div className="flex flex-1 h-full min-h-0 bg-background" data-testid="instant-legal-help-panel">
       <ConfirmDialog
@@ -484,7 +498,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
       <ChatPalette open={paletteOpen} onOpenChange={setPaletteOpen} chats={chats} onSelect={selectChat} />
       <ChatSidebar
         fullScreen={fullScreen} user={user} chats={chats} archivedChats={archivedChats} onUpdateChat={updateChat} onDeleteChat={setPendingDelete} usage={usage}
-        onOpenSettings={openSettings} onGetHelp={() => setHelpOpen(true)} onViewAll={() => navigate("/legal-help/chats")} onLogout={() => auth?.logout?.()} activeId={conversationId} onSelect={selectChat}
+        onOpenSettings={openSettings} onGetHelp={() => setHelpOpen(true)} onViewAll={() => navigate("/legal-help/chats")} onSearch={() => setPaletteOpen(true)} onLogout={() => auth?.logout?.()} activeId={conversationId} onSelect={selectChat}
         onNewChat={startNewChat} newChatDisabled={!recentsOpen && msgs.length === 0 && !loading}
         collapsed={collapsed} onToggleCollapsed={() => setCollapsed((c) => !c)}
         drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}
@@ -500,7 +514,36 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
             >
               <Menu className="w-5 h-5" />
             </button>
-            <h1 className="font-display font-bold text-base leading-tight truncate">Instant Legal Help</h1>
+            {editingTitle ? (
+              <input
+                autoFocus value={titleDraft} maxLength={48} aria-label="Chat title"
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); saveHeaderTitle(); }
+                  if (e.key === "Escape") { e.preventDefault(); setEditingTitle(false); }
+                }}
+                onBlur={() => setEditingTitle(false)}
+                className="min-w-0 flex-1 rounded-lg border border-accent/60 bg-white px-2 py-1.5 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-accent/30"
+                data-testid="chat-title-rename"
+              />
+            ) : (
+              <>
+                {/* Truncates (harder on phones) instead of pushing the icons off screen; full title on hover. */}
+                <h1 className="min-w-0 truncate font-display text-sm font-bold leading-tight sm:text-base" title={headerTitle} data-testid="chat-title">
+                  {headerTitle}
+                </h1>
+                {user && currentChat && !recentsOpen && (
+                  <ChatMenu
+                    chat={currentChat} onUpdate={updateChat} onDelete={setPendingDelete}
+                    onRename={() => { setTitleDraft(currentChat.title || ""); setEditingTitle(true); }}
+                    triggerLabel="Chat options" testId="chat-title-menu" align="start"
+                    triggerClassName="inline-flex h-10 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </ChatMenu>
+                )}
+              </>
+            )}
           </div>
           <div className="flex shrink-0 items-center gap-1">
             {/* Under 640px the pill gives way to the buttons (the drawer's usage block still shows it). */}
