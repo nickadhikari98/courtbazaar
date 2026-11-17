@@ -20,7 +20,8 @@ MODE_INSTRUCTIONS = {
     ),
     "lawyer": (
         "READER: a lawyer. Use precise legal terms and give section and rule numbers. Distinguish binding from "
-        "persuasive authority, and state the limitations of the material relied on."
+        "persuasive authority, and state the limitations of the material relied on. When a provision you cite has "
+        "a proviso (\"Provided that ...\") or an exception, state it with that provision."
     ),
 }
 

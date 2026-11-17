@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { getErrorMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -122,6 +122,7 @@ function savedMode() {
 }
 
 export default function InstantLegalHelpChat({ initialMessage }) {
+  const chatId = useId(); // prefixes each answer's source-row ids, so a chip jumps to its own message's row
   const [mode, setMode] = useState(savedMode);
   const [conversationId, setConversationId] = useState(null);
   // Secret the backend issues with an anonymous conversation's first reply;
@@ -364,14 +365,14 @@ export default function InstantLegalHelpChat({ initialMessage }) {
                     </div>
                   </div>
                 ) : m.answer ? (
-                  <AnswerCard answer={m.answer} citeLinks={documentCitationLinks(m.citations)} clean={cleanAssistantText} />
+                  <AnswerCard answer={m.answer} citeLinks={documentCitationLinks(m.citations, `${chatId}-msg-${i}`)} clean={cleanAssistantText} />
                 ) : (
                   <div className="space-y-3">
                     <ChatMarkdown text={cleanAssistantText(m.text)} citeLinks={webCitationLinks(m.citations)} />
                     <AnswerNote note={m.note} detail={m.noteDetail} clean={cleanAssistantText} />
                   </div>
                 )}
-                <ChatSources citations={m.citations} />
+                <ChatSources citations={m.citations} idPrefix={`${chatId}-msg-${i}`} />
                 {m.retryText && i === msgs.length - 1 && !loading && (
                   <Button
                     type="button" variant="outline" size="sm" onClick={() => retry(m.retryText)}

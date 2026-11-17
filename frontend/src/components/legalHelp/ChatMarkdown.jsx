@@ -1,4 +1,5 @@
 import React from "react";
+import { jumpToSource } from "./ChatSources";
 
 /* Renders the small Markdown subset Instant Legal Help's document answers use
    (see ai_chat._sanitize_markdown_reply): "## " / "### " headings, "- " / "•"
@@ -14,7 +15,9 @@ import React from "react";
 
    The one exception is a "[n]" marker for a verified web source: when
    `citeLinks` (from ChatSources' webCitationLinks) has an entry for n, the
-   marker becomes a link to that source's URL; otherwise it stays text. */
+   marker becomes a link to that source's URL; otherwise it stays text. A
+   document source with an `anchor` (documentCitationLinks) is a button that
+   scrolls to and highlights its row in the Sources list instead. */
 
 const HEADING_RE = /^(#{2,3})\s+(.+)$/;
 const BULLET_RE = /^(\s*)[-•*]\s+(.+)$/;
@@ -69,6 +72,21 @@ function renderCiteMarkers(text, keyPrefix, citeLinks) {
     const source = /^\[\d{1,2}\]$/.test(part) && citeLinks.get(Number(part.slice(1, -1)));
     if (!source) return <React.Fragment key={`${keyPrefix}-c${i}`}>{part}</React.Fragment>;
     const n = part.slice(1, -1);
+    if (source.anchor) {
+      return (
+        <button
+          key={`${keyPrefix}-c${i}`}
+          type="button"
+          onClick={() => jumpToSource(source.anchor)}
+          title={source.title}
+          aria-label={`Source ${n}: ${source.title}`}
+          className="mx-0.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-md bg-accent/10 px-1 align-[2px] text-[11px] font-semibold leading-none text-accent hover:bg-accent hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          data-testid="instant-legal-help-cite"
+        >
+          {n}
+        </button>
+      );
+    }
     // A document with no approved link (url: null) still gets its chip.
     if (!source.url) {
       return (

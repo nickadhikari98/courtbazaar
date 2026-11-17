@@ -91,5 +91,5 @@ def test_appointment_answer_cites_rule_8_6_and_keeps_it_through_attribution():
     citations = llm_service.build_citations(attributed, context, [FILE])
     assert citations == [{
         "title": "Delhi International Arbitration Centre (Arbitration Proceedings) Rules, 2023",
-        "url": llm_service.KB_INSTRUMENT_URLS["Delhi International Arbitration Centre (Arbitration Proceedings) Rules, 2023"], "rules": ["8.6"], "document": llm_service.KB_SOURCE_DISPLAY[FILE]["label"],
+        "url": llm_service.KB_INSTRUMENT_URLS["Delhi International Arbitration Centre (Arbitration Proceedings) Rules, 2023"], "rules": ["8.6"], "label": "Rule", "document": llm_service.KB_SOURCE_DISPLAY[FILE]["label"],
     }]
