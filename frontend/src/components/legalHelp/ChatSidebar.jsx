@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { ChevronDown, LogIn, PanelLeft, Plus } from "lucide-react";
+import { ArrowLeft, ChevronDown, LogIn, PanelLeft, Plus } from "lucide-react";
 import Logo from "@/components/shared/Logo";
 
 const DAY_MS = 86400000;
@@ -23,8 +23,12 @@ function initials(name) {
   return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase() || "?";
 }
 
+// Below the site nav (h-16 + 1px border) for guests; the whole viewport in the app layout.
+// The guest drawer stays under the nav's z-40, so the nav and its menus always paint on top.
+const DRAWER_AREA = { app: "inset-y-0 z-50", site: "top-[65px] bottom-0 z-30" };
+
 export default function ChatSidebar({
-  user, chats, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
+  fullScreen, user, chats, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
 }) {
   // The rail (collapsed) only applies from md up; the mobile drawer is always full width.
   const rail = collapsed ? "md:w-16" : "md:w-[272px]";
@@ -32,17 +36,18 @@ export default function ChatSidebar({
   return (
     <>
       {drawerOpen && (
-        <div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={onCloseDrawer} aria-hidden="true"
+        <div className={`fixed inset-x-0 ${DRAWER_AREA[fullScreen ? "app" : "site"]} bg-black/40 md:hidden`} onClick={onCloseDrawer} aria-hidden="true"
           data-testid="chat-sidebar-overlay" />
       )}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-[272px] ${rail} flex flex-col border-r border-border bg-slate-50 transition-[transform,width] duration-200
-          md:static md:translate-x-0 ${drawerOpen ? "translate-x-0" : "-translate-x-full"}`}
+        className={`fixed left-0 ${DRAWER_AREA[fullScreen ? "app" : "site"]} w-[272px] ${rail} flex flex-col border-r border-border bg-slate-50 transition-[transform,width] duration-200
+          md:static md:z-auto md:translate-x-0 ${drawerOpen ? "translate-x-0" : "-translate-x-full"}`}
         aria-label="Chats"
         data-testid="chat-sidebar"
       >
-        <div className="flex items-center justify-between gap-2 px-3 pt-3 pb-2">
-          <div className={hideOnRail}><Logo size="sm" /></div>
+        <div className={`flex items-center gap-2 px-3 pt-3 pb-2 ${fullScreen ? "justify-between" : "justify-end"}`}>
+          {/* Guests already see the site nav's logo: only one is ever shown. */}
+          {fullScreen && <div className={hideOnRail} data-testid="chat-sidebar-logo"><Logo to="/" size="sm" /></div>}
           <button
             type="button" onClick={onToggleCollapsed}
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!collapsed}
@@ -101,6 +106,15 @@ export default function ChatSidebar({
             <div className="flex justify-between text-xs"><span className="font-semibold">Today's questions</span><span className="text-muted-foreground">0 / 20</span></div>
             <div className="mt-2 h-1.5 rounded-full bg-slate-200"><div className="h-full w-0 rounded-full bg-accent" /></div>
           </div>
+          {fullScreen && (
+            <Link
+              to="/" title="Back to CourtBazaar"
+              className="flex items-center gap-2 rounded-lg px-1 py-1.5 text-sm text-muted-foreground hover:bg-slate-200/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-testid="chat-sidebar-back"
+            >
+              <ArrowLeft className="h-4 w-4 shrink-0" /><span className={hideOnRail}>Back to CourtBazaar</span>
+            </Link>
+          )}
           {user && (
             <button type="button" className="w-full flex items-center gap-2 rounded-lg px-1 py-1.5 hover:bg-slate-200/60 text-sm" data-testid="chat-sidebar-user">
               <span className="h-8 w-8 shrink-0 rounded-full bg-primary text-white text-xs font-semibold flex items-center justify-center">{initials(user.name)}</span>

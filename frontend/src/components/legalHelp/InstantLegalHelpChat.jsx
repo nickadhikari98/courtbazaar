@@ -124,7 +124,7 @@ function savedMode() {
   }
 }
 
-export default function InstantLegalHelpChat({ initialMessage }) {
+export default function InstantLegalHelpChat({ initialMessage, fullScreen = false }) {
   const chatId = useId(); // prefixes each answer's source-row ids, so a chip jumps to its own message's row
   const [mode, setMode] = useState(savedMode);
   const [conversationId, setConversationId] = useState(null);
@@ -331,7 +331,7 @@ export default function InstantLegalHelpChat({ initialMessage }) {
   return (
     <div className="flex flex-1 h-full min-h-0 bg-background" data-testid="instant-legal-help-panel">
       <ChatSidebar
-        user={user} chats={chats} activeId={conversationId} onSelect={openChat}
+        fullScreen={fullScreen} user={user} chats={chats} activeId={conversationId} onSelect={openChat}
         onNewChat={handleNewChat} newChatDisabled={msgs.length === 0 && !loading}
         collapsed={collapsed} onToggleCollapsed={() => setCollapsed((c) => !c)}
         drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}
