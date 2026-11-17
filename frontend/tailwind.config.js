@@ -92,11 +92,17 @@ module.exports = {
           to: {
             height: '0'
           }
+        },
+        // Instant Legal Help's writing indicator: a soft bob-and-tilt, like a pen moving.
+        quill: {
+          '0%, 100%': { transform: 'translate(0, 0) rotate(0deg)' },
+          '50%': { transform: 'translate(1px, -2px) rotate(-8deg)' }
         }
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
-        'accordion-up': 'accordion-up 0.2s ease-out'
+        'accordion-up': 'accordion-up 0.2s ease-out',
+        quill: 'quill 1.4s ease-in-out infinite'
       }
     }
   },

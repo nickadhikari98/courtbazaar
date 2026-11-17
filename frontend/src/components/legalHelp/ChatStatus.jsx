@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Check, Loader2 } from "lucide-react";
+import { Check, Loader2, Scale } from "lucide-react";
 
 /* What the chat shows while an answer is on its way: one bordered panel with
    the server's steps (ai_chat.stream_chat_events sends each when the pipeline
@@ -23,6 +23,22 @@ export function stepLabel(step, done) {
   return text;
 }
 
+/* Our own feather mark, drawn here, in the brand ochre (text-accent). It
+   bobs while the answer is written and is still under reduced motion; it
+   unmounts with this panel the moment the answer renders. */
+export function WritingQuill({ className = "" }) {
+  return (
+    <svg
+      viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true"
+      className={`text-accent origin-bottom-left motion-safe:animate-quill ${className}`}
+      data-testid="instant-legal-help-quill"
+    >
+      <path d="M20 3C13 4 8 9 6 16l-1 4 4-1c7-2 11-7 11-16Z" fill="currentColor" fillOpacity="0.2" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      <path d="M5 20 15 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export default function ChatStatus({ steps }) {
   const [seconds, setSeconds] = useState(0);
 
@@ -36,7 +52,12 @@ export default function ChatStatus({ steps }) {
   const current = all[all.length - 1];
   const shown = all.filter((s) => s.step !== "writing");
   return (
-    <div className="rounded-2xl border border-border bg-white p-4" data-testid="instant-legal-help-loading">
+    <div className="flex items-start gap-3" data-testid="instant-legal-help-loading">
+      <div className="relative shrink-0" aria-hidden="true">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-white"><Scale className="h-4 w-4" /></div>
+        <WritingQuill className="absolute -right-2.5 -top-2" />
+      </div>
+    <div className="min-w-0 flex-1 rounded-2xl border border-border bg-white p-4">
       <ul className="space-y-1.5 text-sm" data-testid="instant-legal-help-status-steps">
         {shown.map((s, i) => {
           const done = s !== current;
@@ -63,6 +84,7 @@ export default function ChatStatus({ steps }) {
           <p className="pt-1 text-xs text-muted-foreground">The full answer card appears here once it is verified.</p>
         </div>
       )}
+    </div>
     </div>
   );
 }

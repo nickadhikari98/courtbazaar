@@ -280,6 +280,9 @@ test("the status panel ticks off done steps, spins on the current one, then show
     expect($("instant-legal-help-status-steps").textContent)
       .toBe("Understood: a question on DIAC RulesSearched DIAC RulesReading Rule 33.1…");
     expect($("instant-legal-help-skeleton")).toBeNull();
+    const quill = $("instant-legal-help-quill");
+    expect(quill.getAttribute("class")).toContain("motion-safe:animate-quill"); // still under reduced motion
+    expect(quill.getAttribute("aria-hidden")).toBe("true");
     act(() => { jest.advanceTimersByTime(3000); });
     expect($("instant-legal-help-status-timer").textContent).toBe("3s");
 
@@ -614,6 +617,7 @@ test("Send shows the thinking indicator before the reply, blocks a second send, 
   } }));
   await flush();
   expect($("instant-legal-help-loading")).toBeNull();
+  expect($("instant-legal-help-quill")).toBeNull(); // the writing indicator stops with the answer
   expect($("instant-legal-help-msg-assistant-1").textContent).toContain("Step one");
   expect($("instant-legal-help-msg-assistant-1").textContent).toContain("Delhi High Court Rules");
   expect(container.textContent).not.toContain("Understanding your question…");
