@@ -133,42 +133,116 @@ test("the user row opens a menu with the email, Settings, Get help and Log out",
   expect(mockAuth.logout).toHaveBeenCalled();
 });
 
-test("Settings: full-screen panes; Account saves the name through PUT /auth/profile, email is read-only; notifications use PUT /notifications/prefs", async () => {
+async function openMenuItem(testId) {
+  key($("chat-sidebar-user"), "Enter");
+  await flush();
+  act(() => $(testId).click());
+  await flush();
+}
+// Inside a container hidden below 768px (the pane, while the phone shows the nav).
+const hiddenOnPhones = (el) => el.closest('[class*="max-md:hidden"]');
+const tab = async (name) => { key($(`settings-tab-${name}`), "Enter"); await flush(); };
+
+test("Settings is a centred modal (nav first on mobile); Account saves only after a change", async () => {
   mockAuth.user = USER;
   mockGets(FREE_USAGE);
   api.put.mockResolvedValue({ data: {} });
   await render();
   key($("chat-sidebar-user"), "Enter");
   await flush();
+  const menu = [...document.querySelectorAll('[role="menuitem"]')].map((i) => i.textContent);
+  expect(menu).toEqual([expect.stringMatching(/^Settings(Ctrl\+,|⌘,)$/), "Usage", "Language", "Get help", "Log out"]);
+  expect($("chat-user-email").textContent).toBe("jay@example.com");
   act(() => $("chat-user-settings").click());
   await flush();
 
   const dialog = $("settings-dialog");
   expect(dialog.getAttribute("role")).toBe("dialog");
-  const tabs = [...dialog.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
-  expect(tabs).toEqual(["Account", "Plan and usage", "Appearance", "Language", "Notifications", "Privacy"]);
-  expect($("settings-email").readOnly).toBe(true);
-  expect($("settings-email").value).toBe("jay@example.com");
+  expect(dialog.className).toContain("max-w-[900px]");
+  expect(dialog.className).toContain("h-[80vh]");
+  expect(dialog.className).toContain("max-md:h-[100dvh]"); // full-screen sheet on phones
+  expect([...dialog.querySelectorAll('[role="tab"]')].map((t) => t.textContent))
+    .toEqual(["Account", "Usage", "Appearance", "Language", "Notifications", "Privacy"]);
+  // Opened from "Settings": on a phone the nav is the first screen.
+  expect(hiddenOnPhones($("settings-back"))).not.toBeNull();
 
+  expect($("settings-save").disabled).toBe(true);
+  expect($("settings-email").readOnly).toBe(true);
   act(() => setValue($("settings-name"), "Jaydeep G"));
+  expect($("settings-save").disabled).toBe(false);
   await act(async () => $("settings-save").click());
   await flush();
   expect(api.put).toHaveBeenCalledWith("/auth/profile", { name: "Jaydeep G" });
-  expect(mockAuth.refresh).toHaveBeenCalled();
 
-  act(() => $("settings-tab-plan").dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
-  key($("settings-tab-plan"), "Enter");
-  await flush();
-  expect($("settings-plan").textContent).toContain("Current plan: Free");
-  expect($("settings-plan").textContent).toContain("12 of 30 questions used today.");
-
-  key($("settings-tab-notifications"), "Enter");
-  await flush();
+  await tab("notifications");
+  expect($("settings-notif-whatsapp")).toBeNull(); // Email and SMS only
   act(() => $("settings-notif-sms").click());
   await flush();
+  // WhatsApp has no toggle but keeps its saved value (the endpoint replaces the whole set).
   expect(api.put).toHaveBeenLastCalledWith("/notifications/prefs", { email: true, sms: true, whatsapp: true });
 
   act(() => $("settings-close").click());
   await flush();
   expect($("settings-dialog")).toBeNull();
+  key(window, ","); // plain comma does nothing
+  act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: ",", ctrlKey: true, bubbles: true })); });
+  await flush();
+  expect($("settings-dialog")).not.toBeNull();
+});
+
+test("Usage opens on its pane with the endpoint's numbers and an Upgrade action for free users", async () => {
+  mockAuth.user = USER;
+  mockGets(FREE_USAGE);
+  await render();
+  await openMenuItem("chat-user-usage");
+  const pane = $("settings-usage");
+  expect(pane.textContent).toContain("PlanFree");
+  expect(pane.textContent).toContain("Requests today12 / 30");
+  expect(pane.textContent).toContain("Tokens today900 (no daily limit)");
+  expect(pane.textContent).toMatch(/Resets at\d/);
+  expect($("settings-upgrade").getAttribute("href")).toBe("/subscription");
+  expect(hiddenOnPhones($("settings-back"))).toBeNull(); // straight to the pane on phones too
+});
+
+test("Language and transcript width are this user's preferences; the language goes out with each message", async () => {
+  mockAuth.user = USER;
+  mockGets(FREE_USAGE);
+  api.post.mockResolvedValue({ data: { conversation_id: "c", reply: "Answer." } });
+  await render();
+  await openMenuItem("chat-user-language");
+  act(() => $("settings-language-hi").click());
+  await flush();
+  expect(JSON.parse(localStorage.getItem("cb_chat_prefs:u1"))).toEqual({ width: "narrow", language: "hi" });
+  await tab("appearance");
+  act(() => $("settings-width-wide").click());
+  await flush();
+  act(() => $("settings-close").click());
+  await flush();
+  expect($("instant-legal-help-transcript").className).toContain("max-w-5xl");
+  await send("Hello");
+  expect(api.post).toHaveBeenLastCalledWith("/ai/chat", expect.objectContaining({ message: "Hello", language: "hi" }));
+  localStorage.clear();
+});
+
+test("Privacy: Delete all chats asks first, then clears the list; account deletion points to support", async () => {
+  mockAuth.user = USER;
+  api.get.mockImplementation((url, opts) => Promise.resolve({
+    data: url === "/ai/usage" ? FREE_USAGE
+      : url === "/ai/chats" ? (opts?.params?.archived ? [] : [{ conversation_id: "c1", title: "Old chat", updated_at: new Date().toISOString() }])
+        : [],
+  }));
+  api.delete.mockResolvedValue({ data: { deleted: 1 } });
+  await render();
+  expect(document.querySelectorAll('[data-testid="chat-row"]')).toHaveLength(1);
+  await openMenuItem("chat-user-settings");
+  await tab("privacy");
+  expect($("settings-account-deletion").textContent).toBe("To delete your CourtBazaar account, write to support.");
+  act(() => $("settings-delete-chats").click());
+  await flush();
+  expect(api.delete).not.toHaveBeenCalled();
+  const confirm = [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent.trim() === "Delete all");
+  await act(async () => confirm.click());
+  await flush();
+  expect(api.delete).toHaveBeenCalledWith("/ai/chats");
+  expect(document.querySelectorAll('[data-testid="chat-row"]')).toHaveLength(0);
 });

@@ -135,6 +135,15 @@ function LimitCard({ reason, text }) {
   );
 }
 
+// This browser's chat preferences per signed-in user (no settings endpoint
+// exists): transcript width and the answer language sent with each message.
+const PREF_OPTIONS = { width: ["narrow", "wide"], language: ["auto", "en", "hi", "hinglish"] };
+function readPrefs(key) {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(key) || "{}") || {}; } catch { /* storage blocked: defaults */ }
+  return Object.fromEntries(Object.entries(PREF_OPTIONS).map(([k, opts]) => [k, opts.includes(saved[k]) ? saved[k] : opts[0]]));
+}
+
 const STOPPED_TEXT = "Stopped. The answer was not generated.";
 const SESSION_EXPIRED_TEXT = "This chat session is no longer available. Please send your message again to start a new chat.";
 
@@ -172,7 +181,16 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const auth = useAuth();
   const user = auth?.user || null;
   const [usage, setUsage] = useState(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState({ open: false, pane: null });
+  const openSettings = (pane = null) => setSettings({ open: true, pane });
+  const prefsKey = `cb_chat_prefs:${user?.user_id || "guest"}`;
+  const [prefs, setPrefs] = useState(() => readPrefs(prefsKey));
+  useEffect(() => { setPrefs(readPrefs(prefsKey)); }, [prefsKey]);
+  const setPref = (k, v) => setPrefs((prev) => {
+    const next = { ...prev, [k]: v };
+    try { localStorage.setItem(prefsKey, JSON.stringify(next)); } catch { /* applies now, not remembered */ }
+    return next;
+  });
   const [helpOpen, setHelpOpen] = useState(false);
   const [chats, setChats] = useState([]);
   const [archivedChats, setArchivedChats] = useState([]);
@@ -247,6 +265,10 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         e.preventDefault();
         setPaletteOpen(true);
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        openSettings();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -312,6 +334,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         message: content,
         mode,
         ...(conversationToken ? { conversation_token: conversationToken } : {}),
+        ...(prefs.language !== "auto" ? { language: prefs.language } : {}),
       }, {
         idleMs: CHAT_TIMEOUT_MS,
         signal: controller.signal,
@@ -437,12 +460,18 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         title="Delete chat?" description="This chat will be permanently deleted. This can't be undone."
         confirmLabel="Delete" onConfirm={confirmDelete}
       />
-      {user && <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} usage={usage} />}
+      {user && (
+        <SettingsDialog
+          open={settings.open} onOpenChange={(open) => setSettings((s) => ({ ...s, open }))} pane={settings.pane}
+          usage={usage} prefs={prefs} setPref={setPref} onGetHelp={() => setHelpOpen(true)}
+          onChatsDeleted={() => { setChats([]); setArchivedChats([]); handleNewChat(); }}
+        />
+      )}
       {helpOpen && <SupportTicketModal open onOpenChange={setHelpOpen} />}
       <ChatPalette open={paletteOpen} onOpenChange={setPaletteOpen} chats={chats} onSelect={openChat} />
       <ChatSidebar
         fullScreen={fullScreen} user={user} chats={chats} archivedChats={archivedChats} onUpdateChat={updateChat} onDeleteChat={setPendingDelete} usage={usage}
-        onOpenSettings={() => setSettingsOpen(true)} onGetHelp={() => setHelpOpen(true)} onViewAll={() => setPaletteOpen(true)} onLogout={() => auth?.logout?.()} activeId={conversationId} onSelect={openChat}
+        onOpenSettings={openSettings} onGetHelp={() => setHelpOpen(true)} onViewAll={() => setPaletteOpen(true)} onLogout={() => auth?.logout?.()} activeId={conversationId} onSelect={openChat}
         onNewChat={handleNewChat} newChatDisabled={msgs.length === 0 && !loading}
         collapsed={collapsed} onToggleCollapsed={() => setCollapsed((c) => !c)}
         drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}
@@ -494,7 +523,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         role="log" aria-live="polite" aria-label="Conversation"
         data-testid="instant-legal-help-messages"
       >
-        <div className="max-w-3xl mx-auto w-full px-4 py-6 sm:py-8 space-y-6">
+        <div className={`${prefs.width === "wide" ? "max-w-5xl" : "max-w-3xl"} mx-auto w-full px-4 py-6 sm:py-8 space-y-6`} data-testid="instant-legal-help-transcript">
           {msgs.length === 0 && !loading && (
             <div className="py-8 sm:py-16 text-center" data-testid="instant-legal-help-empty">
               <h2 className="font-display font-bold text-2xl sm:text-3xl">How can I help today?</h2>

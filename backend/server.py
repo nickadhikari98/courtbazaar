@@ -325,6 +325,8 @@ class ChatSendRequest(BaseModel):
     conversation_token: Optional[str] = Field(None, max_length=128)
     # Reader level for document answers only (prompt_builder.MODE_INSTRUCTIONS).
     mode: Literal["layman", "lawyer"] = "layman"
+    # Preferred answer language from chat Settings (prompt_builder.LANGUAGE_INSTRUCTIONS).
+    language: Literal["auto", "en", "hi", "hinglish"] = "auto"
 
 class RatingCreate(BaseModel):
     order_id: str
@@ -1772,7 +1774,7 @@ async def ai_chat(req: ChatSendRequest, user: Optional[dict] = Depends(get_curre
     ai_chat_svc.check_chat_rate_limit(rate_key)
     return await ai_chat_svc.handle_chat_message(
         db, req.conversation_id, req.message, user, client_ip=client_ip, conversation_token=req.conversation_token,
-        mode=req.mode,
+        mode=req.mode, language=req.language,
     )
 
 @api_router.post("/ai/chat/stream")
@@ -1782,7 +1784,8 @@ async def ai_chat_stream(req: ChatSendRequest, user: Optional[dict] = Depends(ge
     ai_chat_svc.check_chat_rate_limit(user["user_id"] if user else client_ip)
     return StreamingResponse(
         ai_chat_svc.stream_chat_events(db, req.conversation_id, req.message, user, client_ip=client_ip,
-                                       conversation_token=req.conversation_token, mode=req.mode),
+                                       conversation_token=req.conversation_token, mode=req.mode,
+                                       language=req.language),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},  # proxies must not hold events back
     )
@@ -1817,6 +1820,11 @@ async def ai_chat_update(conversation_id: str, req: ChatUpdateRequest, user=Depe
     import ai_chat as ai_chat_svc
     return await ai_chat_svc.update_chat(db, conversation_id, user, title=req.title,
                                          pinned=req.pinned, archived=req.archived)
+
+@api_router.delete("/ai/chats")
+async def ai_chats_delete_all(user=Depends(get_current_user)):
+    import ai_chat as ai_chat_svc
+    return await ai_chat_svc.delete_all_chats(db, user)
 
 @api_router.delete("/ai/chats/{conversation_id}")
 async def ai_chat_delete(conversation_id: str, user=Depends(get_current_user)):

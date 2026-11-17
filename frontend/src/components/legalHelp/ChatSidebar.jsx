@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
-import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, LogIn, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Trash2, Settings, LifeBuoy, LogOut } from "lucide-react";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, LogIn, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Trash2, Settings, LifeBuoy, LogOut, Gauge, Languages } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { formatUsage } from "./usage";
 import Logo from "@/components/shared/Logo";
 
@@ -30,6 +30,8 @@ export function shortList(list, activeId, limit = SIDEBAR_LIMIT) {
   if (active && !shown.includes(active)) shown.push(active);
   return { shown, cut: list.length > limit };
 }
+
+export const SETTINGS_SHORTCUT = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘," : "Ctrl+,";
 
 function initials(name) {
   const parts = (name || "").trim().split(/\s+/).filter(Boolean);
@@ -260,8 +262,14 @@ export default function ChatSidebar({
                 {user.email && <DropdownMenuLabel className="truncate font-normal text-muted-foreground" data-testid="chat-user-email">{user.email}</DropdownMenuLabel>}
                 <DropdownMenuSeparator />
                 {/* Deferred so the closing menu hands focus to the dialog it opens. */}
-                <DropdownMenuItem onSelect={() => setTimeout(onOpenSettings, 0)} data-testid="chat-user-settings">
-                  <Settings className="mr-2 h-4 w-4" />Settings
+                <DropdownMenuItem onSelect={() => setTimeout(() => onOpenSettings(null), 0)} data-testid="chat-user-settings">
+                  <Settings className="mr-2 h-4 w-4" />Settings<DropdownMenuShortcut>{SETTINGS_SHORTCUT}</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setTimeout(() => onOpenSettings("usage"), 0)} data-testid="chat-user-usage">
+                  <Gauge className="mr-2 h-4 w-4" />Usage
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setTimeout(() => onOpenSettings("language"), 0)} data-testid="chat-user-language">
+                  <Languages className="mr-2 h-4 w-4" />Language
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setTimeout(onGetHelp, 0)} data-testid="chat-user-help">
                   <LifeBuoy className="mr-2 h-4 w-4" />Get help

@@ -441,6 +441,18 @@ async def update_chat(db, conversation_id: str, user: Optional[dict], title: Opt
     return {"conversation_id": conversation_id, **changes}
 
 
+async def delete_all_chats(db, user: Optional[dict]) -> Dict[str, Any]:
+    """Backing DELETE /ai/chats: every conversation the signed-in user owns
+    (archived ones too) and their messages. Never anyone else's."""
+    user_id = user.get("user_id") if user else None
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(401, "Not authenticated")
+    ids = await db.ai_conversations.distinct("conversation_id", {"user_id": user_id})
+    await db.ai_chat_messages.delete_many({"conversation_id": {"$in": ids}})
+    await db.ai_conversations.delete_many({"user_id": user_id, "conversation_id": {"$in": ids}})
+    return {"deleted": len(ids)}
+
+
 async def delete_chat(db, conversation_id: str, user: Optional[dict]) -> Dict[str, Any]:
     await _owned_chat(db, conversation_id, user)
     await db.ai_chat_messages.delete_many({"conversation_id": conversation_id})
@@ -2071,7 +2083,7 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
                                client_ip: Optional[str] = None,
                                conversation_token: Optional[str] = None,
                                on_status: Optional[llm_service.StatusCallback] = None,
-                               mode: str = "layman") -> Dict[str, Any]:
+                               mode: str = "layman", language: str = "auto") -> Dict[str, Any]:
     """Main entry point for POST /ai/chat. Raises HTTPException for genuine
     client errors (bad input, conversation ownership); everything else —
     including every LLM-side failure mode — degrades to a normal 200
@@ -2102,7 +2114,7 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
     if convo.get("mode") != mode:
         await db.ai_conversations.update_one({"conversation_id": convo["conversation_id"]}, {"$set": {"mode": mode}})
     turn_tokens = llm_service.start_token_count()
-    result = await _answer_turn(db, convo, text, user, client_ip, on_status, mode)
+    result = await _answer_turn(db, convo, text, user, client_ip, on_status, mode, language)
     await chat_usage.record(db, usage_identity, turn_tokens[0])
     if issued_token:
         result["conversation_token"] = issued_token
@@ -2111,7 +2123,7 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
 
 async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_ip: Optional[str],
                        on_status: Optional[llm_service.StatusCallback] = None,
-                       mode: str = "layman") -> Dict[str, Any]:
+                       mode: str = "layman", language: str = "auto") -> Dict[str, Any]:
     """One chat turn inside a conversation whose ownership
     handle_chat_message has already checked."""
     conv_id = convo["conversation_id"]
@@ -2327,7 +2339,7 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         # Arbitration-source answers use the server-only Master Prompt instead of the product prompt.
         intent = prompt_builder.detect_intent(text)
         llm_messages = prompt_builder.build_legal_system_messages(
-            prompt_builder.subject_for(decision["source"]), mode, intent) + llm_messages[1:]
+            prompt_builder.subject_for(decision["source"]), mode, intent, language) + llm_messages[1:]
         intent_note = INTENT_COMING_SOON_NOTES.get(intent)
     result = await llm_service.generate_response(
         llm_messages, use_file_search=use_rag, selected_source=decision["source"] if use_rag else None,
@@ -2430,7 +2442,7 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
 async def stream_chat_events(db, conversation_id: Optional[str], message: str, user: Optional[dict],
                              client_ip: Optional[str] = None,
                              conversation_token: Optional[str] = None,
-                             mode: str = "layman") -> AsyncIterator[str]:
+                             mode: str = "layman", language: str = "auto") -> AsyncIterator[str]:
     """POST /ai/chat/stream: handle_chat_message as Server-Sent Events, one
     "status" per real step, then "answer" (its usual response) or "error"
     (with the HTTP status the page would otherwise get). Client gone = task
@@ -2441,7 +2453,8 @@ async def stream_chat_events(db, conversation_id: Optional[str], message: str, u
         try:
             await llm_service.emit_status(queue.put, "understanding", "Understanding your question…")
             data = await handle_chat_message(db, conversation_id, message, user, client_ip=client_ip,
-                                             conversation_token=conversation_token, on_status=queue.put, mode=mode)
+                                             conversation_token=conversation_token, on_status=queue.put, mode=mode,
+                                             language=language)
             await queue.put({"type": "answer", "data": data})
         except HTTPException as e:
             event = {"type": "error", "status": e.status_code, "text": str(e.detail)}

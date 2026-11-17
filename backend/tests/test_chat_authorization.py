@@ -552,3 +552,24 @@ def test_pinned_chats_come_first_and_archived_ones_are_listed_only_on_request(mo
         finally:
             await _cleanup(ids)
     _run(body())
+
+
+def test_delete_all_chats_removes_only_the_callers_chats(monkeypatch):
+    _fake_llm(monkeypatch)
+    owner, other = _user(_tag()), _user(_tag())
+
+    async def body():
+        mine = [(await _chat(owner, q))["conversation_id"] for q in ("One?", "Two?")]
+        theirs = (await _chat(other, "Theirs?"))["conversation_id"]
+        await server.ai_chat_update(mine[1], server.ChatUpdateRequest(archived=True), user=owner)
+        try:
+            assert await server.ai_chats_delete_all(user=owner) == {"deleted": 2}  # archived one too
+            assert await server.db.ai_conversations.count_documents({"conversation_id": {"$in": mine}}) == 0
+            assert await server.db.ai_chat_messages.count_documents({"conversation_id": {"$in": mine}}) == 0
+            assert [c["conversation_id"] for c in await server.ai_chats(user=other)] == [theirs]
+            with pytest.raises(HTTPException) as exc:
+                await ai_chat.delete_all_chats(server.db, None)
+            assert exc.value.status_code == 401
+        finally:
+            await _cleanup(mine + [theirs])
+    _run(body())
