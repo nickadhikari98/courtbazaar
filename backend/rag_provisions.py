@@ -33,7 +33,7 @@ PAGE_MARKER_RE = re.compile(r"<(?:IMAGE|PARSED TEXT) FOR PAGE:\s*(\d+)\s*/\s*\d+
 # A numbered provision at the start of a line: "33. Advance on Costs", "33.1 The Centre",
 # "11A. Qualifications" (the Act), "Article 9B" / "Rule 14.2" (rules that print the word).
 _PROVISION_START_RE = re.compile(
-    r"(?m)^((?:Article|Rule)\s+)?(\d{1,3})([A-Z]?)(?:\.(\d{1,2}))?\.?\s+(?=[A-Z(\"'])")
+    r"(?m)(?:^|(?<=\[))((?:Article|Rule)\s+)?(\d{1,3})([A-Z]?)(?:\.(\d{1,2}))?\.?\s+(?=[A-Z(\"'])")
 # Rules that print the word on every heading (ICC, LCIA "Article 31 ...") also
 # run headings into the previous text ("... in Appendix IV. Article 32 Expedited"),
 # and two-column pages put one column's "9.8" after the other's text and a gutter (LCIA).
@@ -46,6 +46,12 @@ _APPENDIX_RE = re.compile(
     r"|\bSchedule of Fees\s+Part ([IVX]+)\.")
 # How a document names an item of its own sub-part: "paragraph 7 of this Schedule 1", "Article 3 of this Appendix".
 _PART_ITEM_RE = r"\b(Article|Paragraph|Rule|Section)s?\s+\d{{1,3}}\S*\s+of\s+(?:this\s+|the\s+)?{kind}\b"
+# An amended statute's footnote, numbered from 1 on every page: "Subs. by Act 33 of 2019",
+# "Ins. by ...", "The words “a company or” omitted by s. 2, ibid.".
+_AMENDMENT_NOTE_RE = re.compile(
+    r"(?:(?:Subs|Ins|Rep)\.|Substituted|Inserted|Omitted|Added|Renumbered)\s+by\b"
+    r"|The (?:words?|proviso|figures|brackets|Explanation)\b[^\n]{0,200}?\b(?:omitted|subs\.|substituted|ins\.|inserted) by\b"
+    r"|[^\n]*?\b(?:w\.e\.f\.|ibid\.)")  # "S. 9 shall be renumbered ... s. 5, Act 3 of 2016 (w.e.f. 23-10-2015)"
 _SMALL_WORDS = {"Of", "The", "And", "For", "To", "In", "On"}
 # "[Source: <file> | Rule 33.1]" / "| Article 9B" / "| Section 11A" / "| Paragraph 3" block label written by expand_chunks.
 _BLOCK_LABEL_RE = re.compile(
@@ -200,6 +206,8 @@ def parse_provisions(doc: str, word: Optional[str] = None) -> List[Dict[str, Any
         if word and m.group(4) is None and (m.group(1) or "").strip() != word:
             continue
         line_end = doc.find("\n", m.start())
+        if _AMENDMENT_NOTE_RE.match(doc, m.end()):
+            continue  # a statute's page footnote ("1. Subs. by Act 33 of 2019, s. 2"), not a section
         # Only an undotted number ("42   Arbitration Rules ..."): "3. Inserted by ..." footnotes repeat too.
         if "." not in m.group(0) and " ".join(re.sub(r"\d", "", doc[m.start():line_end if line_end >= 0 else len(doc)]).split()) in running:
             continue
@@ -361,14 +369,17 @@ def _introducing(provisions: List[Dict[str, Any]], i: int, blocked: set) -> List
 
 
 def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: str = "",
-                  pages: Optional[List[Tuple[int, int]]] = None) -> List[str]:
+                  pages: Optional[List[Tuple[int, int]]] = None, share: int = 1) -> List[str]:
     """Context blocks for one approved file: the complete provisions the
     retrieved chunks overlap (plus each one's parent heading), in document
     order and labelled with their provision numbers ("Rule 33.1", "Section
     11A", "Article 9B"); raw chunks where no provision could be located.
     A provision the question names exactly, then those matching its words,
     come first, so the block cap can't push them out. `pages` is
-    [(offset, page)] for `doc`; by default the index built when it was fetched."""
+    [(offset, page)] for `doc`; by default the index built when it was fetched.
+    `share`: how many files split the context, so each gets its own best
+    1/share of the block and character caps (a second institution in a
+    comparison was getting none)."""
     label = kb_registry.provision_label(filename) or "Rule"
     provisions = parse_provisions(doc, "Article" if label == "Article" else None) if doc else []
     blocked, unsafe = _blocked_indices(filename, provisions, doc, query, pages)
@@ -397,19 +408,23 @@ def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: s
     blocks: List[str] = []
     total = 0
     words: Dict[str, str] = {}
-    for i in sorted(chosen[:MAX_BLOCKS]):
+    max_blocks, max_chars = MAX_BLOCKS // max(1, share), MAX_CONTEXT_CHARS // max(1, share)
+    picked: List[Tuple[int, str]] = []
+    # The character budget goes in rank order (named, keyword, chunk hits), then blocks
+    # print in document order: a long top hit (Act Section 34) is never the one cut.
+    for i in chosen[:max_blocks]:
         p = provisions[i]
         title = f" | {p['title']}" if p.get("title") else ""
         # A sub-part's items carry its own word: "Schedule 1, Paragraph 3", "Appendix IV, Article 7".
         word = words.setdefault(p["appendix"], part_word(doc, p["appendix"], label)) if p.get("appendix") else label
         block = f"[Source: {filename} | {word} {p['number']}{title}]\n{p['text']}"
-        if total + len(block) > MAX_CONTEXT_CHARS:
-            break
-        blocks.append(block)
-        total += len(block)
+        if total + len(block) <= max_chars:
+            picked.append((i, block))
+            total += len(block)
+    blocks.extend(block for _, block in sorted(picked))
     for chunk in raw:
         block = f"[Source: {filename}]\n{chunk}"
-        if total + len(block) > MAX_CONTEXT_CHARS:
+        if total + len(block) > max_chars:
             break
         blocks.append(block)
         total += len(block)
