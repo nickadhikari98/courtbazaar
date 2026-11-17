@@ -20,6 +20,17 @@ export function groupChats(chats, now = new Date()) {
   return groups.filter(([, items]) => items.length);
 }
 
+const SIDEBAR_LIMIT = 5;
+
+/* The first few chats of a list for the sidebar, plus the open chat when it
+   falls further down. Exported for tests. */
+export function shortList(list, activeId, limit = SIDEBAR_LIMIT) {
+  const shown = list.slice(0, limit);
+  const active = list.find((c) => c.conversation_id === activeId);
+  if (active && !shown.includes(active)) shown.push(active);
+  return { shown, cut: list.length > limit };
+}
+
 function initials(name) {
   const parts = (name || "").trim().split(/\s+/).filter(Boolean);
   return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase() || "?";
@@ -115,14 +126,15 @@ function ChatGroup({ label, chats, activeId, onSelect, onUpdate, onDelete }) {
 const DRAWER_AREA = { app: "inset-y-0 z-50", site: "top-[65px] bottom-0 z-30" };
 
 export default function ChatSidebar({
-  fullScreen, user, chats, archivedChats = [], onUpdateChat, onDeleteChat, usage, onOpenSettings, onGetHelp, onLogout, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
+  fullScreen, user, chats, archivedChats = [], onUpdateChat, onDeleteChat, usage, onOpenSettings, onGetHelp, onLogout, onViewAll, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
 }) {
   // The rail (collapsed) only applies from md up; the mobile drawer is always full width.
   const rail = collapsed ? "md:w-16" : "md:w-[272px]";
   const hideOnRail = collapsed ? "md:hidden" : "";
   const [showArchived, setShowArchived] = useState(false);
   const groupProps = { activeId, onSelect, onUpdate: onUpdateChat, onDelete: onDeleteChat };
-  const pinned = chats.filter((c) => c.pinned);
+  const pinned = shortList(chats.filter((c) => c.pinned), activeId);
+  const recents = shortList(chats.filter((c) => !c.pinned), activeId);
   const usageView = formatUsage(usage);
   const planLabel = { free: "Free", paid: "Paid" }[usage?.plan];
   return (
@@ -177,10 +189,18 @@ export default function ChatSidebar({
             </>
           ) : user ? (
             <>
-              {pinned.length > 0 && <ChatGroup label="Pinned" chats={pinned} {...groupProps} />}
-              {groupChats(chats.filter((c) => !c.pinned)).map(([label, items]) => (
-                <ChatGroup key={label} label={label} chats={items} {...groupProps} />
-              ))}
+              {pinned.shown.length > 0 && <ChatGroup label="Pinned" chats={pinned.shown} {...groupProps} />}
+              {recents.shown.length > 0 && <ChatGroup label="Recents" chats={recents.shown} {...groupProps} />}
+              {(pinned.cut || recents.cut) && (
+                // The full lists live in the search palette (with its date groups), not a second view here.
+                <button
+                  type="button" onClick={onViewAll}
+                  className="mb-1 w-full rounded-lg px-2 py-2 text-left text-sm text-muted-foreground hover:bg-slate-200/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="chat-sidebar-view-all"
+                >
+                  View all
+                </button>
+              )}
               {archivedChats.length > 0 && (
                 <button
                   type="button" onClick={() => setShowArchived(true)}

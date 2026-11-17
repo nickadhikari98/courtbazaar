@@ -442,7 +442,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
       <ChatPalette open={paletteOpen} onOpenChange={setPaletteOpen} chats={chats} onSelect={openChat} />
       <ChatSidebar
         fullScreen={fullScreen} user={user} chats={chats} archivedChats={archivedChats} onUpdateChat={updateChat} onDeleteChat={setPendingDelete} usage={usage}
-        onOpenSettings={() => setSettingsOpen(true)} onGetHelp={() => setHelpOpen(true)} onLogout={() => auth?.logout?.()} activeId={conversationId} onSelect={openChat}
+        onOpenSettings={() => setSettingsOpen(true)} onGetHelp={() => setHelpOpen(true)} onViewAll={() => setPaletteOpen(true)} onLogout={() => auth?.logout?.()} activeId={conversationId} onSelect={openChat}
         onNewChat={handleNewChat} newChatDisabled={msgs.length === 0 && !loading}
         collapsed={collapsed} onToggleCollapsed={() => setCollapsed((c) => !c)}
         drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}

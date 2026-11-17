@@ -19,6 +19,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { act } = React;
 const { api } = require("@/lib/api");
 const ChatSidebar = require("./ChatSidebar").default;
+const { shortList } = require("./ChatSidebar");
 const InstantLegalHelpChat = require("./InstantLegalHelpChat").default;
 
 // cmdk and Radix need these in jsdom.
@@ -73,7 +74,7 @@ async function openRowMenu(index) {
 test("pinned chats sit under a Pinned header above the date groups; Archived (n) opens the archived list", () => {
   renderSidebar();
   const headers = [...container.querySelectorAll('[data-testid="chat-sidebar-list"] .uppercase')].map((h) => h.textContent);
-  expect(headers).toEqual(["Pinned", "Today"]);
+  expect(headers).toEqual(["Pinned", "Recents"]); // date headers live in the palette
   expect(all("chat-row").map((r) => r.textContent)).toEqual(["Seat of arbitration", "Cheque bounce notice"]);
   expect($("chat-sidebar-archived").textContent).toBe("Archived (1)");
   act(() => $("chat-sidebar-archived").click());
@@ -132,7 +133,7 @@ test("Ctrl+K opens a keyboard-only palette: filter, arrows, Enter opens the chat
   expect(document.activeElement).toBe(input); // focus moves into the dialog
   expect(dialog.textContent).toContain("Esc");
   const headings = [...dialog.querySelectorAll("[cmdk-group-heading]")].map((h) => h.textContent);
-  expect(headings).toEqual(["Pinned", "Recent"]);
+  expect(headings).toEqual(["Pinned", "Today"]);
   expect(all("chat-palette-item").map((i) => i.textContent)).not.toContain("Old question"); // archived stay out
 
   act(() => setValue(input, "arbitra"));
@@ -245,4 +246,39 @@ test("the header search button opens the same palette with the field focused; gu
   act(() => $("chat-palette-back").click());
   await flush();
   expect(document.querySelector('[role="dialog"]')).toBeNull();
+});
+
+const chat = (n, extra = {}) => ({ conversation_id: `c${n}`, title: `Chat ${n}`, updated_at: NOW, pinned: false, archived: false, ...extra });
+
+test("shortList keeps the first five and the open chat", () => {
+  const list = [1, 2, 3, 4, 5, 6, 7].map((n) => chat(n));
+  expect(shortList(list, "c2").shown.map((c) => c.conversation_id)).toEqual(["c1", "c2", "c3", "c4", "c5"]);
+  expect(shortList(list, "c7").shown.map((c) => c.conversation_id)).toEqual(["c1", "c2", "c3", "c4", "c5", "c7"]);
+  expect(shortList(list, null).cut).toBe(true);
+  expect(shortList(list.slice(0, 5), null).cut).toBe(false);
+});
+
+test("the sidebar shows at most 5 pinned and 5 recents, keeps the open chat, and View all opens the full palette", async () => {
+  const pinned = [1, 2, 3, 4, 5, 6].map((n) => chat(n, { pinned: true }));
+  const recents = [7, 8, 9, 10, 11, 12, 13].map((n) => chat(n));
+  api.get.mockImplementation((url, opts) => Promise.resolve({
+    data: url === "/ai/chats" ? (opts?.params?.archived ? [ARCHIVED] : [...pinned, ...recents])
+      : [{ role: "user", content: "Hi" }, { role: "assistant", content: "Hello." }],
+  }));
+  await act(async () => root.render(<MemoryRouter><InstantLegalHelpChat /></MemoryRouter>));
+  await flush();
+  expect(rowTitles()).toEqual(["Chat 1", "Chat 2", "Chat 3", "Chat 4", "Chat 5", "Chat 7", "Chat 8", "Chat 9", "Chat 10", "Chat 11"]);
+  expect(all("chat-row-menu")).toHaveLength(10); // every row keeps its menu
+  expect($("chat-sidebar-archived").textContent).toBe("Archived (1)");
+
+  // Open "Chat 13" from the palette: it then stays in the sidebar although it's 7th.
+  act(() => $("chat-sidebar-view-all").click());
+  await flush();
+  expect($("chat-palette-input").value).toBe("");
+  expect(all("chat-palette-item")).toHaveLength(13);
+  const target = all("chat-palette-item").find((i) => i.textContent === "Chat 13");
+  act(() => target.click());
+  await flush();
+  expect(rowTitles()).toContain("Chat 13");
+  expect(rowTitles()).toHaveLength(11);
 });

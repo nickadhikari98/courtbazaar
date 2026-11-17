@@ -2,6 +2,7 @@ import React, { useRef } from "react";
 import { ArrowLeft, MessageSquare, Pin } from "lucide-react";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { groupChats } from "./ChatSidebar";
 
 /* Chat search, from Cmd/Ctrl+K, the header's search button or "View all".
    Radix Dialog gives the focus trap, role="dialog", Esc and the dimmed
@@ -54,7 +55,10 @@ export default function ChatPalette({ open, onOpenChange, chats, onSelect }) {
           <CommandList className="max-h-80 max-md:max-h-none max-md:flex-1">
             <CommandEmpty>No chats found.</CommandEmpty>
             {pinned.length > 0 && <CommandGroup heading="Pinned">{pinned.map((c) => item(c, Pin))}</CommandGroup>}
-            {recent.length > 0 && <CommandGroup heading="Recent">{recent.map((c) => item(c, MessageSquare))}</CommandGroup>}
+            {/* Recent chats by day here; the sidebar keeps a short flat list. */}
+            {groupChats(recent).map(([label, items]) => (
+              <CommandGroup key={label} heading={label}>{items.map((c) => item(c, MessageSquare))}</CommandGroup>
+            ))}
           </CommandList>
         </Command>
       </DialogContent>
