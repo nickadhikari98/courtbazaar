@@ -8,7 +8,7 @@ jest.mock("react-router/dom", () => {
   return require("react-router/dist/development/dom-export.js");
 }, { virtual: true });
 jest.mock("@/lib/api", () => ({
-  api: { post: jest.fn(), get: jest.fn(), patch: jest.fn() },
+  api: { post: jest.fn(), get: jest.fn(), patch: jest.fn(), delete: jest.fn() },
   getErrorMessage: (_error, fallback) => fallback,
 }));
 jest.mock("sonner", () => ({ toast: { success: jest.fn(), error: jest.fn(), info: jest.fn() } }));
@@ -167,4 +167,59 @@ test("updating a chat PATCHes it and reloads both lists", async () => {
   expect(api.patch).toHaveBeenCalledWith("/ai/chats/c_new", { pinned: true });
   expect(api.get).toHaveBeenCalledWith("/ai/chats");
   expect(api.get).toHaveBeenCalledWith("/ai/chats", { params: { archived: true } });
+});
+
+async function renderChatWith(list) {
+  api.get.mockImplementation((url, opts) => Promise.resolve({
+    data: url === "/ai/chats" ? (opts?.params?.archived ? [] : list)
+      : [{ role: "user", content: "Hi" }, { role: "assistant", content: "Hello there." }],
+  }));
+  await act(async () => root.render(<MemoryRouter><InstantLegalHelpChat /></MemoryRouter>));
+  await flush();
+}
+const rowTitles = () => all("chat-row").map((r) => r.textContent);
+async function chooseDelete(index) {
+  await openRowMenu(index);
+  act(() => $("chat-row-delete").click());
+  await flush();
+}
+
+test("Delete asks first: Cancel keeps the chat, Delete removes it without a reload and leaves the open chat", async () => {
+  await renderChatWith([RECENT, OTHER]);
+  act(() => all("chat-row")[1].querySelector("button").click()); // open "Emergency arbitrator"
+  await flush();
+  expect(document.body.textContent).toContain("Hello there.");
+
+  await chooseDelete(0);
+  const dialog = document.querySelector('[role="dialog"]');
+  expect(dialog.textContent).toContain("Delete chat?");
+  expect(dialog.textContent).toContain("This chat will be permanently deleted. This can't be undone.");
+  const button = (label) => [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent.trim() === label);
+  act(() => button("Cancel").click());
+  await flush();
+  expect(api.delete).not.toHaveBeenCalled();
+  expect(rowTitles()).toEqual(["Cheque bounce notice", "Emergency arbitrator"]);
+
+  api.delete.mockResolvedValue({ data: { ok: true } });
+  api.get.mockClear();
+  await chooseDelete(1); // the open chat
+  await act(async () => button("Delete").click());
+  await flush();
+  expect(api.delete).toHaveBeenCalledWith("/ai/chats/c_other");
+  expect(rowTitles()).toEqual(["Cheque bounce notice"]);
+  expect(api.get).not.toHaveBeenCalledWith("/ai/chats"); // removed in place, no reload
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect($("instant-legal-help-empty")).not.toBeNull(); // the open chat was deleted: a new empty chat
+});
+
+test("a failed delete shows an error toast and keeps the chat", async () => {
+  const { toast } = require("sonner");
+  await renderChatWith([RECENT]);
+  api.delete.mockRejectedValue(new Error("boom"));
+  await chooseDelete(0);
+  const del = [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent.trim() === "Delete");
+  await act(async () => del.click());
+  await flush();
+  expect(toast.error).toHaveBeenCalledWith("Couldn't delete that chat. Please try again.");
+  expect(rowTitles()).toEqual(["Cheque bounce notice"]);
 });

@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
-import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, LogIn, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus } from "lucide-react";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, LogIn, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Trash2 } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import Logo from "@/components/shared/Logo";
 
 const DAY_MS = 86400000;
@@ -26,7 +26,7 @@ function initials(name) {
 
 /* One chat in the list: open it, or from "..." pin, rename inline
    (Enter saves, Esc cancels) or archive. */
-function ChatRow({ chat, active, onSelect, onUpdate }) {
+function ChatRow({ chat, active, onSelect, onUpdate, onDelete }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const startRename = () => { setDraft(chat.title || ""); setEditing(true); };
@@ -79,20 +79,29 @@ function ChatRow({ chat, active, onSelect, onUpdate }) {
           <DropdownMenuItem onSelect={() => onUpdate(chat.conversation_id, { archived: !chat.archived })} data-testid="chat-row-archive">
             {chat.archived ? <ArchiveRestore className="mr-2 h-4 w-4" /> : <Archive className="mr-2 h-4 w-4" />}{chat.archived ? "Unarchive" : "Archive"}
           </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {/* Deferred so the closing menu hands focus over cleanly to the confirm dialog. */}
+          <DropdownMenuItem
+            onSelect={() => setTimeout(() => onDelete(chat), 0)}
+            className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+            data-testid="chat-row-delete"
+          >
+            <Trash2 className="mr-2 h-4 w-4" />Delete
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
   );
 }
 
-function ChatGroup({ label, chats, activeId, onSelect, onUpdate }) {
+function ChatGroup({ label, chats, activeId, onSelect, onUpdate, onDelete }) {
   return (
     <div className="mb-3">
       <div className="px-2 pb-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
       <ul>
         {chats.map((c) => (
           <li key={c.conversation_id}>
-            <ChatRow chat={c} active={c.conversation_id === activeId} onSelect={onSelect} onUpdate={onUpdate} />
+            <ChatRow chat={c} active={c.conversation_id === activeId} onSelect={onSelect} onUpdate={onUpdate} onDelete={onDelete} />
           </li>
         ))}
       </ul>
@@ -105,13 +114,13 @@ function ChatGroup({ label, chats, activeId, onSelect, onUpdate }) {
 const DRAWER_AREA = { app: "inset-y-0 z-50", site: "top-[65px] bottom-0 z-30" };
 
 export default function ChatSidebar({
-  fullScreen, user, chats, archivedChats = [], onUpdateChat, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
+  fullScreen, user, chats, archivedChats = [], onUpdateChat, onDeleteChat, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
 }) {
   // The rail (collapsed) only applies from md up; the mobile drawer is always full width.
   const rail = collapsed ? "md:w-16" : "md:w-[272px]";
   const hideOnRail = collapsed ? "md:hidden" : "";
   const [showArchived, setShowArchived] = useState(false);
-  const groupProps = { activeId, onSelect, onUpdate: onUpdateChat };
+  const groupProps = { activeId, onSelect, onUpdate: onUpdateChat, onDelete: onDeleteChat };
   const pinned = chats.filter((c) => c.pinned);
   return (
     <>

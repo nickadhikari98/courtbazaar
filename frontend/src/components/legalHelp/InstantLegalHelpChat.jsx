@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { ArrowUp, Scale, User, Info, RotateCcw, Menu, Paperclip, Square, Copy } from "lucide-react";
 import ChatSidebar from "./ChatSidebar";
 import ChatPalette from "./ChatPalette";
+import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import ChatStatus, { FIRST_STEP } from "./ChatStatus";
 import { streamChat } from "./chatStream";
 import ChatMarkdown from "./ChatMarkdown";
@@ -146,6 +147,8 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const [chats, setChats] = useState([]);
   const [archivedChats, setArchivedChats] = useState([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null); // the chat awaiting delete confirmation
+  const [deleting, setDeleting] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const scrollRef = useRef(null);
@@ -175,6 +178,24 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
       toast.error(getErrorMessage(err, "Couldn't update that chat."));
     }
     loadChats();
+  };
+
+  const confirmDelete = async () => {
+    const id = pendingDelete?.conversation_id;
+    if (!id) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/ai/chats/${encodeURIComponent(id)}`);
+      const without = (list) => list.filter((c) => c.conversation_id !== id);
+      setChats(without);
+      setArchivedChats(without);
+      if (id === conversationId) handleNewChat();
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't delete that chat. Please try again."));
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
+    }
   };
 
   // Cmd/Ctrl+K opens chat search (signed-in users: guests have no saved chats).
@@ -362,9 +383,14 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
 
   return (
     <div className="flex flex-1 h-full min-h-0 bg-background" data-testid="instant-legal-help-panel">
+      <ConfirmDialog
+        open={!!pendingDelete} onOpenChange={(open) => { if (!open) setPendingDelete(null); }} busy={deleting}
+        title="Delete chat?" description="This chat will be permanently deleted. This can't be undone."
+        confirmLabel="Delete" onConfirm={confirmDelete}
+      />
       <ChatPalette open={paletteOpen} onOpenChange={setPaletteOpen} chats={chats} onSelect={openChat} />
       <ChatSidebar
-        fullScreen={fullScreen} user={user} chats={chats} archivedChats={archivedChats} onUpdateChat={updateChat} activeId={conversationId} onSelect={openChat}
+        fullScreen={fullScreen} user={user} chats={chats} archivedChats={archivedChats} onUpdateChat={updateChat} onDeleteChat={setPendingDelete} activeId={conversationId} onSelect={openChat}
         onNewChat={handleNewChat} newChatDisabled={msgs.length === 0 && !loading}
         collapsed={collapsed} onToggleCollapsed={() => setCollapsed((c) => !c)}
         drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}
