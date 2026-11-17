@@ -14,7 +14,7 @@ import rag_provisions  # noqa: E402
 
 ICC = "ICC_2026-Arbitration-Rules_2014-Mediation-Rules.pdf"
 SIAC = "SIAC-Rules-7th-Edition_260907.pdf"
-ACT = "Arbitration-And-Conciliation-Act-1996.pdf"
+ACT = "Arbitration-And-Conciliation-Act-1996-as-on-2026-06-01.pdf"  # the in-force Act; the 2019 text is superseded
 
 ICC_DOC = (
     "<PARSED TEXT FOR PAGE: 1 / 106>\nARBITRATION RULES\n"
@@ -82,7 +82,7 @@ def test_two_institutions_route_to_rag_and_search_each_with_its_own_filter(monke
     assert len(filters) == 2
     assert kb_registry.search_filter("ICC") in filters and kb_registry.search_filter("SIAC") in filters
     assert kb_registry.search_filter("ICC")["filters"][0]["key"] == "institution"  # bundled PDF: never doc_id
-    assert kb_registry.search_filter("ACT")["filters"][0] == {"type": "eq", "key": "doc_id", "value": "act-ac-1996"}
+    assert kb_registry.search_filter("ACT")["filters"][0] == {"type": "eq", "key": "doc_id", "value": "act-ac-1996-2026"}
     assert all(f["filters"][1] == {"type": "eq", "key": "status", "value": "in_force"} for f in filters)
     assert llm_service._search_text(query, None) == "Searching ICC Rules, SIAC Rules…"
 
@@ -151,7 +151,8 @@ def test_named_section_is_read_from_the_act_when_search_returned_no_act_chunk(mo
 
 
 def test_unnamed_question_merged_context_is_capped_by_score(monkeypatch):
-    files = [f for f in llm_service.APPROVED_KB_FILES if f not in (ICC, llm_service.SOURCE_SOP)]
+    # in-force only: a superseded file's chunks are dropped by design, so "best score kept" needs live files
+    files = sorted(f for f in llm_service.APPROVED_KB_FILES if f not in (ICC, llm_service.SOURCE_SOP) and llm_service._in_force(f))
     items = [SimpleNamespace(**{**vars(_item(files[i % len(files)], f"chunk{i} " + "tribunal powers " * 200)),
                                 "score": 0.3 + i / 100}) for i in range(20)]
     searches = _install(monkeypatch, items)

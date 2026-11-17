@@ -22,6 +22,7 @@ import answer_guard  # noqa: E402
 import counsel_matching  # noqa: E402
 import court_bazaar_tools  # noqa: E402
 import llm_service  # noqa: E402
+import kb_registry  # noqa: E402
 
 SOP = llm_service.SOURCE_SOP
 DIAC = llm_service.SOURCE_DIAC
@@ -239,7 +240,7 @@ def test_diac_question_never_uses_sop_evidence(fake_rag):
     result = _chat("What does the DIAC Rules say about appointment of arbitrators?")
     assert result["reply"] == ai_chat.document_not_found_message(DIAC)
     assert fake_rag["completions"] == []
-    assert fake_rag["searches"][0]["filters"]["value"] == "diac_rules"
+    assert fake_rag["searches"][0]["filters"] == kb_registry.search_filter("DIAC")  # institution + in_force
 
 
 def test_malicious_retrieved_text_stays_data_and_is_never_obeyed(fake_rag):

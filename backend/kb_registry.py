@@ -138,7 +138,10 @@ def record_code(rec: dict) -> Optional[str]:
 
 
 def files_for(code: str) -> list:
-    return [f for f, recs in _records_by_file().items() if record_code(recs[0]) == code]
+    """Files for one institution that still hold an in-force document; a
+    superseded file (e.g. the 2019 Act text) must not compete in routing."""
+    return [f for f, recs in _records_by_file().items()
+            if record_code(recs[0]) == code and any(r.get("status") == "in_force" for r in recs)]
 
 
 def code_for_file(filename: str) -> Optional[str]:
