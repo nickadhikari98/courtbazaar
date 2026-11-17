@@ -66,6 +66,9 @@ function dropEmptyStructure(blocks) {
   return out;
 }
 
+// A superscript number after the sentence it supports.
+const CITE_CLASS = "ml-0.5 align-super text-[11px] font-semibold leading-none text-accent no-underline hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-sm";
+
 function renderCiteMarkers(text, keyPrefix, citeLinks) {
   if (!citeLinks?.size) return text;
   return String(text).split(/(\[\d{1,2}\])/g).map((part, i) => {
@@ -80,7 +83,7 @@ function renderCiteMarkers(text, keyPrefix, citeLinks) {
           onClick={() => jumpToSource(source.anchor)}
           title={source.title}
           aria-label={`Source ${n}: ${source.title}`}
-          className="mx-0.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-md bg-accent/10 px-1 align-[2px] text-[11px] font-semibold leading-none text-accent hover:bg-accent hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          className={CITE_CLASS}
           data-testid="instant-legal-help-cite"
         >
           {n}
@@ -94,7 +97,7 @@ function renderCiteMarkers(text, keyPrefix, citeLinks) {
           key={`${keyPrefix}-c${i}`}
           title={source.title}
           aria-label={`Source ${n}: ${source.title}`}
-          className="mx-0.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-md bg-accent/10 px-1 align-[2px] text-[11px] font-semibold leading-none text-accent"
+          className={CITE_CLASS}
           data-testid="instant-legal-help-cite"
         >
           {n}
@@ -109,7 +112,7 @@ function renderCiteMarkers(text, keyPrefix, citeLinks) {
         rel="noopener noreferrer"
         title={source.title}
         aria-label={`Source ${n}: ${source.title} (opens in a new tab)`}
-        className="mx-0.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-md bg-accent/10 px-1 align-[2px] text-[11px] font-semibold leading-none text-accent no-underline hover:bg-accent hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        className={CITE_CLASS}
         data-testid="instant-legal-help-cite"
       >
         {n}

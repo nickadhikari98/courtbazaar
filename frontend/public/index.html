@@ -30,6 +30,17 @@
         <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
     </head>
     <body>
+        <!-- Instant Legal Help dark theme before first paint (no light flash). Only the chat
+             page, only the <body> class; InstantLegalHelpChat keeps it in sync from then on. -->
+        <script>
+          try {
+            var t = localStorage.getItem("cb_chat_theme");
+            if (/^\/legal-help(\/|$)/.test(location.pathname) && (t === "dark" || (t === "system"
+                && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches))) {
+              document.body.classList.add("dark");
+            }
+          } catch (e) {}
+        </script>
         <noscript>You need to enable JavaScript to run this app.</noscript>
         <div id="root"></div>
         <!--

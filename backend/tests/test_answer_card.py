@@ -311,9 +311,10 @@ def _stream_with(monkeypatch, output):
 def test_stream_reports_each_real_step_then_the_answer(monkeypatch):
     _stream_with(monkeypatch, _card())
     events = _stream("Under the DIAC rules, what happens if a party does not pay the deposits?")
-    assert [e.get("step") for e in events[:-1]] == ["understanding", "searching", "reading", "writing", "verifying"]
-    assert events[1]["text"] == "Searching DIAC Rules…"
-    assert events[2]["text"].startswith("Reading ") and events[-1]["type"] == "answer"
+    assert [e.get("step") for e in events[:-1]] == ["understanding", "understanding", "searching", "reading", "writing", "verifying"]
+    assert events[1]["text"] == "Understood: a question on DIAC Rules"  # replaces "Understanding…" in place
+    assert events[2]["text"] == "Searching DIAC Rules…"
+    assert events[3]["text"].startswith("Reading ") and events[-1]["type"] == "answer"
     assert events[-1]["data"]["answer"]["status"] == "answered"
 
 

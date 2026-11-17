@@ -62,7 +62,48 @@ code { font-family: 'JetBrains Mono', Menlo, Monaco, Consolas, monospace; }
         --chart-3: 173 58% 39%;
         --chart-4: 43 74% 66%;
         --chart-5: 197 37% 24%;
+        --subtle: 215 20% 65%;     /* #94A3B8 */
+        --border-strong: 213 27% 84%; /* #CBD5E1 */
+        --success: 161 94% 30%;    /* #059669 */
+        --success-foreground: 163 94% 24%; /* #047857 */
+        --warning: 38 92% 50%;     /* #F59E0B */
+        --warning-foreground: 23 82% 31%; /* #92400E */
+        --info: 199 89% 48%;       /* #0EA5E9 */
+        --info-foreground: 201 96% 32%; /* #0369A1 */
         --radius: 0.625rem;
+    }
+
+    /* Dark set (PRODUCT_DESIGN_SYSTEM.md §4.1). Applied by a `dark` class on <body>,
+       set only while the Instant Legal Help chat is on screen (InstantLegalHelpChat),
+       never on <html>, so the rest of the app stays light for now. */
+    .dark {
+        --background: 220 49% 8%;  /* #0B1220 */
+        --foreground: 220 32% 93%; /* #E6EAF2 */
+        --card: 219 43% 12%;       /* #111A2B */
+        --card-foreground: 220 32% 93%; /* #E6EAF2 */
+        --popover: 222 45% 16%;    /* #16213A */
+        --popover-foreground: 220 32% 93%; /* #E6EAF2 */
+        --primary: 220 32% 93%;    /* #E6EAF2 */
+        --primary-foreground: 220 49% 8%; /* #0B1220 */
+        --secondary: 222 45% 16%;  /* #16213A */
+        --secondary-foreground: 220 32% 93%; /* #E6EAF2 */
+        --muted: 219 43% 12%;      /* #111A2B */
+        --muted-foreground: 218 21% 67%; /* #9AA7BD */
+        --subtle: 218 18% 56%;     /* #7A89A3 — text-muted; #6B7A93 failed AA, raised */
+        --accent: 38 92% 50%;      /* #F59E0B */
+        --accent-foreground: 220 49% 8%; /* #0B1220 — white on #F59E0B is 2.15:1 */
+        --destructive: 0 91% 71%;  /* #F87171 */
+        --destructive-foreground: 220 49% 8%; /* #0B1220 */
+        --border: 219 38% 20%;     /* #1F2C45 */
+        --border-strong: 219 35% 26%; /* #2B3B59 */
+        --input: 219 35% 26%;      /* #2B3B59 — border-strong */
+        --ring: 38 92% 50%;        /* #F59E0B */
+        --success: 158 64% 52%;    /* #34D399 */
+        --success-foreground: 158 64% 52%; /* #34D399 */
+        --warning: 43 96% 56%;     /* #FBBF24 */
+        --warning-foreground: 43 96% 56%; /* #FBBF24 */
+        --info: 198 93% 60%;       /* #38BDF8 */
+        --info-foreground: 198 93% 60%; /* #38BDF8 */
     }
 }
 
@@ -119,6 +160,14 @@ code { font-family: 'JetBrains Mono', Menlo, Monaco, Consolas, monospace; }
 
 .cb-divider {
     height: 1px; background: linear-gradient(to right, transparent, hsl(var(--border)), transparent);
+}
+
+/* Instant Legal Help message actions: on devices that can hover, hidden until
+   the message is hovered or an action is focused (opacity, so the space stays
+   reserved); always shown on touch and on the latest answer (data-always). */
+@media (hover: hover) and (pointer: fine) {
+    .cb-msg-actions:not([data-always]) { opacity: 0; transition: opacity 150ms ease; }
+    .cb-msg:hover .cb-msg-actions, .cb-msg-actions:focus-within { opacity: 1; }
 }
 
 /* Modular subtle scrollbar — add `cb-scroll` to any overflow container so

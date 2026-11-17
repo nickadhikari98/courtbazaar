@@ -2,6 +2,7 @@
 CourtBazaar - Legal Operations & Court Services Marketplace
 Main FastAPI application
 """
+from typing import Annotated
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
 from dotenv import load_dotenv
@@ -12,7 +13,7 @@ import json
 import hashlib
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, ConfigDict, Field, EmailStr
 from typing import List, Optional, Literal, Dict, Any
 import uuid
 import secrets
@@ -272,8 +273,14 @@ class SetPasswordRequest(BaseModel):
     token: str
     password: str
 
+WORK_TYPES = ("Advocate", "Law firm", "Corporate counsel", "Law student", "Other")
+
 class UserProfile(BaseModel):
     name: Optional[str] = None
+    # "What should we call you?" — a short name for greetings.
+    display_name: Optional[str] = Field(None, max_length=40)
+    # "What best describes your work?"
+    work_type: Optional[Literal["Advocate", "Law firm", "Corporate counsel", "Law student", "Other"]] = None
     phone: Optional[str] = None
     bar_council_id: Optional[str] = None
     chamber_address: Optional[str] = None
@@ -325,6 +332,8 @@ class ChatSendRequest(BaseModel):
     conversation_token: Optional[str] = Field(None, max_length=128)
     # Reader level for document answers only (prompt_builder.MODE_INSTRUCTIONS).
     mode: Literal["layman", "lawyer"] = "layman"
+    # Preferred answer language from chat Settings (prompt_builder.LANGUAGE_INSTRUCTIONS).
+    language: Literal["auto", "en", "hi", "hinglish"] = "auto"
 
 class RatingCreate(BaseModel):
     order_id: str
@@ -540,6 +549,10 @@ async def seed_initial_data():
     await notifications_svc.ensure_indexes(db)
     await order_agent_tools.ensure_indexes(db)
     await ai_chat_svc.ensure_indexes(db)
+    import chat_usage
+    await chat_usage.ensure_indexes(db)
+    import chat_matters
+    await chat_matters.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -898,10 +911,42 @@ async def set_password(req: SetPasswordRequest):
     fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
     return {"token": token, "user": _enrich_user_with_roles_and_capabilities(fresh)}
 
+AVATAR_EXTENSIONS = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
+AVATAR_URL_TTL_SECONDS = 24 * 60 * 60
+
+def _with_avatar(user: dict) -> dict:
+    """An uploaded photo lives privately in storage (avatar_path); avatar_url is
+    a fresh signed link to it on every read, the same way review photos work.
+    Without an upload, avatar_url stays as it was (e.g. a Google picture)."""
+    if user and user.get("avatar_path"):
+        user["avatar_url"] = presigned_download_url(user["avatar_path"], expires_in=AVATAR_URL_TTL_SECONDS)
+    return user
+
 @api_router.get("/auth/me")
 async def auth_me(user=Depends(get_current_user)):
     user.pop("password_hash", None)
-    return user
+    return _with_avatar(user)
+
+@api_router.post("/auth/profile/avatar")
+async def upload_avatar(file: UploadFile = File(...), user=Depends(get_current_user)):
+    """Profile photo: PNG, JPEG or WebP up to MAX_UPLOAD_SIZE_BYTES (10MB), via the storage module."""
+    data = await file.read()
+    ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else ""
+    content_type = (file.content_type or "").lower()
+    if ext not in AVATAR_EXTENSIONS or (content_type and content_type not in set(AVATAR_EXTENSIONS.values()) | {"image/jpg"}):
+        raise HTTPException(400, "Profile photos must be PNG, JPEG, or WebP.")
+    if not data:
+        raise HTTPException(400, "Uploaded file is empty")
+    if len(data) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(400, f"File too large. Max size is {MAX_UPLOAD_SIZE_BYTES // (1024*1024)}MB")
+    path = f"{APP_NAME}/avatars/{user['user_id']}/{uuid.uuid4().hex}.{ext}"
+    try:
+        result = put_object(path, data, AVATAR_EXTENSIONS[ext])
+    except Exception as e:
+        logger.error(f"Avatar upload failed: {e}")
+        raise HTTPException(500, "Upload failed. Please try again.")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"avatar_path": result["path"]}})
+    return {"avatar_url": presigned_download_url(result["path"], expires_in=AVATAR_URL_TTL_SECONDS)}
 
 @api_router.post("/auth/logout")
 async def logout(authorization: Optional[str] = Header(None)):
@@ -916,7 +961,7 @@ async def update_profile(profile: UserProfile, user=Depends(get_current_user)):
     if update:
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
     refreshed = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
-    return refreshed
+    return _with_avatar(refreshed)
 
 # ---------- COURTS ----------
 @api_router.get("/states")
@@ -1770,7 +1815,7 @@ async def ai_chat(req: ChatSendRequest, user: Optional[dict] = Depends(get_curre
     ai_chat_svc.check_chat_rate_limit(rate_key)
     return await ai_chat_svc.handle_chat_message(
         db, req.conversation_id, req.message, user, client_ip=client_ip, conversation_token=req.conversation_token,
-        mode=req.mode,
+        mode=req.mode, language=req.language,
     )
 
 @api_router.post("/ai/chat/stream")
@@ -1780,7 +1825,8 @@ async def ai_chat_stream(req: ChatSendRequest, user: Optional[dict] = Depends(ge
     ai_chat_svc.check_chat_rate_limit(user["user_id"] if user else client_ip)
     return StreamingResponse(
         ai_chat_svc.stream_chat_events(db, req.conversation_id, req.message, user, client_ip=client_ip,
-                                       conversation_token=req.conversation_token, mode=req.mode),
+                                       conversation_token=req.conversation_token, mode=req.mode,
+                                       language=req.language),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},  # proxies must not hold events back
     )
@@ -1793,6 +1839,112 @@ async def ai_history(conversation_id: str, user: Optional[dict] = Depends(get_cu
     client_ip = request.client.host if request and request.client else "unknown"
     ai_chat_svc.check_history_rate_limit(user["user_id"] if user else client_ip)
     return await ai_chat_svc.get_conversation_history(db, conversation_id, user, x_conversation_token)
+
+class AIPreferences(BaseModel):
+    """Chat Settings stored on the user (ai_preferences). Unknown keys are rejected."""
+    model_config = ConfigDict(extra="forbid")
+    answer_language: Optional[Literal["auto", "en", "hi", "hinglish"]] = None
+    transcript_width: Optional[Literal["narrow", "wide"]] = None
+    theme: Optional[Literal["system", "light", "dark"]] = None
+
+AI_PREFERENCE_DEFAULTS = {"answer_language": "auto", "transcript_width": "narrow", "theme": "system"}
+
+async def _ai_preferences(user_id: str) -> dict:
+    doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "ai_preferences": 1}) or {}
+    stored = {k: v for k, v in (doc.get("ai_preferences") or {}).items() if k in AI_PREFERENCE_DEFAULTS}
+    return {**AI_PREFERENCE_DEFAULTS, **stored}
+
+@api_router.get("/ai/preferences")
+async def ai_preferences_get(user=Depends(get_current_user)):
+    return await _ai_preferences(user["user_id"])
+
+@api_router.patch("/ai/preferences")
+async def ai_preferences_update(req: AIPreferences, user=Depends(get_current_user)):
+    changes = {f"ai_preferences.{k}": v for k, v in req.model_dump(exclude_none=True).items()}
+    if not changes:
+        raise HTTPException(400, "Nothing to update.")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": changes})
+    return await _ai_preferences(user["user_id"])
+
+@api_router.get("/ai/usage")
+async def ai_usage(user: Optional[dict] = Depends(get_current_user_optional), request: Request = None):
+    import chat_usage
+    client_ip = request.client.host if request and request.client else "unknown"  # same key as /ai/chat
+    return await chat_usage.summary(db, user, client_ip)
+
+@api_router.get("/ai/chats")
+async def ai_chats(user: Optional[dict] = Depends(get_current_user_optional), archived: bool = False,
+                   limit: Annotated[int, Query(ge=1, le=100)] = 50, offset: Annotated[int, Query(ge=0)] = 0,
+                   matter_id: Annotated[Optional[str], Query(max_length=64)] = None):
+    import ai_chat as ai_chat_svc
+    return await ai_chat_svc.list_chats(db, user, archived=archived, limit=limit, offset=offset, matter_id=matter_id)
+
+# ---------- Matters: owner-only chat folders with custom instructions (chat_matters) ----------
+class MatterCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    custom_instructions: str = Field("", max_length=2000)
+
+class MatterUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=80)
+    custom_instructions: Optional[str] = Field(None, max_length=2000)
+
+class ChatMatterRequest(BaseModel):
+    matter_id: Optional[str] = Field(None, max_length=64)  # null moves the chat out of its matter
+
+@api_router.get("/ai/matters")
+async def ai_matters_list(user=Depends(get_current_user)):
+    import chat_matters
+    return await chat_matters.list_matters(db, user)
+
+@api_router.post("/ai/matters")
+async def ai_matters_create(req: MatterCreateRequest, user=Depends(get_current_user)):
+    import chat_matters
+    return await chat_matters.create_matter(db, user, req.name, req.custom_instructions)
+
+@api_router.patch("/ai/matters/{matter_id}")
+async def ai_matters_update(matter_id: str, req: MatterUpdateRequest, user=Depends(get_current_user)):
+    import chat_matters
+    return await chat_matters.update_matter(db, user, matter_id, name=req.name, custom_instructions=req.custom_instructions)
+
+@api_router.delete("/ai/matters/{matter_id}")
+async def ai_matters_delete(matter_id: str, user=Depends(get_current_user)):
+    import chat_matters
+    return await chat_matters.delete_matter(db, user, matter_id)
+
+@api_router.put("/ai/chats/{conversation_id}/matter")
+async def ai_chat_move(conversation_id: str, req: ChatMatterRequest, user=Depends(get_current_user)):
+    import chat_matters
+    return await chat_matters.move_chat(db, user, conversation_id, req.matter_id)
+
+class ChatBulkRequest(BaseModel):
+    action: Literal["archive", "unarchive", "delete"]
+    ids: List[str] = Field(..., min_length=1, max_length=200)
+
+@api_router.post("/ai/chats/bulk")
+async def ai_chats_bulk(req: ChatBulkRequest, user=Depends(get_current_user)):
+    import ai_chat as ai_chat_svc
+    return await ai_chat_svc.bulk_update_chats(db, user, req.action, req.ids)
+
+class ChatUpdateRequest(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    pinned: Optional[bool] = None
+    archived: Optional[bool] = None
+
+@api_router.patch("/ai/chats/{conversation_id}")
+async def ai_chat_update(conversation_id: str, req: ChatUpdateRequest, user=Depends(get_current_user)):
+    import ai_chat as ai_chat_svc
+    return await ai_chat_svc.update_chat(db, conversation_id, user, title=req.title,
+                                         pinned=req.pinned, archived=req.archived)
+
+@api_router.delete("/ai/chats")
+async def ai_chats_delete_all(user=Depends(get_current_user)):
+    import ai_chat as ai_chat_svc
+    return await ai_chat_svc.delete_all_chats(db, user)
+
+@api_router.delete("/ai/chats/{conversation_id}")
+async def ai_chat_delete(conversation_id: str, user=Depends(get_current_user)):
+    import ai_chat as ai_chat_svc
+    return await ai_chat_svc.delete_chat(db, conversation_id, user)
 
 @api_router.post("/ai/filing-checklist")
 async def filing_checklist(payload: dict, user=Depends(get_current_user)):

@@ -67,11 +67,28 @@ def role_line(subject: str) -> str:
             "assistant: only from the retrieved CourtBazaar material, never as a substitute for a qualified advocate.")
 
 
+# The reader's preferred answer language, from chat Settings. "auto" adds
+# nothing (today's behaviour: the model follows the message). Each is a
+# separate system message right after the mode instruction, so it can only
+# add to the master prompt, never replace or reorder it.
+LANGUAGE_INSTRUCTIONS = {
+    "auto": None,
+    "en": "Answer language: write the answer in English.",
+    "hi": ("Answer language: write the answer in Hindi (Devanagari script). Keep rule, section and article "
+           "numbers, and the names of statutes, rules and institutions, exactly as they appear in the sources."),
+    "hinglish": ("Answer language: write the answer in Hinglish (Hindi in Latin script, with English legal terms). "
+                 "Keep rule, section and article numbers, and the names of statutes, rules and institutions, "
+                 "exactly as they appear in the sources."),
+}
+
+
 def build_legal_system_messages(subject: str = "Arbitration", mode: str = "layman",
-                                intent: str = "qa") -> List[Dict[str, str]]:
-    """Master prompt, role line, mode instruction, task instruction — in that order."""
+                                intent: str = "qa", language: str = "auto") -> List[Dict[str, str]]:
+    """Master prompt, role line, mode instruction, [language], task instruction — in that order."""
+    language_line = LANGUAGE_INSTRUCTIONS.get(language)
     return [{"role": "system", "content": text} for text in (
         master_prompt(), role_line(subject), MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["layman"]),
+        *([language_line] if language_line else []),
         task_instruction(intent),
     )]
 

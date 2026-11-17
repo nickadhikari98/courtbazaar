@@ -1,13 +1,23 @@
-import React, { useEffect, useId, useRef, useState } from "react";
-import { getErrorMessage } from "@/lib/api";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { api, getErrorMessage } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { ArrowUp, Loader2, Scale, User, SquarePen, Landmark, FileText, Users, Info, RotateCcw } from "lucide-react";
+import { ArrowUp, Scale, User, Info, RotateCcw, Menu, Paperclip, Square, Copy, Search, SquarePen, ChevronDown, MessageSquare, History } from "lucide-react";
+import ChatSidebar, { ChatMenu } from "./ChatSidebar";
+import ChatPalette from "./ChatPalette";
+import ConfirmDialog from "@/components/shared/ConfirmDialog";
+import SupportTicketModal from "@/components/legal/SupportTicketModal";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import RecentsView from "./RecentsView";
+import { MatterView, MoveToMatterDialog, NameDialog } from "./Matters";
+import SettingsDialog from "./SettingsDialog";
+import { formatUsage, usageReminder } from "./usage";
 import ChatStatus, { FIRST_STEP } from "./ChatStatus";
 import { streamChat } from "./chatStream";
 import ChatMarkdown from "./ChatMarkdown";
 import ChatSources, { documentCitationLinks, webCitationLinks } from "./ChatSources";
-import AnswerCard, { AnswerNote, normalizeAnswer } from "./AnswerCard";
+import AnswerCard, { AnswerNote, answerPlainText, normalizeAnswer } from "./AnswerCard";
 
 // Multi-turn conversation via POST /ai/chat/stream. Backend routing (ai_chat.py)
 // transparently grounds some replies in live public CourtBazaar data
@@ -100,14 +110,96 @@ export function assistantMessageFrom(data) {
   };
 }
 
+// Actions only on real answers: ones with sources, or longer than a one-line reply.
+const ACTIONS_MIN_CHARS = 200;
+export const hasActions = (m) => !m.retryText
+  && ((Array.isArray(m.citations) && m.citations.length > 0) || (m.text || "").length > ACTIONS_MIN_CHARS);
+
+// A daily limit (chat_usage) refused the message: which card to show.
+const LIMIT_ACTIONS = {
+  guest: { to: "/register", label: "Sign up to continue" },
+  free: { to: "/subscription", label: "Upgrade" },
+  paid: null,
+};
+
+function LimitCard({ reason, text }) {
+  const action = LIMIT_ACTIONS[reason];
+  return (
+    <div className="rounded-xl border border-accent/40 bg-accent/5 px-4 py-3" data-testid="instant-legal-help-limit">
+      <p className="text-sm leading-6">{text}</p>
+      {action && (
+        <Link to={action.to} className="mt-2 inline-flex h-9 items-center rounded-lg bg-accent px-4 text-sm font-semibold text-accent-foreground hover:bg-accent/90"
+          data-testid="instant-legal-help-limit-action">
+          {action.label}
+        </Link>
+      )}
+    </div>
+  );
+}
+
+// This browser's chat preferences per signed-in user (no settings endpoint
+// exists): transcript width and the answer language sent with each message.
+const PREF_OPTIONS = { width: ["narrow", "wide"], language: ["auto", "en", "hi", "hinglish"], theme: ["system", "light", "dark"] };
+// Settings key -> /ai/preferences field.
+const PREF_FIELDS = { width: "transcript_width", language: "answer_language", theme: "theme" };
+const THEME_KEY = "cb_chat_theme"; // read by public/index.html before first paint
+
+function useSystemDark() {
+  const query = typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  const [dark, setDark] = useState(() => !!query?.matches);
+  useEffect(() => {
+    if (!query) return undefined;
+    const onChange = (e) => setDark(e.matches);
+    query.addEventListener?.("change", onChange);
+    return () => query.removeEventListener?.("change", onChange);
+  }, [query]);
+  return dark;
+}
+function readPrefs(key) {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(key) || "{}") || {}; } catch { /* storage blocked: defaults */ }
+  return Object.fromEntries(Object.entries(PREF_OPTIONS).map(([k, opts]) => [k, opts.includes(saved[k]) ? saved[k] : opts[0]]));
+}
+
+// The same short title the server gives a chat (ai_chat._chat_title): the first
+// message, whitespace collapsed, 48 characters. Used before the list knows the chat.
+const chatTitleFrom = (text) => (text || "").split(/\s+/).join(" ").trim().slice(0, 48).trim();
+
+/* Phones only (<768px): Chat, New, Search, History under the composer. Guests have
+   no saved chats, so they get Chat and New. 56px-tall items; the safe area sits below. */
+function MobileNav({ active, signedIn, onChat, onNew, onSearch, onHistory }) {
+  const items = [
+    ["chat", "Chat", MessageSquare, onChat], ["new", "New", SquarePen, onNew],
+    ...(signedIn ? [["search", "Search", Search, onSearch], ["history", "History", History, onHistory]] : []),
+  ];
+  return (
+    <nav aria-label="Chat navigation" className="shrink-0 bg-background px-3 pt-1 pb-[max(env(safe-area-inset-bottom),0.5rem)] md:hidden" data-testid="chat-bottom-nav">
+      <div className={`mx-auto flex max-w-md items-center gap-1 rounded-full border border-border bg-card p-1 shadow-sm ${signedIn ? "justify-between" : "justify-center"}`}>
+        {items.map(([key, label, Icon, onClick]) => (
+          <button
+            key={key} type="button" onClick={onClick} aria-label={label}
+            aria-current={active === key ? "page" : undefined}
+            className={`flex h-14 min-w-16 flex-1 flex-col items-center justify-center gap-0.5 rounded-full text-2xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              signedIn ? "" : "max-w-28"} ${active === key ? "bg-accent/10 text-accent" : "text-muted-foreground hover:text-foreground"}`}
+            data-testid={`chat-bottom-${key}`}
+          >
+            <Icon className="h-5 w-5" aria-hidden="true" />{label}
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+const STOPPED_TEXT = "Stopped. The answer was not generated.";
 const SESSION_EXPIRED_TEXT = "This chat session is no longer available. Please send your message again to start a new chat.";
 
-// What the empty state says the chat is for. Descriptive only, not
-// clickable prompts.
-const HELP_TOPICS = [
-  { icon: Scale, title: "Understand your situation", text: "Plain-language guidance on legal processes and what to do next." },
-  { icon: FileText, title: "Find the right service", text: "E-filing, printing, scanning and the other court work we handle." },
-  { icon: Users, title: "Get court support", text: "When a proxy counsel or advocate can help, and how to hire one." },
+// Welcome-screen cards; clicking one sends its text as the first message.
+const SUGGESTIONS = [
+  "I received a cheque bounce notice. What should I do?",
+  "How do I e-file a case in the Delhi High Court?",
+  "When should I hire a proxy counsel for a hearing?",
+  "What is the difference between arbitration and mediation?",
 ];
 
 const MODE_KEY = "instantLegalHelpMode";
@@ -121,7 +213,7 @@ function savedMode() {
   }
 }
 
-export default function InstantLegalHelpChat({ initialMessage }) {
+export default function InstantLegalHelpChat({ initialMessage, fullScreen = false }) {
   const chatId = useId(); // prefixes each answer's source-row ids, so a chip jumps to its own message's row
   const [mode, setMode] = useState(savedMode);
   const [conversationId, setConversationId] = useState(null);
@@ -133,6 +225,71 @@ export default function InstantLegalHelpChat({ initialMessage }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [steps, setSteps] = useState([]);
+  const location = useLocation();
+  const navigate = useNavigate();
+  // /legal-help/chats: the full Recents list replaces the transcript; the sidebar stays.
+  const recentsOpen = /\/chats\/?$/.test(location.pathname);
+  // /legal-help/matters/:id: one matter in the main area.
+  const matterId = (/\/matters\/([^/]+)\/?$/.exec(location.pathname) || [])[1] || null;
+  const [recentsKey, setRecentsKey] = useState(0);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [composerFocused, setComposerFocused] = useState(false); // hides the phone bottom bar for the keyboard
+  const [titleDraft, setTitleDraft] = useState("");
+  const auth = useAuth();
+  const user = auth?.user || null;
+  const systemDark = useSystemDark();
+  const [usage, setUsage] = useState(null);
+  const [settings, setSettings] = useState({ open: false, pane: null });
+  const openSettings = (pane = null) => setSettings({ open: true, pane });
+  const prefsKey = `cb_chat_prefs:${user?.user_id || "guest"}`;
+  const [prefs, setPrefs] = useState(() => readPrefs(prefsKey));
+  useEffect(() => { setPrefs(readPrefs(prefsKey)); }, [prefsKey]);
+  const savePrefsLocally = (next) => {
+    try { localStorage.setItem(prefsKey, JSON.stringify(next)); } catch { /* applies now, not remembered here */ }
+  };
+  // Stored on the account (GET/PATCH /ai/preferences); this browser's copy is used until it loads.
+  useEffect(() => {
+    if (!user) return undefined;
+    let live = true;
+    (async () => {
+      try {
+        const { data } = await api.get("/ai/preferences");
+        if (!live || !data || typeof data !== "object") return;
+        const next = Object.fromEntries(Object.entries(PREF_FIELDS).map(([k, field]) => [
+          k, PREF_OPTIONS[k].includes(data[field]) ? data[field] : PREF_OPTIONS[k][0]]));
+        setPrefs(next);
+        savePrefsLocally(next);
+      } catch { /* keep this browser's copy */ }
+    })();
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, prefsKey]);
+  const setPref = (k, v) => {
+    setPrefs((prev) => {
+      const next = { ...prev, [k]: v };
+      savePrefsLocally(next);
+      return next;
+    });
+    if (!user) return;
+    (async () => {
+      try {
+        await api.patch("/ai/preferences", { [PREF_FIELDS[k]]: v });
+      } catch (err) {
+        toast.error(getErrorMessage(err, "Couldn't save that setting to your account."));
+      }
+    })();
+  };
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [chats, setChats] = useState([]);
+  const [archivedChats, setArchivedChats] = useState([]);
+  const [matters, setMatters] = useState([]);
+  const [movingChat, setMovingChat] = useState(null);
+  const [newMatterOpen, setNewMatterOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null); // the chat awaiting delete confirmation
+  const [deleting, setDeleting] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const scrollRef = useRef(null);
   const chooseMode = (value) => {
     setMode(value);
@@ -144,6 +301,128 @@ export default function InstantLegalHelpChat({ initialMessage }) {
   // just cleared can never land its reply into the fresh, empty one.
   const sessionRef = useRef(0);
   const abortRef = useRef(null);
+
+  const loadChats = useCallback(() => {
+    if (!user) { setChats([]); setArchivedChats([]); return; }
+    const list = (data) => (Array.isArray(data) ? data : []);
+    api.get("/ai/chats").then(({ data }) => setChats(list(data))).catch(() => {});
+    api.get("/ai/chats", { params: { archived: true } }).then(({ data }) => setArchivedChats(list(data))).catch(() => {});
+  }, [user]);
+  useEffect(loadChats, [loadChats]);
+
+  const loadMatters = useCallback(async () => {
+    if (!user) { setMatters([]); return; }
+    try {
+      const { data } = await api.get("/ai/matters");
+      setMatters(Array.isArray(data) ? data.filter((m) => m && typeof m.matter_id === "string" && typeof m.name === "string") : []);
+    } catch { /* the section just stays as it was */ }
+  }, [user]);
+  useEffect(() => { loadMatters(); }, [loadMatters]);
+  const refreshLists = () => { loadChats(); loadMatters(); setRecentsKey((k) => k + 1); };
+
+  const createMatter = async (name) => {
+    try {
+      const { data } = await api.post("/ai/matters", { name });
+      loadMatters();
+      return data;
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't create that matter."));
+      return null;
+    }
+  };
+  const moveChat = async (chat, toMatter) => {
+    try {
+      await api.put(`/ai/chats/${encodeURIComponent(chat.conversation_id)}/matter`, { matter_id: toMatter });
+      setMovingChat(null);
+      const name = matters.find((m) => m.matter_id === toMatter)?.name;
+      toast.success(toMatter ? `Moved to ${name || "the matter"}` : "Removed from the matter");
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't move that chat."));
+    }
+    refreshLists();
+  };
+  const updateMatter = async (matter, patch) => {
+    try {
+      await api.patch(`/ai/matters/${encodeURIComponent(matter.matter_id)}`, patch);
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't save that change."));
+    }
+    loadMatters();
+  };
+  const deleteMatter = async (matter) => {
+    try {
+      await api.delete(`/ai/matters/${encodeURIComponent(matter.matter_id)}`);
+      navigate("/legal-help/chats");
+      toast.success("Matter deleted. Its chats are in your chat list.");
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't delete that matter."));
+    }
+    refreshLists();
+  };
+
+  // Never shows a number the endpoint didn't return: anything unexpected clears it.
+  const loadUsage = useCallback(async () => {
+    try {
+      const { data } = await api.get("/ai/usage");
+      setUsage(data && typeof data === "object" && !Array.isArray(data) ? data : null);
+    } catch {
+      setUsage(null);
+    }
+  }, []);
+  useEffect(() => { loadUsage(); }, [loadUsage, user]);
+
+  const updateChat = async (id, patch) => {
+    try {
+      await api.patch(`/ai/chats/${encodeURIComponent(id)}`, patch);
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't update that chat."));
+    }
+    loadChats();
+    setRecentsKey((k) => k + 1);
+  };
+
+  const confirmDelete = async () => {
+    const id = pendingDelete?.conversation_id;
+    if (!id) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/ai/chats/${encodeURIComponent(id)}`);
+      const without = (list) => list.filter((c) => c.conversation_id !== id);
+      setChats(without);
+      setArchivedChats(without);
+      setRecentsKey((k) => k + 1);
+      if (id === conversationId) handleNewChat();
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't delete that chat. Please try again."));
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
+    }
+  };
+
+  // Cmd/Ctrl+K opens chat search (signed-in users: guests have no saved chats).
+  useEffect(() => {
+    if (!user) return undefined;
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen(true);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        openSettings();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [user]);
+
+  useEffect(() => {
+    if (!drawerOpen) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") setDrawerOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawerOpen]);
 
   // Leaving the page cancels the request so nothing lands (or toasts) after unmount.
   useEffect(() => () => {
@@ -198,6 +477,7 @@ export default function InstantLegalHelpChat({ initialMessage }) {
         message: content,
         mode,
         ...(conversationToken ? { conversation_token: conversationToken } : {}),
+        ...(prefs.language !== "auto" ? { language: prefs.language } : {}),
       }, {
         idleMs: CHAT_TIMEOUT_MS,
         signal: controller.signal,
@@ -212,8 +492,15 @@ export default function InstantLegalHelpChat({ initialMessage }) {
       if (typeof data?.conversation_id === "string" && data.conversation_id) setConversationId(data.conversation_id);
       if (typeof data?.conversation_token === "string" && data.conversation_token) setConversationToken(data.conversation_token);
       setMsgs((prev) => [...prev, assistantMessageFrom(data)]);
+      loadChats(); // a new chat appears, an old one moves to the top
     } catch (err) {
       if (sessionRef.current !== mySession) return;
+      const limit = err?.response?.status === 429 ? err.response.data?.reason : null;
+      if (limit && limit in LIMIT_ACTIONS) {
+        const text = typeof err.response.data?.detail === "string" ? err.response.data.detail : "You've reached today's limit.";
+        setMsgs((prev) => [...prev, { role: "assistant", text, limit }]);
+        return;
+      }
       if (err?.response?.status === 404) {
         // The conversation can't be continued (unknown or not ours) — start fresh next time.
         setConversationId(null);
@@ -231,6 +518,7 @@ export default function InstantLegalHelpChat({ initialMessage }) {
       if (!isUnavailable) toast.error(getErrorMessage(err, "Something went wrong. Please try again."));
     } finally {
       if (sessionRef.current === mySession) setLoading(false);
+      loadUsage();
     }
   };
 
@@ -258,8 +546,64 @@ export default function InstantLegalHelpChat({ initialMessage }) {
     setConversationToken(null);
     setInput("");
     setLoading(false);
+    setDrawerOpen(false);
     inputRef.current?.focus();
   };
+
+  const openChat = async (id) => {
+    setDrawerOpen(false);
+    if (id === conversationId) return;
+    handleNewChat();
+    const mySession = sessionRef.current;
+    try {
+      const { data } = await api.get(`/ai/history/${encodeURIComponent(id)}`);
+      if (sessionRef.current !== mySession) return;
+      setConversationId(id);
+      setMsgs((Array.isArray(data) ? data : []).map((m) => (m.role === "user"
+        ? { role: "user", text: m.content } : assistantMessageFrom({ reply: m.content }))));
+    } catch (err) {
+      if (sessionRef.current !== mySession) return;
+      toast.error(getErrorMessage(err, "Couldn't open that chat."));
+      loadChats();
+    }
+  };
+
+  // Stop: drop the in-flight answer (it never lands) and offer to resend the question.
+  const stop = () => {
+    const question = [...msgs].reverse().find((m) => m.role === "user")?.text;
+    sessionRef.current += 1;
+    abortRef.current?.abort();
+    setLoading(false);
+    setMsgs((prev) => [...prev, { role: "assistant", text: STOPPED_TEXT, retryText: question }]);
+  };
+
+  const copyAnswer = async (m) => {
+    const text = m.answer ? answerPlainText(m.answer, cleanAssistantText) : cleanAssistantText(m.text);
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Copied");
+    } catch {
+      toast.error("Couldn't copy. Please select the text instead.");
+    }
+  };
+
+  // Dark theme (signed-in only: the guest page shares the screen with the light site nav).
+  // The class goes on <body>, not <html>, so dialogs, menus and toasts (portals) follow it,
+  // and it's removed when the chat unmounts, so no other page turns dark.
+  const dark = !!user && (prefs.theme === "dark" || (prefs.theme === "system" && systemDark));
+  useLayoutEffect(() => {
+    if (auth?.loading) return; // keep what index.html applied until we know who this is
+    document.body.classList.toggle("dark", dark);
+    try {
+      if (user) localStorage.setItem(THEME_KEY, prefs.theme); else localStorage.removeItem(THEME_KEY);
+    } catch { /* first paint just won't be themed */ }
+  }, [dark, user, prefs.theme, auth?.loading]);
+  useEffect(() => () => document.body.classList.remove("dark"), []);
+
+  // Opening or starting a chat from anywhere leaves the Recents view.
+  const leaveRecents = () => { if (recentsOpen || matterId) navigate("/legal-help"); };
+  const selectChat = (id) => { leaveRecents(); openChat(id); };
+  const startNewChat = () => { leaveRecents(); handleNewChat(); };
 
   const handleKeyDown = (e) => {
     // Enter sends, Shift+Enter is a new line; never send mid-IME-composition.
@@ -269,80 +613,155 @@ export default function InstantLegalHelpChat({ initialMessage }) {
     }
   };
 
+  const usageView = formatUsage(usage);
+  const currentChat = conversationId ? [...chats, ...archivedChats].find((c) => c.conversation_id === conversationId) : null;
+  const currentMatter = matters.find((m) => m.matter_id === (matterId || currentChat?.matter_id));
+  const headerTitle = matterId ? (currentMatter?.name || "Matter") : recentsOpen ? "Recents"
+    : currentChat?.title || chatTitleFrom(msgs.find((m) => m.role === "user")?.text) || "New chat";
+  const saveHeaderTitle = () => {
+    const title = titleDraft.trim();
+    setEditingTitle(false);
+    if (currentChat && title && title !== currentChat.title) updateChat(currentChat.conversation_id, { title });
+  };
   return (
-    <div className="flex flex-col flex-1 h-full min-h-0 bg-background" data-testid="instant-legal-help-panel">
-      <div className="border-b border-border bg-white shrink-0">
-        <div className="max-w-3xl mx-auto w-full px-4 py-3 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-accent/10 flex items-center justify-center shrink-0">
-              <Scale className="w-[18px] h-[18px] text-accent" />
-            </div>
-            <div className="min-w-0">
-              <h1 className="font-display font-bold text-base leading-tight">Instant Legal Help</h1>
-              <p className="text-xs text-muted-foreground truncate">Public legal guidance from CourtBazaar</p>
-            </div>
+    <div className="flex flex-1 h-full min-h-0 bg-background" data-testid="instant-legal-help-panel">
+      <ConfirmDialog
+        open={!!pendingDelete} onOpenChange={(open) => { if (!open) setPendingDelete(null); }} busy={deleting}
+        title="Delete chat?" description="This chat will be permanently deleted. This can't be undone."
+        confirmLabel="Delete" onConfirm={confirmDelete}
+      />
+      {user && (
+        <SettingsDialog
+          open={settings.open} onOpenChange={(open) => setSettings((s) => ({ ...s, open }))} pane={settings.pane}
+          usage={usage} prefs={prefs} setPref={setPref} onGetHelp={() => setHelpOpen(true)}
+          onChatsDeleted={() => { setChats([]); setArchivedChats([]); handleNewChat(); }}
+        />
+      )}
+      {helpOpen && <SupportTicketModal open onOpenChange={setHelpOpen} />}
+      <MoveToMatterDialog
+        chat={movingChat} matters={matters} onOpenChange={(open) => { if (!open) setMovingChat(null); }}
+        onMove={moveChat} onCreate={createMatter}
+      />
+      <NameDialog
+        open={newMatterOpen} onOpenChange={setNewMatterOpen} title="New matter" confirmLabel="Create"
+        onSubmit={async (name) => { const m = await createMatter(name); if (m) navigate(`/legal-help/matters/${m.matter_id}`); }}
+      />
+      <ChatPalette open={paletteOpen} onOpenChange={setPaletteOpen} chats={chats} onSelect={selectChat} />
+      <ChatSidebar
+        fullScreen={fullScreen} user={user} chats={chats} archivedChats={archivedChats} onUpdateChat={updateChat} onDeleteChat={setPendingDelete} usage={usage}
+        onOpenSettings={openSettings} onGetHelp={() => setHelpOpen(true)} onViewAll={() => navigate("/legal-help/chats")} onSearch={() => setPaletteOpen(true)}
+        matters={matters} activeMatterId={matterId} onOpenMatter={(id) => { setDrawerOpen(false); navigate(`/legal-help/matters/${id}`); }}
+        onNewMatter={() => setNewMatterOpen(true)} onMoveChat={setMovingChat} onLogout={() => auth?.logout?.()} activeId={conversationId} onSelect={selectChat}
+        onNewChat={startNewChat} newChatDisabled={!recentsOpen && msgs.length === 0 && !loading}
+        collapsed={collapsed} onToggleCollapsed={() => setCollapsed((c) => !c)}
+        drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}
+      />
+    <div className="flex flex-col flex-1 min-w-0 min-h-0">
+      <div className="border-b border-border bg-card shrink-0">
+        <div className="w-full px-4 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <button
+              type="button" onClick={() => setDrawerOpen(true)} aria-label="Open chats"
+              className="md:hidden inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-testid="chat-sidebar-open"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            {editingTitle ? (
+              <input
+                autoFocus value={titleDraft} maxLength={48} aria-label="Chat title"
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); saveHeaderTitle(); }
+                  if (e.key === "Escape") { e.preventDefault(); setEditingTitle(false); }
+                }}
+                onBlur={() => setEditingTitle(false)}
+                className="min-w-0 flex-1 rounded-lg border border-accent/60 bg-card px-2 py-1.5 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-accent/30"
+                data-testid="chat-title-rename"
+              />
+            ) : (
+              <>
+                {/* Truncates (harder on phones) instead of pushing the icons off screen; full title on hover. */}
+                <div className="min-w-0">
+                  <h1 className="truncate font-display text-sm font-bold leading-tight sm:text-base" title={headerTitle} data-testid="chat-title">
+                    {headerTitle}
+                  </h1>
+                  {!matterId && !recentsOpen && currentChat?.matter_id && currentMatter && (
+                    <p className="truncate text-2xs text-muted-foreground" title={currentMatter.name} data-testid="chat-title-matter">{currentMatter.name}</p>
+                  )}
+                </div>
+                {user && currentChat && !recentsOpen && !matterId && (
+                  <ChatMenu
+                    chat={currentChat} onUpdate={updateChat} onDelete={setPendingDelete} onMove={setMovingChat}
+                    onRename={() => { setTitleDraft(currentChat.title || ""); setEditingTitle(true); }}
+                    triggerLabel="Chat options" testId="chat-title-menu" align="start"
+                    triggerClassName="inline-flex h-10 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </ChatMenu>
+                )}
+              </>
+            )}
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-          <div
-            role="group" aria-label="Answer style"
-            className="inline-flex rounded-lg border border-border bg-muted p-0.5"
-            data-testid="instant-legal-help-mode"
-          >
-            {MODES.map((m) => (
-              <button
-                key={m.value} type="button" aria-pressed={mode === m.value} onClick={() => chooseMode(m.value)}
-                className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                  mode === m.value ? "bg-white text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                data-testid={`instant-legal-help-mode-${m.value}`}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-          <Button
-            type="button" variant="outline" size="sm" onClick={handleNewChat}
-            disabled={msgs.length === 0 && !loading}
-            aria-label="Start a new chat" title="Start a new chat"
-            className="shrink-0 font-semibold"
-            data-testid="instant-legal-help-new-chat"
-          >
-            <SquarePen className="w-4 h-4 sm:mr-1.5" />
-            <span className="hidden sm:inline">New chat</span>
-          </Button>
-          </div>
+          {/* New and Search live in the sidebar rows and Ctrl/Cmd+K on desktop, the bottom bar on phones. */}
+          {usageView && (
+            <span className="shrink-0 whitespace-nowrap rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground" title={usageView.detail} data-testid="chat-usage-pill">
+              {usageView.pill}{usageView.reset && <span className="hidden sm:inline"> · resets {usageView.reset}</span>}
+            </span>
+          )}
         </div>
       </div>
 
+      {matterId ? (
+        <MatterView
+          matter={matters.find((m) => m.matter_id === matterId)} refreshKey={recentsKey}
+          onOpen={selectChat} onUpdate={updateChat} onDelete={setPendingDelete} onMove={setMovingChat}
+          onRenameMatter={(m, name) => updateMatter(m, { name })}
+          onSaveInstructions={(m, custom_instructions) => updateMatter(m, { custom_instructions })}
+          onDeleteMatter={deleteMatter}
+        />
+      ) : recentsOpen ? (
+        <RecentsView
+          refreshKey={recentsKey} onOpen={selectChat} onNewChat={startNewChat} onSearch={() => setPaletteOpen(true)}
+          onUpdate={updateChat} onDelete={setPendingDelete} onMove={setMovingChat}
+          onBulkDone={(action, ids) => {
+            loadChats();
+            if (action === "delete" && ids.includes(conversationId)) handleNewChat();
+          }}
+        />
+      ) : (
+      <>
       <div
         ref={scrollRef}
         className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain cb-scroll"
         role="log" aria-live="polite" aria-label="Conversation"
         data-testid="instant-legal-help-messages"
       >
-        <div className="max-w-3xl mx-auto w-full px-4 py-6 sm:py-8 space-y-6">
+        <div className={`${prefs.width === "wide" ? "max-w-5xl" : "max-w-3xl"} mx-auto w-full px-4 py-6 sm:py-8 space-y-6`} data-testid="instant-legal-help-transcript">
           {msgs.length === 0 && !loading && (
-            <div className="py-6 sm:py-12 text-center" data-testid="instant-legal-help-empty">
-              <div className="w-14 h-14 mx-auto bg-accent/10 rounded-2xl flex items-center justify-center mb-4">
-                <Landmark className="w-7 h-7 text-accent" />
-              </div>
-              <h2 className="font-display font-bold text-xl sm:text-2xl">How can I help today?</h2>
+            <div className="py-8 sm:py-16 text-center" data-testid="instant-legal-help-empty">
+              <h2 className="font-display font-bold text-2xl sm:text-3xl">
+                {user?.display_name ? `How can I help today, ${user.display_name}?` : "How can I help today?"}
+              </h2>
               <p className="text-sm text-muted-foreground mt-2 max-w-md mx-auto leading-6">
                 Tell me what's going on and I'll help you figure out the next step.
               </p>
-              <div className="grid sm:grid-cols-3 gap-3 mt-8 text-left">
-                {HELP_TOPICS.map(({ icon: Icon, title, text }) => (
-                  <div key={title} className="rounded-xl border border-border bg-white p-4">
-                    <Icon className="w-4 h-4 text-accent mb-2" />
-                    <div className="text-sm font-semibold">{title}</div>
-                    <p className="text-xs text-muted-foreground mt-1 leading-5">{text}</p>
-                  </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-8 text-left">
+                {SUGGESTIONS.map((text, i) => (
+                  <button
+                    key={text} type="button" onClick={() => send(text)}
+                    className="rounded-xl border border-border bg-card p-4 text-sm leading-6 hover:border-accent/50 hover:bg-accent/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    data-testid={`instant-legal-help-suggestion-${i}`}
+                  >
+                    {text}
+                  </button>
                 ))}
               </div>
             </div>
           )}
           {msgs.map((m, i) => (m.role === "user" ? (
             <div key={i} className="flex justify-end gap-3" data-testid={`instant-legal-help-msg-user-${i}`}>
-              <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-br-md bg-primary text-white px-4 py-2.5 text-[15px] leading-7 whitespace-pre-wrap break-words">
+              <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-br-md bg-primary text-primary-foreground px-4 py-2.5 text-[15px] leading-7 whitespace-pre-wrap break-words">
                 {m.text}
               </div>
               <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary shrink-0 hidden sm:flex items-center justify-center" aria-hidden="true">
@@ -350,17 +769,19 @@ export default function InstantLegalHelpChat({ initialMessage }) {
               </div>
             </div>
           ) : (
-            <div key={i} className="flex gap-3 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-300" data-testid={`instant-legal-help-msg-assistant-${i}`}>
-              <div className="w-8 h-8 rounded-lg bg-accent text-white shrink-0 flex items-center justify-center" aria-hidden="true">
+            <div key={i} className="cb-msg flex gap-3 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-300" data-testid={`instant-legal-help-msg-assistant-${i}`}>
+              <div className="w-8 h-8 rounded-lg bg-accent text-accent-foreground shrink-0 flex items-center justify-center" aria-hidden="true" data-testid="instant-legal-help-avatar">
                 <Scale className="w-4 h-4" />
               </div>
               <div className="min-w-0 flex-1 pt-0.5">
-                {m.grounding === "insufficient" ? (
+                {m.limit ? (
+                  <LimitCard reason={m.limit} text={m.text} />
+                ) : m.grounding === "insufficient" ? (
                   // Not a failure: the approved documents just don't cover it.
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex gap-3" data-testid="instant-legal-help-insufficient">
-                    <Info className="w-4 h-4 text-amber-700 shrink-0 mt-1" aria-hidden="true" />
+                  <div className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 flex gap-3" data-testid="instant-legal-help-insufficient">
+                    <Info className="w-4 h-4 text-warning-foreground shrink-0 mt-1" aria-hidden="true" />
                     <div className="min-w-0">
-                      <div className="text-xs font-semibold text-amber-800 uppercase tracking-wide">Not covered by the available documents</div>
+                      <div className="text-xs font-semibold text-warning-foreground uppercase tracking-wide">Not covered by the available documents</div>
                       <div className="mt-1"><ChatMarkdown text={cleanAssistantText(m.text)} citeLinks={webCitationLinks(m.citations)} /></div>
                     </div>
                   </div>
@@ -373,6 +794,18 @@ export default function InstantLegalHelpChat({ initialMessage }) {
                   </div>
                 )}
                 <ChatSources citations={m.citations} idPrefix={`${chatId}-msg-${i}`} />
+                {hasActions(m) && (
+                  // Hover/focus reveal on pointer devices (index.css .cb-msg-actions); the latest answer keeps them shown.
+                  <div className="cb-msg-actions mt-2 flex items-center gap-1" data-always={i === msgs.length - 1 ? "" : undefined} data-testid="instant-legal-help-msg-actions">
+                    <button
+                      type="button" onClick={() => copyAnswer(m)} aria-label="Copy answer" title="Copy"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      data-testid="instant-legal-help-copy"
+                    >
+                      <Copy className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
                 {m.retryText && i === msgs.length - 1 && !loading && (
                   <Button
                     type="button" variant="outline" size="sm" onClick={() => retry(m.retryText)}
@@ -388,35 +821,88 @@ export default function InstantLegalHelpChat({ initialMessage }) {
         </div>
       </div>
 
-      <div className="shrink-0 bg-background pb-[max(env(safe-area-inset-bottom),0.75rem)]">
-        <div className="max-w-3xl mx-auto w-full px-4 pt-2">
-          <div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/20 transition-shadow">
+      <div className={`shrink-0 bg-background md:pb-[max(env(safe-area-inset-bottom),0.75rem)] ${composerFocused ? "pb-[max(env(safe-area-inset-bottom),0.75rem)]" : "pb-2"}`}>
+        <div className="max-w-[760px] mx-auto w-full px-4 pt-2">
+          <div className="rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/20 transition-shadow">
             <textarea
               ref={inputRef}
               rows={1}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Describe your situation, legal issue, or service need..."
+              onFocus={() => setComposerFocused(true)}
+              onBlur={() => setComposerFocused(false)}
+              placeholder={loading ? "Generating answer..." : msgs.length ? "Ask a follow-up..." : "Describe your situation, legal issue, or service need..."}
               aria-label="Message Instant Legal Help"
-              autoFocus
-              className="flex-1 resize-none bg-transparent px-2 py-2 text-[15px] leading-6 max-h-40 overflow-y-auto cb-scroll placeholder:text-slate-400 focus:outline-none"
+              // From 768px only: on a phone it would pop the keyboard on load and hide the bottom bar.
+              autoFocus={typeof window !== "undefined" && !!window.matchMedia?.("(min-width: 768px)").matches}
+              className="block w-full resize-none bg-transparent px-2 py-2 text-[15px] leading-6 max-h-40 overflow-y-auto cb-scroll placeholder:text-subtle focus:outline-none"
               data-testid="instant-legal-help-input"
             />
-            <Button
-              type="button" onClick={() => send()} disabled={loading || !input.trim()}
-              aria-label="Send message"
-              className="h-10 w-10 shrink-0 rounded-xl bg-accent p-0 hover:bg-accent/90"
-              data-testid="instant-legal-help-send"
-            >
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-5 h-5" />}
-            </Button>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button" disabled title="Coming soon" aria-label="Attach a file (coming soon)"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground disabled:opacity-50"
+                data-testid="instant-legal-help-attach"
+              >
+                <Paperclip className="w-4 h-4" />
+              </button>
+              <div
+                role="group" aria-label="Answer style"
+                className="inline-flex rounded-lg border border-border bg-muted p-0.5"
+                data-testid="instant-legal-help-mode"
+              >
+                {MODES.map((m) => (
+                  <button
+                    key={m.value} type="button" aria-pressed={mode === m.value} onClick={() => chooseMode(m.value)}
+                    className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      mode === m.value ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                    data-testid={`instant-legal-help-mode-${m.value}`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              {loading ? (
+                <Button
+                  type="button" onClick={stop} aria-label="Stop generating" title="Stop generating"
+                  className="ml-auto h-10 w-10 shrink-0 rounded-full bg-foreground p-0 hover:bg-foreground/90"
+                  data-testid="instant-legal-help-stop"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                </Button>
+              ) : (
+                <Button
+                  type="button" onClick={() => send()} disabled={!input.trim()}
+                  aria-label="Send message"
+                  className="ml-auto h-10 w-10 shrink-0 rounded-full bg-accent p-0 hover:bg-accent/90"
+                  data-testid="instant-legal-help-send"
+                >
+                  <ArrowUp className="w-5 h-5" />
+                </Button>
+              )}
+            </div>
           </div>
+          {usageReminder(usage) && (
+            <p className="mt-2 px-2 text-center text-xs text-muted-foreground" role="status" data-testid="instant-legal-help-usage-reminder">
+              {usageReminder(usage)}
+            </p>
+          )}
           <p className="text-2xs text-muted-foreground text-center mt-2 px-2">
             General guidance only, not a substitute for advice from a lawyer on your specific case.
           </p>
         </div>
       </div>
+      </>
+      )}
+      {!composerFocused && (
+        <MobileNav
+          active={recentsOpen || matterId ? "history" : "chat"} signedIn={!!user}
+          onChat={leaveRecents}
+          onNew={startNewChat} onSearch={() => setPaletteOpen(true)} onHistory={() => navigate("/legal-help/chats")}
+        />
+      )}
+    </div>
     </div>
   );
 }

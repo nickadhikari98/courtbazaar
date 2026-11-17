@@ -478,3 +478,146 @@ def test_rag_routing_and_legal_safety_unchanged():
     assert decision["source"] == llm_service.SOURCE_DIAC
     reply = answer_guard.guard_general_answer("Anticipatory bail is granted under Section 438 CrPC.", legal=True)
     assert "now Section 482 BNSS" in reply
+
+
+# ---------------------------------------------------------------------------
+# Chat list (GET/PATCH/DELETE /ai/chats)
+# ---------------------------------------------------------------------------
+
+def test_chat_list_is_per_user_and_empty_for_anonymous(monkeypatch):
+    _fake_llm(monkeypatch)
+    user_a, user_b = _user(_tag()), _user(_tag())
+
+    async def body():
+        long_q = "  What   is the limitation period for a cheque bounce complaint under section 138?"
+        a1 = (await _chat(user_a, long_q))["conversation_id"]
+        b1 = (await _chat(user_b, "What is bail?"))["conversation_id"]
+        anon = await _chat(None, "Anonymous question")
+        ids = [a1, b1, anon["conversation_id"]]
+        try:
+            listed = await server.ai_chats(user=user_a)
+            assert [c["conversation_id"] for c in listed] == [a1]
+            assert listed[0]["title"] == " ".join(long_q.split())[:48].strip()
+            assert set(listed[0]) == {"conversation_id", "title", "updated_at", "pinned", "archived", "matter_id"}
+            assert await server.ai_chats(user=None) == []
+
+            # B cannot rename or delete A's chat; same generic 404 as an unknown id.
+            await _expect_404(ai_chat.update_chat(server.db, a1, user_b, title="hijack"))
+            await _expect_404(ai_chat.delete_chat(server.db, a1, user_b))
+            await _expect_404(ai_chat.delete_chat(server.db, anon["conversation_id"], user_b))
+            await _expect_404(ai_chat.update_chat(server.db, "conv_missing", user_a, title="x"))
+
+            renamed = await ai_chat.update_chat(server.db, a1, user_a, title="  Cheque bounce  ")
+            assert renamed["title"] == "Cheque bounce"
+            await ai_chat.delete_chat(server.db, a1, user_a)
+            assert await server.ai_chats(user=user_a) == []
+            assert await server.db.ai_chat_messages.count_documents({"conversation_id": a1}) == 0
+            assert [c["conversation_id"] for c in await server.ai_chats(user=user_b)] == [b1]
+        finally:
+            await _cleanup(ids)
+    _run(body())
+
+
+def test_pinned_chats_come_first_and_archived_ones_are_listed_only_on_request(monkeypatch):
+    _fake_llm(monkeypatch)
+    owner, other = _user(_tag()), _user(_tag())
+
+    async def body():
+        old = (await _chat(owner, "First question"))["conversation_id"]
+        mid = (await _chat(owner, "Second question"))["conversation_id"]
+        new = (await _chat(owner, "Third question"))["conversation_id"]
+        ids = [old, mid, new]
+        try:
+            listed = await server.ai_chats(user=owner)
+            assert [c["conversation_id"] for c in listed] == [new, mid, old]
+            assert all(c["pinned"] is False and c["archived"] is False for c in listed)
+
+            assert (await server.ai_chat_update(old, server.ChatUpdateRequest(pinned=True), user=owner))["pinned"] is True
+            await server.ai_chat_update(mid, server.ChatUpdateRequest(archived=True), user=owner)
+            assert [c["conversation_id"] for c in await server.ai_chats(user=owner)] == [old, new]
+            archived = await server.ai_chats(user=owner, archived=True)
+            assert [(c["conversation_id"], c["archived"]) for c in archived] == [(mid, True)]
+
+            # Owner only, for every field; nothing to change is a 400.
+            for change in ({"pinned": True}, {"archived": True}, {"title": "x"}):
+                await _expect_404(server.ai_chat_update(new, server.ChatUpdateRequest(**change), user=other))
+            assert await server.ai_chats(user=other) == [] and await server.ai_chats(user=other, archived=True) == []
+            with pytest.raises(HTTPException) as exc:
+                await server.ai_chat_update(new, server.ChatUpdateRequest(), user=owner)
+            assert exc.value.status_code == 400
+
+            await server.ai_chat_update(mid, server.ChatUpdateRequest(archived=False, pinned=True), user=owner)
+            assert [c["conversation_id"] for c in await server.ai_chats(user=owner)][:2] in ([mid, old], [old, mid])
+            assert await server.ai_chats(user=None, archived=True) == []
+        finally:
+            await _cleanup(ids)
+    _run(body())
+
+
+def test_delete_all_chats_removes_only_the_callers_chats(monkeypatch):
+    _fake_llm(monkeypatch)
+    owner, other = _user(_tag()), _user(_tag())
+
+    async def body():
+        mine = [(await _chat(owner, q))["conversation_id"] for q in ("One?", "Two?")]
+        theirs = (await _chat(other, "Theirs?"))["conversation_id"]
+        await server.ai_chat_update(mine[1], server.ChatUpdateRequest(archived=True), user=owner)
+        try:
+            assert await server.ai_chats_delete_all(user=owner) == {"deleted": 2}  # archived one too
+            assert await server.db.ai_conversations.count_documents({"conversation_id": {"$in": mine}}) == 0
+            assert await server.db.ai_chat_messages.count_documents({"conversation_id": {"$in": mine}}) == 0
+            assert [c["conversation_id"] for c in await server.ai_chats(user=other)] == [theirs]
+            with pytest.raises(HTTPException) as exc:
+                await ai_chat.delete_all_chats(server.db, None)
+            assert exc.value.status_code == 401
+        finally:
+            await _cleanup(mine + [theirs])
+    _run(body())
+
+
+def test_chat_list_pages_with_limit_and_offset(monkeypatch):
+    _fake_llm(monkeypatch)
+    owner = _user(_tag())
+
+    async def body():
+        ids = [(await _chat(owner, f"Question {n}?"))["conversation_id"] for n in range(5)]
+        try:
+            first = await server.ai_chats(user=owner, limit=2, offset=0)
+            second = await server.ai_chats(user=owner, limit=2, offset=2)
+            last = await server.ai_chats(user=owner, limit=2, offset=4)
+            paged = [c["conversation_id"] for c in first + second + last]
+            assert paged == list(reversed(ids)) and len(last) == 1  # a short page is the end
+            assert await server.ai_chats(user=owner, limit=2, offset=10) == []
+        finally:
+            await _cleanup(ids)
+    _run(body())
+
+
+def test_bulk_archive_and_delete_change_only_the_callers_chats(monkeypatch):
+    _fake_llm(monkeypatch)
+    owner, other = _user(_tag()), _user(_tag())
+
+    async def body():
+        mine = [(await _chat(owner, q))["conversation_id"] for q in ("A?", "B?", "C?")]
+        theirs = (await _chat(other, "Theirs?"))["conversation_id"]
+        try:
+            req = server.ChatBulkRequest(action="archive", ids=[mine[0], mine[1], theirs, "conv_unknown"])
+            assert await server.ai_chats_bulk(req, user=owner) == {"changed": 2}
+            assert {c["conversation_id"] for c in await server.ai_chats(user=owner, archived=True)} == {mine[0], mine[1]}
+            assert [c["archived"] for c in await server.ai_chats(user=other)] == [False]  # untouched
+
+            req = server.ChatBulkRequest(action="delete", ids=[mine[0], theirs, "conv_unknown"])
+            assert await server.ai_chats_bulk(req, user=owner) == {"changed": 1}
+            assert await server.db.ai_conversations.count_documents({"conversation_id": mine[0]}) == 0
+            assert await server.db.ai_chat_messages.count_documents({"conversation_id": mine[0]}) == 0
+            assert await server.db.ai_conversations.count_documents({"conversation_id": theirs}) == 1
+
+            req = server.ChatBulkRequest(action="unarchive", ids=[mine[1]])
+            assert await server.ai_chats_bulk(req, user=owner) == {"changed": 1}
+            assert await server.ai_chats_bulk(server.ChatBulkRequest(action="delete", ids=[theirs]), user=owner) == {"changed": 0}
+            with pytest.raises(HTTPException) as exc:
+                await ai_chat.bulk_update_chats(server.db, None, "delete", mine)
+            assert exc.value.status_code == 401
+        finally:
+            await _cleanup(mine + [theirs])
+    _run(body())

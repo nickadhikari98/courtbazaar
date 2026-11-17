@@ -1501,7 +1501,7 @@ def test_efiling_empty_services_reply_is_specific():
         class FakeDB:
             ai_chat_messages = FakeCollection()
 
-        async def get_conversation(_db, _conversation_id, _user_id, _conversation_token=None):
+        async def get_conversation(_db, _conversation_id, _user_id, _conversation_token=None, **_kw):
             return {"conversation_id": "conv_test", "user_id": None, "mode": "layman"}
 
         async def no_prior(_db, _conversation_id, _limit):

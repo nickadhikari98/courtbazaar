@@ -319,6 +319,7 @@ def _now_iso() -> str:
 async def ensure_indexes(db) -> None:
     await db.ai_conversations.create_index([("conversation_id", 1)], name="conversation_id", unique=True)
     await db.ai_chat_messages.create_index([("conversation_id", 1), ("created_at", 1)], name="conversation_created")
+    await db.ai_conversations.create_index([("user_id", 1), ("updated_at", -1)], name="user_updated")
 
 
 def check_history_rate_limit(key: str) -> None:
@@ -361,7 +362,7 @@ def check_chat_rate_limit(key: str) -> None:
 
 
 async def _get_or_create_conversation(db, conversation_id: Optional[str], user_id: Optional[str],
-                                      conversation_token: Optional[str] = None) -> dict:
+                                      conversation_token: Optional[str] = None, title: str = "") -> dict:
     """Looks up an existing conversation by id, enforcing ownership, or
     creates a new one when no id is given.
 
@@ -383,7 +384,8 @@ async def _get_or_create_conversation(db, conversation_id: Optional[str], user_i
         return convo
 
     new_id = new_conversation_id()
-    doc = {"conversation_id": new_id, "user_id": user_id, "created_at": _now_iso(), "updated_at": _now_iso()}
+    doc = {"conversation_id": new_id, "user_id": user_id, "title": _chat_title(title),
+           "pinned": False, "archived": False, "created_at": _now_iso(), "updated_at": _now_iso()}
     token = None
     if user_id is None:
         token = secrets.token_urlsafe(32)
@@ -393,6 +395,101 @@ async def _get_or_create_conversation(db, conversation_id: Optional[str], user_i
     if token:
         doc["conversation_token"] = token  # returned to the caller once; never stored in plain text
     return doc
+
+
+CHAT_TITLE_MAX = 48
+CHAT_LIST_LIMIT = 50
+CHAT_PAGE_MAX = 100
+BULK_MAX_IDS = 200
+
+
+def _chat_title(text: str) -> str:
+    return " ".join((text or "").split())[:CHAT_TITLE_MAX].strip() or "New chat"
+
+
+async def list_chats(db, user: Optional[dict], archived: bool = False,
+                     limit: int = CHAT_LIST_LIMIT, offset: int = 0, matter_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Backing GET /ai/chats. Only a logged-in user's own conversations, pinned
+    first then most recent; archived ones only when asked for. Paged by
+    limit/offset (a page shorter than `limit` is the last). Anonymous callers
+    always get [] (their chats are reachable only by token)."""
+    # shortcut: offset paging can skip or repeat a row if chats change between pages; fine for a chat list.
+    limit = max(1, min(int(limit), CHAT_PAGE_MAX))
+    offset = max(0, int(offset))
+    user_id = user.get("user_id") if user else None
+    if not isinstance(user_id, str) or not user_id:
+        return []
+    # Chats created before pinned/archived existed have neither field.
+    query = {"user_id": user_id, "archived": True if archived else {"$ne": True}}
+    if matter_id:
+        query["matter_id"] = matter_id
+    rows = await db.ai_conversations.find(
+        query, {"_id": 0, "conversation_id": 1, "title": 1, "updated_at": 1, "pinned": 1, "archived": 1, "matter_id": 1},
+    ).sort([("pinned", -1), ("updated_at", -1), ("conversation_id", 1)]).skip(offset).limit(limit).to_list(limit)
+    return [{**r, "pinned": bool(r.get("pinned")), "archived": bool(r.get("archived")), "matter_id": r.get("matter_id")}
+            for r in rows]
+
+
+async def _owned_chat(db, conversation_id: str, user: Optional[dict]) -> None:
+    convo = await db.ai_conversations.find_one({"conversation_id": conversation_id}, {"_id": 0})
+    user_id = user.get("user_id") if user else None
+    # Token-only (anonymous) chats are not listed, so they can't be renamed/deleted here either.
+    if not convo or not user_id or not _can_access_conversation(convo, user_id, None):
+        raise HTTPException(404, CONVERSATION_NOT_FOUND_MESSAGE)
+
+
+async def update_chat(db, conversation_id: str, user: Optional[dict], title: Optional[str] = None,
+                      pinned: Optional[bool] = None, archived: Optional[bool] = None) -> Dict[str, Any]:
+    """Backing PATCH /ai/chats/{id}: any of title, pinned, archived. Owner only."""
+    await _owned_chat(db, conversation_id, user)
+    changes = {k: v for k, v in (("pinned", pinned), ("archived", archived)) if v is not None}
+    if title is not None:
+        changes["title"] = _chat_title(title)
+    if not changes:
+        raise HTTPException(400, "Nothing to update.")
+    await db.ai_conversations.update_one({"conversation_id": conversation_id}, {"$set": changes})
+    return {"conversation_id": conversation_id, **changes}
+
+
+async def bulk_update_chats(db, user: Optional[dict], action: str, ids: List[str]) -> Dict[str, Any]:
+    """Backing POST /ai/chats/bulk: archive, unarchive or delete many chats at
+    once. Only the caller's own chats change; unknown ids and other users'
+    ids are ignored. Returns how many changed."""
+    user_id = user.get("user_id") if user else None
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(401, "Not authenticated")
+    if action not in ("archive", "unarchive", "delete"):
+        raise HTTPException(400, "Unknown action.")
+    wanted = [i for i in dict.fromkeys(ids or []) if isinstance(i, str)][:BULK_MAX_IDS]
+    owned = await db.ai_conversations.distinct("conversation_id", {"user_id": user_id, "conversation_id": {"$in": wanted}})
+    if not owned:
+        return {"changed": 0}
+    if action == "delete":
+        await db.ai_chat_messages.delete_many({"conversation_id": {"$in": owned}})
+        result = await db.ai_conversations.delete_many({"user_id": user_id, "conversation_id": {"$in": owned}})
+        return {"changed": result.deleted_count}
+    result = await db.ai_conversations.update_many(
+        {"user_id": user_id, "conversation_id": {"$in": owned}}, {"$set": {"archived": action == "archive"}})
+    return {"changed": result.modified_count}
+
+
+async def delete_all_chats(db, user: Optional[dict]) -> Dict[str, Any]:
+    """Backing DELETE /ai/chats: every conversation the signed-in user owns
+    (archived ones too) and their messages. Never anyone else's."""
+    user_id = user.get("user_id") if user else None
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(401, "Not authenticated")
+    ids = await db.ai_conversations.distinct("conversation_id", {"user_id": user_id})
+    await db.ai_chat_messages.delete_many({"conversation_id": {"$in": ids}})
+    await db.ai_conversations.delete_many({"user_id": user_id, "conversation_id": {"$in": ids}})
+    return {"deleted": len(ids)}
+
+
+async def delete_chat(db, conversation_id: str, user: Optional[dict]) -> Dict[str, Any]:
+    await _owned_chat(db, conversation_id, user)
+    await db.ai_chat_messages.delete_many({"conversation_id": conversation_id})
+    await db.ai_conversations.delete_one({"conversation_id": conversation_id})
+    return {"ok": True}
 
 
 async def _append_message(db, conversation_id: str, role: str, content: str) -> None:
@@ -2018,7 +2115,7 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
                                client_ip: Optional[str] = None,
                                conversation_token: Optional[str] = None,
                                on_status: Optional[llm_service.StatusCallback] = None,
-                               mode: str = "layman") -> Dict[str, Any]:
+                               mode: str = "layman", language: str = "auto") -> Dict[str, Any]:
     """Main entry point for POST /ai/chat. Raises HTTPException for genuine
     client errors (bad input, conversation ownership); everything else —
     including every LLM-side failure mode — degrades to a normal 200
@@ -2036,14 +2133,21 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
         logger.error("Instant Legal Help unavailable: provider configuration is incomplete")
         raise HTTPException(503, NOT_CONFIGURED_MESSAGE)
 
+    # Daily limit (chat_usage): checked before anything is written, so a
+    # refused message never creates a conversation or counts against the day.
+    import chat_usage
+    usage_identity = await chat_usage.check(db, user, client_ip)
+
     # `user` comes only from the server's auth dependency; nothing in the
     # message or request body can change which user this turn runs as.
     user_id = user.get("user_id") if user else None
-    convo = await _get_or_create_conversation(db, conversation_id, user_id, conversation_token)
+    convo = await _get_or_create_conversation(db, conversation_id, user_id, conversation_token, title=text)
     issued_token = convo.pop("conversation_token", None)
     if convo.get("mode") != mode:
         await db.ai_conversations.update_one({"conversation_id": convo["conversation_id"]}, {"$set": {"mode": mode}})
-    result = await _answer_turn(db, convo, text, user, client_ip, on_status, mode)
+    turn_tokens = llm_service.start_token_count()
+    result = await _answer_turn(db, convo, text, user, client_ip, on_status, mode, language)
+    await chat_usage.record(db, usage_identity, turn_tokens[0])
     if issued_token:
         result["conversation_token"] = issued_token
     return result
@@ -2051,7 +2155,7 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
 
 async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_ip: Optional[str],
                        on_status: Optional[llm_service.StatusCallback] = None,
-                       mode: str = "layman") -> Dict[str, Any]:
+                       mode: str = "layman", language: str = "auto") -> Dict[str, Any]:
     """One chat turn inside a conversation whose ownership
     handle_chat_message has already checked."""
     conv_id = convo["conversation_id"]
@@ -2267,12 +2371,22 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         # Arbitration-source answers use the server-only Master Prompt instead of the product prompt.
         intent = prompt_builder.detect_intent(text)
         llm_messages = prompt_builder.build_legal_system_messages(
-            prompt_builder.subject_for(decision["source"]), mode, intent) + llm_messages[1:]
+            prompt_builder.subject_for(decision["source"]), mode, intent, language) + llm_messages[1:]
         intent_note = INTENT_COMING_SOON_NOTES.get(intent)
-    result = await llm_service.generate_response(
-        llm_messages, use_file_search=use_rag, selected_source=decision["source"] if use_rag else None,
-        on_status=on_status,
-    )
+    # A matter's custom instructions: user-role DATA after every system message
+    # (chat_matters), and their length comes out of the retrieval context budget.
+    import chat_matters
+    import rag_provisions
+    matter_text = await chat_matters.instructions_for(db, convo)
+    llm_messages = chat_matters.with_instructions(llm_messages, matter_text)
+    reserved = rag_provisions.RESERVED_CHARS.set(len(matter_text))
+    try:
+        result = await llm_service.generate_response(
+            llm_messages, use_file_search=use_rag, selected_source=decision["source"] if use_rag else None,
+            on_status=on_status, **({"language": language} if language != "auto" else {}),
+        )
+    finally:
+        rag_provisions.RESERVED_CHARS.reset(reserved)
     citations: List[Dict[str, Any]] = []
     grounding: Optional[str] = None
     answer: Optional[Dict[str, Any]] = None
@@ -2370,7 +2484,7 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
 async def stream_chat_events(db, conversation_id: Optional[str], message: str, user: Optional[dict],
                              client_ip: Optional[str] = None,
                              conversation_token: Optional[str] = None,
-                             mode: str = "layman") -> AsyncIterator[str]:
+                             mode: str = "layman", language: str = "auto") -> AsyncIterator[str]:
     """POST /ai/chat/stream: handle_chat_message as Server-Sent Events, one
     "status" per real step, then "answer" (its usual response) or "error"
     (with the HTTP status the page would otherwise get). Client gone = task
@@ -2381,10 +2495,15 @@ async def stream_chat_events(db, conversation_id: Optional[str], message: str, u
         try:
             await llm_service.emit_status(queue.put, "understanding", "Understanding your question…")
             data = await handle_chat_message(db, conversation_id, message, user, client_ip=client_ip,
-                                             conversation_token=conversation_token, on_status=queue.put, mode=mode)
+                                             conversation_token=conversation_token, on_status=queue.put, mode=mode,
+                                             language=language)
             await queue.put({"type": "answer", "data": data})
         except HTTPException as e:
-            await queue.put({"type": "error", "status": e.status_code, "text": str(e.detail)})
+            event = {"type": "error", "status": e.status_code, "text": str(e.detail)}
+            limit = (e.headers or {}).get("X-Usage-Limit")
+            if limit:
+                event["reason"] = limit  # which daily limit: guest / free / paid
+            await queue.put(event)
         except Exception as e:
             logger.error("Chat stream failed (%s): %s", type(e).__name__, llm_service._safe_error_detail(e))
             await queue.put({"type": "error", "status": 500, "text": _DEFAULT_FALLBACK})

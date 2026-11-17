@@ -11,11 +11,10 @@ import ChatMarkdown from "./ChatMarkdown";
    back to rendering the plain `reply`. */
 
 const ICONS = { rule: BookOpen, check: CheckCircle2, warning: TriangleAlert, info: Info };
-const ICON_TONES = { success: "text-emerald-600", warning: "text-amber-600", neutral: "text-accent" };
 const BADGE_TONES = {
-  success: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  warning: "bg-amber-50 text-amber-800 border-amber-200",
-  neutral: "bg-slate-100 text-slate-600 border-slate-200",
+  success: "bg-success/10 text-success-foreground border-success/30",
+  warning: "bg-warning/10 text-warning-foreground border-warning/40",
+  neutral: "bg-secondary text-muted-foreground border-border",
 };
 const text = (value) => (typeof value === "string" ? value.trim() : "");
 
@@ -71,54 +70,53 @@ export function AnswerNote({ note, detail, clean }) {
   );
 }
 
+/* A small muted label line with its text underneath; no boxes, icons or badges. */
+function Section({ label, children, testId }) {
+  return (
+    <section data-testid={testId}>
+      <h4 className="text-[13px] font-semibold leading-5 text-muted-foreground [overflow-wrap:anywhere]">{label}</h4>
+      <div className="mt-0.5 text-foreground">{children}</div>
+    </section>
+  );
+}
+
 export default function AnswerCard({ answer, citeLinks, clean }) {
   return (
     <div className="space-y-3">
-      <article className="rounded-2xl border border-border bg-white shadow-sm overflow-hidden" data-testid="instant-legal-help-answer-card">
+      <article className="space-y-4 text-[15px] leading-7" data-testid="instant-legal-help-answer-card">
         {answer.partial && (
-          <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs leading-5 text-amber-800" data-testid="instant-legal-help-partial-note">
+          <p className="flex items-start gap-1.5 text-xs leading-5 text-warning-foreground" data-testid="instant-legal-help-partial-note">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span>Partial answer: only part of this is covered by the available documents.</span>
-          </div>
+          </p>
         )}
-        <div className="px-4 py-3.5 font-medium">
-          <ChatMarkdown text={clean(answer.summary)} citeLinks={citeLinks} />
-        </div>
-        <ul className="divide-y divide-border border-t border-border">
-          {answer.points.map((point, i) => {
-            const Icon = ICONS[point.icon];
-            const chips = point.cite.filter((n) => citeLinks.has(n)).map((n) => `[${n}]`).join(" ");
-            return (
-              <li key={`${i}-${point.title}`} className="flex gap-3 px-4 py-3" data-testid="instant-legal-help-answer-point">
-                <Icon className={`mt-1 h-4 w-4 shrink-0 ${ICON_TONES[point.tone]}`} aria-hidden="true" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-3">
-                    <h4 className="min-w-0 flex-1 text-[15px] font-semibold leading-6 text-foreground [overflow-wrap:anywhere]">{clean(point.title)}</h4>
-                    {point.badge && (
-                      <span className={`shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-2xs font-semibold ${BADGE_TONES[point.tone]}`}>
-                        {clean(point.badge)}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-0.5 text-muted-foreground">
-                    <ChatMarkdown text={clean(`${point.text} ${chips}`)} citeLinks={citeLinks} />
-                  </div>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-        {[["practicalImplications", "Practical implications"], ["limitations", "Limitations"]].map(([key, label]) => answer[key] && (
-          <div key={key} className="border-t border-border px-4 py-3 text-sm leading-6" data-testid={`instant-legal-help-answer-${key === "limitations" ? "limitations" : "implications"}`}>
-            <h4 className="font-semibold text-foreground">{label}</h4>
-            <p className="mt-0.5 text-muted-foreground [overflow-wrap:anywhere]">{clean(answer[key])}</p>
-          </div>
+        <ChatMarkdown text={clean(answer.summary)} citeLinks={citeLinks} />
+        {answer.points.map((point, i) => {
+          const chips = point.cite.filter((n) => citeLinks.has(n)).map((n) => `[${n}]`).join("");
+          return (
+            <Section key={`${i}-${point.title}`} label={clean(point.title)} testId="instant-legal-help-answer-point">
+              <ChatMarkdown text={clean(`${point.text}${chips}`)} citeLinks={citeLinks} />
+            </Section>
+          );
+        })}
+        {[["practicalImplications", "Practical implications", "implications"], ["limitations", "Limitations", "limitations"]].map(([key, label, id]) => answer[key] && (
+          <Section key={key} label={label} testId={`instant-legal-help-answer-${id}`}>
+            <p className="[overflow-wrap:anywhere]">{clean(answer[key])}</p>
+          </Section>
         ))}
-        {answer.followUp && (
-          <p className="border-t border-border bg-accent/5 px-4 py-2.5 text-sm leading-6 text-foreground">{clean(answer.followUp)}</p>
-        )}
+        {answer.followUp && <p className="text-foreground">{clean(answer.followUp)}</p>}
       </article>
       <AnswerNote note={answer.note} detail={answer.noteDetail} clean={clean} />
     </div>
   );
+}
+
+/* Plain text of an answer, for the Copy action. */
+export function answerPlainText(answer, clean) {
+  return [
+    answer.summary,
+    ...answer.points.map((p) => `${p.title}\n${p.text}`),
+    answer.practicalImplications && `Practical implications\n${answer.practicalImplications}`,
+    answer.limitations && `Limitations\n${answer.limitations}`,
+  ].filter(Boolean).map(clean).join("\n\n");
 }

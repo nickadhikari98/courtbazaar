@@ -5,6 +5,7 @@ When Groq is selected, the OpenAI vector store is used only to retrieve the
 allowlisted knowledge-base passages; Groq still generates the answer.
 """
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -485,7 +486,7 @@ def _cap_context(passages: list[str], named: list) -> list[str]:
     for p in passages:
         if p in kept:
             continue
-        if len(kept) >= rag_provisions.MAX_BLOCKS or total + len(p) > rag_provisions.MAX_CONTEXT_CHARS:
+        if len(kept) >= rag_provisions.MAX_BLOCKS or total + len(p) > rag_provisions.context_char_budget():
             break
         kept.append(p)
         total += len(p)
@@ -537,13 +538,18 @@ async def _filtered_search(client, query: str, flt: dict | None, max_results: in
     return getattr(result, "data", []) or [], True
 
 
-def _search_text(query: str, selected_source: str | None) -> str:
-    """"Searching DIAC Rules…" / "Searching ICC Rules, SIAC Rules…"."""
+def _search_names(query: str, selected_source: str | None) -> str:
+    """"DIAC Rules" / "ICC Rules, SIAC Rules": what this question searches."""
     codes = _search_codes(query, selected_source)
     if codes and codes == kb_registry.all_codes():
-        return "Searching the Arbitration Act and institutional rules…"
+        return "the Arbitration Act and institutional rules"
     files = [f for c in sorted(codes) for f in kb_registry.files_for(c)] or ([selected_source] if selected_source else [])
-    return f"Searching {', '.join(kb_registry.search_name(f) for f in files) or 'the documents'}…"
+    return ', '.join(kb_registry.search_name(f) for f in files) or 'the documents'
+
+
+def _search_text(query: str, selected_source: str | None) -> str:
+    """"Searching DIAC Rules…" / "Searching ICC Rules, SIAC Rules…"."""
+    return f"Searching {_search_names(query, selected_source)}…"
 
 
 async def _provision_passages(client, approved_chunks: list[tuple[str, str | None, str | None]], query: str,
@@ -578,6 +584,27 @@ async def _provision_passages(client, approved_chunks: list[tuple[str, str | Non
     return passages
 
 
+# Tokens (in + out) spent by the current chat turn, for chat_usage's daily
+# caps. ai_chat.handle_chat_message opens the counter; outside a turn it's off.
+_TURN_TOKENS: contextvars.ContextVar[Optional[List[int]]] = contextvars.ContextVar("turn_tokens", default=None)
+
+
+def start_token_count() -> List[int]:
+    counter = [0]
+    _TURN_TOKENS.set(counter)
+    return counter
+
+
+def _count_tokens(response: Any) -> None:
+    counter = _TURN_TOKENS.get()
+    usage = getattr(response, "usage", None)
+    if counter is None or usage is None:
+        return
+    # Responses API: input/output_tokens; Chat Completions: prompt/completion_tokens.
+    counter[0] += int(getattr(usage, "input_tokens", None) or getattr(usage, "prompt_tokens", None) or 0)
+    counter[0] += int(getattr(usage, "output_tokens", None) or getattr(usage, "completion_tokens", None) or 0)
+
+
 async def emit_status(on_status: Optional[StatusCallback], step: str, text: str) -> None:
     """Reports one real pipeline step to a streaming caller."""
     if on_status:
@@ -597,7 +624,8 @@ def _reading_text(query: str, rules: List[str], sources: List[str]) -> str:
 
 async def generate_response(messages: List[Dict[str, str]], use_file_search: bool = False,
                             selected_source: str | None = None,
-                            on_status: Optional[StatusCallback] = None) -> Dict[str, Any]:
+                            on_status: Optional[StatusCallback] = None,
+                            language: str = "auto") -> Dict[str, Any]:
     """Generate a reply, optionally grounding it in hosted vector-store results.
 
     `selected_source` is the one approved document to search, as decided by
@@ -660,6 +688,8 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
     stage = "RAG retrieval" if use_file_search else f"{AI_PROVIDER} generation"
     try:
         if use_file_search:
+            # Same step id as the page's first step, so it replaces "Understanding…" in place.
+            await emit_status(on_status, "understanding", f"Understood: a question on {_search_names(query, selected_source)}")
             await emit_status(on_status, "searching", _search_text(query, selected_source))
             context, sources, rag_chunk_count, ranked_rules, document_text = await asyncio.wait_for(
                 _retrieve_context(query, selected_source), timeout=AI_TIMEOUT_SECONDS
@@ -688,7 +718,7 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
             try:
                 # Both attempts share one budget, so the plain fallback below
                 # still finishes inside the page's request timeout.
-                card_result = await asyncio.wait_for(_card_answer(client, messages, context, sources, on_status, action_gap),
+                card_result = await asyncio.wait_for(_card_answer(client, messages, context, sources, on_status, action_gap, language),
                                                      timeout=AI_TIMEOUT_SECONDS + AI_VERIFIER_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 logger.warning("Card fallback: using the plain answer (timed out)")
@@ -702,6 +732,7 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
                 max_output_tokens=AI_RAG_MAX_OUTPUT_TOKENS,
                 temperature=AI_RAG_TEMPERATURE,
             ), timeout=AI_TIMEOUT_SECONDS)
+            _count_tokens(response)
             text = response.output_text
         else:
             stage = f"{AI_PROVIDER} generation"
@@ -716,6 +747,7 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
                 max_tokens=AI_RAG_MAX_OUTPUT_TOKENS if use_file_search else AI_MAX_OUTPUT_TOKENS,
                 **({"temperature": AI_RAG_TEMPERATURE} if use_file_search else {}),
             ), timeout=AI_TIMEOUT_SECONDS)
+            _count_tokens(response)
             try:
                 text = response.choices[0].message.content
             except (IndexError, AttributeError, KeyError, TypeError) as e:
@@ -1275,6 +1307,7 @@ async def _verify_answer(client, question: str, context: str, answer: Dict[str, 
             temperature=0,
             text=_ANSWER_VERDICT_FORMAT,
         ), timeout=AI_VERIFIER_TIMEOUT_SECONDS)
+        _count_tokens(response)
         return AnswerVerdict.model_validate_json(response.output_text or "").model_dump()
     except ValidationError:
         logger.warning("Verifier output was invalid; keeping the evidence-checked answer")
@@ -1324,9 +1357,13 @@ async def _card_output(client, on_status: Optional[StatusCallback], **request: A
     """The model's raw JSON. For a streaming caller the tokens are read as they
     come, only to learn the real moment reading ends and writing starts."""
     if not on_status:
-        return (await client.responses.create(**request)).output_text or ""
+        response = await client.responses.create(**request)
+        _count_tokens(response)
+        return response.output_text or ""
     parts: List[str] = []
     async for event in await client.responses.create(**request, stream=True):
+        if event.type == "response.completed":
+            _count_tokens(getattr(event, "response", None))
         if event.type == "response.output_text.delta":
             if not parts:
                 await emit_status(on_status, "writing", "Writing answer…")
@@ -1350,7 +1387,7 @@ def _rules_name(citations: List[Dict[str, Any]]) -> str:
 
 async def _card_answer(client, messages: List[Dict[str, str]], context: str, sources: List[str],
                        on_status: Optional[StatusCallback] = None,
-                       action_gap: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                       action_gap: Optional[str] = None, language: str = "auto") -> Optional[Dict[str, Any]]:
     """A document answer as a validated card, or None to use the plain answer.
     One retry when the output isn't valid or doesn't survive the evidence
     checks; provider errors propagate to generate_response as usual.
@@ -1393,7 +1430,7 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
         if card["status"] == "not_found":
             return {"ok": False, "error_code": ERR_NO_CONTEXT, "detail": "Model found no answer in the evidence",
                     "stage": "rag", "exception_type": "NoContextError", "fallback_reason": "model_not_found"}
-        answer = answer_guard.validate_answer_card(card, evidence, provisions)
+        answer = answer_guard.validate_answer_card(card, evidence, provisions, language=language)
         if answer is None:
             reason = "no point passed the evidence checks"
             logger.warning("Structured answer attempt %d failed evidence validation", attempt + 1)
@@ -1643,6 +1680,7 @@ async def generate_web_answer(messages: List[Dict[str, str]]) -> Dict[str, Any]:
             reasoning={"effort": "low"},
             max_output_tokens=AI_RAG_MAX_OUTPUT_TOKENS * 3,
         ), timeout=AI_TIMEOUT_SECONDS)
+        _count_tokens(response)
     except asyncio.TimeoutError:
         return {"ok": False, "error_code": ERR_TIMEOUT, "detail": f"web search exceeded {AI_TIMEOUT_SECONDS}s",
                 "stage": "web search"}

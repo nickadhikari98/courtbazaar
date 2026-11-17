@@ -79,8 +79,8 @@ export default function SupportTicketModal({ open, onOpenChange }) {
       <DialogContent className="w-[calc(100%-1.5rem)] sm:w-full sm:max-w-md max-h-[90dvh] overflow-y-auto cb-scroll">
         {ticket ? (
           <div className="flex flex-col items-center text-center py-6 px-2">
-            <div className="w-16 h-16 rounded-full bg-emerald-50 flex items-center justify-center mb-5">
-              <CheckCircle2 className="w-9 h-9 text-emerald-500" strokeWidth={1.75} />
+            <div className="w-16 h-16 rounded-full bg-success/10 flex items-center justify-center mb-5">
+              <CheckCircle2 className="w-9 h-9 text-success" strokeWidth={1.75} />
             </div>
             <h3 className="font-display font-bold text-2xl mb-2">Ticket Raised</h3>
             <p className="text-sm text-muted-foreground max-w-sm leading-relaxed">
@@ -90,7 +90,7 @@ export default function SupportTicketModal({ open, onOpenChange }) {
             <p className="text-xs text-muted-foreground/80 max-w-sm mt-2">
               Please quote this Ticket ID in any follow-up communication.
             </p>
-            <Button type="button" onClick={() => handleOpenChange(false)} className="bg-accent hover:bg-accent/90 text-white font-bold px-8 mt-6">
+            <Button type="button" onClick={() => handleOpenChange(false)} className="bg-accent hover:bg-accent/90 text-accent-foreground font-bold px-8 mt-6">
               Done
             </Button>
           </div>

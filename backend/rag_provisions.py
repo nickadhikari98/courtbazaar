@@ -18,6 +18,7 @@ document's own structure: it belongs to the last numbered provision before
 it, with only page breaks in between. Anything that can't be located falls
 back to the raw chunk.
 """
+import contextvars
 import logging
 import math
 import re
@@ -63,6 +64,13 @@ _LABEL_WORDS = {"rule": "Rule", "article": "Article"}  # anything else matched i
 
 MAX_BLOCKS = 14
 MAX_CONTEXT_CHARS = 20000
+# Characters of this turn's prompt that come out of the same budget (a matter's
+# custom instructions, chat_matters); set per turn by ai_chat.
+RESERVED_CHARS: "contextvars.ContextVar[int]" = contextvars.ContextVar("reserved_context_chars", default=0)
+
+
+def context_char_budget() -> int:
+    return max(0, MAX_CONTEXT_CHARS - RESERVED_CHARS.get())
 
 _doc_cache: Dict[Tuple[str, str], Tuple[float, str]] = {}
 # doc text -> [(offset, page number)], to match a provision to its rule set's page_range.
@@ -408,7 +416,7 @@ def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: s
     blocks: List[str] = []
     total = 0
     words: Dict[str, str] = {}
-    max_blocks, max_chars = MAX_BLOCKS // max(1, share), MAX_CONTEXT_CHARS // max(1, share)
+    max_blocks, max_chars = MAX_BLOCKS // max(1, share), context_char_budget() // max(1, share)
     picked: List[Tuple[int, str]] = []
     # The character budget goes in rank order (named, keyword, chunk hits), then blocks
     # print in document order: a long top hit (Act Section 34) is never the one cut.

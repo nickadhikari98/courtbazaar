@@ -1,0 +1,350 @@
+import React, { useState } from "react";
+import { Link } from "react-router-dom";
+import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, LogIn, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Trash2, Settings, LifeBuoy, LogOut, Gauge, Languages, Search, FolderOpen, FolderInput } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { formatUsage } from "./usage";
+import Logo from "@/components/shared/Logo";
+
+const DAY_MS = 86400000;
+
+/* Buckets chats (already newest first) under Today / Yesterday / Previous 7
+   days / Older, by the viewer's local calendar day. Empty groups are dropped. */
+export function groupChats(chats, now = new Date()) {
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const groups = [["Today", []], ["Yesterday", []], ["Previous 7 days", []], ["Older", []]];
+  for (const chat of chats) {
+    const t = Date.parse(chat.updated_at) || 0;
+    const idx = t >= startOfToday ? 0 : t >= startOfToday - DAY_MS ? 1 : t >= startOfToday - 7 * DAY_MS ? 2 : 3;
+    groups[idx][1].push(chat);
+  }
+  return groups.filter(([, items]) => items.length);
+}
+
+const SIDEBAR_LIMIT = 5;
+
+/* The first few chats of a list for the sidebar, plus the open chat when it
+   falls further down. Exported for tests. */
+export function shortList(list, activeId, limit = SIDEBAR_LIMIT) {
+  const shown = list.slice(0, limit);
+  const active = list.find((c) => c.conversation_id === activeId);
+  if (active && !shown.includes(active)) shown.push(active);
+  return { shown, cut: list.length > limit };
+}
+
+export const SETTINGS_SHORTCUT = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘," : "Ctrl+,";
+
+function initials(name) {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase() || "?";
+}
+
+/* The per-chat menu (Pin, Rename, Archive, Delete), shared by sidebar rows,
+   the Recents view and the header's title chevron. `children` is the
+   trigger's content. Rename is the caller's inline editor. */
+export function ChatMenu({ chat, onUpdate, onDelete, onRename, onMove, children, triggerClassName, triggerLabel, testId = "chat-row-menu", align = "end" }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label={triggerLabel || `Options for ${chat.title || "chat"}`}
+        className={triggerClassName}
+        data-testid={testId}
+      >
+        {children}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align={align} className="w-40">
+        <DropdownMenuItem onSelect={() => onUpdate(chat.conversation_id, { pinned: !chat.pinned })} data-testid="chat-row-pin">
+          {chat.pinned ? <PinOff className="mr-2 h-4 w-4" /> : <Pin className="mr-2 h-4 w-4" />}{chat.pinned ? "Unpin" : "Pin"}
+        </DropdownMenuItem>
+        {/* Deferred so the menu's focus return doesn't blur the new input. */}
+        <DropdownMenuItem onSelect={() => setTimeout(onRename, 0)} data-testid="chat-row-rename-item">
+          <Pencil className="mr-2 h-4 w-4" />Rename
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onUpdate(chat.conversation_id, { archived: !chat.archived })} data-testid="chat-row-archive">
+          {chat.archived ? <ArchiveRestore className="mr-2 h-4 w-4" /> : <Archive className="mr-2 h-4 w-4" />}{chat.archived ? "Unarchive" : "Archive"}
+        </DropdownMenuItem>
+        {onMove && (
+          <DropdownMenuItem onSelect={() => setTimeout(() => onMove(chat), 0)} data-testid="chat-row-move">
+            <FolderInput className="mr-2 h-4 w-4" />Move to matter
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        {/* Deferred so the closing menu hands focus over cleanly to the confirm dialog. */}
+        <DropdownMenuItem
+          onSelect={() => setTimeout(() => onDelete(chat), 0)}
+          className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+          data-testid="chat-row-delete"
+        >
+          <Trash2 className="mr-2 h-4 w-4" />Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/* One chat in the list: open it, or from "..." pin, rename inline
+   (Enter saves, Esc cancels) or archive. */
+function ChatRow({ chat, active, onSelect, onUpdate, onDelete, onMove }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const startRename = () => { setDraft(chat.title || ""); setEditing(true); };
+  const save = () => {
+    const title = draft.trim();
+    setEditing(false);
+    if (title && title !== chat.title) onUpdate(chat.conversation_id, { title });
+  };
+  if (editing) {
+    return (
+      <input
+        autoFocus value={draft} maxLength={48} aria-label="Chat title"
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); save(); }
+          if (e.key === "Escape") { e.preventDefault(); setEditing(false); }
+        }}
+        onBlur={() => setEditing(false)}
+        className="w-full rounded-lg border border-accent/60 bg-card px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30"
+        data-testid="chat-row-rename"
+      />
+    );
+  }
+  return (
+    <div className={`group flex items-center rounded-lg ${active ? "bg-card shadow-sm dark:bg-popover" : "hover:bg-secondary"}`} data-testid="chat-row">
+      <button
+        type="button" onClick={() => onSelect(chat.conversation_id)}
+        aria-current={active ? "page" : undefined}
+        className={`min-w-0 flex-1 truncate rounded-lg px-2 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${active ? "font-semibold" : ""}`}
+        title={chat.title}
+      >
+        {chat.title || "New chat"}
+      </button>
+      <ChatMenu
+        chat={chat} onUpdate={onUpdate} onDelete={onDelete} onRename={startRename} onMove={onMove}
+        triggerClassName="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-100 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 data-[state=open]:opacity-100"
+      >
+        <MoreHorizontal className="h-4 w-4" />
+      </ChatMenu>
+    </div>
+  );
+}
+
+function ChatGroup({ label, chats, activeId, onSelect, onUpdate, onDelete, onMove }) {
+  return (
+    <div className="mb-3">
+      <div className="px-2 pb-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
+      <ul>
+        {chats.map((c) => (
+          <li key={c.conversation_id}>
+            <ChatRow chat={c} active={c.conversation_id === activeId} onSelect={onSelect} onUpdate={onUpdate} onDelete={onDelete} onMove={onMove} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// Below the site nav (h-16 + 1px border) for guests; the whole viewport in the app layout.
+// The guest drawer stays under the nav's z-40, so the nav and its menus always paint on top.
+const DRAWER_AREA = { app: "inset-y-0 z-50", site: "top-[65px] bottom-0 z-30" };
+
+export default function ChatSidebar({
+  fullScreen, user, chats, archivedChats = [], onUpdateChat, onDeleteChat, usage, onOpenSettings, onGetHelp, onLogout, onViewAll, onSearch, matters = [], activeMatterId, onOpenMatter, onNewMatter, onMoveChat, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
+}) {
+  // The rail (collapsed) only applies from md up; the mobile drawer is always full width.
+  const rail = collapsed ? "md:w-16" : "md:w-[272px]";
+  const hideOnRail = collapsed ? "md:hidden" : "";
+  const actionRow = "flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm hover:bg-secondary disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  const [showArchived, setShowArchived] = useState(false);
+  const groupProps = { activeId, onSelect, onUpdate: onUpdateChat, onDelete: onDeleteChat, onMove: onMoveChat };
+  const pinned = shortList(chats.filter((c) => c.pinned), activeId);
+  const recents = shortList(chats.filter((c) => !c.pinned), activeId);
+  const usageView = formatUsage(usage);
+  const planLabel = { free: "Free", paid: "Paid" }[usage?.plan];
+  return (
+    <>
+      {drawerOpen && (
+        <div className={`fixed inset-x-0 ${DRAWER_AREA[fullScreen ? "app" : "site"]} bg-black/40 md:hidden`} onClick={onCloseDrawer} aria-hidden="true"
+          data-testid="chat-sidebar-overlay" />
+      )}
+      <aside
+        className={`fixed left-0 ${DRAWER_AREA[fullScreen ? "app" : "site"]} w-[272px] ${rail} flex flex-col border-r border-border bg-muted transition-[transform,width] duration-200
+          md:static md:z-auto md:translate-x-0 ${drawerOpen ? "translate-x-0" : "-translate-x-full"}`}
+        aria-label="Chats"
+        data-testid="chat-sidebar"
+      >
+        <div className={`flex items-center gap-2 px-3 pt-3 pb-2 ${fullScreen ? "justify-between" : "justify-end"}`}>
+          {/* Guests already see the site nav's logo: only one is ever shown. */}
+          {/* The logo PNG has black "Court" and grey tagline on transparency, unreadable on the dark
+              background; in dark mode it sits on a light plate (asset unchanged). */}
+          {fullScreen && <div className={`${hideOnRail} dark:rounded-md dark:bg-primary dark:px-2 dark:py-1`} data-testid="chat-sidebar-logo"><Logo to="/" size="sm" /></div>}
+          <button
+            type="button" onClick={onToggleCollapsed}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!collapsed}
+            className="hidden md:inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            data-testid="chat-sidebar-collapse"
+          >
+            <PanelLeft className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Compact rows in the chat-row style; icon buttons on the collapsed rail. */}
+        <div className="space-y-0.5 px-2">
+          <button
+            type="button" onClick={onNewChat} disabled={newChatDisabled}
+            aria-label="New chat" title="New chat"
+            className={`${actionRow} ${collapsed ? "md:mx-auto md:h-10 md:w-10 md:justify-center md:px-0" : ""}`}
+            data-testid="instant-legal-help-new-chat"
+          >
+            <Plus className="h-4 w-4 shrink-0" /><span className={hideOnRail}>New</span>
+          </button>
+          {/* Guests have no saved chats to search. */}
+          {user && (
+            <button
+              type="button" onClick={onSearch} aria-label="Search chats" title="Search chats"
+              className={`${actionRow} ${collapsed ? "md:mx-auto md:h-10 md:w-10 md:justify-center md:px-0" : ""}`}
+              data-testid="chat-sidebar-search"
+            >
+              <Search className="h-4 w-4 shrink-0" /><span className={hideOnRail}>Search</span>
+            </button>
+          )}
+        </div>
+
+        <nav className={`flex-1 min-h-0 overflow-y-auto cb-scroll px-2 py-3 ${hideOnRail}`} data-testid="chat-sidebar-list">
+          {user && showArchived ? (
+            <>
+              <button
+                type="button" onClick={() => setShowArchived(false)}
+                className="mb-2 flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-semibold hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                data-testid="chat-sidebar-archived-back"
+              >
+                <ArrowLeft className="h-4 w-4" />All chats
+              </button>
+              {archivedChats.length
+                ? <ChatGroup label="Archived" chats={archivedChats} {...groupProps} />
+                : <p className="px-2 text-sm text-muted-foreground">No archived chats.</p>}
+            </>
+          ) : user ? (
+            <>
+              <div className="mb-3" data-testid="chat-sidebar-matters">
+                <div className="px-2 pb-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Matters</div>
+                <ul>
+                  {matters.map((m) => (
+                    <li key={m.matter_id}>
+                      <button
+                        type="button" onClick={() => onOpenMatter(m.matter_id)}
+                        aria-current={m.matter_id === activeMatterId ? "page" : undefined}
+                        className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                          m.matter_id === activeMatterId ? "bg-card font-semibold shadow-sm dark:bg-popover" : "hover:bg-secondary"}`}
+                        data-testid="chat-sidebar-matter"
+                      >
+                        <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                        <span className="min-w-0 flex-1 truncate" title={m.name}>{m.name}</span>
+                        <span className="shrink-0 text-xs text-muted-foreground tabular-nums" aria-label={`${m.chat_count} chats`}>{m.chat_count}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                {!matters.length && <p className="px-2 pb-1 text-xs text-muted-foreground" data-testid="chat-sidebar-no-matters">No matters yet.</p>}
+                <button
+                  type="button" onClick={onNewMatter}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="chat-sidebar-new-matter"
+                >
+                  <Plus className="h-4 w-4 shrink-0" />New matter
+                </button>
+              </div>
+              {pinned.shown.length > 0 && <ChatGroup label="Pinned" chats={pinned.shown} {...groupProps} />}
+              {recents.shown.length > 0 && <ChatGroup label="Recents" chats={recents.shown} {...groupProps} />}
+              {(pinned.cut || recents.cut) && (
+                // The full lists live in the search palette (with its date groups), not a second view here.
+                <button
+                  type="button" onClick={onViewAll}
+                  className="mb-1 w-full rounded-lg px-2 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="chat-sidebar-view-all"
+                >
+                  View all
+                </button>
+              )}
+              {archivedChats.length > 0 && (
+                <button
+                  type="button" onClick={() => setShowArchived(true)}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="chat-sidebar-archived"
+                >
+                  <Archive className="h-4 w-4" />Archived ({archivedChats.length})
+                </button>
+              )}
+            </>
+          ) : (
+            <div className="mx-1 rounded-xl border border-border bg-card p-4 text-sm" data-testid="chat-sidebar-login">
+              <p className="font-semibold">Log in to save your chats</p>
+              <p className="mt-1 text-xs text-muted-foreground leading-5">Your conversations will appear here so you can pick them up later.</p>
+              <Link to="/login" className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline">
+                <LogIn className="w-4 h-4" />Log in
+              </Link>
+            </div>
+          )}
+        </nav>
+
+        <div className={`border-t border-border p-3 space-y-3 ${collapsed ? "md:mt-auto" : ""}`}>
+          {/* GET /ai/usage only; nothing is shown until it answers. */}
+          {usageView && (
+            <div className={`rounded-lg bg-card border border-border p-3 ${hideOnRail}`} data-testid="chat-sidebar-usage">
+              <div className="flex justify-between gap-2 text-xs">
+                <span className="font-semibold">{usageView.label}</span>
+                <span className="text-muted-foreground tabular-nums">{usageView.used.toLocaleString()} / {usageView.limit.toLocaleString()}</span>
+              </div>
+              <div className="mt-2 h-1.5 rounded-full bg-border" role="progressbar" aria-label={usageView.label}
+                aria-valuemin={0} aria-valuemax={usageView.limit} aria-valuenow={Math.min(usageView.used, usageView.limit)}>
+                {/* eslint-disable-next-line no-restricted-syntax -- width is the runtime usage fraction */}
+                <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, (usageView.used / (usageView.limit || 1)) * 100)}%` }} />
+              </div>
+              {usageView.reset && <p className="mt-1.5 text-2xs text-muted-foreground">Resets at {usageView.reset}</p>}
+            </div>
+          )}
+          {fullScreen && (
+            <Link
+              to={user ? "/dashboard" : "/"} title={user ? "Back to dashboard" : "Back to CourtBazaar"}
+              className="flex items-center gap-2 rounded-lg px-1 py-1.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-testid="chat-sidebar-back"
+            >
+              <ArrowLeft className="h-4 w-4 shrink-0" /><span className={hideOnRail}>{user ? "Back to dashboard" : "Back to CourtBazaar"}</span>
+            </Link>
+          )}
+          {user && (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                className="w-full flex items-center gap-2 rounded-lg px-1 py-1.5 hover:bg-secondary text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="Account menu" data-testid="chat-sidebar-user"
+              >
+                <span className="h-8 w-8 shrink-0 rounded-full bg-primary text-primary-foreground text-xs font-semibold flex items-center justify-center">{initials(user.name)}</span>
+                <span className={`flex-1 text-left truncate ${hideOnRail}`}>{initials(user.name)}{planLabel ? ` · ${planLabel}` : ""}</span>
+                <ChevronDown className={`w-4 h-4 text-muted-foreground ${hideOnRail}`} />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side="top" align="start" className="w-60">
+                {user.email && <DropdownMenuLabel className="truncate font-normal text-muted-foreground" data-testid="chat-user-email">{user.email}</DropdownMenuLabel>}
+                <DropdownMenuSeparator />
+                {/* Deferred so the closing menu hands focus to the dialog it opens. */}
+                <DropdownMenuItem onSelect={() => setTimeout(() => onOpenSettings(null), 0)} data-testid="chat-user-settings">
+                  <Settings className="mr-2 h-4 w-4" />Settings<DropdownMenuShortcut>{SETTINGS_SHORTCUT}</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setTimeout(() => onOpenSettings("usage"), 0)} data-testid="chat-user-usage">
+                  <Gauge className="mr-2 h-4 w-4" />Usage
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setTimeout(() => onOpenSettings("language"), 0)} data-testid="chat-user-language">
+                  <Languages className="mr-2 h-4 w-4" />Language
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setTimeout(onGetHelp, 0)} data-testid="chat-user-help">
+                  <LifeBuoy className="mr-2 h-4 w-4" />Get help
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={onLogout} data-testid="chat-user-logout">
+                  <LogOut className="mr-2 h-4 w-4" />Log out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
+      </aside>
+    </>
+  );
+}
