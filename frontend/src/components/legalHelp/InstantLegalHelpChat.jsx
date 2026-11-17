@@ -1,8 +1,10 @@
-import React, { useEffect, useId, useRef, useState } from "react";
-import { getErrorMessage } from "@/lib/api";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
+import { api, getErrorMessage } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { ArrowUp, Loader2, Scale, User, SquarePen, Landmark, FileText, Users, Info, RotateCcw } from "lucide-react";
+import { ArrowUp, Loader2, Scale, User, Info, RotateCcw, Menu, Paperclip } from "lucide-react";
+import ChatSidebar from "./ChatSidebar";
 import ChatStatus, { FIRST_STEP } from "./ChatStatus";
 import { streamChat } from "./chatStream";
 import ChatMarkdown from "./ChatMarkdown";
@@ -102,12 +104,12 @@ export function assistantMessageFrom(data) {
 
 const SESSION_EXPIRED_TEXT = "This chat session is no longer available. Please send your message again to start a new chat.";
 
-// What the empty state says the chat is for. Descriptive only, not
-// clickable prompts.
-const HELP_TOPICS = [
-  { icon: Scale, title: "Understand your situation", text: "Plain-language guidance on legal processes and what to do next." },
-  { icon: FileText, title: "Find the right service", text: "E-filing, printing, scanning and the other court work we handle." },
-  { icon: Users, title: "Get court support", text: "When a proxy counsel or advocate can help, and how to hire one." },
+// Welcome-screen cards; clicking one sends its text as the first message.
+const SUGGESTIONS = [
+  "I received a cheque bounce notice. What should I do?",
+  "How do I e-file a case in the Delhi High Court?",
+  "When should I hire a proxy counsel for a hearing?",
+  "What is the difference between arbitration and mediation?",
 ];
 
 const MODE_KEY = "instantLegalHelpMode";
@@ -133,6 +135,10 @@ export default function InstantLegalHelpChat({ initialMessage }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [steps, setSteps] = useState([]);
+  const user = useAuth()?.user || null;
+  const [chats, setChats] = useState([]);
+  const [collapsed, setCollapsed] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const scrollRef = useRef(null);
   const chooseMode = (value) => {
     setMode(value);
@@ -144,6 +150,19 @@ export default function InstantLegalHelpChat({ initialMessage }) {
   // just cleared can never land its reply into the fresh, empty one.
   const sessionRef = useRef(0);
   const abortRef = useRef(null);
+
+  const loadChats = useCallback(() => {
+    if (!user) { setChats([]); return; }
+    api.get("/ai/chats").then(({ data }) => setChats(Array.isArray(data) ? data : [])).catch(() => {});
+  }, [user]);
+  useEffect(loadChats, [loadChats]);
+
+  useEffect(() => {
+    if (!drawerOpen) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") setDrawerOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawerOpen]);
 
   // Leaving the page cancels the request so nothing lands (or toasts) after unmount.
   useEffect(() => () => {
@@ -212,6 +231,7 @@ export default function InstantLegalHelpChat({ initialMessage }) {
       if (typeof data?.conversation_id === "string" && data.conversation_id) setConversationId(data.conversation_id);
       if (typeof data?.conversation_token === "string" && data.conversation_token) setConversationToken(data.conversation_token);
       setMsgs((prev) => [...prev, assistantMessageFrom(data)]);
+      loadChats(); // a new chat appears, an old one moves to the top
     } catch (err) {
       if (sessionRef.current !== mySession) return;
       if (err?.response?.status === 404) {
@@ -258,7 +278,26 @@ export default function InstantLegalHelpChat({ initialMessage }) {
     setConversationToken(null);
     setInput("");
     setLoading(false);
+    setDrawerOpen(false);
     inputRef.current?.focus();
+  };
+
+  const openChat = async (id) => {
+    setDrawerOpen(false);
+    if (id === conversationId) return;
+    handleNewChat();
+    const mySession = sessionRef.current;
+    try {
+      const { data } = await api.get(`/ai/history/${encodeURIComponent(id)}`);
+      if (sessionRef.current !== mySession) return;
+      setConversationId(id);
+      setMsgs((Array.isArray(data) ? data : []).map((m) => (m.role === "user"
+        ? { role: "user", text: m.content } : assistantMessageFrom({ reply: m.content }))));
+    } catch (err) {
+      if (sessionRef.current !== mySession) return;
+      toast.error(getErrorMessage(err, "Couldn't open that chat."));
+      loadChats();
+    }
   };
 
   const handleKeyDown = (e) => {
@@ -270,46 +309,30 @@ export default function InstantLegalHelpChat({ initialMessage }) {
   };
 
   return (
-    <div className="flex flex-col flex-1 h-full min-h-0 bg-background" data-testid="instant-legal-help-panel">
+    <div className="flex flex-1 h-full min-h-0 bg-background" data-testid="instant-legal-help-panel">
+      <ChatSidebar
+        user={user} chats={chats} activeId={conversationId} onSelect={openChat}
+        onNewChat={handleNewChat} newChatDisabled={msgs.length === 0 && !loading}
+        collapsed={collapsed} onToggleCollapsed={() => setCollapsed((c) => !c)}
+        drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}
+      />
+    <div className="flex flex-col flex-1 min-w-0 min-h-0">
       <div className="border-b border-border bg-white shrink-0">
-        <div className="max-w-3xl mx-auto w-full px-4 py-3 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-accent/10 flex items-center justify-center shrink-0">
-              <Scale className="w-[18px] h-[18px] text-accent" />
-            </div>
-            <div className="min-w-0">
-              <h1 className="font-display font-bold text-base leading-tight">Instant Legal Help</h1>
-              <p className="text-xs text-muted-foreground truncate">Public legal guidance from CourtBazaar</p>
-            </div>
+        <div className="w-full px-4 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <button
+              type="button" onClick={() => setDrawerOpen(true)} aria-label="Open chats"
+              className="md:hidden inline-flex h-9 w-9 items-center justify-center rounded-lg hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-testid="chat-sidebar-open"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <h1 className="font-display font-bold text-base leading-tight truncate">Instant Legal Help</h1>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-          <div
-            role="group" aria-label="Answer style"
-            className="inline-flex rounded-lg border border-border bg-muted p-0.5"
-            data-testid="instant-legal-help-mode"
-          >
-            {MODES.map((m) => (
-              <button
-                key={m.value} type="button" aria-pressed={mode === m.value} onClick={() => chooseMode(m.value)}
-                className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                  mode === m.value ? "bg-white text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                data-testid={`instant-legal-help-mode-${m.value}`}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-          <Button
-            type="button" variant="outline" size="sm" onClick={handleNewChat}
-            disabled={msgs.length === 0 && !loading}
-            aria-label="Start a new chat" title="Start a new chat"
-            className="shrink-0 font-semibold"
-            data-testid="instant-legal-help-new-chat"
-          >
-            <SquarePen className="w-4 h-4 sm:mr-1.5" />
-            <span className="hidden sm:inline">New chat</span>
-          </Button>
-          </div>
+          {/* Placeholder; wired to real usage in UI-4. */}
+          <span className="shrink-0 rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground" data-testid="chat-usage-pill">
+            Free · 20 left today
+          </span>
         </div>
       </div>
 
@@ -321,21 +344,20 @@ export default function InstantLegalHelpChat({ initialMessage }) {
       >
         <div className="max-w-3xl mx-auto w-full px-4 py-6 sm:py-8 space-y-6">
           {msgs.length === 0 && !loading && (
-            <div className="py-6 sm:py-12 text-center" data-testid="instant-legal-help-empty">
-              <div className="w-14 h-14 mx-auto bg-accent/10 rounded-2xl flex items-center justify-center mb-4">
-                <Landmark className="w-7 h-7 text-accent" />
-              </div>
-              <h2 className="font-display font-bold text-xl sm:text-2xl">How can I help today?</h2>
+            <div className="py-8 sm:py-16 text-center" data-testid="instant-legal-help-empty">
+              <h2 className="font-display font-bold text-2xl sm:text-3xl">How can I help today?</h2>
               <p className="text-sm text-muted-foreground mt-2 max-w-md mx-auto leading-6">
                 Tell me what's going on and I'll help you figure out the next step.
               </p>
-              <div className="grid sm:grid-cols-3 gap-3 mt-8 text-left">
-                {HELP_TOPICS.map(({ icon: Icon, title, text }) => (
-                  <div key={title} className="rounded-xl border border-border bg-white p-4">
-                    <Icon className="w-4 h-4 text-accent mb-2" />
-                    <div className="text-sm font-semibold">{title}</div>
-                    <p className="text-xs text-muted-foreground mt-1 leading-5">{text}</p>
-                  </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-8 text-left">
+                {SUGGESTIONS.map((text, i) => (
+                  <button
+                    key={text} type="button" onClick={() => send(text)}
+                    className="rounded-xl border border-border bg-white p-4 text-sm leading-6 hover:border-accent/50 hover:bg-accent/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    data-testid={`instant-legal-help-suggestion-${i}`}
+                  >
+                    {text}
+                  </button>
                 ))}
               </div>
             </div>
@@ -389,34 +411,60 @@ export default function InstantLegalHelpChat({ initialMessage }) {
       </div>
 
       <div className="shrink-0 bg-background pb-[max(env(safe-area-inset-bottom),0.75rem)]">
-        <div className="max-w-3xl mx-auto w-full px-4 pt-2">
-          <div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/20 transition-shadow">
+        <div className="max-w-[760px] mx-auto w-full px-4 pt-2">
+          <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/20 transition-shadow">
             <textarea
               ref={inputRef}
               rows={1}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Describe your situation, legal issue, or service need..."
+              placeholder={msgs.length ? "Ask a follow-up..." : "Describe your situation, legal issue, or service need..."}
               aria-label="Message Instant Legal Help"
               autoFocus
-              className="flex-1 resize-none bg-transparent px-2 py-2 text-[15px] leading-6 max-h-40 overflow-y-auto cb-scroll placeholder:text-slate-400 focus:outline-none"
+              className="block w-full resize-none bg-transparent px-2 py-2 text-[15px] leading-6 max-h-40 overflow-y-auto cb-scroll placeholder:text-slate-400 focus:outline-none"
               data-testid="instant-legal-help-input"
             />
-            <Button
-              type="button" onClick={() => send()} disabled={loading || !input.trim()}
-              aria-label="Send message"
-              className="h-10 w-10 shrink-0 rounded-xl bg-accent p-0 hover:bg-accent/90"
-              data-testid="instant-legal-help-send"
-            >
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-5 h-5" />}
-            </Button>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button" disabled title="Coming soon" aria-label="Attach a file (coming soon)"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground disabled:opacity-50"
+                data-testid="instant-legal-help-attach"
+              >
+                <Paperclip className="w-4 h-4" />
+              </button>
+              <div
+                role="group" aria-label="Answer style"
+                className="inline-flex rounded-lg border border-border bg-muted p-0.5"
+                data-testid="instant-legal-help-mode"
+              >
+                {MODES.map((m) => (
+                  <button
+                    key={m.value} type="button" aria-pressed={mode === m.value} onClick={() => chooseMode(m.value)}
+                    className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      mode === m.value ? "bg-white text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                    data-testid={`instant-legal-help-mode-${m.value}`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              <Button
+                type="button" onClick={() => send()} disabled={loading || !input.trim()}
+                aria-label="Send message"
+                className="ml-auto h-10 w-10 shrink-0 rounded-full bg-accent p-0 hover:bg-accent/90"
+                data-testid="instant-legal-help-send"
+              >
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-5 h-5" />}
+              </Button>
+            </div>
           </div>
           <p className="text-2xs text-muted-foreground text-center mt-2 px-2">
             General guidance only, not a substitute for advice from a lawyer on your specific case.
           </p>
         </div>
       </div>
+    </div>
     </div>
   );
 }

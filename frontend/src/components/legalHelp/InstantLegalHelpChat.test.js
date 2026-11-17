@@ -67,7 +67,7 @@ function renderApp(initialEntries = ["/"]) {
 }
 
 function renderChat(props = {}) {
-  act(() => root.render(<InstantLegalHelpChat {...props} />));
+  act(() => root.render(<MemoryRouter><InstantLegalHelpChat {...props} /></MemoryRouter>));
 }
 
 // Every chat request carries a client timeout and an abort signal.
@@ -702,7 +702,7 @@ test("only the message log scrolls: the page is a flex column and the chat fills
   expect(panel.parentElement.className).toEqual(expect.stringContaining("min-h-0"));
   expect(panel.className).toEqual(expect.stringContaining("flex-1"));
   expect($("instant-legal-help-messages").className).toEqual(expect.stringContaining("overflow-y-auto"));
-  expect(panel.querySelectorAll(".overflow-y-auto")).toHaveLength(2); // the log, and the composer textarea
+  expect(panel.querySelectorAll(".overflow-y-auto")).toHaveLength(3); // the log, the sidebar chat list, and the composer textarea
 });
 
 test("New chat cancels the in-flight request and leaves no stale indicator", async () => {
@@ -835,4 +835,16 @@ test("a card's source chip scrolls to and highlights its own source row; the tit
   act(() => chip.click());
   expect(rows[1].scrollIntoView).toHaveBeenCalled();
   expect(rows[1].classList.contains("ring-2")).toBe(true);
+});
+
+test("a welcome suggestion card sends its text as the first message; logged-out users see the login card", async () => {
+  api.post.mockResolvedValueOnce({ data: { conversation_id: "conv_s", reply: "Answer." } });
+  renderChat();
+  expect($("chat-sidebar-login")).not.toBeNull();
+  expect($("instant-legal-help-input").placeholder).toBe("Describe your situation, legal issue, or service need...");
+  const card = $("instant-legal-help-suggestion-0");
+  await act(async () => card.click());
+  await flush();
+  expect(api.post).toHaveBeenCalledWith("/ai/chat", expect.objectContaining({ message: card.textContent }), CHAT_OPTS);
+  expect($("instant-legal-help-input").placeholder).toBe("Ask a follow-up...");
 });

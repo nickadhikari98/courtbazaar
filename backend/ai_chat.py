@@ -319,6 +319,7 @@ def _now_iso() -> str:
 async def ensure_indexes(db) -> None:
     await db.ai_conversations.create_index([("conversation_id", 1)], name="conversation_id", unique=True)
     await db.ai_chat_messages.create_index([("conversation_id", 1), ("created_at", 1)], name="conversation_created")
+    await db.ai_conversations.create_index([("user_id", 1), ("updated_at", -1)], name="user_updated")
 
 
 def check_history_rate_limit(key: str) -> None:
@@ -361,7 +362,7 @@ def check_chat_rate_limit(key: str) -> None:
 
 
 async def _get_or_create_conversation(db, conversation_id: Optional[str], user_id: Optional[str],
-                                      conversation_token: Optional[str] = None) -> dict:
+                                      conversation_token: Optional[str] = None, title: str = "") -> dict:
     """Looks up an existing conversation by id, enforcing ownership, or
     creates a new one when no id is given.
 
@@ -383,7 +384,8 @@ async def _get_or_create_conversation(db, conversation_id: Optional[str], user_i
         return convo
 
     new_id = new_conversation_id()
-    doc = {"conversation_id": new_id, "user_id": user_id, "created_at": _now_iso(), "updated_at": _now_iso()}
+    doc = {"conversation_id": new_id, "user_id": user_id, "title": _chat_title(title),
+           "created_at": _now_iso(), "updated_at": _now_iso()}
     token = None
     if user_id is None:
         token = secrets.token_urlsafe(32)
@@ -393,6 +395,47 @@ async def _get_or_create_conversation(db, conversation_id: Optional[str], user_i
     if token:
         doc["conversation_token"] = token  # returned to the caller once; never stored in plain text
     return doc
+
+
+CHAT_TITLE_MAX = 48
+CHAT_LIST_LIMIT = 50
+
+
+def _chat_title(text: str) -> str:
+    return " ".join((text or "").split())[:CHAT_TITLE_MAX].strip() or "New chat"
+
+
+async def list_chats(db, user: Optional[dict]) -> List[Dict[str, Any]]:
+    """Backing GET /ai/chats. Only a logged-in user's own conversations;
+    anonymous callers always get [] (their chats are reachable only by token)."""
+    user_id = user.get("user_id") if user else None
+    if not isinstance(user_id, str) or not user_id:
+        return []
+    return await db.ai_conversations.find(
+        {"user_id": user_id}, {"_id": 0, "conversation_id": 1, "title": 1, "updated_at": 1},
+    ).sort("updated_at", -1).limit(CHAT_LIST_LIMIT).to_list(CHAT_LIST_LIMIT)
+
+
+async def _owned_chat(db, conversation_id: str, user: Optional[dict]) -> None:
+    convo = await db.ai_conversations.find_one({"conversation_id": conversation_id}, {"_id": 0})
+    user_id = user.get("user_id") if user else None
+    # Token-only (anonymous) chats are not listed, so they can't be renamed/deleted here either.
+    if not convo or not user_id or not _can_access_conversation(convo, user_id, None):
+        raise HTTPException(404, CONVERSATION_NOT_FOUND_MESSAGE)
+
+
+async def rename_chat(db, conversation_id: str, title: str, user: Optional[dict]) -> Dict[str, Any]:
+    await _owned_chat(db, conversation_id, user)
+    clean = _chat_title(title)
+    await db.ai_conversations.update_one({"conversation_id": conversation_id}, {"$set": {"title": clean}})
+    return {"conversation_id": conversation_id, "title": clean}
+
+
+async def delete_chat(db, conversation_id: str, user: Optional[dict]) -> Dict[str, Any]:
+    await _owned_chat(db, conversation_id, user)
+    await db.ai_chat_messages.delete_many({"conversation_id": conversation_id})
+    await db.ai_conversations.delete_one({"conversation_id": conversation_id})
+    return {"ok": True}
 
 
 async def _append_message(db, conversation_id: str, role: str, content: str) -> None:
@@ -2039,7 +2082,7 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
     # `user` comes only from the server's auth dependency; nothing in the
     # message or request body can change which user this turn runs as.
     user_id = user.get("user_id") if user else None
-    convo = await _get_or_create_conversation(db, conversation_id, user_id, conversation_token)
+    convo = await _get_or_create_conversation(db, conversation_id, user_id, conversation_token, title=text)
     issued_token = convo.pop("conversation_token", None)
     if convo.get("mode") != mode:
         await db.ai_conversations.update_one({"conversation_id": convo["conversation_id"]}, {"$set": {"mode": mode}})

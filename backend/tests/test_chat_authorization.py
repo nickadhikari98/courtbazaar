@@ -478,3 +478,41 @@ def test_rag_routing_and_legal_safety_unchanged():
     assert decision["source"] == llm_service.SOURCE_DIAC
     reply = answer_guard.guard_general_answer("Anticipatory bail is granted under Section 438 CrPC.", legal=True)
     assert "now Section 482 BNSS" in reply
+
+
+# ---------------------------------------------------------------------------
+# Chat list (GET/PATCH/DELETE /ai/chats)
+# ---------------------------------------------------------------------------
+
+def test_chat_list_is_per_user_and_empty_for_anonymous(monkeypatch):
+    _fake_llm(monkeypatch)
+    user_a, user_b = _user(_tag()), _user(_tag())
+
+    async def body():
+        long_q = "  What   is the limitation period for a cheque bounce complaint under section 138?"
+        a1 = (await _chat(user_a, long_q))["conversation_id"]
+        b1 = (await _chat(user_b, "What is bail?"))["conversation_id"]
+        anon = await _chat(None, "Anonymous question")
+        ids = [a1, b1, anon["conversation_id"]]
+        try:
+            listed = await server.ai_chats(user=user_a)
+            assert [c["conversation_id"] for c in listed] == [a1]
+            assert listed[0]["title"] == " ".join(long_q.split())[:48].strip()
+            assert set(listed[0]) == {"conversation_id", "title", "updated_at"}
+            assert await server.ai_chats(user=None) == []
+
+            # B cannot rename or delete A's chat; same generic 404 as an unknown id.
+            await _expect_404(ai_chat.rename_chat(server.db, a1, "hijack", user_b))
+            await _expect_404(ai_chat.delete_chat(server.db, a1, user_b))
+            await _expect_404(ai_chat.delete_chat(server.db, anon["conversation_id"], user_b))
+            await _expect_404(ai_chat.rename_chat(server.db, "conv_missing", "x", user_a))
+
+            renamed = await ai_chat.rename_chat(server.db, a1, "  Cheque bounce  ", user_a)
+            assert renamed["title"] == "Cheque bounce"
+            await ai_chat.delete_chat(server.db, a1, user_a)
+            assert await server.ai_chats(user=user_a) == []
+            assert await server.db.ai_chat_messages.count_documents({"conversation_id": a1}) == 0
+            assert [c["conversation_id"] for c in await server.ai_chats(user=user_b)] == [b1]
+        finally:
+            await _cleanup(ids)
+    _run(body())

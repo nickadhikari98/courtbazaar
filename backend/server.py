@@ -1794,6 +1794,24 @@ async def ai_history(conversation_id: str, user: Optional[dict] = Depends(get_cu
     ai_chat_svc.check_history_rate_limit(user["user_id"] if user else client_ip)
     return await ai_chat_svc.get_conversation_history(db, conversation_id, user, x_conversation_token)
 
+@api_router.get("/ai/chats")
+async def ai_chats(user: Optional[dict] = Depends(get_current_user_optional)):
+    import ai_chat as ai_chat_svc
+    return await ai_chat_svc.list_chats(db, user)
+
+class ChatRenameRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+
+@api_router.patch("/ai/chats/{conversation_id}")
+async def ai_chat_rename(conversation_id: str, req: ChatRenameRequest, user=Depends(get_current_user)):
+    import ai_chat as ai_chat_svc
+    return await ai_chat_svc.rename_chat(db, conversation_id, req.title, user)
+
+@api_router.delete("/ai/chats/{conversation_id}")
+async def ai_chat_delete(conversation_id: str, user=Depends(get_current_user)):
+    import ai_chat as ai_chat_svc
+    return await ai_chat_svc.delete_chat(db, conversation_id, user)
+
 @api_router.post("/ai/filing-checklist")
 async def filing_checklist(payload: dict, user=Depends(get_current_user)):
     court = payload.get("court", "")
