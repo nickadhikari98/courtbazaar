@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
   User, LogOut, Menu, Scale, Bell, ChevronDown, Shield, Users, Truck,
   Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic, Banknote,
-  UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel, ArrowLeft, LifeBuoy,
+  UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel, ArrowLeft, LifeBuoy, MessagesSquare,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +36,7 @@ const buildWorkspaceNav = (user) => {
           { to: "/hire-proxy-counsel", icon: Gavel, label: "Hire Proxy Counsel" },
         ]
       : []),
+    { to: "/legal-help", icon: MessagesSquare, label: "Instant Legal Help", flag: "sidebar.instantLegalHelp" },
     { to: "/orders", icon: Package, label: "My Orders" },
     { to: "/marketplace", icon: Store, label: "Marketplace", flag: "services.marketplace" },
     { to: "/stenographer", icon: Mic, label: "Stenographer", flag: "services.stenographer" },

@@ -14,7 +14,7 @@ import { timeAgo } from "@/lib/utils";
 import {
   Plus, Printer, FileText, Gavel, Stamp, Package, BookOpen, Sparkles, Truck, ArrowRight,
   Scale, Type, FileSignature, Briefcase, Wallet, CheckCircle2, Circle, Store, Banknote,
-  BadgeCheck, Clock, Mic, Star, UploadCloud, ShieldCheck, AlertTriangle, XCircle, Info, Bell,
+  BadgeCheck, Clock, Mic, Star, UploadCloud, ShieldCheck, AlertTriangle, XCircle, Info, Bell, MessagesSquare,
 } from "lucide-react";
 import { isFeatureEnabled } from "@/config/featureFlags";
 import { listPublicServices } from "@/lib/servicesApi";
@@ -435,6 +435,23 @@ export default function Dashboard() {
           </Button>
         </CardContent>
       </Card>
+
+      {isFeatureEnabled("quickActions.instantLegalHelp") && (
+        <Card className="bento-card border-none mb-8" data-testid="dashboard-instant-legal-help">
+          <CardContent className="p-5 flex items-center gap-4">
+            <div className="w-11 h-11 rounded-xl bg-accent/15 flex items-center justify-center flex-shrink-0">
+              <MessagesSquare className="w-5 h-5 text-accent" strokeWidth={2} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="font-display font-bold">Instant Legal Help</div>
+              <p className="text-sm text-muted-foreground">Ask a legal question and get an answer from verified arbitration sources</p>
+            </div>
+            <Button onClick={() => navigate("/legal-help")} className="bg-accent hover:bg-accent/90 font-bold flex-shrink-0" data-testid="dashboard-instant-legal-help-go">
+              Go <ArrowRight className="w-4 h-4 ml-1.5" />
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 mb-8">
         {/* Upcoming Hearings — the primary column; the sidebar next to it is

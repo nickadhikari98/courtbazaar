@@ -108,11 +108,11 @@ export default function ChatSidebar({
           </div>
           {fullScreen && (
             <Link
-              to="/" title="Back to CourtBazaar"
+              to={user ? "/dashboard" : "/"} title={user ? "Back to dashboard" : "Back to CourtBazaar"}
               className="flex items-center gap-2 rounded-lg px-1 py-1.5 text-sm text-muted-foreground hover:bg-slate-200/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               data-testid="chat-sidebar-back"
             >
-              <ArrowLeft className="h-4 w-4 shrink-0" /><span className={hideOnRail}>Back to CourtBazaar</span>
+              <ArrowLeft className="h-4 w-4 shrink-0" /><span className={hideOnRail}>{user ? "Back to dashboard" : "Back to CourtBazaar"}</span>
             </Link>
           )}
           {user && (

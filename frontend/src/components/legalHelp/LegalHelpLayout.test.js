@@ -59,7 +59,7 @@ test("guests keep the site nav and footer; the sidebar sits below the nav with n
   expect(logos()).toHaveLength(1);
 });
 
-test("signed-in users get the full-screen app: no site nav or footer, one logo in the sidebar, Back to CourtBazaar", async () => {
+test("signed-in users get the full-screen app: no site nav or footer, one logo in the sidebar, Back to dashboard", async () => {
   mockUser = { user_id: "u1", name: "Jay Dee" };
   await render();
   expect(container.querySelector("nav.landing-nav")).toBeNull();
@@ -67,8 +67,8 @@ test("signed-in users get the full-screen app: no site nav or footer, one logo i
   const logo = $("chat-sidebar-logo");
   expect(logo).not.toBeNull();
   expect(logo.querySelector("a").getAttribute("href")).toBe("/");
-  expect($("chat-sidebar-back").getAttribute("href")).toBe("/");
-  expect($("chat-sidebar-back").textContent).toContain("Back to CourtBazaar");
+  expect($("chat-sidebar-back").getAttribute("href")).toBe("/dashboard");
+  expect($("chat-sidebar-back").textContent).toBe("Back to dashboard");
   // The back link sits above the user row.
   const back = $("chat-sidebar-back");
   expect(back.compareDocumentPosition($("chat-sidebar-user")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

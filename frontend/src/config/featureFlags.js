@@ -19,11 +19,15 @@ export const FEATURE_FLAGS = {
     lawFirm: false,
     bulkImport: false,
     myData: false,
+    // The /legal-help chat, for signed-in users who land on /dashboard.
+    instantLegalHelp: true,
   },
   quickActions: {
     // AI Assistant's one remaining entry point: a Dashboard quick-action
     // tile instead of a hero CTA + promo card.
     aiAssistant: true,
+    // Dashboard card for the /legal-help chat.
+    instantLegalHelp: true,
   },
   services: {
     // Hire Counsel shares Hire Proxy Counsel's full browse/matching/escrow
