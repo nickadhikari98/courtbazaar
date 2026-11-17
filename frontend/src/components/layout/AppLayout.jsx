@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Plus, Package, Store, Building2, Sparkles, Wallet, CreditCard,
   User, LogOut, Menu, Scale, Bell, ChevronDown, Shield, Users, Truck,
   Receipt, MessageSquare, FileSpreadsheet, Database, Trophy, Activity, Crown, Mic, Banknote,
-  UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel, ArrowLeft, LifeBuoy, MessagesSquare,
+  UserPlus, Star, Briefcase, FileText, CalendarDays, Gavel, ArrowLeft, LifeBuoy,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -36,7 +36,6 @@ const buildWorkspaceNav = (user) => {
           { to: "/hire-proxy-counsel", icon: Gavel, label: "Hire Proxy Counsel" },
         ]
       : []),
-    { to: "/legal-help", icon: MessagesSquare, label: "Instant Legal Help", flag: "sidebar.instantLegalHelp" },
     { to: "/orders", icon: Package, label: "My Orders" },
     { to: "/marketplace", icon: Store, label: "Marketplace", flag: "services.marketplace" },
     { to: "/stenographer", icon: Mic, label: "Stenographer", flag: "services.stenographer" },
@@ -71,6 +70,9 @@ const buildWorkspaceNav = (user) => {
 
   const items = [
     { to: "/dashboard", icon: LayoutDashboard, label: "Home" },
+    // The AI chatbot: its own highlighted card under Home, not a Services row.
+    { to: "/legal-help", icon: Sparkles, label: "Instant Legal Help", hint: "Ask a legal question", feature: true,
+      flag: "sidebar.instantLegalHelp" },
     { section: "Services" }, ...services,
     { section: "Workspace" }, ...workspace,
     { section: "Finance" }, ...finance,
@@ -238,6 +240,29 @@ export default function AppLayout({ children }) {
                   {item.section}
                 </div>
               )
+            ) : item.feature ? (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              ref={(el) => { navRefs.current[item.to] = el; }}
+              data-testid={`nav-${item.label.toLowerCase().replace(/\s+/g, '-')}`}
+              title={sidebarOpen ? undefined : item.label}
+              aria-label={sidebarOpen ? undefined : item.label}
+              // Ochre tint + hairline border; active adds a ring (not a wider border) so nothing shifts.
+              className={({ isActive }) =>
+                `flex items-center gap-3 rounded-lg border-[0.5px] border-accent/50 bg-accent/5 text-foreground transition-colors hover:bg-accent/10 ${
+                  isActive ? "border-accent ring-1 ring-accent" : ""} ${sidebarOpen ? "px-3 py-2" : "mx-auto h-10 w-10 justify-center"}`
+              }
+              onClick={closeSidebarOnMobileNav}
+            >
+              <item.icon className="w-[18px] h-[18px] flex-shrink-0 text-accent" strokeWidth={2} />
+              {sidebarOpen && (
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium">{item.label}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{item.hint}</span>
+                </span>
+              )}
+            </NavLink>
             ) : (
             <NavLink
               key={item.to}
