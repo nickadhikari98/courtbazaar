@@ -94,6 +94,27 @@ socket.socket.connect = _guarded_connect
 socket.socket.connect_ex = _guarded_connect_ex
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_usage: run chat_usage's daily limits for real (off elsewhere)")
+
+
+@pytest.fixture(autouse=True)
+def _no_chat_usage_limits(request, monkeypatch):
+    # Chat tests send many messages from one test IP; only tests marked
+    # real_usage (test_chat_usage.py) exercise the daily caps and their records.
+    if request.node.get_closest_marker("real_usage"):
+        return
+    import chat_usage
+
+    async def unlimited(_db, user, client_ip):
+        return chat_usage.identity(user, client_ip)
+
+    async def no_record(_db, _who, _tokens):
+        return None
+    monkeypatch.setattr(chat_usage, "check", unlimited)
+    monkeypatch.setattr(chat_usage, "record", no_record)
+
+
 @pytest.fixture(autouse=True)
 def _no_score_routing(monkeypatch):
     # A search before every general turn would hit the network from every chat

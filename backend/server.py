@@ -540,6 +540,8 @@ async def seed_initial_data():
     await notifications_svc.ensure_indexes(db)
     await order_agent_tools.ensure_indexes(db)
     await ai_chat_svc.ensure_indexes(db)
+    import chat_usage
+    await chat_usage.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -1793,6 +1795,12 @@ async def ai_history(conversation_id: str, user: Optional[dict] = Depends(get_cu
     client_ip = request.client.host if request and request.client else "unknown"
     ai_chat_svc.check_history_rate_limit(user["user_id"] if user else client_ip)
     return await ai_chat_svc.get_conversation_history(db, conversation_id, user, x_conversation_token)
+
+@api_router.get("/ai/usage")
+async def ai_usage(user: Optional[dict] = Depends(get_current_user_optional), request: Request = None):
+    import chat_usage
+    client_ip = request.client.host if request and request.client else "unknown"  # same key as /ai/chat
+    return await chat_usage.summary(db, user, client_ip)
 
 @api_router.get("/ai/chats")
 async def ai_chats(user: Optional[dict] = Depends(get_current_user_optional), archived: bool = False):

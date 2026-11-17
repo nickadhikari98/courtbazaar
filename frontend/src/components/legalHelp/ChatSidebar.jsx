@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
-import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, LogIn, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Trash2 } from "lucide-react";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, LogIn, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Trash2, Settings, LifeBuoy, LogOut } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { formatUsage } from "./usage";
 import Logo from "@/components/shared/Logo";
 
 const DAY_MS = 86400000;
@@ -114,7 +115,7 @@ function ChatGroup({ label, chats, activeId, onSelect, onUpdate, onDelete }) {
 const DRAWER_AREA = { app: "inset-y-0 z-50", site: "top-[65px] bottom-0 z-30" };
 
 export default function ChatSidebar({
-  fullScreen, user, chats, archivedChats = [], onUpdateChat, onDeleteChat, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
+  fullScreen, user, chats, archivedChats = [], onUpdateChat, onDeleteChat, usage, onOpenSettings, onGetHelp, onLogout, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
 }) {
   // The rail (collapsed) only applies from md up; the mobile drawer is always full width.
   const rail = collapsed ? "md:w-16" : "md:w-[272px]";
@@ -122,6 +123,8 @@ export default function ChatSidebar({
   const [showArchived, setShowArchived] = useState(false);
   const groupProps = { activeId, onSelect, onUpdate: onUpdateChat, onDelete: onDeleteChat };
   const pinned = chats.filter((c) => c.pinned);
+  const usageView = formatUsage(usage);
+  const planLabel = { free: "Free", paid: "Paid" }[usage?.plan];
   return (
     <>
       {drawerOpen && (
@@ -200,11 +203,20 @@ export default function ChatSidebar({
         </nav>
 
         <div className={`border-t border-border p-3 space-y-3 ${collapsed ? "md:mt-auto" : ""}`}>
-          {/* Placeholder values; wired to real usage in UI-4. */}
-          <div className={`rounded-lg bg-white border border-border p-3 ${hideOnRail}`} data-testid="chat-sidebar-usage">
-            <div className="flex justify-between text-xs"><span className="font-semibold">Today's questions</span><span className="text-muted-foreground">0 / 20</span></div>
-            <div className="mt-2 h-1.5 rounded-full bg-slate-200"><div className="h-full w-0 rounded-full bg-accent" /></div>
-          </div>
+          {/* GET /ai/usage only; nothing is shown until it answers. */}
+          {usageView && (
+            <div className={`rounded-lg bg-white border border-border p-3 ${hideOnRail}`} data-testid="chat-sidebar-usage">
+              <div className="flex justify-between gap-2 text-xs">
+                <span className="font-semibold">{usageView.label}</span>
+                <span className="text-muted-foreground tabular-nums">{usageView.used.toLocaleString()} / {usageView.limit.toLocaleString()}</span>
+              </div>
+              <div className="mt-2 h-1.5 rounded-full bg-slate-200" role="progressbar" aria-label={usageView.label}
+                aria-valuemin={0} aria-valuemax={usageView.limit} aria-valuenow={Math.min(usageView.used, usageView.limit)}>
+                <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, (usageView.used / (usageView.limit || 1)) * 100)}%` }} />
+              </div>
+              {usageView.reset && <p className="mt-1.5 text-2xs text-muted-foreground">Resets at {usageView.reset}</p>}
+            </div>
+          )}
           {fullScreen && (
             <Link
               to={user ? "/dashboard" : "/"} title={user ? "Back to dashboard" : "Back to CourtBazaar"}
@@ -215,11 +227,31 @@ export default function ChatSidebar({
             </Link>
           )}
           {user && (
-            <button type="button" className="w-full flex items-center gap-2 rounded-lg px-1 py-1.5 hover:bg-slate-200/60 text-sm" data-testid="chat-sidebar-user">
-              <span className="h-8 w-8 shrink-0 rounded-full bg-primary text-white text-xs font-semibold flex items-center justify-center">{initials(user.name)}</span>
-              <span className={`flex-1 text-left truncate ${hideOnRail}`}>{initials(user.name)} · Free</span>
-              <ChevronDown className={`w-4 h-4 text-muted-foreground ${hideOnRail}`} />
-            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                className="w-full flex items-center gap-2 rounded-lg px-1 py-1.5 hover:bg-slate-200/60 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="Account menu" data-testid="chat-sidebar-user"
+              >
+                <span className="h-8 w-8 shrink-0 rounded-full bg-primary text-white text-xs font-semibold flex items-center justify-center">{initials(user.name)}</span>
+                <span className={`flex-1 text-left truncate ${hideOnRail}`}>{initials(user.name)}{planLabel ? ` · ${planLabel}` : ""}</span>
+                <ChevronDown className={`w-4 h-4 text-muted-foreground ${hideOnRail}`} />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side="top" align="start" className="w-60">
+                {user.email && <DropdownMenuLabel className="truncate font-normal text-muted-foreground" data-testid="chat-user-email">{user.email}</DropdownMenuLabel>}
+                <DropdownMenuSeparator />
+                {/* Deferred so the closing menu hands focus to the dialog it opens. */}
+                <DropdownMenuItem onSelect={() => setTimeout(onOpenSettings, 0)} data-testid="chat-user-settings">
+                  <Settings className="mr-2 h-4 w-4" />Settings
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setTimeout(onGetHelp, 0)} data-testid="chat-user-help">
+                  <LifeBuoy className="mr-2 h-4 w-4" />Get help
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={onLogout} data-testid="chat-user-logout">
+                  <LogOut className="mr-2 h-4 w-4" />Log out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
       </aside>

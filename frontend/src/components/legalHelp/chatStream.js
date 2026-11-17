@@ -61,7 +61,7 @@ export async function streamChat(payload, { idleMs, signal, onStatus }) {
         if (event.type === "status") onStatus(event);
         else if (event.type === "answer") return event.data;
         else if (event.type === "error") {
-          throw { response: { status: event.status || 500, data: { detail: event.text } } }; // eslint-disable-line no-throw-literal
+          throw { response: { status: event.status || 500, data: { detail: event.text, reason: event.reason } } }; // eslint-disable-line no-throw-literal
         }
       }
     }

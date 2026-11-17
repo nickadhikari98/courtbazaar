@@ -2089,6 +2089,11 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
         logger.error("Instant Legal Help unavailable: provider configuration is incomplete")
         raise HTTPException(503, NOT_CONFIGURED_MESSAGE)
 
+    # Daily limit (chat_usage): checked before anything is written, so a
+    # refused message never creates a conversation or counts against the day.
+    import chat_usage
+    usage_identity = await chat_usage.check(db, user, client_ip)
+
     # `user` comes only from the server's auth dependency; nothing in the
     # message or request body can change which user this turn runs as.
     user_id = user.get("user_id") if user else None
@@ -2096,7 +2101,9 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
     issued_token = convo.pop("conversation_token", None)
     if convo.get("mode") != mode:
         await db.ai_conversations.update_one({"conversation_id": convo["conversation_id"]}, {"$set": {"mode": mode}})
+    turn_tokens = llm_service.start_token_count()
     result = await _answer_turn(db, convo, text, user, client_ip, on_status, mode)
+    await chat_usage.record(db, usage_identity, turn_tokens[0])
     if issued_token:
         result["conversation_token"] = issued_token
     return result
@@ -2437,7 +2444,11 @@ async def stream_chat_events(db, conversation_id: Optional[str], message: str, u
                                              conversation_token=conversation_token, on_status=queue.put, mode=mode)
             await queue.put({"type": "answer", "data": data})
         except HTTPException as e:
-            await queue.put({"type": "error", "status": e.status_code, "text": str(e.detail)})
+            event = {"type": "error", "status": e.status_code, "text": str(e.detail)}
+            limit = (e.headers or {}).get("X-Usage-Limit")
+            if limit:
+                event["reason"] = limit  # which daily limit: guest / free / paid
+            await queue.put(event)
         except Exception as e:
             logger.error("Chat stream failed (%s): %s", type(e).__name__, llm_service._safe_error_detail(e))
             await queue.put({"type": "error", "status": 500, "text": _DEFAULT_FALLBACK})

@@ -7,6 +7,10 @@ import { ArrowUp, Scale, User, Info, RotateCcw, Menu, Paperclip, Square, Copy } 
 import ChatSidebar from "./ChatSidebar";
 import ChatPalette from "./ChatPalette";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
+import SupportTicketModal from "@/components/legal/SupportTicketModal";
+import { Link } from "react-router-dom";
+import SettingsDialog from "./SettingsDialog";
+import { formatUsage } from "./usage";
 import ChatStatus, { FIRST_STEP } from "./ChatStatus";
 import { streamChat } from "./chatStream";
 import ChatMarkdown from "./ChatMarkdown";
@@ -109,6 +113,28 @@ const ACTIONS_MIN_CHARS = 200;
 export const hasActions = (m) => !m.retryText
   && ((Array.isArray(m.citations) && m.citations.length > 0) || (m.text || "").length > ACTIONS_MIN_CHARS);
 
+// A daily limit (chat_usage) refused the message: which card to show.
+const LIMIT_ACTIONS = {
+  guest: { to: "/register", label: "Sign up to continue" },
+  free: { to: "/subscription", label: "Upgrade" },
+  paid: null,
+};
+
+function LimitCard({ reason, text }) {
+  const action = LIMIT_ACTIONS[reason];
+  return (
+    <div className="rounded-xl border border-accent/40 bg-accent/5 px-4 py-3" data-testid="instant-legal-help-limit">
+      <p className="text-sm leading-6">{text}</p>
+      {action && (
+        <Link to={action.to} className="mt-2 inline-flex h-9 items-center rounded-lg bg-accent px-4 text-sm font-semibold text-white hover:bg-accent/90"
+          data-testid="instant-legal-help-limit-action">
+          {action.label}
+        </Link>
+      )}
+    </div>
+  );
+}
+
 const STOPPED_TEXT = "Stopped. The answer was not generated.";
 const SESSION_EXPIRED_TEXT = "This chat session is no longer available. Please send your message again to start a new chat.";
 
@@ -143,7 +169,11 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [steps, setSteps] = useState([]);
-  const user = useAuth()?.user || null;
+  const auth = useAuth();
+  const user = auth?.user || null;
+  const [usage, setUsage] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [chats, setChats] = useState([]);
   const [archivedChats, setArchivedChats] = useState([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -170,6 +200,17 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
     api.get("/ai/chats", { params: { archived: true } }).then(({ data }) => setArchivedChats(list(data))).catch(() => {});
   }, [user]);
   useEffect(loadChats, [loadChats]);
+
+  // Never shows a number the endpoint didn't return: anything unexpected clears it.
+  const loadUsage = useCallback(async () => {
+    try {
+      const { data } = await api.get("/ai/usage");
+      setUsage(data && typeof data === "object" && !Array.isArray(data) ? data : null);
+    } catch {
+      setUsage(null);
+    }
+  }, []);
+  useEffect(() => { loadUsage(); }, [loadUsage, user]);
 
   const updateChat = async (id, patch) => {
     try {
@@ -288,6 +329,12 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
       loadChats(); // a new chat appears, an old one moves to the top
     } catch (err) {
       if (sessionRef.current !== mySession) return;
+      const limit = err?.response?.status === 429 ? err.response.data?.reason : null;
+      if (limit && limit in LIMIT_ACTIONS) {
+        const text = typeof err.response.data?.detail === "string" ? err.response.data.detail : "You've reached today's limit.";
+        setMsgs((prev) => [...prev, { role: "assistant", text, limit }]);
+        return;
+      }
       if (err?.response?.status === 404) {
         // The conversation can't be continued (unknown or not ours) — start fresh next time.
         setConversationId(null);
@@ -305,6 +352,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
       if (!isUnavailable) toast.error(getErrorMessage(err, "Something went wrong. Please try again."));
     } finally {
       if (sessionRef.current === mySession) setLoading(false);
+      loadUsage();
     }
   };
 
@@ -381,6 +429,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
     }
   };
 
+  const usageView = formatUsage(usage);
   return (
     <div className="flex flex-1 h-full min-h-0 bg-background" data-testid="instant-legal-help-panel">
       <ConfirmDialog
@@ -388,9 +437,12 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         title="Delete chat?" description="This chat will be permanently deleted. This can't be undone."
         confirmLabel="Delete" onConfirm={confirmDelete}
       />
+      {user && <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} usage={usage} />}
+      {helpOpen && <SupportTicketModal open onOpenChange={setHelpOpen} />}
       <ChatPalette open={paletteOpen} onOpenChange={setPaletteOpen} chats={chats} onSelect={openChat} />
       <ChatSidebar
-        fullScreen={fullScreen} user={user} chats={chats} archivedChats={archivedChats} onUpdateChat={updateChat} onDeleteChat={setPendingDelete} activeId={conversationId} onSelect={openChat}
+        fullScreen={fullScreen} user={user} chats={chats} archivedChats={archivedChats} onUpdateChat={updateChat} onDeleteChat={setPendingDelete} usage={usage}
+        onOpenSettings={() => setSettingsOpen(true)} onGetHelp={() => setHelpOpen(true)} onLogout={() => auth?.logout?.()} activeId={conversationId} onSelect={openChat}
         onNewChat={handleNewChat} newChatDisabled={msgs.length === 0 && !loading}
         collapsed={collapsed} onToggleCollapsed={() => setCollapsed((c) => !c)}
         drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}
@@ -408,10 +460,11 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
             </button>
             <h1 className="font-display font-bold text-base leading-tight truncate">Instant Legal Help</h1>
           </div>
-          {/* Placeholder; wired to real usage in UI-4. */}
-          <span className="shrink-0 rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground" data-testid="chat-usage-pill">
-            Free · 20 left today
-          </span>
+          {usageView && (
+            <span className="shrink-0 rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground" title={usageView.detail} data-testid="chat-usage-pill">
+              {usageView.pill}{usageView.reset && <span className="hidden sm:inline"> · resets {usageView.reset}</span>}
+            </span>
+          )}
         </div>
       </div>
 
@@ -456,7 +509,9 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
                 <Scale className="w-4 h-4" />
               </div>
               <div className="min-w-0 flex-1 pt-0.5">
-                {m.grounding === "insufficient" ? (
+                {m.limit ? (
+                  <LimitCard reason={m.limit} text={m.text} />
+                ) : m.grounding === "insufficient" ? (
                   // Not a failure: the approved documents just don't cover it.
                   <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex gap-3" data-testid="instant-legal-help-insufficient">
                     <Info className="w-4 h-4 text-amber-700 shrink-0 mt-1" aria-hidden="true" />

@@ -5,6 +5,7 @@ When Groq is selected, the OpenAI vector store is used only to retrieve the
 allowlisted knowledge-base passages; Groq still generates the answer.
 """
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -583,6 +584,27 @@ async def _provision_passages(client, approved_chunks: list[tuple[str, str | Non
     return passages
 
 
+# Tokens (in + out) spent by the current chat turn, for chat_usage's daily
+# caps. ai_chat.handle_chat_message opens the counter; outside a turn it's off.
+_TURN_TOKENS: contextvars.ContextVar[Optional[List[int]]] = contextvars.ContextVar("turn_tokens", default=None)
+
+
+def start_token_count() -> List[int]:
+    counter = [0]
+    _TURN_TOKENS.set(counter)
+    return counter
+
+
+def _count_tokens(response: Any) -> None:
+    counter = _TURN_TOKENS.get()
+    usage = getattr(response, "usage", None)
+    if counter is None or usage is None:
+        return
+    # Responses API: input/output_tokens; Chat Completions: prompt/completion_tokens.
+    counter[0] += int(getattr(usage, "input_tokens", None) or getattr(usage, "prompt_tokens", None) or 0)
+    counter[0] += int(getattr(usage, "output_tokens", None) or getattr(usage, "completion_tokens", None) or 0)
+
+
 async def emit_status(on_status: Optional[StatusCallback], step: str, text: str) -> None:
     """Reports one real pipeline step to a streaming caller."""
     if on_status:
@@ -709,6 +731,7 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
                 max_output_tokens=AI_RAG_MAX_OUTPUT_TOKENS,
                 temperature=AI_RAG_TEMPERATURE,
             ), timeout=AI_TIMEOUT_SECONDS)
+            _count_tokens(response)
             text = response.output_text
         else:
             stage = f"{AI_PROVIDER} generation"
@@ -723,6 +746,7 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
                 max_tokens=AI_RAG_MAX_OUTPUT_TOKENS if use_file_search else AI_MAX_OUTPUT_TOKENS,
                 **({"temperature": AI_RAG_TEMPERATURE} if use_file_search else {}),
             ), timeout=AI_TIMEOUT_SECONDS)
+            _count_tokens(response)
             try:
                 text = response.choices[0].message.content
             except (IndexError, AttributeError, KeyError, TypeError) as e:
@@ -1282,6 +1306,7 @@ async def _verify_answer(client, question: str, context: str, answer: Dict[str, 
             temperature=0,
             text=_ANSWER_VERDICT_FORMAT,
         ), timeout=AI_VERIFIER_TIMEOUT_SECONDS)
+        _count_tokens(response)
         return AnswerVerdict.model_validate_json(response.output_text or "").model_dump()
     except ValidationError:
         logger.warning("Verifier output was invalid; keeping the evidence-checked answer")
@@ -1331,9 +1356,13 @@ async def _card_output(client, on_status: Optional[StatusCallback], **request: A
     """The model's raw JSON. For a streaming caller the tokens are read as they
     come, only to learn the real moment reading ends and writing starts."""
     if not on_status:
-        return (await client.responses.create(**request)).output_text or ""
+        response = await client.responses.create(**request)
+        _count_tokens(response)
+        return response.output_text or ""
     parts: List[str] = []
     async for event in await client.responses.create(**request, stream=True):
+        if event.type == "response.completed":
+            _count_tokens(getattr(event, "response", None))
         if event.type == "response.output_text.delta":
             if not parts:
                 await emit_status(on_status, "writing", "Writing answer…")
@@ -1650,6 +1679,7 @@ async def generate_web_answer(messages: List[Dict[str, str]]) -> Dict[str, Any]:
             reasoning={"effort": "low"},
             max_output_tokens=AI_RAG_MAX_OUTPUT_TOKENS * 3,
         ), timeout=AI_TIMEOUT_SECONDS)
+        _count_tokens(response)
     except asyncio.TimeoutError:
         return {"ok": False, "error_code": ERR_TIMEOUT, "detail": f"web search exceeded {AI_TIMEOUT_SECONDS}s",
                 "stage": "web search"}
