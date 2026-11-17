@@ -4,7 +4,8 @@
   registered free   30 messages / day
   paid              unlimited messages, AI_PAID_DAILY_TOKEN_CAP tokens / day (in + out)
 
-Days are UTC; `resets_at` is the next UTC midnight."""
+Days are India Standard Time ("YYYY-MM-DD" in Asia/Kolkata); `resets_at` is the next
+00:00 IST. Rows written before this keyed on UTC dates and simply age out."""
 import hashlib
 import os
 from datetime import datetime, timedelta, timezone
@@ -21,8 +22,14 @@ def paid_daily_tokens() -> int:
     return int(os.environ.get("AI_PAID_DAILY_TOKEN_CAP") or 200000)
 
 
+# Asia/Kolkata has no daylight saving, so a fixed +05:30 offset is exact (and
+# needs no tz database on Windows).
+IST = timezone(timedelta(hours=5, minutes=30), "IST")
+
+
 def _today() -> datetime:
-    return datetime.now(timezone.utc)
+    """Now, in IST: its .date() is the usage day."""
+    return datetime.now(IST)
 
 
 def identity(user: Optional[dict], client_ip: Optional[str]) -> Dict[str, str]:
@@ -58,7 +65,7 @@ def limit_message(plan: str) -> str:
         return f"You've used today's {GUEST_DAILY_MESSAGES} free questions. Sign up to continue."
     if plan == "free":
         return f"You've used today's {FREE_DAILY_MESSAGES} questions on the free plan. Upgrade for unlimited questions."
-    return "You've reached today's usage limit for your plan. It resets at midnight UTC."
+    return "You've reached today's usage limit for your plan. It resets at midnight IST."
 
 
 async def check(db, user: Optional[dict], client_ip: Optional[str]) -> Dict[str, str]:

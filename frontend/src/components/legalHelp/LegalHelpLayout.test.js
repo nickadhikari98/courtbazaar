@@ -25,7 +25,7 @@ beforeEach(() => {
   // CRA resets mock implementations before each test.
   require("@/lib/api").api.get.mockImplementation((url) => Promise.resolve({
     data: url === "/ai/usage"
-      ? { plan: "guest", messages_used: 1, messages_limit: 5, tokens_used: 10, tokens_limit: null, resets_at: "2026-11-18T00:00:00+00:00" }
+      ? { plan: "guest", messages_used: 1, messages_limit: 5, tokens_used: 10, tokens_limit: null, resets_at: "2026-11-18T00:00:00+05:30" }
       : [],
   }));
   container = document.createElement("div");

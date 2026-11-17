@@ -28,7 +28,7 @@ const { formatUsage } = require("./usage");
 global.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 Element.prototype.scrollIntoView = jest.fn();
 
-const RESETS = "2026-11-18T00:00:00+00:00";
+const RESETS = "2026-11-18T00:00:00+05:30";
 const FREE_USAGE = { plan: "free", messages_used: 12, messages_limit: 30, tokens_used: 900, tokens_limit: null, resets_at: RESETS };
 const USER = { user_id: "u1", name: "Jay Dee", email: "jay@example.com", notif_prefs: { email: true, sms: false, whatsapp: true } };
 
@@ -338,4 +338,38 @@ test("guests always get the light chat", async () => {
   await render();
   expect(document.body.classList.contains("dark")).toBe(false);
   expect(localStorage.getItem("cb_chat_theme")).toBeNull();
+});
+
+test("usageReminder: guests at 2 and 1 left, free users from 5 left, paid at 90% of the token cap", () => {
+  const { usageReminder } = require("./usage");
+  const guest = (used) => ({ plan: "guest", messages_used: used, messages_limit: 5, tokens_used: 0, tokens_limit: null, resets_at: RESETS });
+  const free = (used) => ({ plan: "free", messages_used: used, messages_limit: 30, tokens_used: 0, tokens_limit: null, resets_at: RESETS });
+  const paid = (tokens) => ({ plan: "paid", messages_used: 50, messages_limit: null, tokens_used: tokens, tokens_limit: 200000, resets_at: RESETS });
+  expect(usageReminder(guest(2))).toBeNull(); // 3 left: nothing yet
+  expect(usageReminder(guest(3))).toBe("2 free questions left today.");
+  expect(usageReminder(guest(4))).toBe("1 question left today. Register free for 30 a day.");
+  expect(usageReminder(guest(5))).toBeNull(); // at the limit the card takes over
+  expect(usageReminder(free(24))).toBeNull(); // 6 left
+  expect(usageReminder(free(25))).toBe("5 questions left today.");
+  expect(usageReminder(free(27))).toBe("3 questions left today.");
+  expect(usageReminder(free(29))).toBe("1 question left today.");
+  expect(usageReminder(free(30))).toBeNull();
+  expect(usageReminder(paid(179999))).toBeNull();
+  expect(usageReminder(paid(180000))).toBe("You're near today's AI usage allowance. It resets at midnight IST.");
+  expect(usageReminder(paid(200000))).toBeNull();
+  expect(usageReminder({ plan: "free" })).toBeNull(); // no numbers from the endpoint: nothing shown
+  expect(usageReminder(null)).toBeNull();
+});
+
+test("the reminder shows as a muted line under the composer from GET /ai/usage", async () => {
+  mockAuth.user = USER;
+  mockGets({ ...FREE_USAGE, messages_used: 25 });
+  await render();
+  expect($("instant-legal-help-usage-reminder").textContent).toBe("5 questions left today.");
+  expect($("instant-legal-help-usage-reminder").className).toContain("text-muted-foreground");
+  act(() => root.unmount());
+  root = createRoot(container);
+  mockGets(FREE_USAGE); // 18 left
+  await render();
+  expect($("instant-legal-help-usage-reminder")).toBeNull();
 });

@@ -12,7 +12,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import RecentsView from "./RecentsView";
 import { MatterView, MoveToMatterDialog, NameDialog } from "./Matters";
 import SettingsDialog from "./SettingsDialog";
-import { formatUsage } from "./usage";
+import { formatUsage, usageReminder } from "./usage";
 import ChatStatus, { FIRST_STEP } from "./ChatStatus";
 import { streamChat } from "./chatStream";
 import ChatMarkdown from "./ChatMarkdown";
@@ -883,6 +883,11 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
               )}
             </div>
           </div>
+          {usageReminder(usage) && (
+            <p className="mt-2 px-2 text-center text-xs text-muted-foreground" role="status" data-testid="instant-legal-help-usage-reminder">
+              {usageReminder(usage)}
+            </p>
+          )}
           <p className="text-2xs text-muted-foreground text-center mt-2 px-2">
             General guidance only, not a substitute for advice from a lawyer on your specific case.
           </p>

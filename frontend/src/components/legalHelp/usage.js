@@ -28,3 +28,26 @@ export function formatUsage(u) {
   }
   return null;
 }
+
+/* The muted line under the composer as the daily limit gets close, from the
+   endpoint's numbers only (left = limit - used). Guests from 2 left, free
+   users from 5 left, paid users at 90% of the token cap; none at the limit
+   itself (the limit card takes over). */
+export function usageReminder(u) {
+  if (!u || typeof u !== "object") return null;
+  if (num(u.messages_limit) && num(u.messages_used)) {
+    const left = u.messages_limit - u.messages_used;
+    if (left < 1) return null;
+    if (u.plan === "guest") {
+      if (left === 1) return "1 question left today. Register free for 30 a day.";
+      return left === 2 ? "2 free questions left today." : null;
+    }
+    if (left === 1) return "1 question left today.";
+    return left <= 5 ? `${left} questions left today.` : null;
+  }
+  if (u.plan === "paid" && num(u.tokens_limit) && num(u.tokens_used) && u.tokens_limit > 0
+      && u.tokens_used >= 0.9 * u.tokens_limit && u.tokens_used < u.tokens_limit) {
+    return "You're near today's AI usage allowance. It resets at midnight IST.";
+  }
+  return null;
+}

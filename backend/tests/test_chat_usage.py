@@ -85,7 +85,7 @@ def test_guest_gets_five_messages_a_day_then_a_429_asking_to_sign_up():
             assert {k: usage[k] for k in ("plan", "messages_used", "messages_limit", "tokens_limit")} == \
                 {"plan": "guest", "messages_used": 5, "messages_limit": 5, "tokens_limit": None}
             assert usage["tokens_used"] == 750
-            assert usage["resets_at"].endswith("T00:00:00+00:00")
+            assert usage["resets_at"].endswith("T00:00:00+05:30")  # next midnight IST
             detail = await _expect_limit(_send(None, ip), "guest")
             assert "Sign up" in detail
             # Another guest (another IP) is unaffected; the raw IP is never stored.
@@ -147,4 +147,34 @@ def test_a_refused_message_writes_nothing_and_the_stream_reports_the_reason():
             assert (await chat_usage.summary(server.db, None, ip))["messages_used"] == 5
         finally:
             await _cleanup(None, ip)
+    asyncio.run(body())
+
+
+def test_the_usage_day_is_the_date_in_india_and_resets_at_midnight_ist(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    user, ip = _user(), _ip()
+    utc = timezone.utc
+    clock = {}
+    monkeypatch.setattr(chat_usage, "_today", lambda: clock["now"].astimezone(chat_usage.IST))
+
+    async def at(when):
+        clock["now"] = when
+        await chat_usage.record(server.db, chat_usage.identity(user, ip), 0)
+        return await chat_usage.summary(server.db, user, ip)
+
+    async def body():
+        try:
+            # 23:00 IST on the 17th (17:30 UTC) and 01:00 IST on the 18th (19:30 UTC, same UTC day): two IST days.
+            late = await at(datetime(2026, 11, 17, 17, 30, tzinfo=utc))
+            assert (late["messages_used"], late["resets_at"]) == (1, "2026-11-18T00:00:00+05:30")
+            early = await at(datetime(2026, 11, 17, 19, 30, tzinfo=utc))
+            assert (early["messages_used"], early["resets_at"]) == (1, "2026-11-19T00:00:00+05:30")
+            # 00:00 UTC (05:30 IST on the 18th) does not roll the counter.
+            before = await at(datetime(2026, 11, 17, 23, 50, tzinfo=utc))   # 05:20 IST, 18th
+            after = await at(datetime(2026, 11, 18, 0, 10, tzinfo=utc))     # 05:40 IST, 18th
+            assert (before["messages_used"], after["messages_used"]) == (2, 3)
+            days = await server.db.ai_usage_daily.distinct("day", {"key": chat_usage.identity(user, ip)["key"]})
+            assert sorted(days) == ["2026-11-17", "2026-11-18"]
+        finally:
+            await _cleanup(user, ip)
     asyncio.run(body())
