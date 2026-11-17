@@ -385,7 +385,7 @@ async def _get_or_create_conversation(db, conversation_id: Optional[str], user_i
 
     new_id = new_conversation_id()
     doc = {"conversation_id": new_id, "user_id": user_id, "title": _chat_title(title),
-           "created_at": _now_iso(), "updated_at": _now_iso()}
+           "pinned": False, "archived": False, "created_at": _now_iso(), "updated_at": _now_iso()}
     token = None
     if user_id is None:
         token = secrets.token_urlsafe(32)
@@ -405,15 +405,19 @@ def _chat_title(text: str) -> str:
     return " ".join((text or "").split())[:CHAT_TITLE_MAX].strip() or "New chat"
 
 
-async def list_chats(db, user: Optional[dict]) -> List[Dict[str, Any]]:
-    """Backing GET /ai/chats. Only a logged-in user's own conversations;
-    anonymous callers always get [] (their chats are reachable only by token)."""
+async def list_chats(db, user: Optional[dict], archived: bool = False) -> List[Dict[str, Any]]:
+    """Backing GET /ai/chats. Only a logged-in user's own conversations, pinned
+    first then most recent; archived ones only when asked for. Anonymous
+    callers always get [] (their chats are reachable only by token)."""
     user_id = user.get("user_id") if user else None
     if not isinstance(user_id, str) or not user_id:
         return []
-    return await db.ai_conversations.find(
-        {"user_id": user_id}, {"_id": 0, "conversation_id": 1, "title": 1, "updated_at": 1},
-    ).sort("updated_at", -1).limit(CHAT_LIST_LIMIT).to_list(CHAT_LIST_LIMIT)
+    # Chats created before pinned/archived existed have neither field.
+    query = {"user_id": user_id, "archived": True if archived else {"$ne": True}}
+    rows = await db.ai_conversations.find(
+        query, {"_id": 0, "conversation_id": 1, "title": 1, "updated_at": 1, "pinned": 1, "archived": 1},
+    ).sort([("pinned", -1), ("updated_at", -1)]).limit(CHAT_LIST_LIMIT).to_list(CHAT_LIST_LIMIT)
+    return [{**r, "pinned": bool(r.get("pinned")), "archived": bool(r.get("archived"))} for r in rows]
 
 
 async def _owned_chat(db, conversation_id: str, user: Optional[dict]) -> None:
@@ -424,11 +428,17 @@ async def _owned_chat(db, conversation_id: str, user: Optional[dict]) -> None:
         raise HTTPException(404, CONVERSATION_NOT_FOUND_MESSAGE)
 
 
-async def rename_chat(db, conversation_id: str, title: str, user: Optional[dict]) -> Dict[str, Any]:
+async def update_chat(db, conversation_id: str, user: Optional[dict], title: Optional[str] = None,
+                      pinned: Optional[bool] = None, archived: Optional[bool] = None) -> Dict[str, Any]:
+    """Backing PATCH /ai/chats/{id}: any of title, pinned, archived. Owner only."""
     await _owned_chat(db, conversation_id, user)
-    clean = _chat_title(title)
-    await db.ai_conversations.update_one({"conversation_id": conversation_id}, {"$set": {"title": clean}})
-    return {"conversation_id": conversation_id, "title": clean}
+    changes = {k: v for k, v in (("pinned", pinned), ("archived", archived)) if v is not None}
+    if title is not None:
+        changes["title"] = _chat_title(title)
+    if not changes:
+        raise HTTPException(400, "Nothing to update.")
+    await db.ai_conversations.update_one({"conversation_id": conversation_id}, {"$set": changes})
+    return {"conversation_id": conversation_id, **changes}
 
 
 async def delete_chat(db, conversation_id: str, user: Optional[dict]) -> Dict[str, Any]:

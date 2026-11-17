@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeft, ChevronDown, LogIn, PanelLeft, Plus } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, LogIn, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import Logo from "@/components/shared/Logo";
 
 const DAY_MS = 86400000;
@@ -23,16 +24,95 @@ function initials(name) {
   return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase() || "?";
 }
 
+/* One chat in the list: open it, or from "..." pin, rename inline
+   (Enter saves, Esc cancels) or archive. */
+function ChatRow({ chat, active, onSelect, onUpdate }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const startRename = () => { setDraft(chat.title || ""); setEditing(true); };
+  const save = () => {
+    const title = draft.trim();
+    setEditing(false);
+    if (title && title !== chat.title) onUpdate(chat.conversation_id, { title });
+  };
+  if (editing) {
+    return (
+      <input
+        autoFocus value={draft} maxLength={48} aria-label="Chat title"
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); save(); }
+          if (e.key === "Escape") { e.preventDefault(); setEditing(false); }
+        }}
+        onBlur={() => setEditing(false)}
+        className="w-full rounded-lg border border-accent/60 bg-white px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30"
+        data-testid="chat-row-rename"
+      />
+    );
+  }
+  return (
+    <div className={`group flex items-center rounded-lg ${active ? "bg-white shadow-sm" : "hover:bg-slate-200/60"}`} data-testid="chat-row">
+      <button
+        type="button" onClick={() => onSelect(chat.conversation_id)}
+        aria-current={active ? "page" : undefined}
+        className={`min-w-0 flex-1 truncate rounded-lg px-2 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${active ? "font-semibold" : ""}`}
+        title={chat.title}
+      >
+        {chat.title || "New chat"}
+      </button>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          aria-label={`Options for ${chat.title || "chat"}`}
+          className="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-100 hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 data-[state=open]:opacity-100"
+          data-testid="chat-row-menu"
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-40">
+          <DropdownMenuItem onSelect={() => onUpdate(chat.conversation_id, { pinned: !chat.pinned })} data-testid="chat-row-pin">
+            {chat.pinned ? <PinOff className="mr-2 h-4 w-4" /> : <Pin className="mr-2 h-4 w-4" />}{chat.pinned ? "Unpin" : "Pin"}
+          </DropdownMenuItem>
+          {/* Deferred so the menu's focus return doesn't blur the new input. */}
+          <DropdownMenuItem onSelect={() => setTimeout(startRename, 0)} data-testid="chat-row-rename-item">
+            <Pencil className="mr-2 h-4 w-4" />Rename
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onUpdate(chat.conversation_id, { archived: !chat.archived })} data-testid="chat-row-archive">
+            {chat.archived ? <ArchiveRestore className="mr-2 h-4 w-4" /> : <Archive className="mr-2 h-4 w-4" />}{chat.archived ? "Unarchive" : "Archive"}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
+function ChatGroup({ label, chats, activeId, onSelect, onUpdate }) {
+  return (
+    <div className="mb-3">
+      <div className="px-2 pb-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
+      <ul>
+        {chats.map((c) => (
+          <li key={c.conversation_id}>
+            <ChatRow chat={c} active={c.conversation_id === activeId} onSelect={onSelect} onUpdate={onUpdate} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // Below the site nav (h-16 + 1px border) for guests; the whole viewport in the app layout.
 // The guest drawer stays under the nav's z-40, so the nav and its menus always paint on top.
 const DRAWER_AREA = { app: "inset-y-0 z-50", site: "top-[65px] bottom-0 z-30" };
 
 export default function ChatSidebar({
-  fullScreen, user, chats, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
+  fullScreen, user, chats, archivedChats = [], onUpdateChat, activeId, onSelect, onNewChat, newChatDisabled, collapsed, onToggleCollapsed, drawerOpen, onCloseDrawer,
 }) {
   // The rail (collapsed) only applies from md up; the mobile drawer is always full width.
   const rail = collapsed ? "md:w-16" : "md:w-[272px]";
   const hideOnRail = collapsed ? "md:hidden" : "";
+  const [showArchived, setShowArchived] = useState(false);
+  const groupProps = { activeId, onSelect, onUpdate: onUpdateChat };
+  const pinned = chats.filter((c) => c.pinned);
   return (
     <>
       {drawerOpen && (
@@ -70,26 +150,36 @@ export default function ChatSidebar({
         </div>
 
         <nav className={`flex-1 min-h-0 overflow-y-auto cb-scroll px-2 py-3 ${hideOnRail}`} data-testid="chat-sidebar-list">
-          {user ? groupChats(chats).map(([label, items]) => (
-            <div key={label} className="mb-3">
-              <div className="px-2 pb-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
-              <ul>
-                {items.map((c) => (
-                  <li key={c.conversation_id}>
-                    <button
-                      type="button" onClick={() => onSelect(c.conversation_id)}
-                      aria-current={c.conversation_id === activeId ? "page" : undefined}
-                      className={`w-full truncate rounded-lg px-2 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                        c.conversation_id === activeId ? "bg-white font-semibold shadow-sm" : "hover:bg-slate-200/60"}`}
-                      title={c.title}
-                    >
-                      {c.title || "New chat"}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )) : (
+          {user && showArchived ? (
+            <>
+              <button
+                type="button" onClick={() => setShowArchived(false)}
+                className="mb-2 flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-semibold hover:bg-slate-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                data-testid="chat-sidebar-archived-back"
+              >
+                <ArrowLeft className="h-4 w-4" />All chats
+              </button>
+              {archivedChats.length
+                ? <ChatGroup label="Archived" chats={archivedChats} {...groupProps} />
+                : <p className="px-2 text-sm text-muted-foreground">No archived chats.</p>}
+            </>
+          ) : user ? (
+            <>
+              {pinned.length > 0 && <ChatGroup label="Pinned" chats={pinned} {...groupProps} />}
+              {groupChats(chats.filter((c) => !c.pinned)).map(([label, items]) => (
+                <ChatGroup key={label} label={label} chats={items} {...groupProps} />
+              ))}
+              {archivedChats.length > 0 && (
+                <button
+                  type="button" onClick={() => setShowArchived(true)}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-muted-foreground hover:bg-slate-200/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="chat-sidebar-archived"
+                >
+                  <Archive className="h-4 w-4" />Archived ({archivedChats.length})
+                </button>
+              )}
+            </>
+          ) : (
             <div className="mx-1 rounded-xl border border-border bg-white p-4 text-sm" data-testid="chat-sidebar-login">
               <p className="font-semibold">Log in to save your chats</p>
               <p className="mt-1 text-xs text-muted-foreground leading-5">Your conversations will appear here so you can pick them up later.</p>

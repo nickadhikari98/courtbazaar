@@ -1795,17 +1795,20 @@ async def ai_history(conversation_id: str, user: Optional[dict] = Depends(get_cu
     return await ai_chat_svc.get_conversation_history(db, conversation_id, user, x_conversation_token)
 
 @api_router.get("/ai/chats")
-async def ai_chats(user: Optional[dict] = Depends(get_current_user_optional)):
+async def ai_chats(user: Optional[dict] = Depends(get_current_user_optional), archived: bool = False):
     import ai_chat as ai_chat_svc
-    return await ai_chat_svc.list_chats(db, user)
+    return await ai_chat_svc.list_chats(db, user, archived=archived)
 
-class ChatRenameRequest(BaseModel):
-    title: str = Field(..., min_length=1, max_length=200)
+class ChatUpdateRequest(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    pinned: Optional[bool] = None
+    archived: Optional[bool] = None
 
 @api_router.patch("/ai/chats/{conversation_id}")
-async def ai_chat_rename(conversation_id: str, req: ChatRenameRequest, user=Depends(get_current_user)):
+async def ai_chat_update(conversation_id: str, req: ChatUpdateRequest, user=Depends(get_current_user)):
     import ai_chat as ai_chat_svc
-    return await ai_chat_svc.rename_chat(db, conversation_id, req.title, user)
+    return await ai_chat_svc.update_chat(db, conversation_id, user, title=req.title,
+                                         pinned=req.pinned, archived=req.archived)
 
 @api_router.delete("/ai/chats/{conversation_id}")
 async def ai_chat_delete(conversation_id: str, user=Depends(get_current_user)):

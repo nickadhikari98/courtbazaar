@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { ArrowUp, Scale, User, Info, RotateCcw, Menu, Paperclip, Square, Copy } from "lucide-react";
 import ChatSidebar from "./ChatSidebar";
+import ChatPalette from "./ChatPalette";
 import ChatStatus, { FIRST_STEP } from "./ChatStatus";
 import { streamChat } from "./chatStream";
 import ChatMarkdown from "./ChatMarkdown";
@@ -138,6 +139,8 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const [steps, setSteps] = useState([]);
   const user = useAuth()?.user || null;
   const [chats, setChats] = useState([]);
+  const [archivedChats, setArchivedChats] = useState([]);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const scrollRef = useRef(null);
@@ -153,10 +156,34 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const abortRef = useRef(null);
 
   const loadChats = useCallback(() => {
-    if (!user) { setChats([]); return; }
-    api.get("/ai/chats").then(({ data }) => setChats(Array.isArray(data) ? data : [])).catch(() => {});
+    if (!user) { setChats([]); setArchivedChats([]); return; }
+    const list = (data) => (Array.isArray(data) ? data : []);
+    api.get("/ai/chats").then(({ data }) => setChats(list(data))).catch(() => {});
+    api.get("/ai/chats", { params: { archived: true } }).then(({ data }) => setArchivedChats(list(data))).catch(() => {});
   }, [user]);
   useEffect(loadChats, [loadChats]);
+
+  const updateChat = async (id, patch) => {
+    try {
+      await api.patch(`/ai/chats/${encodeURIComponent(id)}`, patch);
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't update that chat."));
+    }
+    loadChats();
+  };
+
+  // Cmd/Ctrl+K opens chat search (signed-in users: guests have no saved chats).
+  useEffect(() => {
+    if (!user) return undefined;
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [user]);
 
   useEffect(() => {
     if (!drawerOpen) return undefined;
@@ -330,8 +357,9 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
 
   return (
     <div className="flex flex-1 h-full min-h-0 bg-background" data-testid="instant-legal-help-panel">
+      <ChatPalette open={paletteOpen} onOpenChange={setPaletteOpen} chats={chats} onSelect={openChat} />
       <ChatSidebar
-        fullScreen={fullScreen} user={user} chats={chats} activeId={conversationId} onSelect={openChat}
+        fullScreen={fullScreen} user={user} chats={chats} archivedChats={archivedChats} onUpdateChat={updateChat} activeId={conversationId} onSelect={openChat}
         onNewChat={handleNewChat} newChatDisabled={msgs.length === 0 && !loading}
         collapsed={collapsed} onToggleCollapsed={() => setCollapsed((c) => !c)}
         drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}

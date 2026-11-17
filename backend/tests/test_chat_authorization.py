@@ -498,21 +498,57 @@ def test_chat_list_is_per_user_and_empty_for_anonymous(monkeypatch):
             listed = await server.ai_chats(user=user_a)
             assert [c["conversation_id"] for c in listed] == [a1]
             assert listed[0]["title"] == " ".join(long_q.split())[:48].strip()
-            assert set(listed[0]) == {"conversation_id", "title", "updated_at"}
+            assert set(listed[0]) == {"conversation_id", "title", "updated_at", "pinned", "archived"}
             assert await server.ai_chats(user=None) == []
 
             # B cannot rename or delete A's chat; same generic 404 as an unknown id.
-            await _expect_404(ai_chat.rename_chat(server.db, a1, "hijack", user_b))
+            await _expect_404(ai_chat.update_chat(server.db, a1, user_b, title="hijack"))
             await _expect_404(ai_chat.delete_chat(server.db, a1, user_b))
             await _expect_404(ai_chat.delete_chat(server.db, anon["conversation_id"], user_b))
-            await _expect_404(ai_chat.rename_chat(server.db, "conv_missing", "x", user_a))
+            await _expect_404(ai_chat.update_chat(server.db, "conv_missing", user_a, title="x"))
 
-            renamed = await ai_chat.rename_chat(server.db, a1, "  Cheque bounce  ", user_a)
+            renamed = await ai_chat.update_chat(server.db, a1, user_a, title="  Cheque bounce  ")
             assert renamed["title"] == "Cheque bounce"
             await ai_chat.delete_chat(server.db, a1, user_a)
             assert await server.ai_chats(user=user_a) == []
             assert await server.db.ai_chat_messages.count_documents({"conversation_id": a1}) == 0
             assert [c["conversation_id"] for c in await server.ai_chats(user=user_b)] == [b1]
+        finally:
+            await _cleanup(ids)
+    _run(body())
+
+
+def test_pinned_chats_come_first_and_archived_ones_are_listed_only_on_request(monkeypatch):
+    _fake_llm(monkeypatch)
+    owner, other = _user(_tag()), _user(_tag())
+
+    async def body():
+        old = (await _chat(owner, "First question"))["conversation_id"]
+        mid = (await _chat(owner, "Second question"))["conversation_id"]
+        new = (await _chat(owner, "Third question"))["conversation_id"]
+        ids = [old, mid, new]
+        try:
+            listed = await server.ai_chats(user=owner)
+            assert [c["conversation_id"] for c in listed] == [new, mid, old]
+            assert all(c["pinned"] is False and c["archived"] is False for c in listed)
+
+            assert (await server.ai_chat_update(old, server.ChatUpdateRequest(pinned=True), user=owner))["pinned"] is True
+            await server.ai_chat_update(mid, server.ChatUpdateRequest(archived=True), user=owner)
+            assert [c["conversation_id"] for c in await server.ai_chats(user=owner)] == [old, new]
+            archived = await server.ai_chats(user=owner, archived=True)
+            assert [(c["conversation_id"], c["archived"]) for c in archived] == [(mid, True)]
+
+            # Owner only, for every field; nothing to change is a 400.
+            for change in ({"pinned": True}, {"archived": True}, {"title": "x"}):
+                await _expect_404(server.ai_chat_update(new, server.ChatUpdateRequest(**change), user=other))
+            assert await server.ai_chats(user=other) == [] and await server.ai_chats(user=other, archived=True) == []
+            with pytest.raises(HTTPException) as exc:
+                await server.ai_chat_update(new, server.ChatUpdateRequest(), user=owner)
+            assert exc.value.status_code == 400
+
+            await server.ai_chat_update(mid, server.ChatUpdateRequest(archived=False, pinned=True), user=owner)
+            assert [c["conversation_id"] for c in await server.ai_chats(user=owner)][:2] in ([mid, old], [old, mid])
+            assert await server.ai_chats(user=None, archived=True) == []
         finally:
             await _cleanup(ids)
     _run(body())
