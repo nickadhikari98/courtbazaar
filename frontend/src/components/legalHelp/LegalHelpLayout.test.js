@@ -54,8 +54,9 @@ test("guests keep the site nav and footer; the sidebar sits below the nav with n
   expect($("chat-sidebar-back")).toBeNull();
   expect($("chat-sidebar-login")).not.toBeNull();
   expect($("chat-sidebar-usage")).not.toBeNull();
-  expect($("chat-header-search")).toBeNull(); // nothing to search for a guest
-  expect($("chat-header-new")).not.toBeNull();
+  // Guests have no saved chats: the phone bar carries only Chat and New, centred.
+  expect([...$("chat-bottom-nav").querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Chat", "New"]);
+  expect($("chat-bottom-nav").firstChild.className).toContain("justify-center");
   const sidebar = $("chat-sidebar");
   // Below the sticky nav (z-40) on every width, so its Services menu opens on top.
   expect(sidebar.className).toContain("md:z-auto");

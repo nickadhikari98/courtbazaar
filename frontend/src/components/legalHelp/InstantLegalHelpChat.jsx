@@ -3,7 +3,7 @@ import { api, getErrorMessage } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { ArrowUp, Scale, User, Info, RotateCcw, Menu, Paperclip, Square, Copy, Search, SquarePen, ChevronDown } from "lucide-react";
+import { ArrowUp, Scale, User, Info, RotateCcw, Menu, Paperclip, Square, Copy, Search, SquarePen, ChevronDown, MessageSquare, History } from "lucide-react";
 import ChatSidebar, { ChatMenu } from "./ChatSidebar";
 import ChatPalette from "./ChatPalette";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
@@ -164,6 +164,32 @@ function readPrefs(key) {
 // message, whitespace collapsed, 48 characters. Used before the list knows the chat.
 const chatTitleFrom = (text) => (text || "").split(/\s+/).join(" ").trim().slice(0, 48).trim();
 
+/* Phones only (<768px): Chat, New, Search, History under the composer. Guests have
+   no saved chats, so they get Chat and New. 56px-tall items; the safe area sits below. */
+function MobileNav({ active, signedIn, onChat, onNew, onSearch, onHistory }) {
+  const items = [
+    ["chat", "Chat", MessageSquare, onChat], ["new", "New", SquarePen, onNew],
+    ...(signedIn ? [["search", "Search", Search, onSearch], ["history", "History", History, onHistory]] : []),
+  ];
+  return (
+    <nav aria-label="Chat navigation" className="shrink-0 bg-background px-3 pt-1 pb-[max(env(safe-area-inset-bottom),0.5rem)] md:hidden" data-testid="chat-bottom-nav">
+      <div className={`mx-auto flex max-w-md items-center gap-1 rounded-full border border-border bg-card p-1 shadow-sm ${signedIn ? "justify-between" : "justify-center"}`}>
+        {items.map(([key, label, Icon, onClick]) => (
+          <button
+            key={key} type="button" onClick={onClick} aria-label={label}
+            aria-current={active === key ? "page" : undefined}
+            className={`flex h-14 min-w-16 flex-1 flex-col items-center justify-center gap-0.5 rounded-full text-2xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              signedIn ? "" : "max-w-28"} ${active === key ? "bg-accent/10 text-accent" : "text-muted-foreground hover:text-foreground"}`}
+            data-testid={`chat-bottom-${key}`}
+          >
+            <Icon className="h-5 w-5" aria-hidden="true" />{label}
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
 const STOPPED_TEXT = "Stopped. The answer was not generated.";
 const SESSION_EXPIRED_TEXT = "This chat session is no longer available. Please send your message again to start a new chat.";
 
@@ -204,6 +230,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const recentsOpen = /\/chats\/?$/.test(location.pathname);
   const [recentsKey, setRecentsKey] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
+  const [composerFocused, setComposerFocused] = useState(false); // hides the phone bottom bar for the keyboard
   const [titleDraft, setTitleDraft] = useState("");
   const auth = useAuth();
   const user = auth?.user || null;
@@ -604,31 +631,12 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
               </>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {/* Under 640px the pill gives way to the buttons (the drawer's usage block still shows it). */}
-            {usageView && (
-              <span className="mr-1 hidden rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground sm:inline" title={usageView.detail} data-testid="chat-usage-pill">
-                {usageView.pill}{usageView.reset && <span> · resets {usageView.reset}</span>}
-              </span>
-            )}
-            {/* Guests have no saved chats, so search would do nothing for them. */}
-            {user && (
-              <button
-                type="button" onClick={() => setPaletteOpen(true)} aria-label="Search chats" title="Search chats (Ctrl+K)"
-                className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                data-testid="chat-header-search"
-              >
-                <Search className="h-5 w-5" />
-              </button>
-            )}
-            <button
-              type="button" onClick={startNewChat} disabled={!recentsOpen && msgs.length === 0 && !loading} aria-label="New chat" title="New chat"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              data-testid="chat-header-new"
-            >
-              <SquarePen className="h-5 w-5" />
-            </button>
-          </div>
+          {/* New and Search live in the sidebar rows and Ctrl/Cmd+K on desktop, the bottom bar on phones. */}
+          {usageView && (
+            <span className="shrink-0 whitespace-nowrap rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground" title={usageView.detail} data-testid="chat-usage-pill">
+              {usageView.pill}{usageView.reset && <span className="hidden sm:inline"> · resets {usageView.reset}</span>}
+            </span>
+          )}
         </div>
       </div>
 
@@ -733,7 +741,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         </div>
       </div>
 
-      <div className="shrink-0 bg-background pb-[max(env(safe-area-inset-bottom),0.75rem)]">
+      <div className={`shrink-0 bg-background md:pb-[max(env(safe-area-inset-bottom),0.75rem)] ${composerFocused ? "pb-[max(env(safe-area-inset-bottom),0.75rem)]" : "pb-2"}`}>
         <div className="max-w-[760px] mx-auto w-full px-4 pt-2">
           <div className="rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/20 transition-shadow">
             <textarea
@@ -742,9 +750,12 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
+              onFocus={() => setComposerFocused(true)}
+              onBlur={() => setComposerFocused(false)}
               placeholder={loading ? "Generating answer..." : msgs.length ? "Ask a follow-up..." : "Describe your situation, legal issue, or service need..."}
               aria-label="Message Instant Legal Help"
-              autoFocus
+              // From 768px only: on a phone it would pop the keyboard on load and hide the bottom bar.
+              autoFocus={typeof window !== "undefined" && !!window.matchMedia?.("(min-width: 768px)").matches}
               className="block w-full resize-none bg-transparent px-2 py-2 text-[15px] leading-6 max-h-40 overflow-y-auto cb-scroll placeholder:text-subtle focus:outline-none"
               data-testid="instant-legal-help-input"
             />
@@ -798,6 +809,13 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         </div>
       </div>
       </>
+      )}
+      {!composerFocused && (
+        <MobileNav
+          active={recentsOpen ? "history" : "chat"} signedIn={!!user}
+          onChat={() => { if (recentsOpen) navigate("/legal-help"); }}
+          onNew={startNewChat} onSearch={() => setPaletteOpen(true)} onHistory={() => navigate("/legal-help/chats")}
+        />
       )}
     </div>
     </div>

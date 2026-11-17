@@ -229,27 +229,49 @@ test("a failed delete shows an error toast and keeps the chat", async () => {
   expect(rowTitles()).toEqual(["Cheque bounce notice"]);
 });
 
-test("the header search button opens the same palette with the field focused; guests get New chat but no search", async () => {
+test("phone bottom bar: Chat, New, Search, History; Search opens the full-screen sheet, History the Recents view; the header has no new/search icons", async () => {
   api.get.mockImplementation((url, opts) => Promise.resolve({
     data: url === "/ai/chats" ? (opts?.params?.archived ? [] : [PINNED, RECENT]) : [],
   }));
   await act(async () => root.render(<MemoryRouter><InstantLegalHelpChat /></MemoryRouter>));
   await flush();
-  const search = $("chat-header-search");
-  expect(search.getAttribute("aria-label")).toBe("Search chats");
-  expect($("chat-header-new").getAttribute("aria-label")).toBe("New chat");
-  for (const b of [search, $("chat-header-new"), $("chat-sidebar-open")]) {
-    expect(b.className).toContain("h-10 w-10"); // 40x40 touch targets
-  }
-  act(() => search.click());
+  expect($("chat-header-search")).toBeNull();
+  expect($("chat-header-new")).toBeNull();
+  const nav = $("chat-bottom-nav");
+  expect(nav.className).toContain("md:hidden"); // phones only
+  expect(nav.className).toContain("safe-area-inset-bottom");
+  expect([...nav.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Chat", "New", "Search", "History"]);
+  expect($("chat-bottom-chat").getAttribute("aria-current")).toBe("page");
+  expect($("chat-bottom-chat").className).toContain("h-14"); // 56px touch targets
+  expect($("chat-bottom-chat").className).toContain("text-accent");
+
+  act(() => $("chat-bottom-search").click());
   await flush();
-  expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   expect(document.activeElement).toBe($("chat-palette-input"));
-  // Below 768px it is a full-screen sheet with a back arrow.
   expect($("chat-palette").className).toContain("max-md:h-[100dvh]");
   act(() => $("chat-palette-back").click());
   await flush();
-  expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+  act(() => $("chat-bottom-history").click());
+  await flush();
+  expect($("chat-recents")).not.toBeNull();
+  expect($("chat-bottom-history").getAttribute("aria-current")).toBe("page");
+  act(() => $("chat-bottom-chat").click());
+  await flush();
+  expect($("chat-recents")).toBeNull();
+});
+
+test("the bottom bar hides while the composer has focus and comes back on blur", async () => {
+  api.get.mockImplementation(() => Promise.resolve({ data: [] }));
+  await act(async () => root.render(<MemoryRouter><InstantLegalHelpChat /></MemoryRouter>));
+  await flush();
+  const input = $("instant-legal-help-input");
+  act(() => input.focus());
+  expect($("chat-bottom-nav")).toBeNull();
+  act(() => input.blur());
+  expect($("chat-bottom-nav")).not.toBeNull();
+  // The Layman | Lawyer toggle stays in the composer.
+  expect($("instant-legal-help-mode")).not.toBeNull();
 });
 
 const chat = (n, extra = {}) => ({ conversation_id: `c${n}`, title: `Chat ${n}`, updated_at: NOW, pinned: false, archived: false, ...extra });
