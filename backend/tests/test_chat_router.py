@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ai_chat  # noqa: E402
 import counsel_matching  # noqa: E402
 import court_bazaar_tools  # noqa: E402
+import kb_registry  # noqa: E402
 import llm_service  # noqa: E402
 
 SOP = llm_service.SOURCE_SOP
@@ -320,7 +321,10 @@ def test_selected_document_never_falls_back_to_the_other_document(monkeypatch, s
     assert result["ok"] is False
     assert result["error_code"] == llm_service.ERR_NO_CONTEXT
     assert completions == []
-    assert searches[0]["filters"]["value"] == llm_service.KB_SOURCE_METADATA[selected]["source_id"]
+    # Institutional rules are filtered by institution (kb_registry), the SOP by source_id.
+    expected = (kb_registry.search_filter("DIAC") if selected == DIAC else
+                {"type": "eq", "key": "source_id", "value": llm_service.KB_SOURCE_METADATA[selected]["source_id"]})
+    assert searches[0]["filters"] == expected
 
 
 @pytest.mark.parametrize("selected", [SOP, DIAC])

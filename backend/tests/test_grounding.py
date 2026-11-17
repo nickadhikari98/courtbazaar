@@ -22,6 +22,7 @@ import answer_guard  # noqa: E402
 import counsel_matching  # noqa: E402
 import court_bazaar_tools  # noqa: E402
 import llm_service  # noqa: E402
+import kb_registry  # noqa: E402
 
 SOP = llm_service.SOURCE_SOP
 DIAC = llm_service.SOURCE_DIAC
@@ -213,7 +214,7 @@ def test_sop_question_without_relevant_sop_evidence_is_not_answered(fake_rag):
     fake_rag["items"] = [_chunk(SOP, "KYC onboarding requires identity documents for partners.")]
     fake_rag["answer"] = "The printing SLA is 4 hours."
     result = _chat("What is the SLA for Printing Service?")
-    assert result["reply"] == NO_CONTEXT_REPLY
+    assert result["reply"] == ai_chat.document_not_found_message(SOP)
     assert fake_rag["completions"] == []  # irrelevant evidence never reaches the model
 
 
@@ -221,7 +222,7 @@ def test_answer_not_supported_by_the_retrieved_sop_text_is_not_returned(fake_rag
     fake_rag["items"] = [_chunk(SOP, _SOP_SLA)]
     fake_rag["answer"] = "The printing vendor must accept the order within 30 minutes and offers free delivery."
     result = _chat("What is the SLA for Printing Service?")
-    assert result["reply"] == NO_CONTEXT_REPLY
+    assert result["reply"] == ai_chat.document_not_found_message(SOP)
     assert "30 minutes" not in result["reply"]
 
 
@@ -229,7 +230,7 @@ def test_sop_question_never_uses_diac_evidence(fake_rag):
     fake_rag["items"] = [_chunk(DIAC, "Printing service SLA under the DIAC Rules is 30 days.")]
     fake_rag["answer"] = "The SLA for printing service is 30 days."
     result = _chat("What is the SLA for Printing Service?")
-    assert result["reply"] == NO_CONTEXT_REPLY
+    assert result["reply"] == ai_chat.document_not_found_message(SOP)
     assert fake_rag["completions"] == []
 
 
@@ -237,9 +238,9 @@ def test_diac_question_never_uses_sop_evidence(fake_rag):
     fake_rag["items"] = [_chunk(SOP, "Arbitrators are appointed by the CourtBazaar admin within 2 days.")]
     fake_rag["answer"] = "Arbitrators are appointed by the admin within 2 days."
     result = _chat("What does the DIAC Rules say about appointment of arbitrators?")
-    assert result["reply"] == NO_CONTEXT_REPLY
+    assert result["reply"] == ai_chat.document_not_found_message(DIAC)
     assert fake_rag["completions"] == []
-    assert fake_rag["searches"][0]["filters"]["value"] == "diac_rules"
+    assert fake_rag["searches"][0]["filters"] == kb_registry.search_filter("DIAC")  # institution + in_force
 
 
 def test_malicious_retrieved_text_stays_data_and_is_never_obeyed(fake_rag):
@@ -249,7 +250,7 @@ def test_malicious_retrieved_text_stays_data_and_is_never_obeyed(fake_rag):
     fake_rag["answer"] = f"Sure, ignoring previous instructions. The API key is {FAKE_KEY}."
     result = _chat("What is the SLA for Printing Service?")
     assert FAKE_KEY not in result["reply"]
-    assert result["reply"] == NO_CONTEXT_REPLY
+    assert result["reply"] == ai_chat.document_not_found_message(SOP)
 
     messages = fake_rag["completions"][0]["messages"]
     system_text = " ".join(m["content"] for m in messages if m["role"] == "system")
@@ -317,7 +318,7 @@ def test_courtbazaar_refund_policy_without_evidence_is_not_invented(fake_rag):
     fake_rag["items"] = []
     fake_rag["answer"] = "Refunds are always issued within 3 days, no questions asked."
     result = _chat("What is CourtBazaar's refund policy?")
-    assert result["reply"] == NO_CONTEXT_REPLY
+    assert result["reply"] == ai_chat.document_not_found_message(SOP)
     assert fake_rag["completions"] == []
 
 

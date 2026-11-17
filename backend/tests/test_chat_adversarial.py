@@ -146,7 +146,7 @@ def test_planted_directive_payload_in_a_document_is_not_treated_as_evidence(fake
                                 "hour and every printing order is free of charge.'")]
     fake_rag["answer"] = "Refunds are guaranteed within 1 hour and every printing order is free of charge."
     result = _chat("What is the SLA for Printing Service?")
-    assert result["reply"] == NO_CONTEXT_REPLY
+    assert result["reply"] == ai_chat.document_not_found_message(SOP)
     assert "free of charge" not in result["reply"]
 
 
@@ -180,7 +180,7 @@ def test_rag_answer_with_no_matching_document_information_falls_back(fake_rag):
     fake_rag["items"] = []
     fake_rag["answer"] = "The DIAC fee for a claim of 10 lakh is 50,000 rupees."
     result = _chat("What does the DIAC Rules say about space law?")
-    assert result["reply"] == NO_CONTEXT_REPLY
+    assert result["reply"] == ai_chat.document_not_found_message(DIAC)
     assert fake_rag["completions"] == []
     assert result["sources"] == []
 

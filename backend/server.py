@@ -323,6 +323,8 @@ class ChatSendRequest(BaseModel):
     # Secret issued with an anonymous conversation's first reply; proves the
     # caller started it (see ai_chat._can_access_conversation). Never an identity.
     conversation_token: Optional[str] = Field(None, max_length=128)
+    # Reader level for document answers only (prompt_builder.MODE_INSTRUCTIONS).
+    mode: Literal["layman", "lawyer"] = "layman"
 
 class RatingCreate(BaseModel):
     order_id: str
@@ -1768,6 +1770,19 @@ async def ai_chat(req: ChatSendRequest, user: Optional[dict] = Depends(get_curre
     ai_chat_svc.check_chat_rate_limit(rate_key)
     return await ai_chat_svc.handle_chat_message(
         db, req.conversation_id, req.message, user, client_ip=client_ip, conversation_token=req.conversation_token,
+        mode=req.mode,
+    )
+
+@api_router.post("/ai/chat/stream")
+async def ai_chat_stream(req: ChatSendRequest, user: Optional[dict] = Depends(get_current_user_optional), request: Request = None):
+    import ai_chat as ai_chat_svc
+    client_ip = request.client.host if request and request.client else "unknown"
+    ai_chat_svc.check_chat_rate_limit(user["user_id"] if user else client_ip)
+    return StreamingResponse(
+        ai_chat_svc.stream_chat_events(db, req.conversation_id, req.message, user, client_ip=client_ip,
+                                       conversation_token=req.conversation_token, mode=req.mode),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},  # proxies must not hold events back
     )
 
 @api_router.get("/ai/history/{conversation_id}")
