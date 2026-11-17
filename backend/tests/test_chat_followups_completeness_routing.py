@@ -19,6 +19,7 @@ from test_answer_card import GOOD_POINT, ScriptedOpenAI, _card, _verdict  # noqa
 from test_rag_answer_quality import RULE_33_BODY, RULE_33_HEAD, _db, _install, _item  # noqa: E402
 
 import ai_chat  # noqa: E402
+import kb_registry  # noqa: E402
 import llm_service  # noqa: E402
 
 RULE_31 = ("31. Arbitral Award \r\n31.1 The Arbitral Tribunal shall make an award within a period of eighteen \r\n"
@@ -78,7 +79,8 @@ def test_follow_up_is_retrieved_again_from_the_same_document_with_its_rules(monk
     assert len(fake.searches) == 2
     query = fake.searches[1]["query"]
     assert query.startswith(FOLLOW_UP) and FIRST in query and "Rule 31.1" in query
-    assert fake.searches[1]["filters"]["value"] == "diac_rules"  # same document, never another
+    # Same institution's in-force files, never another (kb_registry.search_filter).
+    assert fake.searches[1]["filters"] == kb_registry.search_filter("DIAC")
     assert second["grounding"] == "supported" and second["citations"][0]["rules"] == ["31.1"]
     # The answer model gets the standalone question; the earlier answer text is not part of it.
     assert fake.calls[-1]["input"][-1]["content"] == query and "eighteen" not in query

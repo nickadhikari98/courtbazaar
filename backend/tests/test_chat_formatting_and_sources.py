@@ -22,6 +22,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ai_chat  # noqa: E402
 import answer_guard  # noqa: E402
+import kb_registry  # noqa: E402
 import llm_service  # noqa: E402
 
 DIAC = llm_service.SOURCE_DIAC
@@ -202,7 +203,9 @@ def test_invented_rules_and_page_numbers_are_still_never_cited():
 
 
 def test_no_document_url_is_invented():
-    assert all(entry["url"] is None for entry in llm_service.KB_SOURCE_DISPLAY.values())
+    # Only the publisher's own link from the KB metadata (never our R2 copy), else none.
+    assert all(entry["url"] == kb_registry.official_url(f) for f, entry in llm_service.KB_SOURCE_DISPLAY.items())
+    assert not any("r2" in (entry["url"] or "") for entry in llm_service.KB_SOURCE_DISPLAY.values())
     citations = _cite("Termination (Rule 33.5). Expenses (Rule 5).")
     assert all(c["url"] == llm_service.KB_INSTRUMENT_URLS[c["title"]] for c in citations)
 
