@@ -223,3 +223,26 @@ test("a failed delete shows an error toast and keeps the chat", async () => {
   expect(toast.error).toHaveBeenCalledWith("Couldn't delete that chat. Please try again.");
   expect(rowTitles()).toEqual(["Cheque bounce notice"]);
 });
+
+test("the header search button opens the same palette with the field focused; guests get New chat but no search", async () => {
+  api.get.mockImplementation((url, opts) => Promise.resolve({
+    data: url === "/ai/chats" ? (opts?.params?.archived ? [] : [PINNED, RECENT]) : [],
+  }));
+  await act(async () => root.render(<MemoryRouter><InstantLegalHelpChat /></MemoryRouter>));
+  await flush();
+  const search = $("chat-header-search");
+  expect(search.getAttribute("aria-label")).toBe("Search chats");
+  expect($("chat-header-new").getAttribute("aria-label")).toBe("New chat");
+  for (const b of [search, $("chat-header-new"), $("chat-sidebar-open")]) {
+    expect(b.className).toContain("h-10 w-10"); // 40x40 touch targets
+  }
+  act(() => search.click());
+  await flush();
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  expect(document.activeElement).toBe($("chat-palette-input"));
+  // Below 768px it is a full-screen sheet with a back arrow.
+  expect($("chat-palette").className).toContain("max-md:h-[100dvh]");
+  act(() => $("chat-palette-back").click());
+  await flush();
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+});

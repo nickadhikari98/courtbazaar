@@ -3,7 +3,7 @@ import { api, getErrorMessage } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { ArrowUp, Scale, User, Info, RotateCcw, Menu, Paperclip, Square, Copy } from "lucide-react";
+import { ArrowUp, Scale, User, Info, RotateCcw, Menu, Paperclip, Square, Copy, Search, SquarePen } from "lucide-react";
 import ChatSidebar from "./ChatSidebar";
 import ChatPalette from "./ChatPalette";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
@@ -453,18 +453,38 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
           <div className="flex items-center gap-2 min-w-0">
             <button
               type="button" onClick={() => setDrawerOpen(true)} aria-label="Open chats"
-              className="md:hidden inline-flex h-9 w-9 items-center justify-center rounded-lg hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="md:hidden inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               data-testid="chat-sidebar-open"
             >
               <Menu className="w-5 h-5" />
             </button>
             <h1 className="font-display font-bold text-base leading-tight truncate">Instant Legal Help</h1>
           </div>
-          {usageView && (
-            <span className="shrink-0 rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground" title={usageView.detail} data-testid="chat-usage-pill">
-              {usageView.pill}{usageView.reset && <span className="hidden sm:inline"> · resets {usageView.reset}</span>}
-            </span>
-          )}
+          <div className="flex shrink-0 items-center gap-1">
+            {/* Under 640px the pill gives way to the buttons (the drawer's usage block still shows it). */}
+            {usageView && (
+              <span className="mr-1 hidden rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground sm:inline" title={usageView.detail} data-testid="chat-usage-pill">
+                {usageView.pill}{usageView.reset && <span> · resets {usageView.reset}</span>}
+              </span>
+            )}
+            {/* Guests have no saved chats, so search would do nothing for them. */}
+            {user && (
+              <button
+                type="button" onClick={() => setPaletteOpen(true)} aria-label="Search chats" title="Search chats (Ctrl+K)"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                data-testid="chat-header-search"
+              >
+                <Search className="h-5 w-5" />
+              </button>
+            )}
+            <button
+              type="button" onClick={handleNewChat} disabled={msgs.length === 0 && !loading} aria-label="New chat" title="New chat"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-testid="chat-header-new"
+            >
+              <SquarePen className="h-5 w-5" />
+            </button>
+          </div>
         </div>
       </div>
 
