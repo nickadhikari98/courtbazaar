@@ -478,8 +478,7 @@ async def _store_file_id(client, filename: str) -> str | None:
 def _cap_context(passages: list[str], named: list) -> list[str]:
     """At most MAX_BLOCKS blocks / MAX_CONTEXT_CHARS for the merged context,
     in the order given (best-scoring file first); named provisions always kept.
-    shortcut: ranks by file score, not per block; upgrade if one file's weak
-    blocks crowd out another file's strong ones."""
+    Each file already arrives within its share (expand_chunks `share`)."""
     import rag_provisions
     first = [p for p in passages if any(rx.match(p) for rx in named)]
     kept, total = list(first), sum(map(len, first))
@@ -570,7 +569,7 @@ async def _provision_passages(client, approved_chunks: list[tuple[str, str | Non
             except Exception as e:
                 logger.warning("Provision expansion unavailable for %s (%s): %s; using retrieved chunks only",
                                filename, type(e).__name__, _safe_error_detail(e))
-        blocks = rag_provisions.expand_chunks(filename, chunks, doc, query)
+        blocks = rag_provisions.expand_chunks(filename, chunks, doc, query, share=len(by_file))
         if filename in named_only:
             blocks = [b for b in blocks if any(rx.match(b) for rx in _named_res(query))]
         passages.extend(blocks)
@@ -835,7 +834,8 @@ RAG_EVIDENCE_INSTRUCTIONS = (
     "consequences, and any exception or qualification. Organise them under short headings that start with "
     "\"## \", one provision or consequence per heading, each followed by a short paragraph or \"- \" bullets. "
     "A simple single-point answer needs no headings. Use **bold** sparingly, for key terms only.\n"
-    "- Excerpts labelled \"| Rule N\" each hold one complete provision, and the label is its number (the next "
+    "- Excerpts labelled \"| Rule N\" (or \"| Section N\", \"| Article N\": cite with that same word) each hold one "
+    "complete provision, and the label is its number (the next "
     "part of the label names the set of rules it belongs to). Write about each relevant labelled sub-rule "
     "separately and end each statement taken from one with that number in parentheses, for example (Rule 12.3). "
     "Each statement must say only what its own rule says, with the same actor doing the same thing: never "
@@ -893,7 +893,10 @@ RAG_CARD_INSTRUCTIONS = (
     "differently under it, direct is \"no\". If the excerpts don't address what was asked, direct is null.\n"
     "- Give each rule number exactly as its excerpt's label and text show it, and never build one yourself. Some "
     "sets of rules number clauses \"(i)\": that is Rule 4(i), and writing Rule 4.1 for it cites a rule that doesn't "
-    "exist. Sub-rules with their own number stay as they are (Rule 33.1, Rule 31.1(b)).\n"
+    "exist. Sub-rules with their own number stay as they are (Rule 33.1, Rule 31.1(b)). Use the label's own word: "
+    "an excerpt labelled \"| Section 34\" is cited as Section 34, and its sub-section \"(3)\" as Section 34(3), "
+    "never Rule 34.3 or Section 34.3; a paragraph numbered \"1\" inside \"| Article 7\" is Article 7(1), never "
+    "Article 7.1. Only a label that itself reads \"9.8\" or \"33.1\" is written with a dot.\n"
     "- cite: the number of each source below that supports the point. A point you can't cite must be left out.\n"
     "- practical_implications: one or two sentences on what the provisions mean in practice for the parties, "
     "stated only from the excerpts. Null if the excerpts don't support any.\n"
