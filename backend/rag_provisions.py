@@ -35,15 +35,21 @@ PAGE_MARKER_RE = re.compile(r"<(?:IMAGE|PARSED TEXT) FOR PAGE:\s*(\d+)\s*/\s*\d+
 _PROVISION_START_RE = re.compile(
     r"(?m)^((?:Article|Rule)\s+)?(\d{1,3})([A-Z]?)(?:\.(\d{1,2}))?\.?\s+(?=[A-Z(\"'])")
 # Rules that print the word on every heading (ICC, LCIA "Article 31 ...") also
-# run headings into the previous text ("... in Appendix IV. Article 32 Expedited").
+# run headings into the previous text ("... in Appendix IV. Article 32 Expedited"),
+# and two-column pages put one column's "9.8" after the other's text and a gutter (LCIA).
 _WORD_PROVISION_START_RE = re.compile(
-    r"(?m)(?:^|(?<=[.:;]\s))((?:Article|Rule)\s+)?(\d{1,3})([A-Z]?)(?:\.(\d{1,2}))?\.?\s+(?=[A-Z(\"'])")
-# The running header above an appendix's first article: "ICC Arbitration Rules APPENDIX IV - EMERGENCY ...".
-_APPENDIX_RE = re.compile(r"\bAPPENDIX ([IVX]+) - ([A-Z][A-Z ,'&-]*[A-Z])|\bSchedule of Fees\s+Part ([IVX]+)\.")
+    r"(?m)(?:^|(?<=[.:;]\s)|(?<= {3}))((?:Article|Rule)\s+)?(\d{1,3})([A-Z]?)(?:\.(\d{1,2}))?\.?\s+(?=[A-Z(\"'])")
+# The heading above a sub-part's first provision, whose numbering restarts:
+# "APPENDIX IV - EMERGENCY ..." (ICC), "SCHEDULE 1. EMERGENCY ..." (SIAC), "APPENDIX - FEES AND COSTS" (ICC Mediation).
+_APPENDIX_RE = re.compile(
+    r"\b(APPENDIX|SCHEDULE|ANNEX)(?: ([IVX]+|\d{1,2}))?\s*[-.:]\s*([A-Z][A-Z ,'&-]*[A-Z])\b"
+    r"|\bSchedule of Fees\s+Part ([IVX]+)\.")
+# How a document names an item of its own sub-part: "paragraph 7 of this Schedule 1", "Article 3 of this Appendix".
+_PART_ITEM_RE = r"\b(Article|Paragraph|Rule|Section)s?\s+\d{{1,3}}\S*\s+of\s+(?:this\s+|the\s+)?{kind}\b"
 _SMALL_WORDS = {"Of", "The", "And", "For", "To", "In", "On"}
-# "[Source: <file> | Rule 33.1]" / "| Article 9B" / "| Section 11A" block label written by expand_chunks.
+# "[Source: <file> | Rule 33.1]" / "| Article 9B" / "| Section 11A" / "| Paragraph 3" block label written by expand_chunks.
 _BLOCK_LABEL_RE = re.compile(
-    r"(?m)^\[Source: [^\]|]+\| (?:Rule|Article|Section) (\d{1,3}[A-Z]?(?:\.\d{1,2})?)(?: \| [^\]\n]*)?\]\n")
+    r"(?m)^\[Source: [^\]|]+\| (?:Rule|Article|Section|Paragraph) (\d{1,3}[A-Z]?(?:\.\d{1,2})?)(?: \| [^\]\n]*)?\]\n")
 # "Section 11", "Rule 14.2", "Article 9B" named in a question.
 EXACT_REF_RE = re.compile(
     r"\b(Rule|Article|Section|Sec\b\.?|S\.)s?\s*(\d{1,3}[A-Za-z]?(?:\.\d{1,2})?)\b", re.IGNORECASE)
@@ -139,17 +145,39 @@ def _num(key: Tuple[int, str]) -> str:
 
 
 def _appendix(doc: str, start: int) -> Optional[str]:
-    """"Appendix IV - Emergency Arbitrator Provisions" (or "Schedule of Fees,
-    Part II") when the running header just above an instrument's first
-    article names one, else None."""
+    """"Appendix IV - Emergency Arbitrator Provisions", "Schedule 1 - Emergency
+    Arbitrator Procedure" (or "Schedule of Fees, Part II") when the heading
+    just above an instrument's first provision names one, else None."""
     found = list(_APPENDIX_RE.finditer(doc[max(0, start - 200):start]))
     if not found:
         return None
-    if found[-1].group(3):
-        return f"Schedule of Fees, Part {found[-1].group(3)}"
-    words = found[-1].group(2).title().split()
+    if found[-1].group(4):
+        return f"Schedule of Fees, Part {found[-1].group(4)}"
+    words = found[-1].group(3).title().split()
     name = " ".join([words[0]] + [w.lower() if w in _SMALL_WORDS else w for w in words[1:]])
-    return f"Appendix {found[-1].group(1)} - {name}"
+    number = f" {found[-1].group(2)}" if found[-1].group(2) else ""
+    return f"{found[-1].group(1).title()}{number} - {name}"
+
+
+def part_word(doc: str, appendix: str, default: str) -> str:
+    """What the document calls an item of this sub-part, from its own cross
+    references ("paragraph 7 of this Schedule 1" -> "Paragraph"); `default`
+    (the file's provision_label) when it never says."""
+    kind = appendix.split()[0]
+    found = [m.group(1).title() for m in re.finditer(_PART_ITEM_RE.format(kind=kind), doc, re.IGNORECASE)]
+    return max(set(found), key=found.count) if found else default
+
+
+def _running_lines(doc: str) -> set:
+    """Page headers/footers: lines that, without their digits, repeat 3+
+    times ("42   Arbitration Rules of the Singapore ... SIAC Rules"). A page
+    number at the start of one is not a provision heading."""
+    counts: Dict[str, int] = {}
+    for line in doc.split("\n"):
+        key = " ".join(re.sub(r"\d", "", line).split())
+        if len(key) >= 20:
+            counts[key] = counts.get(key, 0) + 1
+    return {k for k, n in counts.items() if n >= 3}
 
 
 def parse_provisions(doc: str, word: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -167,11 +195,22 @@ def parse_provisions(doc: str, word: Optional[str] = None) -> List[Dict[str, Any
     instrument = 0
     titles: Dict[int, str] = {}
     appendices: Dict[int, Optional[str]] = {}
+    running = _running_lines(doc)
     for m in (_WORD_PROVISION_START_RE if word else _PROVISION_START_RE).finditer(doc):
         if word and m.group(4) is None and (m.group(1) or "").strip() != word:
             continue
+        line_end = doc.find("\n", m.start())
+        # Only an undotted number ("42   Arbitration Rules ..."): "3. Inserted by ..." footnotes repeat too.
+        if "." not in m.group(0) and " ".join(re.sub(r"\d", "", doc[m.start():line_end if line_end >= 0 else len(doc)]).split()) in running:
+            continue
         top, sub = int(m.group(2)), m.group(4)
         key = (top, m.group(3))
+        # After a column gutter only a paragraph of the open (or next) article counts: the other
+        # column can run ahead ("Article 14" beside "Article 13") and must not move numbering on.
+        # shortcut: interleaved columns still lose a few LCIA paragraphs (10.4, 23.1); re-index LCIA single-column to fix.
+        if doc[max(0, m.start() - 3):m.start()] == "   " and not (
+                sub is not None and parent is not None and (top == parent[0] or (top == parent[0] + 1 and sub == "1"))):
+            continue
         if sub is not None:
             if parent != key:
                 if (key == prev_parent and not parent_has_subs and accepted
@@ -188,6 +227,8 @@ def parse_provisions(doc: str, word: Optional[str] = None) -> List[Dict[str, Any
                     # into the previous text), but its first sub-rule is
                     # there: "9.1" right after rule 8 opens rule 9.
                     prev_parent, parent, parent_has_subs = parent, key, False
+                elif parent is not None and parent[0] == top and parent[1] and not key[1]:
+                    pass  # "9.8" under "Article 9B": LCIA numbers Articles 9A-9C's paragraphs 9.1-9.19
                 else:
                     continue
             number = f"{_num(key)}.{int(sub)}"
@@ -202,7 +243,7 @@ def parse_provisions(doc: str, word: Optional[str] = None) -> List[Dict[str, Any
         if instrument not in titles:
             titles[instrument] = _instrument_title(doc, m.start())
             appendices[instrument] = _appendix(doc, m.start())
-        accepted.append({"number": number, "parent": _num(key), "instrument": instrument,
+        accepted.append({"number": number, "parent": _num(parent), "instrument": instrument,
                          "title": titles[instrument], "appendix": appendices[instrument], "start": m.start()})
     for i, p in enumerate(accepted):
         p["end"] = accepted[i + 1]["start"] if i + 1 < len(accepted) else len(doc)
@@ -307,13 +348,14 @@ def _blocked_indices(filename: str, provisions: List[Dict[str, Any]], doc: Optio
 
 
 def _introducing(provisions: List[Dict[str, Any]], i: int, blocked: set) -> List[int]:
-    """For an appendix article, the main-rules article that brings the
-    appendix in ("... Provisions in Appendix IV." is ICC Article 31): it
-    states when the appendix applies, so it goes in first."""
-    m = re.match(r"Appendix ([IVX]+) ", provisions[i].get("appendix") or "")
+    """For an appendix/schedule provision, the main-rules provision that
+    brings the sub-part in ("... Provisions in Appendix IV." is ICC Article
+    31; "... set out in Schedule 1" is SIAC Rule 12.1): it states when the
+    sub-part applies, so it goes in first."""
+    m = re.match(r"((?:Appendix|Schedule|Annex) \w+) - ", provisions[i].get("appendix") or "")
     if not m:
         return []
-    rx = re.compile(rf"\bin Appendix {m.group(1)}\b")
+    rx = re.compile(rf"\bin {m.group(1)}\b")
     return [k for k, p in enumerate(provisions)
             if k not in blocked and p.get("appendix") is None and rx.search(p["text"])][:1]
 
@@ -354,10 +396,13 @@ def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: s
                     chosen.append(j)
     blocks: List[str] = []
     total = 0
+    words: Dict[str, str] = {}
     for i in sorted(chosen[:MAX_BLOCKS]):
         p = provisions[i]
         title = f" | {p['title']}" if p.get("title") else ""
-        block = f"[Source: {filename} | {label} {p['number']}{title}]\n{p['text']}"
+        # A sub-part's items carry its own word: "Schedule 1, Paragraph 3", "Appendix IV, Article 7".
+        word = words.setdefault(p["appendix"], part_word(doc, p["appendix"], label)) if p.get("appendix") else label
+        block = f"[Source: {filename} | {word} {p['number']}{title}]\n{p['text']}"
         if total + len(block) > MAX_CONTEXT_CHARS:
             break
         blocks.append(block)
