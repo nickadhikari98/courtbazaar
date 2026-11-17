@@ -262,6 +262,7 @@ export default function ChatSidebar({
               </div>
               <div className="mt-2 h-1.5 rounded-full bg-border" role="progressbar" aria-label={usageView.label}
                 aria-valuemin={0} aria-valuemax={usageView.limit} aria-valuenow={Math.min(usageView.used, usageView.limit)}>
+                {/* eslint-disable-next-line no-restricted-syntax -- width is the runtime usage fraction */}
                 <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, (usageView.used / (usageView.limit || 1)) * 100)}%` }} />
               </div>
               {usageView.reset && <p className="mt-1.5 text-2xs text-muted-foreground">Resets at {usageView.reset}</p>}
