@@ -266,18 +266,31 @@ test("a malformed card falls back to the plain reply", async () => {
   expect($("instant-legal-help-msg-assistant-1").textContent).toContain("Plain answer.");
 });
 
-test("the status indicator follows the server's steps, ticks them off and counts up", async () => {
+test("the status panel ticks off done steps, spins on the current one, then shows the skeleton", async () => {
   jest.useFakeTimers();
-  const ChatStatus = require("./ChatStatus").default;
-  const steps = [{ step: "understanding", text: "Understanding your question…" }, { step: "reading", text: "Reading Rule 33.1…" }];
-  act(() => { root.render(<ChatStatus steps={steps} />); });
-  expect($("instant-legal-help-status-text").textContent).toBe("Reading Rule 33.1…");
-  act(() => { jest.advanceTimersByTime(3000); });
-  expect($("instant-legal-help-status-timer").textContent).toBe("3s");
-  expect($("instant-legal-help-status-steps")).toBeNull(); // collapsed by default
-  act(() => { $("instant-legal-help-status-toggle").click(); });
-  expect($("instant-legal-help-status-steps").textContent).toBe("Understanding your question…");
-  jest.useRealTimers();
+  try {
+    const ChatStatus = require("./ChatStatus").default;
+    const steps = [
+      { step: "understanding", text: "Understood: a question on DIAC Rules" },
+      { step: "searching", text: "Searching DIAC Rules…" },
+      { step: "reading", text: "Reading Rule 33.1…" },
+    ];
+    act(() => { root.render(<ChatStatus steps={steps} />); });
+    expect($("instant-legal-help-status-text").textContent).toBe("Reading Rule 33.1…");
+    expect($("instant-legal-help-status-steps").textContent)
+      .toBe("Understood: a question on DIAC RulesSearched DIAC RulesReading Rule 33.1…");
+    expect($("instant-legal-help-skeleton")).toBeNull();
+    act(() => { jest.advanceTimersByTime(3000); });
+    expect($("instant-legal-help-status-timer").textContent).toBe("3s");
+
+    const verifying = [...steps, { step: "writing", text: "Writing answer…" }, { step: "verifying", text: "Checking…" }];
+    act(() => { root.render(<ChatStatus steps={verifying} />); });
+    expect($("instant-legal-help-status-steps").textContent).not.toContain("Writing"); // the skeleton covers it
+    expect($("instant-legal-help-status-text").textContent).toBe("Verifying citations…");
+    expect($("instant-legal-help-skeleton").textContent).toContain("The full answer card appears here once it is verified.");
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test("a citation with an approved URL is a safe external link", async () => {
@@ -291,7 +304,7 @@ test("a citation with an approved URL is a safe external link", async () => {
   expect(link.getAttribute("href")).toBe("https://example.org/diac-rules.pdf");
   expect(link.getAttribute("target")).toBe("_blank");
   expect(link.getAttribute("rel")).toBe("noopener noreferrer");
-  expect(link.textContent).toBe("DIAC Rules (opens in a new tab)");
+  expect(link.textContent).toBe("[1]DIAC Rules, Rule 33.5 (opens in a new tab)"); // the whole row is the link
   expect($("instant-legal-help-citations").textContent).toContain("Rule 33.5");
 });
 
@@ -307,8 +320,8 @@ test("multiple sources are listed in order, each with only its own verified rule
   await sendMessage("q");
   const items = [...container.querySelectorAll('[data-testid="instant-legal-help-source"]')];
   expect(items.map((li) => li.textContent)).toEqual([
-    "1DIAC RulesRule 33.5",
-    "2Standard Operating Procedure (SOP)",
+    "[1]DIAC Rules, Rule 33.5",
+    "[2]Standard Operating Procedure (SOP)",
   ]);
   expect(items[1].querySelector('[data-testid="instant-legal-help-source-detail"]')).toBeNull();
 });
@@ -478,7 +491,7 @@ test("web and document sources are shown together but kept distinct, with DIAC r
   expect(doc.textContent).toContain("Arbitration Proceedings) Rules, 2023");
   // Numbers never collide: the document comes after the web sources.
   expect(web.textContent.startsWith("1")).toBe(true);
-  expect(doc.textContent.startsWith("2")).toBe(true);
+  expect(doc.textContent.startsWith("[2]")).toBe(true);
   // Only the web marker is linked; the rule number stays text.
   expect(container.querySelectorAll('[data-testid="instant-legal-help-cite"]')).toHaveLength(1);
 });
@@ -587,7 +600,9 @@ test("Send shows the thinking indicator before the reply, blocks a second send, 
   expect(loading).not.toBeNull();
   expect(loading.textContent).toContain("Understanding your question…");
   expect($("instant-legal-help-msg-user-0").textContent).toBe("Hello");
-  expect($("instant-legal-help-send").disabled).toBe(true);
+  expect($("instant-legal-help-send")).toBeNull(); // the stop button replaces it while generating
+  expect($("instant-legal-help-stop")).not.toBeNull();
+  expect($("instant-legal-help-input").placeholder).toBe("Generating answer...");
   // A second Enter while waiting is ignored.
   const input = $("instant-legal-help-input");
   await act(async () => setValue(input, "Again"));
@@ -847,4 +862,47 @@ test("a welcome suggestion card sends its text as the first message; logged-out 
   await flush();
   expect(api.post).toHaveBeenCalledWith("/ai/chat", expect.objectContaining({ message: card.textContent }), CHAT_OPTS);
   expect($("instant-legal-help-input").placeholder).toBe("Ask a follow-up...");
+});
+
+test("Stop aborts the stream, never shows the late answer and offers to resend the question", async () => {
+  const d = deferred();
+  api.post.mockReturnValueOnce(d.promise).mockResolvedValueOnce({ data: { conversation_id: "c", reply: "Second try." } });
+  renderChat();
+  await sendMessage("What is Rule 8?");
+  const { signal } = api.post.mock.calls[0][2];
+  await act(async () => $("instant-legal-help-stop").click());
+  expect(signal.aborted).toBe(true);
+  expect($("instant-legal-help-loading")).toBeNull();
+  expect($("instant-legal-help-stop")).toBeNull();
+  expect($("instant-legal-help-send")).not.toBeNull();
+  await act(async () => d.resolve({ data: { conversation_id: "c", reply: "Late answer." } }));
+  await flush();
+  expect(container.textContent).not.toContain("Late answer.");
+  expect(container.textContent).toContain("Stopped.");
+  await act(async () => $("instant-legal-help-retry").click());
+  await flush();
+  expect(api.post).toHaveBeenLastCalledWith("/ai/chat", expect.objectContaining({ message: "What is Rule 8?" }), CHAT_OPTS);
+  expect(container.textContent).toContain("Second try.");
+  expect(container.textContent).not.toContain("Stopped.");
+});
+
+test("a superscript number in the summary scrolls to and highlights its source row; a linked row is one link", async () => {
+  const citations = [{ title: "SIAC Rules 2025", url: "https://siac.org.sg/rules.pdf", rules: ["9"], label: "Rule" }];
+  const answer = { ...CARD, summary: "Interim relief is available.[1]",
+    points: [{ icon: "rule", title: "Proviso (international arbitration)", badge: "", tone: "neutral", text: "Apply early.", cite: [1] }] };
+  api.post.mockResolvedValue({ data: { conversation_id: "c", reply: "x", citations, grounding: "supported", answer } });
+  renderChat();
+  await sendMessage("SIAC interim relief");
+  const point = $("instant-legal-help-answer-point");
+  expect(point.querySelector("h4").textContent).toBe("Proviso (international arbitration)");
+  const row = $("instant-legal-help-source");
+  const link = row.querySelector('[data-testid="instant-legal-help-source-link"]');
+  expect(link.textContent).toContain("[1]SIAC Rules 2025, Rule 9");
+  expect(link.getAttribute("href")).toBe("https://siac.org.sg/rules.pdf");
+  const summaryCite = $("instant-legal-help-answer-card").querySelector('[data-testid="instant-legal-help-cite"]');
+  expect(summaryCite.className).toContain("align-super");
+  row.scrollIntoView = jest.fn();
+  act(() => summaryCite.click());
+  expect(row.scrollIntoView).toHaveBeenCalled();
+  expect(row.classList.contains("ring-2")).toBe(true);
 });

@@ -537,13 +537,18 @@ async def _filtered_search(client, query: str, flt: dict | None, max_results: in
     return getattr(result, "data", []) or [], True
 
 
-def _search_text(query: str, selected_source: str | None) -> str:
-    """"Searching DIAC Rules…" / "Searching ICC Rules, SIAC Rules…"."""
+def _search_names(query: str, selected_source: str | None) -> str:
+    """"DIAC Rules" / "ICC Rules, SIAC Rules": what this question searches."""
     codes = _search_codes(query, selected_source)
     if codes and codes == kb_registry.all_codes():
-        return "Searching the Arbitration Act and institutional rules…"
+        return "the Arbitration Act and institutional rules"
     files = [f for c in sorted(codes) for f in kb_registry.files_for(c)] or ([selected_source] if selected_source else [])
-    return f"Searching {', '.join(kb_registry.search_name(f) for f in files) or 'the documents'}…"
+    return ', '.join(kb_registry.search_name(f) for f in files) or 'the documents'
+
+
+def _search_text(query: str, selected_source: str | None) -> str:
+    """"Searching DIAC Rules…" / "Searching ICC Rules, SIAC Rules…"."""
+    return f"Searching {_search_names(query, selected_source)}…"
 
 
 async def _provision_passages(client, approved_chunks: list[tuple[str, str | None, str | None]], query: str,
@@ -660,6 +665,8 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
     stage = "RAG retrieval" if use_file_search else f"{AI_PROVIDER} generation"
     try:
         if use_file_search:
+            # Same step id as the page's first step, so it replaces "Understanding…" in place.
+            await emit_status(on_status, "understanding", f"Understood: a question on {_search_names(query, selected_source)}")
             await emit_status(on_status, "searching", _search_text(query, selected_source))
             context, sources, rag_chunk_count, ranked_rules, document_text = await asyncio.wait_for(
                 _retrieve_context(query, selected_source), timeout=AI_TIMEOUT_SECONDS

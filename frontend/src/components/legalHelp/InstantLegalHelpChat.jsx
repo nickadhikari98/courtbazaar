@@ -3,13 +3,13 @@ import { api, getErrorMessage } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { ArrowUp, Loader2, Scale, User, Info, RotateCcw, Menu, Paperclip } from "lucide-react";
+import { ArrowUp, Scale, User, Info, RotateCcw, Menu, Paperclip, Square, Copy } from "lucide-react";
 import ChatSidebar from "./ChatSidebar";
 import ChatStatus, { FIRST_STEP } from "./ChatStatus";
 import { streamChat } from "./chatStream";
 import ChatMarkdown from "./ChatMarkdown";
 import ChatSources, { documentCitationLinks, webCitationLinks } from "./ChatSources";
-import AnswerCard, { AnswerNote, normalizeAnswer } from "./AnswerCard";
+import AnswerCard, { AnswerNote, answerPlainText, normalizeAnswer } from "./AnswerCard";
 
 // Multi-turn conversation via POST /ai/chat/stream. Backend routing (ai_chat.py)
 // transparently grounds some replies in live public CourtBazaar data
@@ -102,6 +102,7 @@ export function assistantMessageFrom(data) {
   };
 }
 
+const STOPPED_TEXT = "Stopped. The answer was not generated.";
 const SESSION_EXPIRED_TEXT = "This chat session is no longer available. Please send your message again to start a new chat.";
 
 // Welcome-screen cards; clicking one sends its text as the first message.
@@ -300,6 +301,25 @@ export default function InstantLegalHelpChat({ initialMessage }) {
     }
   };
 
+  // Stop: drop the in-flight answer (it never lands) and offer to resend the question.
+  const stop = () => {
+    const question = [...msgs].reverse().find((m) => m.role === "user")?.text;
+    sessionRef.current += 1;
+    abortRef.current?.abort();
+    setLoading(false);
+    setMsgs((prev) => [...prev, { role: "assistant", text: STOPPED_TEXT, retryText: question }]);
+  };
+
+  const copyAnswer = async (m) => {
+    const text = m.answer ? answerPlainText(m.answer, cleanAssistantText) : cleanAssistantText(m.text);
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Copied");
+    } catch {
+      toast.error("Couldn't copy. Please select the text instead.");
+    }
+  };
+
   const handleKeyDown = (e) => {
     // Enter sends, Shift+Enter is a new line; never send mid-IME-composition.
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -395,6 +415,17 @@ export default function InstantLegalHelpChat({ initialMessage }) {
                   </div>
                 )}
                 <ChatSources citations={m.citations} idPrefix={`${chatId}-msg-${i}`} />
+                {!m.retryText && (
+                  <div className="mt-2 flex items-center gap-1">
+                    <button
+                      type="button" onClick={() => copyAnswer(m)} aria-label="Copy answer" title="Copy"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      data-testid="instant-legal-help-copy"
+                    >
+                      <Copy className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
                 {m.retryText && i === msgs.length - 1 && !loading && (
                   <Button
                     type="button" variant="outline" size="sm" onClick={() => retry(m.retryText)}
@@ -419,7 +450,7 @@ export default function InstantLegalHelpChat({ initialMessage }) {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={msgs.length ? "Ask a follow-up..." : "Describe your situation, legal issue, or service need..."}
+              placeholder={loading ? "Generating answer..." : msgs.length ? "Ask a follow-up..." : "Describe your situation, legal issue, or service need..."}
               aria-label="Message Instant Legal Help"
               autoFocus
               className="block w-full resize-none bg-transparent px-2 py-2 text-[15px] leading-6 max-h-40 overflow-y-auto cb-scroll placeholder:text-slate-400 focus:outline-none"
@@ -449,14 +480,24 @@ export default function InstantLegalHelpChat({ initialMessage }) {
                   </button>
                 ))}
               </div>
-              <Button
-                type="button" onClick={() => send()} disabled={loading || !input.trim()}
-                aria-label="Send message"
-                className="ml-auto h-10 w-10 shrink-0 rounded-full bg-accent p-0 hover:bg-accent/90"
-                data-testid="instant-legal-help-send"
-              >
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-5 h-5" />}
-              </Button>
+              {loading ? (
+                <Button
+                  type="button" onClick={stop} aria-label="Stop generating" title="Stop generating"
+                  className="ml-auto h-10 w-10 shrink-0 rounded-full bg-foreground p-0 hover:bg-foreground/90"
+                  data-testid="instant-legal-help-stop"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                </Button>
+              ) : (
+                <Button
+                  type="button" onClick={() => send()} disabled={!input.trim()}
+                  aria-label="Send message"
+                  className="ml-auto h-10 w-10 shrink-0 rounded-full bg-accent p-0 hover:bg-accent/90"
+                  data-testid="instant-legal-help-send"
+                >
+                  <ArrowUp className="w-5 h-5" />
+                </Button>
+              )}
             </div>
           </div>
           <p className="text-2xs text-muted-foreground text-center mt-2 px-2">

@@ -1,16 +1,30 @@
 import React, { useEffect, useState } from "react";
-import { Check, ChevronDown, Scale } from "lucide-react";
+import { Check, Loader2 } from "lucide-react";
 
-/* What the chat shows while an answer is on its way. Every step comes from
-   the server (ai_chat.stream_chat_events), which sends one when the pipeline
+/* What the chat shows while an answer is on its way: one bordered panel with
+   the server's steps (ai_chat.stream_chat_events sends each when the pipeline
    really reaches it; only the first is set here, as the page knows it has
-   started. Mounted for one request, so the timer runs from send to answer. */
+   started), then skeleton bars while the card is written and verified. The
+   page swaps the whole panel for the finished answer. Mounted for one
+   request, so the timer runs from send to answer. */
 
 export const FIRST_STEP = { step: "understanding", text: "Understanding your question…" };
 
+// Writing is covered by the skeleton, not a row of its own.
+const CARD_STEPS = ["writing", "verifying"];
+
+/* Exported for tests: a step's line, past tense (no "…") once it is done. */
+export function stepLabel(step, done) {
+  if (step.step === "verifying") return done ? "Verified citations" : "Verifying citations…";
+  if (!done) return String(step.text || "");
+  const text = String(step.text || "").replace(/…$/, "");
+  if (step.step === "searching") return text.replace(/^Searching\b/, "Searched");
+  if (step.step === "understanding") return text.replace(/^Understanding\b/, "Understood");
+  return text;
+}
+
 export default function ChatStatus({ steps }) {
   const [seconds, setSeconds] = useState(0);
-  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     const started = Date.now();
@@ -18,47 +32,37 @@ export default function ChatStatus({ steps }) {
     return () => clearInterval(timer);
   }, []);
 
-  const current = steps[steps.length - 1] ?? FIRST_STEP;
-  const done = steps.slice(0, -1);
+  const all = steps.length ? steps : [FIRST_STEP];
+  const current = all[all.length - 1];
+  const shown = all.filter((s) => s.step !== "writing");
   return (
-    <div className="flex gap-3 items-start" data-testid="instant-legal-help-loading">
-      <div className="w-8 h-8 rounded-lg bg-accent text-white flex items-center justify-center shrink-0" aria-hidden="true">
-        <Scale className="w-4 h-4" />
-      </div>
-      <div className="min-w-0 flex-1 pt-1.5 text-sm text-muted-foreground">
-        <div className="flex items-center gap-2.5">
-          <span className="flex gap-1 items-center shrink-0" aria-hidden="true">
-            <span className="w-1.5 h-1.5 bg-accent rounded-full motion-safe:animate-bounce" style={{ animationDelay: "0ms" }} />
-            <span className="w-1.5 h-1.5 bg-accent rounded-full motion-safe:animate-bounce" style={{ animationDelay: "150ms" }} />
-            <span className="w-1.5 h-1.5 bg-accent rounded-full motion-safe:animate-bounce" style={{ animationDelay: "300ms" }} />
-          </span>
-          {/* Keyed so each new step fades in. */}
-          <span key={current.text} role="status" className="min-w-0 [overflow-wrap:anywhere] motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200" data-testid="instant-legal-help-status-text">
-            {current.text}
-          </span>
-          {/* Hidden under 1s so instant replies (greetings) never flash a "0s" timer. */}
-          {seconds > 0 && <span className="shrink-0 tabular-nums text-xs text-muted-foreground/80" aria-hidden="true" data-testid="instant-legal-help-status-timer">{seconds}s</span>}
-          {done.length > 0 && (
-            <button
-              type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-label="Show completed steps"
-              className="shrink-0 rounded p-0.5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              data-testid="instant-legal-help-status-toggle"
-            >
-              <ChevronDown className={`h-4 w-4 motion-safe:transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
-            </button>
-          )}
+    <div className="rounded-2xl border border-border bg-white p-4" data-testid="instant-legal-help-loading">
+      <ul className="space-y-1.5 text-sm" data-testid="instant-legal-help-status-steps">
+        {shown.map((s, i) => {
+          const done = s !== current;
+          return (
+            <li key={`${i}-${s.step}`} className={`flex items-start gap-2 ${done ? "text-muted-foreground" : "text-foreground"}`}>
+              {done
+                ? <Check className="mt-1 h-3.5 w-3.5 shrink-0 text-emerald-600" aria-hidden="true" />
+                : <Loader2 className="mt-1 h-3.5 w-3.5 shrink-0 motion-safe:animate-spin text-accent" aria-hidden="true" />}
+              <span
+                className="min-w-0 flex-1 [overflow-wrap:anywhere]"
+                {...(done ? {} : { role: "status", "data-testid": "instant-legal-help-status-text" })}
+              >
+                {stepLabel(s, done)}
+              </span>
+              {/* Hidden under 1s so instant replies (greetings) never flash a "0s" timer. */}
+              {!done && seconds > 0 && <span className="shrink-0 tabular-nums text-xs text-muted-foreground" aria-hidden="true" data-testid="instant-legal-help-status-timer">{seconds}s</span>}
+            </li>
+          );
+        })}
+      </ul>
+      {CARD_STEPS.includes(current.step) && (
+        <div className="mt-4 space-y-2" data-testid="instant-legal-help-skeleton">
+          {["w-full", "w-11/12", "w-2/3"].map((w) => <div key={w} className={`h-3 ${w} rounded bg-slate-200 motion-safe:animate-pulse`} />)}
+          <p className="pt-1 text-xs text-muted-foreground">The full answer card appears here once it is verified.</p>
         </div>
-        {open && done.length > 0 && (
-          <ul className="mt-2 space-y-1 text-xs" data-testid="instant-legal-help-status-steps">
-            {done.map((s, i) => (
-              <li key={`${i}-${s.step}`} className="flex items-start gap-1.5">
-                <Check className="mt-0.5 h-3 w-3 shrink-0 text-emerald-600" aria-hidden="true" />
-                <span className="min-w-0 [overflow-wrap:anywhere]">{s.text}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      )}
     </div>
   );
 }

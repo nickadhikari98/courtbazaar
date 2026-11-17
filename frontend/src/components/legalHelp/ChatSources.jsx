@@ -1,5 +1,5 @@
 import React from "react";
-import { BookOpen, ExternalLink, Globe } from "lucide-react";
+import { ExternalLink, Globe } from "lucide-react";
 
 /* The "Sources" block under a document answer. Every entry comes from the
    response's `citations`, which the server builds from approved-source
@@ -175,50 +175,48 @@ export default function ChatSources({ citations, idPrefix }) {
       data-testid="instant-legal-help-citations"
     >
       <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sources</h4>
-      <ol className="mt-2 space-y-2">
+      <ol className="mt-2 space-y-1">
         {web.map((s) => <WebSource key={`web-${s.index}`} source={s} />)}
-        {sources.map((s, i) => (
-          <li
-            key={`doc-${s.title}`}
-            id={idPrefix ? sourceRowId(idPrefix, firstDocNumber + i) : undefined}
-            className="flex scroll-mt-4 items-start gap-2.5 rounded-lg border border-border bg-white px-3 py-2 transition-shadow"
-            data-testid="instant-legal-help-source"
-          >
-            <span className="mt-0.5 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-accent/10 px-1 text-2xs font-bold text-accent" aria-hidden="true">
-              {firstDocNumber + i}
-            </span>
-            <div className="min-w-0 flex-1 text-sm leading-6">
-              <div className="flex items-start gap-1.5 font-medium text-foreground [overflow-wrap:anywhere]">
-                <BookOpen className="mt-1 h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
-                {s.url ? (
-                  <a
-                    href={s.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline decoration-accent/40 underline-offset-2 hover:text-accent hover:decoration-accent"
-                    data-testid="instant-legal-help-source-link"
-                  >
-                    {s.title}
-                    <ExternalLink className="ml-1 inline h-3 w-3 align-[-1px]" aria-hidden="true" />
-                    <span className="sr-only"> (opens in a new tab)</span>
-                  </a>
-                ) : (
-                  <span>{s.title}</span>
+        {sources.map((s, i) => {
+          const n = firstDocNumber + i;
+          const row = (
+            <>
+              <span className="shrink-0 tabular-nums text-muted-foreground" aria-hidden="true">[{n}]</span>
+              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                <span className="font-medium text-foreground">{s.title}</span>
+                {s.rules.length > 0 && (
+                  <>, <span className="text-muted-foreground" data-testid="instant-legal-help-source-detail">{ruleLabel(s.rules, s.label)}</span></>
                 )}
-              </div>
-              {s.rules.length > 0 && (
-                <div className="text-xs text-muted-foreground" data-testid="instant-legal-help-source-detail">
-                  {ruleLabel(s.rules, s.label)}
-                </div>
+                {s.document && (
+                  <span className="block text-xs text-muted-foreground" data-testid="instant-legal-help-source-document">From: {s.document}</span>
+                )}
+              </span>
+            </>
+          );
+          const rowClass = "flex items-start gap-3 rounded-lg px-2 py-1.5 text-sm leading-6";
+          return (
+            <li
+              key={`doc-${s.title}`}
+              id={idPrefix ? sourceRowId(idPrefix, n) : undefined}
+              className="scroll-mt-4 rounded-lg transition-shadow"
+              data-testid="instant-legal-help-source"
+            >
+              {s.url ? (
+                <a
+                  href={s.url} target="_blank" rel="noopener noreferrer"
+                  className={`${rowClass} hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40`}
+                  data-testid="instant-legal-help-source-link"
+                >
+                  {row}
+                  <ExternalLink className="mt-1.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <span className="sr-only"> (opens in a new tab)</span>
+                </a>
+              ) : (
+                <div className={rowClass}>{row}</div>
               )}
-              {s.document && (
-                <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]" data-testid="instant-legal-help-source-document">
-                  From: {s.document}
-                </div>
-              )}
-            </div>
-          </li>
-        ))}
+            </li>
+          );
+        })}
       </ol>
     </section>
   );
