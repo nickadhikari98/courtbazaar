@@ -13,7 +13,7 @@ import json
 import hashlib
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, ConfigDict, Field, EmailStr
 from typing import List, Optional, Literal, Dict, Any
 import uuid
 import secrets
@@ -273,8 +273,14 @@ class SetPasswordRequest(BaseModel):
     token: str
     password: str
 
+WORK_TYPES = ("Advocate", "Law firm", "Corporate counsel", "Law student", "Other")
+
 class UserProfile(BaseModel):
     name: Optional[str] = None
+    # "What should we call you?" — a short name for greetings.
+    display_name: Optional[str] = Field(None, max_length=40)
+    # "What best describes your work?"
+    work_type: Optional[Literal["Advocate", "Law firm", "Corporate counsel", "Law student", "Other"]] = None
     phone: Optional[str] = None
     bar_council_id: Optional[str] = None
     chamber_address: Optional[str] = None
@@ -903,10 +909,42 @@ async def set_password(req: SetPasswordRequest):
     fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
     return {"token": token, "user": _enrich_user_with_roles_and_capabilities(fresh)}
 
+AVATAR_EXTENSIONS = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
+AVATAR_URL_TTL_SECONDS = 24 * 60 * 60
+
+def _with_avatar(user: dict) -> dict:
+    """An uploaded photo lives privately in storage (avatar_path); avatar_url is
+    a fresh signed link to it on every read, the same way review photos work.
+    Without an upload, avatar_url stays as it was (e.g. a Google picture)."""
+    if user and user.get("avatar_path"):
+        user["avatar_url"] = presigned_download_url(user["avatar_path"], expires_in=AVATAR_URL_TTL_SECONDS)
+    return user
+
 @api_router.get("/auth/me")
 async def auth_me(user=Depends(get_current_user)):
     user.pop("password_hash", None)
-    return user
+    return _with_avatar(user)
+
+@api_router.post("/auth/profile/avatar")
+async def upload_avatar(file: UploadFile = File(...), user=Depends(get_current_user)):
+    """Profile photo: PNG, JPEG or WebP up to MAX_UPLOAD_SIZE_BYTES (10MB), via the storage module."""
+    data = await file.read()
+    ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else ""
+    content_type = (file.content_type or "").lower()
+    if ext not in AVATAR_EXTENSIONS or (content_type and content_type not in set(AVATAR_EXTENSIONS.values()) | {"image/jpg"}):
+        raise HTTPException(400, "Profile photos must be PNG, JPEG, or WebP.")
+    if not data:
+        raise HTTPException(400, "Uploaded file is empty")
+    if len(data) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(400, f"File too large. Max size is {MAX_UPLOAD_SIZE_BYTES // (1024*1024)}MB")
+    path = f"{APP_NAME}/avatars/{user['user_id']}/{uuid.uuid4().hex}.{ext}"
+    try:
+        result = put_object(path, data, AVATAR_EXTENSIONS[ext])
+    except Exception as e:
+        logger.error(f"Avatar upload failed: {e}")
+        raise HTTPException(500, "Upload failed. Please try again.")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"avatar_path": result["path"]}})
+    return {"avatar_url": presigned_download_url(result["path"], expires_in=AVATAR_URL_TTL_SECONDS)}
 
 @api_router.post("/auth/logout")
 async def logout(authorization: Optional[str] = Header(None)):
@@ -921,7 +959,7 @@ async def update_profile(profile: UserProfile, user=Depends(get_current_user)):
     if update:
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
     refreshed = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
-    return refreshed
+    return _with_avatar(refreshed)
 
 # ---------- COURTS ----------
 @api_router.get("/states")
@@ -1799,6 +1837,32 @@ async def ai_history(conversation_id: str, user: Optional[dict] = Depends(get_cu
     client_ip = request.client.host if request and request.client else "unknown"
     ai_chat_svc.check_history_rate_limit(user["user_id"] if user else client_ip)
     return await ai_chat_svc.get_conversation_history(db, conversation_id, user, x_conversation_token)
+
+class AIPreferences(BaseModel):
+    """Chat Settings stored on the user (ai_preferences). Unknown keys are rejected."""
+    model_config = ConfigDict(extra="forbid")
+    answer_language: Optional[Literal["auto", "en", "hi", "hinglish"]] = None
+    transcript_width: Optional[Literal["narrow", "wide"]] = None
+    theme: Optional[Literal["system", "light", "dark"]] = None
+
+AI_PREFERENCE_DEFAULTS = {"answer_language": "auto", "transcript_width": "narrow", "theme": "system"}
+
+async def _ai_preferences(user_id: str) -> dict:
+    doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "ai_preferences": 1}) or {}
+    stored = {k: v for k, v in (doc.get("ai_preferences") or {}).items() if k in AI_PREFERENCE_DEFAULTS}
+    return {**AI_PREFERENCE_DEFAULTS, **stored}
+
+@api_router.get("/ai/preferences")
+async def ai_preferences_get(user=Depends(get_current_user)):
+    return await _ai_preferences(user["user_id"])
+
+@api_router.patch("/ai/preferences")
+async def ai_preferences_update(req: AIPreferences, user=Depends(get_current_user)):
+    changes = {f"ai_preferences.{k}": v for k, v in req.model_dump(exclude_none=True).items()}
+    if not changes:
+        raise HTTPException(400, "Nothing to update.")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": changes})
+    return await _ai_preferences(user["user_id"])
 
 @api_router.get("/ai/usage")
 async def ai_usage(user: Optional[dict] = Depends(get_current_user_optional), request: Request = None):

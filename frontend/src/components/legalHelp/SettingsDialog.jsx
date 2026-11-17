@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft, ChevronRight, X } from "lucide-react";
 import { toast } from "sonner";
@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { resetTime } from "./usage";
 
@@ -33,15 +34,43 @@ function Heading({ children }) {
   return <h2 className="mb-4 font-display text-xl font-bold">{children}</h2>;
 }
 
+export const WORK_TYPES = ["Advocate", "Law firm", "Corporate counsel", "Law student", "Other"];
+const AVATAR_TYPES = ["image/png", "image/jpeg", "image/webp"];
+const AVATAR_MAX_BYTES = 10 * 1024 * 1024;
+
 function AccountPane({ user, refresh }) {
-  const [name, setName] = useState(user?.name || "");
+  const [form, setForm] = useState({ name: user?.name || "", display_name: user?.display_name || "", work_type: user?.work_type || "" });
   const [saving, setSaving] = useState(false);
-  const changed = name.trim() !== (user?.name || "") && !!name.trim();
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef(null);
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  // Only fields that changed are sent (PUT /auth/profile ignores the rest).
+  const changes = Object.fromEntries(Object.entries(form)
+    .map(([k, v]) => [k, v.trim()]).filter(([k, v]) => v && v !== (user?.[k] || "")));
+  const changed = Object.keys(changes).length > 0;
+  const uploadPhoto = async (file) => {
+    if (!file) return;
+    if (!AVATAR_TYPES.includes(file.type)) { toast.error("Profile photos must be PNG, JPEG, or WebP."); return; }
+    if (file.size > AVATAR_MAX_BYTES) { toast.error("That photo is over 10MB."); return; }
+    setUploading(true);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      await api.post("/auth/profile/avatar", body);
+      await refresh?.();
+      toast.success("Photo updated");
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Couldn't upload that photo."));
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
   const save = async (e) => {
     e.preventDefault();
     setSaving(true);
     try {
-      await api.put("/auth/profile", { name: name.trim() });
+      await api.put("/auth/profile", changes);
       await refresh?.();
       toast.success("Profile saved");
     } catch (err) {
@@ -53,13 +82,37 @@ function AccountPane({ user, refresh }) {
   return (
     <form onSubmit={save} className="max-w-md space-y-5">
       <Heading>Account</Heading>
-      <Avatar className="h-16 w-16">
-        <AvatarImage src={user?.avatar_url} alt="" />
-        <AvatarFallback className="text-lg font-semibold">{(user?.name || "?").slice(0, 1).toUpperCase()}</AvatarFallback>
-      </Avatar>
+      <div className="flex items-center gap-4">
+        <Avatar className="h-16 w-16">
+          <AvatarImage src={user?.avatar_url} alt="" />
+          <AvatarFallback className="text-lg font-semibold">{(user?.name || "?").slice(0, 1).toUpperCase()}</AvatarFallback>
+        </Avatar>
+        <div>
+          <input ref={fileRef} type="file" accept={AVATAR_TYPES.join(",")} className="sr-only" id="settings-photo"
+            onChange={(e) => uploadPhoto(e.target.files?.[0])} data-testid="settings-photo-input" />
+          <Button type="button" variant="outline" size="sm" className="h-10" disabled={uploading}
+            onClick={() => fileRef.current?.click()} data-testid="settings-photo">
+            {uploading ? "Uploading…" : "Upload photo"}
+          </Button>
+          <p className="mt-1 text-xs text-muted-foreground">PNG, JPEG, or WebP, up to 10MB</p>
+        </div>
+      </div>
       <div className="space-y-1.5">
         <Label htmlFor="settings-name">Full name</Label>
-        <Input id="settings-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} data-testid="settings-name" />
+        <Input id="settings-name" value={form.name} onChange={(e) => set("name")(e.target.value)} maxLength={120} data-testid="settings-name" />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="settings-display-name">What should we call you?</Label>
+        <Input id="settings-display-name" value={form.display_name} onChange={(e) => set("display_name")(e.target.value)} maxLength={40} data-testid="settings-display-name" />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="settings-work-type">What best describes your work?</Label>
+        <Select value={form.work_type || undefined} onValueChange={set("work_type")}>
+          <SelectTrigger id="settings-work-type" data-testid="settings-work-type"><SelectValue placeholder="Choose one" /></SelectTrigger>
+          <SelectContent>
+            {WORK_TYPES.map((w) => <SelectItem key={w} value={w}>{w}</SelectItem>)}
+          </SelectContent>
+        </Select>
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="settings-email">Email</Label>

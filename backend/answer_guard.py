@@ -581,6 +581,36 @@ def validate_rule_attribution(answer: str, provisions: dict) -> Tuple[Optional[s
     return _rebuild(out), dropped
 
 
+# Hindi / Hinglish answers (Settings answer language). The prose can't be
+# matched word for word against English sources (Devanagari has no "content
+# words" at all for _content_supported, so it used to pass unchecked; Hinglish
+# mostly failed). Instead each part must name a provision that was actually
+# retrieved, and every figure in it must appear in the source. The LLM
+# verifier still reads the whole card afterwards.
+NON_ENGLISH_LANGUAGES = ("hi", "hinglish")
+_DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+_PROVISION_REF_RE = re.compile(
+    r"(?:\b(?:rules?|sections?|articles?|clauses?|paragraphs?|niyam|dhara|anuchchhed)\b\.?|नियम|धारा|अनुच्छेद|खंड)"
+    r"\s*\(?(\d{1,3}[A-Z]?(?:\.\d{1,2})?)", re.IGNORECASE)
+
+
+def _provision_grounded(text: str, evidence: str, provisions: dict) -> Optional[str]:
+    """`text` (Devanagari digits made ASCII) when it cites at least one
+    retrieved provision and all its figures are in the evidence; else None."""
+    body = (text or "").translate(_DEVANAGARI_DIGITS)
+    refs = set(_PROVISION_REF_RE.findall(body))
+    if not refs:
+        return None  # nothing ties the claim to the source
+    for ref in refs:
+        if provisions:
+            if ref not in provisions:
+                return None  # cites a provision whose text wasn't retrieved
+        elif not re.search(rf"(?<![\d.]){re.escape(ref)}(?![\d.])", evidence or ""):
+            return None
+    figures = _numbers(_PROVISION_REF_RE.sub(" ", body))
+    return body if figures <= _numbers(evidence or "") else None
+
+
 def _checked_card_text(markdown: str, evidence: str, provisions: dict) -> Optional[str]:
     """One card field through both document checks, or None when nothing
     trustworthy is left."""
@@ -589,7 +619,51 @@ def _checked_card_text(markdown: str, evidence: str, provisions: dict) -> Option
     return validated.replace(PARTIAL_ANSWER_NOTE, "").strip() if validated else None
 
 
-def validate_answer_card(card: dict, evidence: str, provisions: dict) -> Optional[dict]:
+def _mostly_devanagari(card: dict) -> bool:
+    text = " ".join([card.get("summary") or ""] + [f"{p.get('title') or ''} {p.get('text') or ''}" for p in card.get("points") or []])
+    letters = [c for c in text if c.isalpha()]
+    return bool(letters) and sum("ऀ" <= c <= "ॿ" for c in letters) * 2 > len(letters)
+
+
+def validate_answer_card(card: dict, evidence: str, provisions: dict, language: str = "auto") -> Optional[dict]:
+    # By the setting, or by the script: on "auto" a Hindi question gets a Hindi answer.
+    if language in NON_ENGLISH_LANGUAGES or _mostly_devanagari(card):
+        return _validate_non_english_card(card, evidence, provisions)
+    return _validate_english_card(card, evidence, provisions)
+
+
+def _validate_non_english_card(card: dict, evidence: str, provisions: dict) -> Optional[dict]:
+    """validate_answer_card for Hindi / Hinglish: the same shape and the same
+    rule (a point that can't be tied to the source is dropped; no points left
+    means no card), with _provision_grounded in place of the English wording
+    checks. The summary may lean on the points' citations, but its figures
+    must still be in the evidence."""
+    one_line = lambda value: re.sub(r"\s+", " ", value or "").strip()
+    evidence_numbers = _numbers(evidence or "")
+    points = []
+    for point in card["points"]:
+        title, badge = one_line(point["title"]), one_line(point.get("badge"))
+        text = re.sub(r"\s*\[\d{1,2}\]", "", one_line(point["text"]))
+        if not title or not text or _provision_grounded(f"{badge} {title} {text}", evidence, provisions) is None:
+            continue
+        points.append({**point, "title": title.translate(_DEVANAGARI_DIGITS), "text": text.translate(_DEVANAGARI_DIGITS),
+                       "badge": badge if badge and _numbers(badge) <= evidence_numbers else None})
+    if not points:
+        return None
+    summary = one_line(card["summary"]).translate(_DEVANAGARI_DIGITS)
+    if not summary or not _numbers(summary) <= evidence_numbers:
+        summary = None
+    direct = {"yes": "Yes. ", "no": "No. "}.get(card.get("direct"), "")
+    extra = {key: (_provision_grounded(one_line(card.get(key)), evidence, provisions) if card.get(key) else None)
+             for key in ("practical_implications", "limitations")}
+    follow_up = one_line(card.get("follow_up")).translate(_DEVANAGARI_DIGITS)
+    if not _numbers(follow_up) <= evidence_numbers:
+        follow_up = ""
+    return {"status": "partial" if card["status"] == "partial" else "answered",
+            "summary": summary and direct + summary, "points": points, **extra, "follow_up": follow_up}
+
+
+def _validate_english_card(card: dict, evidence: str, provisions: dict) -> Optional[dict]:
     """The structured form of validate_grounded_answer + validate_rule_attribution:
     each point is checked as its own "## title" section, so a dropped sentence
     or point can't leave text under the wrong heading. A point that doesn't

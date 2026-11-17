@@ -198,11 +198,43 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const prefsKey = `cb_chat_prefs:${user?.user_id || "guest"}`;
   const [prefs, setPrefs] = useState(() => readPrefs(prefsKey));
   useEffect(() => { setPrefs(readPrefs(prefsKey)); }, [prefsKey]);
-  const setPref = (k, v) => setPrefs((prev) => {
-    const next = { ...prev, [k]: v };
-    try { localStorage.setItem(prefsKey, JSON.stringify(next)); } catch { /* applies now, not remembered */ }
-    return next;
-  });
+  const savePrefsLocally = (next) => {
+    try { localStorage.setItem(prefsKey, JSON.stringify(next)); } catch { /* applies now, not remembered here */ }
+  };
+  // Stored on the account (GET/PATCH /ai/preferences); this browser's copy is used until it loads.
+  useEffect(() => {
+    if (!user) return undefined;
+    let live = true;
+    (async () => {
+      try {
+        const { data } = await api.get("/ai/preferences");
+        if (!live || !data || typeof data !== "object") return;
+        const next = {
+          width: PREF_OPTIONS.width.includes(data.transcript_width) ? data.transcript_width : PREF_OPTIONS.width[0],
+          language: PREF_OPTIONS.language.includes(data.answer_language) ? data.answer_language : PREF_OPTIONS.language[0],
+        };
+        setPrefs(next);
+        savePrefsLocally(next);
+      } catch { /* keep this browser's copy */ }
+    })();
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, prefsKey]);
+  const setPref = (k, v) => {
+    setPrefs((prev) => {
+      const next = { ...prev, [k]: v };
+      savePrefsLocally(next);
+      return next;
+    });
+    if (!user) return;
+    (async () => {
+      try {
+        await api.patch("/ai/preferences", { [k === "width" ? "transcript_width" : "answer_language"]: v });
+      } catch (err) {
+        toast.error(getErrorMessage(err, "Couldn't save that setting to your account."));
+      }
+    })();
+  };
   const [helpOpen, setHelpOpen] = useState(false);
   const [chats, setChats] = useState([]);
   const [archivedChats, setArchivedChats] = useState([]);
@@ -593,7 +625,9 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         <div className={`${prefs.width === "wide" ? "max-w-5xl" : "max-w-3xl"} mx-auto w-full px-4 py-6 sm:py-8 space-y-6`} data-testid="instant-legal-help-transcript">
           {msgs.length === 0 && !loading && (
             <div className="py-8 sm:py-16 text-center" data-testid="instant-legal-help-empty">
-              <h2 className="font-display font-bold text-2xl sm:text-3xl">How can I help today?</h2>
+              <h2 className="font-display font-bold text-2xl sm:text-3xl">
+                {user?.display_name ? `How can I help today, ${user.display_name}?` : "How can I help today?"}
+              </h2>
               <p className="text-sm text-muted-foreground mt-2 max-w-md mx-auto leading-6">
                 Tell me what's going on and I'll help you figure out the next step.
               </p>

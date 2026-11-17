@@ -624,7 +624,8 @@ def _reading_text(query: str, rules: List[str], sources: List[str]) -> str:
 
 async def generate_response(messages: List[Dict[str, str]], use_file_search: bool = False,
                             selected_source: str | None = None,
-                            on_status: Optional[StatusCallback] = None) -> Dict[str, Any]:
+                            on_status: Optional[StatusCallback] = None,
+                            language: str = "auto") -> Dict[str, Any]:
     """Generate a reply, optionally grounding it in hosted vector-store results.
 
     `selected_source` is the one approved document to search, as decided by
@@ -717,7 +718,7 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
             try:
                 # Both attempts share one budget, so the plain fallback below
                 # still finishes inside the page's request timeout.
-                card_result = await asyncio.wait_for(_card_answer(client, messages, context, sources, on_status, action_gap),
+                card_result = await asyncio.wait_for(_card_answer(client, messages, context, sources, on_status, action_gap, language),
                                                      timeout=AI_TIMEOUT_SECONDS + AI_VERIFIER_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 logger.warning("Card fallback: using the plain answer (timed out)")
@@ -1386,7 +1387,7 @@ def _rules_name(citations: List[Dict[str, Any]]) -> str:
 
 async def _card_answer(client, messages: List[Dict[str, str]], context: str, sources: List[str],
                        on_status: Optional[StatusCallback] = None,
-                       action_gap: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                       action_gap: Optional[str] = None, language: str = "auto") -> Optional[Dict[str, Any]]:
     """A document answer as a validated card, or None to use the plain answer.
     One retry when the output isn't valid or doesn't survive the evidence
     checks; provider errors propagate to generate_response as usual.
@@ -1429,7 +1430,7 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
         if card["status"] == "not_found":
             return {"ok": False, "error_code": ERR_NO_CONTEXT, "detail": "Model found no answer in the evidence",
                     "stage": "rag", "exception_type": "NoContextError", "fallback_reason": "model_not_found"}
-        answer = answer_guard.validate_answer_card(card, evidence, provisions)
+        answer = answer_guard.validate_answer_card(card, evidence, provisions, language=language)
         if answer is None:
             reason = "no point passed the evidence checks"
             logger.warning("Structured answer attempt %d failed evidence validation", attempt + 1)

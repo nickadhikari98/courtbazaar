@@ -246,3 +246,57 @@ test("Privacy: Delete all chats asks first, then clears the list; account deleti
   expect(api.delete).toHaveBeenCalledWith("/ai/chats");
   expect(document.querySelectorAll('[data-testid="chat-row"]')).toHaveLength(0);
 });
+
+test("preferences load from the account and save back to it; the browser copy is the fallback", async () => {
+  mockAuth.user = USER;
+  api.get.mockImplementation((url) => Promise.resolve({
+    data: url === "/ai/usage" ? FREE_USAGE
+      : url === "/ai/preferences" ? { answer_language: "hinglish", transcript_width: "wide", theme: "system" } : [],
+  }));
+  api.patch.mockResolvedValue({ data: {} });
+  await render();
+  expect(api.get).toHaveBeenCalledWith("/ai/preferences");
+  expect($("instant-legal-help-transcript").className).toContain("max-w-5xl"); // from the account
+  await openMenuItem("chat-user-language");
+  expect($("settings-language-hinglish").getAttribute("aria-checked")).toBe("true");
+  act(() => $("settings-language-en").click());
+  await flush();
+  expect(api.patch).toHaveBeenCalledWith("/ai/preferences", { answer_language: "en" });
+  expect(JSON.parse(localStorage.getItem("cb_chat_prefs:u1")).language).toBe("en");
+  localStorage.clear();
+});
+
+test("Account: display name and work type save through PUT /auth/profile; the photo uploads with its rules shown", async () => {
+  mockAuth.user = { ...USER, display_name: "", work_type: "Advocate" };
+  mockGets(FREE_USAGE);
+  api.put.mockResolvedValue({ data: {} });
+  api.post.mockResolvedValue({ data: { avatar_url: "https://signed.example/a.png" } });
+  await render();
+  await openMenuItem("chat-user-settings");
+  expect(document.body.textContent).toContain("PNG, JPEG, or WebP, up to 10MB");
+  expect($("settings-work-type").textContent).toBe("Advocate");
+  expect($("settings-save").disabled).toBe(true);
+  act(() => setValue($("settings-display-name"), "JD"));
+  await act(async () => $("settings-save").click());
+  await flush();
+  expect(api.put).toHaveBeenCalledWith("/auth/profile", { display_name: "JD" }); // only what changed
+
+  const input = $("settings-photo-input");
+  const { toast } = require("sonner");
+  Object.defineProperty(input, "files", { configurable: true, value: [new File(["x"], "me.gif", { type: "image/gif" })] });
+  await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+  expect(toast.error).toHaveBeenCalledWith("Profile photos must be PNG, JPEG, or WebP.");
+  expect(api.post).not.toHaveBeenCalledWith("/auth/profile/avatar", expect.anything());
+  Object.defineProperty(input, "files", { configurable: true, value: [new File(["x"], "me.webp", { type: "image/webp" })] });
+  await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+  await flush();
+  expect(api.post).toHaveBeenCalledWith("/auth/profile/avatar", expect.any(FormData));
+  expect(mockAuth.refresh).toHaveBeenCalled();
+});
+
+test("the welcome heading greets by the display name", async () => {
+  mockAuth.user = { ...USER, display_name: "JD" };
+  mockGets(FREE_USAGE);
+  await render();
+  expect($("instant-legal-help-empty").textContent).toContain("How can I help today, JD?");
+});

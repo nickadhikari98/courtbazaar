@@ -2372,7 +2372,7 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         intent_note = INTENT_COMING_SOON_NOTES.get(intent)
     result = await llm_service.generate_response(
         llm_messages, use_file_search=use_rag, selected_source=decision["source"] if use_rag else None,
-        on_status=on_status,
+        on_status=on_status, **({"language": language} if language != "auto" else {}),
     )
     citations: List[Dict[str, Any]] = []
     grounding: Optional[str] = None
