@@ -7,14 +7,15 @@ import { BookOpen, ExternalLink, Globe } from "lucide-react";
    never from the reply text — so this component only displays what it's
    given, after checking its shape:
 
-     { title: string, url: string | null, rules: string[], document?: string }
+     { title: string, url: string | null, rules: string[], label?: string, document?: string }
 
    `title` is the set of rules or document the verified rules belong to;
    `document` (optional, newer responses) names the approved file they came
    from, shown only when it differs from the title. A source is a link only
    when the server supplied an https URL for it (KB_SOURCE_DISPLAY);
    otherwise it's a plain label. Rule numbers are shown only when the server
-   verified them. Nothing here is inferred or invented.
+   verified them, named with the server's `label` ("Article", "Appendix IV,
+   Article"; "Rule" for older responses). Nothing here is inferred or invented.
 
    A web source (general legal answers, llm_service.generate_web_answer) is
 
@@ -28,6 +29,7 @@ import { BookOpen, ExternalLink, Globe } from "lucide-react";
 const MAX_SOURCES = 10;
 const MAX_TITLE_LENGTH = 200;
 const RULE_REF_RE = /^\d{1,3}(?:\.\d{1,3})?(?:\([a-z]{1,4}\))?$/i;
+const RULE_LABEL_RE = /^(?:(?:Appendix [IVX]{1,5}|Schedule of Fees, Part [IVX]{1,5}), )?(?:Rule|Article|Section)$/;
 
 function safeHttpsUrl(value) {
   if (typeof value !== "string" || !value.trim()) return null;
@@ -89,6 +91,7 @@ export function normalizeCitations(raw) {
       title,
       url: safeHttpsUrl(c.url),
       rules: [...new Set(rules)],
+      label: typeof c.label === "string" && RULE_LABEL_RE.test(c.label) ? c.label : "Rule",
       document: document && document !== title ? document : null,
     });
   }
@@ -96,15 +99,31 @@ export function normalizeCitations(raw) {
 }
 
 /* Source number -> document source, for the chips in an answer card. Numbers
-   match the list below: document sources follow any web ones. */
-export function documentCitationLinks(raw) {
+   match the list below: document sources follow any web ones. With `idPrefix`
+   (the same one given to ChatSources) each gets the `anchor` id of its row. */
+export function documentCitationLinks(raw, idPrefix) {
   const web = normalizeWebCitations(raw);
   const first = (web.length ? web[web.length - 1].index : 0) + 1;
-  return new Map(normalizeCitations(raw).map((s, i) => [first + i, s]));
+  return new Map(normalizeCitations(raw).map((s, i) => [
+    first + i, idPrefix ? { ...s, anchor: sourceRowId(idPrefix, first + i) } : s,
+  ]));
 }
 
-function ruleLabel(rules) {
-  return `${rules.length > 1 ? "Rules" : "Rule"} ${rules.join(", ")}`;
+const sourceRowId = (idPrefix, n) => `${idPrefix}-source-${n}`;
+const HIGHLIGHT = ["ring-2", "ring-accent", "bg-accent/5"];
+
+/* A chip's click: scroll its source row into view and flash it. */
+export function jumpToSource(anchor) {
+  const row = document.getElementById(anchor);
+  if (!row) return;
+  row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  row.classList.add(...HIGHLIGHT);
+  setTimeout(() => row.classList.remove(...HIGHLIGHT), 1800);
+}
+
+/* "Rule 8.6", "Articles 7, 8", "Appendix IV, Articles 7, 8". */
+export function ruleLabel(rules, label = "Rule") {
+  return `${label}${rules.length > 1 ? "s" : ""} ${rules.join(", ")}`;
 }
 
 function WebSource({ source }) {
@@ -143,7 +162,7 @@ function WebSource({ source }) {
   );
 }
 
-export default function ChatSources({ citations }) {
+export default function ChatSources({ citations, idPrefix }) {
   const web = normalizeWebCitations(citations);
   const sources = normalizeCitations(citations);
   if (!sources.length && !web.length) return null;
@@ -161,7 +180,8 @@ export default function ChatSources({ citations }) {
         {sources.map((s, i) => (
           <li
             key={`doc-${s.title}`}
-            className="flex items-start gap-2.5 rounded-lg border border-border bg-white px-3 py-2"
+            id={idPrefix ? sourceRowId(idPrefix, firstDocNumber + i) : undefined}
+            className="flex scroll-mt-4 items-start gap-2.5 rounded-lg border border-border bg-white px-3 py-2 transition-shadow"
             data-testid="instant-legal-help-source"
           >
             <span className="mt-0.5 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-accent/10 px-1 text-2xs font-bold text-accent" aria-hidden="true">
@@ -188,7 +208,7 @@ export default function ChatSources({ citations }) {
               </div>
               {s.rules.length > 0 && (
                 <div className="text-xs text-muted-foreground" data-testid="instant-legal-help-source-detail">
-                  {ruleLabel(s.rules)}
+                  {ruleLabel(s.rules, s.label)}
                 </div>
               )}
               {s.document && (

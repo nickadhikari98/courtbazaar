@@ -183,6 +183,20 @@ def rule_set_title(rec: dict) -> str:
     return f"{title} {version}" if re.fullmatch(r"\d{4}", version) and version not in title else title
 
 
+# Our own R2 copy is never a citation link (ICC, SIAC, LCIA, MCIA, ICA texts are copyrighted).
+_R2_HOST_RE = re.compile(r"^https://[^/]*(?:\.r2\.dev|\.r2\.cloudflarestorage\.com)(?:/|$)", re.IGNORECASE)
+
+
+def official_url(filename: str, set_title: Optional[str] = None) -> Optional[str]:
+    """The publisher's own link for a rule set (the record whose
+    rule_set_title starts `set_title`, else the file's only record), or None."""
+    recs = records_for_file(filename) or []
+    rec = next((r for r in recs if set_title and set_title.startswith(rule_set_title(r))), None)
+    rec = rec or (recs[0] if len(recs) == 1 else None)
+    url = (rec or {}).get("official_url")
+    return url if isinstance(url, str) and url.startswith("https://") and not _R2_HOST_RE.match(url) else None
+
+
 def rule_set_for_page(filename: str, page: int) -> Optional[dict]:
     for rec in records_for_file(filename) or []:
         lo, hi = (rec.get("page_range") or [0, 10 ** 6])[:2]

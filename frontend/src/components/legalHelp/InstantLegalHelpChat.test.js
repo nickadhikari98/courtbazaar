@@ -809,3 +809,30 @@ test("New chat clears the conversation and starts a fresh one", async () => {
   await sendMessage("Again");
   expect(api.post).toHaveBeenLastCalledWith("/ai/chat", { conversation_id: null, message: "Again", mode: "layman" }, CHAT_OPTS);
 });
+
+test("a card's source chip scrolls to and highlights its own source row; the title opens the official link", async () => {
+  const citations = [
+    { title: "ICC Arbitration Rules 2026", url: "https://iccwbo.org/icc-rules.pdf", rules: ["31"], label: "Article" },
+    { title: "ICC Arbitration Rules 2026, Appendix IV - Emergency Arbitrator Provisions", url: null,
+      rules: ["7", "8"], label: "Appendix IV, Article" },
+  ];
+  const answer = { ...CARD, summary: "Apply under Article 31.",
+    points: [{ icon: "rule", title: "Preliminary Order", badge: "", tone: "neutral", text: "Appendix IV, Article 7.", cite: [2] }] };
+  api.post.mockResolvedValue({ data: { conversation_id: "c", reply: "x", citations, grounding: "supported", answer } });
+  renderChat();
+  await sendMessage("ICC emergency arbitrator procedure");
+  const rows = [...container.querySelectorAll('[data-testid="instant-legal-help-source"]')];
+  expect(rows.map((r) => r.querySelector('[data-testid="instant-legal-help-source-detail"]').textContent))
+    .toEqual(["Article 31", "Appendix IV, Articles 7, 8"]);
+  const link = rows[0].querySelector('[data-testid="instant-legal-help-source-link"]');
+  expect(link.getAttribute("href")).toBe("https://iccwbo.org/icc-rules.pdf");
+  expect(link.getAttribute("target")).toBe("_blank");
+
+  const chip = $("instant-legal-help-answer-point").querySelector('[data-testid="instant-legal-help-cite"]');
+  expect(chip.tagName).toBe("BUTTON");
+  expect(rows[1].id).toBeTruthy();
+  rows[1].scrollIntoView = jest.fn();
+  act(() => chip.click());
+  expect(rows[1].scrollIntoView).toHaveBeenCalled();
+  expect(rows[1].classList.contains("ring-2")).toBe(true);
+});

@@ -598,7 +598,8 @@ def _standalone_document_question(text: str, context: dict) -> str:
     """The follow-up as a question that stands on its own, for retrieval and
     for the answer and verifier models. The earlier answer itself is never
     included — only the user's earlier question and the rules it cited."""
-    rules = ", ".join(f"Rule {r}" for r in (context.get("rules") or [])[:6])
+    # Stored as "Article 31"; contexts saved before labels hold bare "8.6".
+    rules = ", ".join(r if not r[:1].isdigit() else f"Rule {r}" for r in (context.get("rules") or [])[:6])
     cited = f", answered from {rules}" if rules else ""
     return f'{text} (This follows up the earlier question "{context.get("question", "")}"{cited}.)'
 
@@ -2354,7 +2355,7 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
     if use_rag and grounding in ("supported", "partial") and decision["source"]:
         doc_context = {"source": decision["source"],
                        "question": (doc_followup or {}).get("question") or text,
-                       "rules": [r for c in citations for r in c.get("rules") or []]}
+                       "rules": [f"{c.get('label') or 'Rule'} {r}" for c in citations for r in c.get("rules") or []]}
         await db.ai_conversations.update_one({"conversation_id": conv_id}, {"$set": {"doc_context": doc_context}})
     elif convo.get("doc_context") and not doc_followup:
         await db.ai_conversations.update_one({"conversation_id": conv_id}, {"$unset": {"doc_context": ""}})

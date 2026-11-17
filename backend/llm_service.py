@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 import answer_guard
 import kb_registry
+import prompt_builder
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +91,11 @@ OFFICIAL_SOURCE_DOMAINS = ("gov.in", "nic.in")
 # The allowlist and per-file metadata live in kb_registry (kb/*.json + SOP).
 APPROVED_KB_FILES = kb_registry.approved_files()
 KB_SOURCE_METADATA = {f: kb_registry.file_meta(f) for f in APPROVED_KB_FILES}
-# What the chat shows for each approved file. `url` stays None until an
-# official link is approved for that document; the UI then renders the
-# citation as a link instead of a plain label.
-KB_SOURCE_DISPLAY = {f: {"label": kb_registry.display_label(f), "url": None} for f in APPROVED_KB_FILES}
+# What the chat shows for each approved file. `url` is the record's
+# official_url (never our R2 copy); None until one is filled in, and the UI
+# then shows a plain label instead of a link.
+KB_SOURCE_DISPLAY = {f: {"label": kb_registry.display_label(f), "url": kb_registry.official_url(f)}
+                     for f in APPROVED_KB_FILES}
 # Some PDFs bundle several separately numbered rule sets (DIAC: three), so
 # "Rule 4" alone is ambiguous. rag_provisions labels each provision with the
 # upper-case title the document prints above that set; a label is matched to
@@ -426,8 +428,10 @@ async def _retrieve_context(query: str, selected_source: str | None = None) -> t
     # Best match first, read before the sort below loses the ranking.
     ranked_rules = list(dict.fromkeys(m.group(2) for p in passages for m in _CONTEXT_RULE_LABEL_RE.finditer(p)))
     # Search order varies between identical queries; the answer must not.
-    # Sorting by "[Source: <file>" also groups the blocks by institution (one file each).
-    passages = sorted(set(passages))
+    # Grouped by file (one institution each); a file's labelled provisions keep
+    # expand_chunks' document order (ICC Article 31 before Appendix IV), raw chunks sort by text.
+    passages = sorted(dict.fromkeys(passages), key=lambda p: (
+        p.split("]")[0].split(" | ")[0], *((0, "") if " | " in p.split("\n", 1)[0] else (1, p))))
     # A provision the question names ("Section 11", "Article 9B") goes first.
     named = _named_res(query)
     passages.sort(key=lambda p: not any(rx.match(p) for rx in named))
@@ -587,7 +591,8 @@ def _reading_text(query: str, rules: List[str], sources: List[str]) -> str:
     if not rules:
         return f"Reading {', '.join(KB_SOURCE_DISPLAY.get(s, {'label': s})['label'] for s in sources)}…"
     ordered = sorted(rules, key=lambda r: not re.search(rf"(?<![\d.]){re.escape(r)}(?![\d.])", query))
-    named = ", ".join(f"Rule {r}" for r in ordered[:3])
+    word = _provision_word(sources)
+    named = ", ".join(f"{word} {r}" for r in ordered[:3])
     return f"Reading {named}{f' +{len(ordered) - 3} more' if len(ordered) > 3 else ''}…"
 
 
@@ -1014,9 +1019,23 @@ _CONTEXT_RULE_LABEL_RE = re.compile(
 )
 
 
+def _provision_word(sources: List[str]) -> str:
+    """"Article" for ICC/LCIA, "Section" for the Act; "Rule" when sources mix."""
+    words = {kb_registry.provision_label(s) or "Rule" for s in sources}
+    return words.pop() if len(words) == 1 else "Rule"
+
+
+# A set title ending in an appendix (rag_provisions._appendix): "..., Appendix IV - Emergency ...".
+_APPENDIX_TITLE_RE = re.compile(r", (Appendix [IVX]+|Schedule of Fees, Part [IVX]+)(?: - |$)")
+
+
 def _instrument_for_label(filename: str, label_title: Optional[str]) -> Optional[str]:
-    if label_title in {name for _, name in KB_INSTRUMENTS.get(filename, ())}:
+    names = {name for _, name in KB_INSTRUMENTS.get(filename, ())}
+    if label_title in names:
         return label_title  # labelled from the set's page_range (rag_provisions)
+    m = _APPENDIX_TITLE_RE.search(label_title or "")
+    if m and label_title[:m.start()] in names:
+        return label_title  # an appendix restarts at Article 1: its own set
     letters = re.sub(r"[^A-Z]", "", (label_title or "").upper())
     if _DIAC_TITLE_KEY not in letters:
         return None
@@ -1035,7 +1054,8 @@ def _rule_instruments(context: str, filename: str) -> Dict[str, set]:
     return found
 
 
-def _group_rules_by_instrument(rules: List[str], context: str, filename: str) -> List[tuple]:
+def _group_rules_by_instrument(rules: List[str], context: str, filename: str,
+                               appendix_refs: frozenset = frozenset()) -> List[tuple]:
     """[(set name or None, [rules])], in the order of each group's lowest
     rule number (`rules` arrives sorted). A rule goes under a
     set only when every retrieved label for it (or, for a bare parent like
@@ -1045,9 +1065,33 @@ def _group_rules_by_instrument(rules: List[str], context: str, filename: str) ->
     groups: Dict[Optional[str], List[str]] = {}
     for ref in rules:
         sets = labels.get(ref) or set().union(*[v for k, v in labels.items() if k.startswith(ref + ".")])
+        if len(sets) > 1:
+            # One number in the main rules and an appendix: the answer's own
+            # "Appendix IV, Article 7" decides; a bare "Article 31" means the main rules.
+            named = {s for s in sets if s and (m := _APPENDIX_TITLE_RE.search(s)) and (m.group(1), ref) in appendix_refs}
+            plain = {s for s in sets if s and not _APPENDIX_TITLE_RE.search(s)}
+            sets = named or (plain if (None, ref) in appendix_refs else sets)
         name = next(iter(sets)) if len(sets) == 1 else None
         groups.setdefault(name, []).append(ref)
     return list(groups.items())
+
+
+_APPENDIX_REF_RES = (
+    re.compile(r"\b(Appendix [IVX]+),?\s+Articles?\s+(\d{1,3})\b"),
+    re.compile(r"\bArticles?\s+(\d{1,3})(?:\(\d+\))?\s+of\s+(?:the\s+|this\s+)?(Appendix [IVX]+)\b"),
+)
+
+
+def _appendix_refs(answer: str) -> frozenset:
+    """{("Appendix IV", "7"), (None, "31")}: the set each Article the answer
+    cites belongs to, in the answer's own words."""
+    text = answer or ""
+    tied = [m for rx in _APPENDIX_REF_RES for m in rx.finditer(text)]
+    out = {(m.group(1), m.group(2)) if m.re is _APPENDIX_REF_RES[0] else (m.group(2), m.group(1)) for m in tied}
+    for m in re.finditer(r"\bArticle\s+(\d{1,3})\b", text):
+        if not any(t.start() <= m.start() < t.end() for t in tied):
+            out.add((None, m.group(1)))
+    return frozenset(out)
 
 
 def build_citations(answer: str, context: str, sources: List[str]) -> List[Dict[str, Any]]:
@@ -1096,12 +1140,17 @@ def build_citations(answer: str, context: str, sources: List[str]) -> List[Dict[
     for filename in sources:
         display = KB_SOURCE_DISPLAY.get(filename, {"label": filename, "url": None})
         rules = sorted(by_file.get(filename, []), key=_rule_sort_key)
-        groups = _group_rules_by_instrument(rules, context, filename) if rules else [(None, [])]
+        groups = _group_rules_by_instrument(rules, context, filename, _appendix_refs(answer)) if rules else [(None, [])]
+        word = kb_registry.provision_label(filename) or "Rule"
         for instrument, group_rules in groups:
+            appendix = _APPENDIX_TITLE_RE.search(instrument or "")
             citations.append({
                 "title": instrument or display["label"],
-                "url": KB_INSTRUMENT_URLS.get(instrument) or display["url"],
+                "url": (KB_INSTRUMENT_URLS.get(instrument) or kb_registry.official_url(filename, instrument)
+                        or display["url"]),
                 "rules": group_rules,
+                # "Article 31", "Appendix IV, Article 7": the provision's own name in that set.
+                "label": f"{appendix.group(1)}, {word}" if appendix else word,
                 "document": display["label"],
                 # "4(i)" where the answer cites the clause, so the two read the same.
                 **({"rule_labels": [label for r in group_rules for label in clauses.get(r, [r])]}
@@ -1299,6 +1348,7 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
     evidence = answer_guard.evidence_without_directives(context)
     provisions = rag_provisions.provision_map(evidence)
     menu = _source_menu(context, sources)
+    lawyer = any(m["role"] == "system" and m["content"] == prompt_builder.MODE_INSTRUCTIONS["lawyer"] for m in messages)
     note = RAG_CARD_INSTRUCTIONS + "\n\nSOURCES:\n" + "\n".join(f"{i}. {name}" for i, name in enumerate(menu, 1))
     last_user = max(i for i, m in enumerate(messages) if m["role"] == "user")
     question = messages[last_user]["content"]
@@ -1375,8 +1425,11 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
                   "partial": answer["status"] == "partial", "answer": answer}
         missing = []
         if best is None and attempt == 0:
-            missing = [f"Rule {r}" for r in _uncovered_rules(verdict, evidence, answer["points"])] + [
+            word = _provision_word(sources)
+            missing = [f"{word} {r}" for r in _uncovered_rules(verdict, evidence, answer["points"])] + [
                 f'what the question asks about "{p}"' for p in _unanswered_parts(question, result["text"], evidence)]
+            if lawyer:
+                missing += [f"the proviso to {word} {r}" for r in _missing_provisos(answer["points"], provisions)]
         if missing:
             logger.info("Structured answer missed %s; retrying once for completeness", missing)
             best = result
@@ -1394,6 +1447,20 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
 
 def _cited_rules(result: Dict[str, Any]) -> set:
     return {r for c in result.get("citations") or [] for r in c.get("rules") or []}
+
+
+_PROVISO_RE = re.compile(r"\bProvided (?:further |also )?that\b", re.IGNORECASE)
+
+
+def _missing_provisos(points: List[Dict[str, Any]], provisions: Dict[str, str]) -> List[str]:
+    """Rules the card cites whose text carries a proviso ("Provided that in a
+    case of an International Arbitration ..." in DIAC Rule 8.6) that the card
+    never states. A lawyer reads a rule with its proviso."""
+    said = " ".join(f"{p['title']} {p['text']}" for p in points)
+    if re.search(r"\bprovi(?:so|ded that)\b", said, re.IGNORECASE):
+        return []
+    used = dict.fromkeys(r for p in points for r in answer_guard.point_rule_refs(p))
+    return [r for r in used if _PROVISO_RE.search(provisions.get(r, ""))][:2]
 
 
 def _uncovered_rules(verdict: Optional[Dict[str, Any]], evidence: str,

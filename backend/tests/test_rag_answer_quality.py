@@ -159,7 +159,7 @@ def test_benchmark_answer_keeps_its_structure_and_verified_citations(monkeypatch
     # The fake store returns raw chunks only (no rule-set labels), so the
     # rules stay with the document as a whole, named in full.
     diac_label = llm_service.KB_SOURCE_DISPLAY[DIAC]["label"]
-    assert result["citations"] == [{"title": diac_label, "url": None, "rules": ["33", "33.1", "33.2", "33.5"],
+    assert result["citations"] == [{"title": diac_label, "url": None, "rules": ["33", "33.1", "33.2", "33.5"], "label": "Rule",
                                      "document": diac_label}]
     assert result["sources"] == [DIAC]
     # Server-added caveat distinguishing the document's statements.

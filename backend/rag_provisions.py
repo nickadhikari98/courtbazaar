@@ -33,7 +33,14 @@ PAGE_MARKER_RE = re.compile(r"<(?:IMAGE|PARSED TEXT) FOR PAGE:\s*(\d+)\s*/\s*\d+
 # A numbered provision at the start of a line: "33. Advance on Costs", "33.1 The Centre",
 # "11A. Qualifications" (the Act), "Article 9B" / "Rule 14.2" (rules that print the word).
 _PROVISION_START_RE = re.compile(
-    r"(?m)^(?:(?:Article|Rule)\s+)?(\d{1,3})([A-Z]?)(?:\.(\d{1,2}))?\.?\s+(?=[A-Z(\"'])")
+    r"(?m)^((?:Article|Rule)\s+)?(\d{1,3})([A-Z]?)(?:\.(\d{1,2}))?\.?\s+(?=[A-Z(\"'])")
+# Rules that print the word on every heading (ICC, LCIA "Article 31 ...") also
+# run headings into the previous text ("... in Appendix IV. Article 32 Expedited").
+_WORD_PROVISION_START_RE = re.compile(
+    r"(?m)(?:^|(?<=[.:;]\s))((?:Article|Rule)\s+)?(\d{1,3})([A-Z]?)(?:\.(\d{1,2}))?\.?\s+(?=[A-Z(\"'])")
+# The running header above an appendix's first article: "ICC Arbitration Rules APPENDIX IV - EMERGENCY ...".
+_APPENDIX_RE = re.compile(r"\bAPPENDIX ([IVX]+) - ([A-Z][A-Z ,'&-]*[A-Z])|\bSchedule of Fees\s+Part ([IVX]+)\.")
+_SMALL_WORDS = {"Of", "The", "And", "For", "To", "In", "On"}
 # "[Source: <file> | Rule 33.1]" / "| Article 9B" / "| Section 11A" block label written by expand_chunks.
 _BLOCK_LABEL_RE = re.compile(
     r"(?m)^\[Source: [^\]|]+\| (?:Rule|Article|Section) (\d{1,3}[A-Z]?(?:\.\d{1,2})?)(?: \| [^\]\n]*)?\]\n")
@@ -131,21 +138,40 @@ def _num(key: Tuple[int, str]) -> str:
     return f"{key[0]}{key[1]}"
 
 
-def parse_provisions(doc: str) -> List[Dict[str, Any]]:
+def _appendix(doc: str, start: int) -> Optional[str]:
+    """"Appendix IV - Emergency Arbitrator Provisions" (or "Schedule of Fees,
+    Part II") when the running header just above an instrument's first
+    article names one, else None."""
+    found = list(_APPENDIX_RE.finditer(doc[max(0, start - 200):start]))
+    if not found:
+        return None
+    if found[-1].group(3):
+        return f"Schedule of Fees, Part {found[-1].group(3)}"
+    words = found[-1].group(2).title().split()
+    name = " ".join([words[0]] + [w.lower() if w in _SMALL_WORDS else w for w in words[1:]])
+    return f"Appendix {found[-1].group(1)} - {name}"
+
+
+def parse_provisions(doc: str, word: Optional[str] = None) -> List[Dict[str, Any]]:
     """Numbered provisions in document order: number, parent, instrument,
-    start, end, text. A sub-rule ("33.1") counts only under its own parent
-    heading ("33."); a top-level number restarting at 1 begins a new
+    appendix, start, end, text. A sub-rule ("33.1") counts only under its own
+    parent heading ("33."); a top-level number restarting at 1 begins a new
     instrument (the PDF holds more than one set of rules, so numbers repeat).
-    Other line-initial numbers (schedule rows, amounts) are ignored."""
+    Other line-initial numbers (schedule rows, amounts) are ignored. With
+    `word` ("Article"), a top-level heading must print it: a bare "7 The
+    Order ..." is then a paragraph of the article (ICC), or a page number."""
     accepted: List[Dict[str, Any]] = []
     parent: Optional[Tuple[int, str]] = None  # (11, "A") for "11A": sorts between 11 and 12
     prev_parent: Optional[Tuple[int, str]] = None
     parent_has_subs = False
     instrument = 0
     titles: Dict[int, str] = {}
-    for m in _PROVISION_START_RE.finditer(doc):
-        top, sub = int(m.group(1)), m.group(3)
-        key = (top, m.group(2))
+    appendices: Dict[int, Optional[str]] = {}
+    for m in (_WORD_PROVISION_START_RE if word else _PROVISION_START_RE).finditer(doc):
+        if word and m.group(4) is None and (m.group(1) or "").strip() != word:
+            continue
+        top, sub = int(m.group(2)), m.group(4)
+        key = (top, m.group(3))
         if sub is not None:
             if parent != key:
                 if (key == prev_parent and not parent_has_subs and accepted
@@ -175,8 +201,9 @@ def parse_provisions(doc: str) -> List[Dict[str, Any]]:
             number = _num(key)
         if instrument not in titles:
             titles[instrument] = _instrument_title(doc, m.start())
+            appendices[instrument] = _appendix(doc, m.start())
         accepted.append({"number": number, "parent": _num(key), "instrument": instrument,
-                         "title": titles[instrument], "start": m.start()})
+                         "title": titles[instrument], "appendix": appendices[instrument], "start": m.start()})
     for i, p in enumerate(accepted):
         p["end"] = accepted[i + 1]["start"] if i + 1 < len(accepted) else len(doc)
         p["text"] = doc[p["start"]:p["end"]].strip()
@@ -272,10 +299,23 @@ def _blocked_indices(filename: str, provisions: List[Dict[str, Any]], doc: Optio
             page = page_at(pages, p["start"]) if pages else None
             rec = kb_registry.rule_set_for_page(filename, page) if page else None
         if rec:
-            p["title"] = kb_registry.rule_set_title(rec)
+            # An appendix restarts at Article 1, so it is its own set: "..., Appendix IV - ...".
+            p["title"] = kb_registry.rule_set_title(rec) + (f", {p['appendix']}" if p.get("appendix") else "")
         if kb_registry.excluded(rec, query) or (rec is None and unsafe):
             blocked.add(k)
     return blocked, unsafe
+
+
+def _introducing(provisions: List[Dict[str, Any]], i: int, blocked: set) -> List[int]:
+    """For an appendix article, the main-rules article that brings the
+    appendix in ("... Provisions in Appendix IV." is ICC Article 31): it
+    states when the appendix applies, so it goes in first."""
+    m = re.match(r"Appendix ([IVX]+) ", provisions[i].get("appendix") or "")
+    if not m:
+        return []
+    rx = re.compile(rf"\bin Appendix {m.group(1)}\b")
+    return [k for k, p in enumerate(provisions)
+            if k not in blocked and p.get("appendix") is None and rx.search(p["text"])][:1]
 
 
 def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: str = "",
@@ -287,9 +327,9 @@ def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: s
     A provision the question names exactly, then those matching its words,
     come first, so the block cap can't push them out. `pages` is
     [(offset, page)] for `doc`; by default the index built when it was fetched."""
-    provisions = parse_provisions(doc) if doc else []
-    blocked, unsafe = _blocked_indices(filename, provisions, doc, query, pages)
     label = kb_registry.provision_label(filename) or "Rule"
+    provisions = parse_provisions(doc, "Article" if label == "Article" else None) if doc else []
+    blocked, unsafe = _blocked_indices(filename, provisions, doc, query, pages)
     named = {num for word, num in exact_refs(query) if word == label}
     exact = [k for k, p in enumerate(provisions) if p["number"] in named]
     chosen: List[int] = []
@@ -309,7 +349,7 @@ def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: s
             # The rule's own heading ("33. Advance on Costs") gives sub-rules their context.
             head = next((j for j in range(i, -1, -1) if provisions[j]["number"] == provisions[i]["parent"]
                          and provisions[j]["instrument"] == provisions[i]["instrument"]), None)
-            for j in ([head] if head is not None else []) + [i]:
+            for j in _introducing(provisions, i, blocked) + ([head] if head is not None else []) + [i]:
                 if j not in chosen:
                     chosen.append(j)
     blocks: List[str] = []

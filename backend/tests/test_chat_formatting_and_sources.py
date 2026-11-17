@@ -165,7 +165,7 @@ def _cite(answer):
 
 def test_a_verified_rule_is_shown_under_the_full_name_of_its_own_set():
     assert _cite("The Centre may terminate (Rule 33.5).") == [
-        {"title": PROCEEDINGS_2023, "url": llm_service.KB_INSTRUMENT_URLS[PROCEEDINGS_2023], "rules": ["33.5"],
+        {"title": PROCEEDINGS_2023, "url": llm_service.KB_INSTRUMENT_URLS[PROCEEDINGS_2023], "rules": ["33.5"], "label": "Rule",
          "document": DIAC_LABEL},
     ]
 
@@ -180,12 +180,12 @@ def test_rules_from_different_sets_become_separate_sources():
 def test_a_bare_parent_rule_takes_the_set_of_its_labelled_sub_rules():
     citations = _cite("Rule 33 applies.")
     assert citations == [{"title": PROCEEDINGS_2023, "url": llm_service.KB_INSTRUMENT_URLS[PROCEEDINGS_2023],
-                          "rules": ["33"], "document": DIAC_LABEL}]
+                          "rules": ["33"], "label": "Rule", "document": DIAC_LABEL}]
 
 
 def test_a_number_found_in_two_sets_is_never_pinned_on_either():
     citations = _cite("Fees are paid in advance (Rule 4).")
-    assert citations == [{"title": DIAC_LABEL, "url": None, "rules": ["4"], "document": DIAC_LABEL}]
+    assert citations == [{"title": DIAC_LABEL, "url": None, "rules": ["4"], "label": "Rule", "document": DIAC_LABEL}]
 
 
 def test_cover_page_untitled_and_other_file_labels_name_no_set():
@@ -198,7 +198,7 @@ def test_cover_page_untitled_and_other_file_labels_name_no_set():
 
 def test_invented_rules_and_page_numbers_are_still_never_cited():
     citations = _cite("See Rule 99 and Rule 33.9 (page 28).")
-    assert citations == [{"title": DIAC_LABEL, "url": None, "rules": [], "document": DIAC_LABEL}]
+    assert citations == [{"title": DIAC_LABEL, "url": None, "rules": [], "label": "Rule", "document": DIAC_LABEL}]
 
 
 def test_no_document_url_is_invented():
