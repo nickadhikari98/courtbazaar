@@ -943,7 +943,7 @@ procedure document courtbazaar court bazaar
 
 # Rule/section references in an answer: "Rule 33.1", "Rules 33.1, 33.2 and 33.5", "(Rule 33)".
 _RULE_REF_RE = re.compile(
-    r"\b(?:Rules?|Sections?|Articles?|Clauses?)\s+(\d{1,3}(?-i:[A-Z])?(?:\.\d{1,3})?"
+    r"\b(?:Rules?|Sections?|Articles?|Clauses?|Paragraphs?)\s+(\d{1,3}(?-i:[A-Z])?(?:\.\d{1,3})?"
     r"(?:\s*(?:,|and|&|or)\s*\d{1,3}(?-i:[A-Z])?(?:\.\d{1,3})?)*)"
     r"|\((\d{1,3}\.\d{1,3})\)",
     re.IGNORECASE,
@@ -964,7 +964,7 @@ _OTHER_INSTRUMENT_RE = re.compile(  # "Section 11 (6) / 29A(3) of the Act": suff
 # line ("33.5 If a party", "16. Default") or after the word Rule/Section.
 _SOURCE_PROVISION_RE = re.compile(
     r"(?m)^\s*(\d{1,3}(?-i:[A-Z])?(?:\.\d{1,3})?)\.?\s+\S"
-    r"|\b(?:Rules?|Sections?|Articles?|Clauses?)\s+(\d{1,3}(?-i:[A-Z])?(?:\.\d{1,3})?)",
+    r"|\b(?:Rules?|Sections?|Articles?|Clauses?|Paragraphs?)\s+(\d{1,3}(?-i:[A-Z])?(?:\.\d{1,3})?)",
     re.IGNORECASE,
 )
 # A closing line that comments on the rules instead of stating them ("These
@@ -1015,7 +1015,7 @@ def _rule_sort_key(ref: str):
 
 # "[Source: <file> | Rule 33.1 | <set title>]", written by rag_provisions.expand_chunks.
 _CONTEXT_RULE_LABEL_RE = re.compile(
-    r"(?m)^\[Source: ([^\]|\n]+?) \| (?:Rule|Article|Section) (\d{1,3}[A-Z]?(?:\.\d{1,3})?)(?: \| ([^\]\n]*))?\]"
+    r"(?m)^\[Source: ([^\]|\n]+?) \| (?:Rule|Article|Section|Paragraph) (\d{1,3}[A-Z]?(?:\.\d{1,3})?)(?: \| ([^\]\n]*))?\]"
 )
 
 
@@ -1025,8 +1025,9 @@ def _provision_word(sources: List[str]) -> str:
     return words.pop() if len(words) == 1 else "Rule"
 
 
-# A set title ending in an appendix (rag_provisions._appendix): "..., Appendix IV - Emergency ...".
-_APPENDIX_TITLE_RE = re.compile(r", (Appendix [IVX]+|Schedule of Fees, Part [IVX]+)(?: - |$)")
+# A set title ending in a sub-part (rag_provisions._appendix): "..., Appendix IV - Emergency ...", "..., Schedule 1 - ...".
+_APPENDIX_TITLE_RE = re.compile(
+    r", ((?:Appendix|Schedule|Annex)(?: [IVX]+| \d{1,2})?|Schedule of Fees, Part [IVX]+)(?: - |$)")
 
 
 def _instrument_for_label(filename: str, label_title: Optional[str]) -> Optional[str]:
@@ -1034,7 +1035,8 @@ def _instrument_for_label(filename: str, label_title: Optional[str]) -> Optional
     if label_title in names:
         return label_title  # labelled from the set's page_range (rag_provisions)
     m = _APPENDIX_TITLE_RE.search(label_title or "")
-    if m and label_title[:m.start()] in names:
+    sets = names | {kb_registry.rule_set_title(r) for r in kb_registry.records_for_file(filename) or []}
+    if m and label_title[:m.start()] in sets:
         return label_title  # an appendix restarts at Article 1: its own set
     letters = re.sub(r"[^A-Z]", "", (label_title or "").upper())
     if _DIAC_TITLE_KEY not in letters:
@@ -1076,19 +1078,25 @@ def _group_rules_by_instrument(rules: List[str], context: str, filename: str,
     return list(groups.items())
 
 
+_PART = r"((?:Appendix|Schedule|Annex) (?:[IVX]+|\d{1,2}))"
+_ITEM = r"(?:Articles?|Paragraphs?|Rules?|Sections?)"
 _APPENDIX_REF_RES = (
-    re.compile(r"\b(Appendix [IVX]+),?\s+Articles?\s+(\d{1,3})\b"),
-    re.compile(r"\bArticles?\s+(\d{1,3})(?:\(\d+\))?\s+of\s+(?:the\s+|this\s+)?(Appendix [IVX]+)\b"),
+    re.compile(rf"\b{_PART},?\s+{_ITEM}\s+(\d{{1,3}})\b", re.IGNORECASE),
+    re.compile(rf"\b{_ITEM}\s+(\d{{1,3}})(?:\(\w+\))?\s+of\s+(?:the\s+|this\s+)?{_PART}\b", re.IGNORECASE),
 )
 
 
 def _appendix_refs(answer: str) -> frozenset:
-    """{("Appendix IV", "7"), (None, "31")}: the set each Article the answer
-    cites belongs to, in the answer's own words."""
+    """{("Appendix IV", "7"), ("Schedule 1", "3"), (None, "31")}: the set each
+    provision the answer cites belongs to, in the answer's own words."""
     text = answer or ""
     tied = [m for rx in _APPENDIX_REF_RES for m in rx.finditer(text)]
-    out = {(m.group(1), m.group(2)) if m.re is _APPENDIX_REF_RES[0] else (m.group(2), m.group(1)) for m in tied}
-    for m in re.finditer(r"\bArticle\s+(\d{1,3})\b", text):
+    def part(name: str) -> str:  # "schedule 1" / "APPENDIX IV" -> "Schedule 1" / "Appendix IV"
+        kind, number = name.split()
+        return f"{kind.title()} {number.upper()}"
+    out = {(part(m.group(1)), m.group(2)) if m.re is _APPENDIX_REF_RES[0] else (part(m.group(2)), m.group(1))
+           for m in tied}
+    for m in re.finditer(r"\b(?:Article|Rule|Paragraph|Section)\s+(\d{1,3})\b", text):
         if not any(t.start() <= m.start() < t.end() for t in tied):
             out.add((None, m.group(1)))
     return frozenset(out)
@@ -1122,7 +1130,7 @@ def build_citations(answer: str, context: str, sources: List[str]) -> List[Dict[
             # A Section/Article/Clause number must be called that in the
             # source too; only "Rule" and bare "(33.5)" refs map onto the
             # document's own numbered provisions.
-            if keyword in ("section", "article", "clause") and f"{keyword} {ref.lower()}" not in context_lower:
+            if keyword in ("section", "article", "clause", "paragraph") and f"{keyword} {ref.lower()}" not in context_lower:
                 continue
             cited.append((ref, keyword))
     # Each cited provision goes under the source whose labelled block holds it
@@ -1142,6 +1150,9 @@ def build_citations(answer: str, context: str, sources: List[str]) -> List[Dict[
         rules = sorted(by_file.get(filename, []), key=_rule_sort_key)
         groups = _group_rules_by_instrument(rules, context, filename, _appendix_refs(answer)) if rules else [(None, [])]
         word = kb_registry.provision_label(filename) or "Rule"
+        # A sub-part's own item word, as its blocks were labelled: "Schedule 1, Paragraph".
+        part_words = {m.group(3): m.group(0).split(" | ")[1].split(" ")[0]
+                      for m in _CONTEXT_RULE_LABEL_RE.finditer(context or "") if m.group(1).strip() == filename}
         for instrument, group_rules in groups:
             appendix = _APPENDIX_TITLE_RE.search(instrument or "")
             citations.append({
@@ -1150,7 +1161,7 @@ def build_citations(answer: str, context: str, sources: List[str]) -> List[Dict[
                         or display["url"]),
                 "rules": group_rules,
                 # "Article 31", "Appendix IV, Article 7": the provision's own name in that set.
-                "label": f"{appendix.group(1)}, {word}" if appendix else word,
+                "label": f"{appendix.group(1)}, {part_words.get(instrument, word)}" if appendix else word,
                 "document": display["label"],
                 # "4(i)" where the answer cites the clause, so the two read the same.
                 **({"rule_labels": [label for r in group_rules for label in clauses.get(r, [r])]}

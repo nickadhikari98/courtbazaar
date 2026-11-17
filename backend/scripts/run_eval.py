@@ -64,12 +64,12 @@ def cited_docs(citation, sources):
 def provision_hit(expected, citations_for_doc):
     """"Rule 8.6" / "Appendix IV, Article 7": the number is cited, as itself, a
     sub-provision of it, or its parent (a citation of "9" for "9.8")."""
-    m = re.match(r"(?:(Appendix [IVX]+), )?(?:Rule|Article|Section) (\S+)$", expected)
+    m = re.match(r"(?:((?:Appendix|Schedule|Annex) \w+), )?(?:Rule|Article|Section|Paragraph) (\S+)$", expected)
     appendix, number = m.group(1), m.group(2)
     for c in citations_for_doc:
-        if appendix and not (c.get("label") or "").startswith(appendix):
+        if appendix and not (c.get("label") or "").startswith(appendix + ","):
             continue
-        if not appendix and (c.get("label") or "").startswith("Appendix"):
+        if not appendix and re.match(r"(?:Appendix|Schedule|Annex)\b", c.get("label") or ""):
             continue
         for r in c.get("rule_labels") or c.get("rules") or []:
             r = r.split("(")[0]
@@ -94,8 +94,12 @@ async def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--mode", default="layman", choices=("layman", "lawyer"))
+    parser.add_argument("--source", action="append", help="only questions expecting this doc_id (repeatable)")
     args = parser.parse_args()
     cases = [json.loads(line) for line in EVAL_FILE.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if args.source:
+        cases = [c for c in cases if set(args.source) & set(
+            [c["expected_doc_id"]] if isinstance(c["expected_doc_id"], str) else c["expected_doc_id"] or [])]
     cases = cases[:args.limit] if args.limit else cases
     stats = defaultdict(lambda: {"n": 0, "doc": 0, "prov": 0, "wrong_inst": 0})
     failures, per_question_tokens = [], []
@@ -128,8 +132,13 @@ async def main():
         provisions = case["expected_provision"]
         provisions = [provisions] if isinstance(provisions, str) else provisions
         row["doc"] += set(expected) <= docs
-        row["prov"] += all(provision_hit(p, [c for c in citations if d in cited_docs(c, sources)])
-                           for d, p in zip(expected, provisions))
+        prov_ok = all(provision_hit(p, [c for c in citations if d in cited_docs(c, sources)])
+                      for d, p in zip(expected, provisions))
+        row["prov"] += prov_ok
+        print(f"{'ok  ' if prov_ok else 'MISS'} {case['question']}\n     expected: "
+              + "; ".join(f"{d} {p}" for d, p in zip(expected, provisions)) + "\n     cited:    "
+              + ("; ".join(f"{c.get('title')} | {c.get('label')} {', '.join(c.get('rule_labels') or c.get('rules') or [])}"
+                           for c in citations) or "(none)"))
         codes = {kb_registry.record_code(RECORDS[d][1]) for d in expected}
         row["wrong_inst"] += sum(kb_registry.record_code(RECORDS[d][1]) not in codes for d in docs if d in RECORDS)
         if result.get("error"):
