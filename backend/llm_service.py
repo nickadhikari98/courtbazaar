@@ -6,6 +6,7 @@ allowlisted knowledge-base passages; Groq still generates the answer.
 """
 import asyncio
 import contextvars
+import copy
 import json
 import logging
 import os
@@ -726,20 +727,24 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
 
         if AI_PROVIDER == "openai" and use_file_search:
             stage = "OpenAI answer generation"
-            try:
-                # Both attempts share one budget, so the plain fallback below
-                # still finishes inside the page's request timeout.
-                card_result = await asyncio.wait_for(_card_answer(client, messages, context, sources, on_status, action_gap,
-                                                                  language, file_evidence),
-                                                     timeout=AI_TIMEOUT_SECONDS + AI_VERIFIER_TIMEOUT_SECONDS)
-            except asyncio.TimeoutError:
-                logger.warning("Card fallback: using the plain answer (timed out)")
-                card_result = None
-            if card_result is not None:
-                return card_result
+            # A file check gets one more structured try (a plain answer can't keep the
+            # file's evidence apart from the rules'), then its checked file points alone.
+            salvage: Dict[str, Any] = {}
+            for card_try in range(2 if file_evidence else 1):
+                try:
+                    # Both attempts share one budget, so the plain fallback below
+                    # still finishes inside the page's request timeout.
+                    card_result = await asyncio.wait_for(_card_answer(client, messages, context, sources, on_status,
+                                                                      action_gap, language, file_evidence, salvage),
+                                                         timeout=AI_TIMEOUT_SECONDS + AI_VERIFIER_TIMEOUT_SECONDS)
+                except asyncio.TimeoutError:
+                    logger.warning("Card fallback: %s (timed out)", "retrying the file check" if file_evidence and not card_try
+                                   else "using the plain answer")
+                    card_result = None
+                if card_result is not None:
+                    return card_result
             if file_evidence:
-                return {"ok": False, "error_code": ERR_NO_CONTEXT, "stage": "rag", "exception_type": "UnsupportedAnswer",
-                        "detail": "No checked card for a file check", "fallback_reason": "file_check_without_card"}
+                return _file_only_fallback(salvage, sources)
             await emit_status(on_status, "writing", "Writing answer…")
             response = await asyncio.wait_for(client.responses.create(
                 model=AI_MODEL,
@@ -1482,11 +1487,14 @@ def _rules_name(citations: List[Dict[str, Any]]) -> str:
 async def _card_answer(client, messages: List[Dict[str, str]], context: str, sources: List[str],
                        on_status: Optional[StatusCallback] = None,
                        action_gap: Optional[str] = None, language: str = "auto",
-                       file_evidence: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                       file_evidence: Optional[str] = None,
+                       salvage: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """A document answer as a validated card, or None to use the plain answer.
     With `file_evidence` (the user's uploaded file, as labelled blocks) points
     carry a basis: "rules" points take the usual checks, "file" and "both"
-    points take _file_backed_points; see FILE_EVIDENCE_CARD_NOTE.
+    points take _file_backed_points; see FILE_EVIDENCE_CARD_NOTE. The most file
+    points any attempt kept are copied into `salvage` as they pass, so they
+    outlive a failed or timed-out card (_file_only_fallback).
     One retry when the output isn't valid or doesn't survive the evidence
     checks; provider errors propagate to generate_response as usual.
     `action_gap` is the action asked about that the rules don't provide: the
@@ -1539,6 +1547,9 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
             card["points"] = [{k: v for k, v in p.items() if k != "basis"} for p in card["points"] if p["basis"] == "rules"]
             logger.info("File check attempt %d: %d rules point(s), %d file/both proposed, %d kept",
                         attempt + 1, len(card["points"]), proposed, len(file_points))
+            only_file = [p for p in file_points if p["source"] == "file"]
+            if salvage is not None and len(only_file) > len(salvage.get("points", [])):
+                salvage.update(card=copy.deepcopy(card), points=copy.deepcopy(only_file))
             if not card["points"]:
                 if file_points:
                     return _card_result(_file_only_card(card, file_points), [], file_points, file_citations, sources)
@@ -1634,10 +1645,28 @@ def _card_result(answer: Dict[str, Any], citations: List[Dict[str, Any]], file_p
             "partial": answer["status"] == "partial", "answer": answer}
 
 
+FILE_CHECK_INCOMPLETE_NOTE = ("The comparison against the approved rules could not be completed, so these points "
+                              "only describe what your file says.")
+
+
+def _file_only_fallback(salvage: Dict[str, Any], sources: List[str]) -> Dict[str, Any]:
+    """After the file check's card failed twice: the points evidenced by the file
+    alone ("both" points are left out: their legal half was never verified), with
+    a line saying the comparison wasn't completed. Nothing at all: no context."""
+    if not salvage.get("points"):
+        return {"ok": False, "error_code": ERR_NO_CONTEXT, "stage": "rag", "exception_type": "UnsupportedAnswer",
+                "detail": "No checked card for a file check", "fallback_reason": "file_check_without_card"}
+    logger.warning("File check fell back to %d file-only point(s): the rules comparison failed",
+                   len(salvage["points"]))
+    card = {**_file_only_card(salvage["card"], salvage["points"]), "limitations": FILE_CHECK_INCOMPLETE_NOTE}
+    citations = [c for p in salvage["points"] for c in p["_citations"]]
+    return {**_card_result(card, [], salvage["points"], citations, sources), "file_only": True}
+
+
 def _file_only_card(card: Dict[str, Any], points: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Every point is about the file: the summary is the first checked point,
     never unchecked model text."""
-    return {**card, "status": "partial", "direct": None, "summary": points[0]["text"], "points": points,
+    return {**card, "status": "partial", "direct": None, "summary": points[0]["text"], "points": [],  # _card_result adds them
             "practical_implications": None, "limitations": None, "follow_up": None}
 
 

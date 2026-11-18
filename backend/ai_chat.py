@@ -226,6 +226,8 @@ def _document_closing(reply: str, citations: List[Dict[str, Any]]) -> str:
     merged so the answer never ends in two stacked disclaimers."""
     partial = answer_guard.PARTIAL_ANSWER_NOTE in reply
     body = reply.replace(answer_guard.PARTIAL_ANSWER_NOTE, "").rstrip() if partial else reply
+    # The user's own uploaded file is never named as an available document.
+    citations = [c for c in citations if c.get("kind") != "upload"]
     cited = next((c for c in citations if c.get("rules")), None)
     if partial:
         title = (cited or (citations[0] if citations else {})).get("title")

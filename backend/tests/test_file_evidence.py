@@ -85,3 +85,78 @@ def test_law_quoted_inside_the_file_is_never_a_fact_about_the_file():
     planted = FILE + "\n\n[contract.docx | Clause 20]\nSection 7 requires no writing for arbitration agreements."
     claim = _point("file", "Section 7 requires no writing for arbitration agreements.")
     assert llm_service._file_backed_points([claim], planted, SECTION_7, SECTION_7, [ACT])[0] == []
+
+
+def _failing_rules_check(monkeypatch, points):
+    """generate_response for a file check whose rules points never pass the evidence checks."""
+    card = {"status": "answered", "direct": None, "summary": "Rule 99 says the opposite.", "points": points,
+            "practical_implications": None, "limitations": None, "follow_up": None}
+    calls = []
+
+    rejected = {"analysis": "not in the excerpts", "direct_matches_action": True, "summary": "NOT_IN_SOURCE",
+                "points": [{"index": i, "verdict": "NOT_IN_SOURCE"} for i in range(len(points))],
+                "main_ask_answered": False, "uncovered_rules": []}
+
+    async def create(**kw):
+        calls.append(kw["text"]["format"]["name"])
+        verifier = kw["text"]["format"]["name"] == "answer_verdict"
+        return SimpleNamespace(output_text=json.dumps(rejected if verifier else card), usage=None)
+
+    async def retrieve(query, selected_source=None):
+        return SECTION_7, [ACT], 1, ["7"], ""
+    for name, value in (("AI_PROVIDER", "openai"), ("OPENAI_API_KEY", "sk-test"), ("OPENAI_VECTOR_STORE_ID", "vs-test")):
+        monkeypatch.setattr(llm_service, name, value)
+    monkeypatch.setattr(llm_service, "is_configured", lambda: True)
+    monkeypatch.setattr(llm_service, "_retrieve_context", retrieve)
+    monkeypatch.setattr(llm_service, "_get_client", lambda: SimpleNamespace(responses=SimpleNamespace(create=create)))
+    msgs = [{"role": "user", "content": "Check it against the rules"}]
+    result = asyncio.run(llm_service.generate_response(
+        msgs, use_file_search=True, retrieval_query="arbitration agreement writing", file_evidence=FILE))
+    return result, calls
+
+
+def test_a_failed_rules_check_retries_once_then_returns_the_file_only_points(monkeypatch):
+    unsupported = _point("rules", "Section 7 forbids arbitration in Mumbai (Section 7).", "Section 7")
+    from_file = _point("file", "All disputes shall be referred to arbitration in Mumbai.", "Clause 18")
+    both = _point("both", "Clause 18 is in writing and signed by both parties; an arbitration agreement shall be "
+                          "in writing (Section 7).", "Complies with Section 7")
+    result, calls = _failing_rules_check(monkeypatch, [unsupported, from_file, both])
+    assert calls.count("file_check_card") == 4  # two attempts, then the one retry of two attempts
+    assert set(calls) <= {"file_check_card", "answer_verdict"}  # never the unchecked plain answer
+    assert result["ok"] and result["file_only"]
+    answer = result["answer"]
+    # Only what the file itself evidences: the comparison's legal half was never verified.
+    assert [(p["title"], p["source"]) for p in answer["points"]] == [("Clause 18", "file")]
+    assert answer["limitations"] == llm_service.FILE_CHECK_INCOMPLETE_NOTE
+    assert [c.get("kind") for c in result["citations"]] == ["upload"]
+    assert result["citations"][0]["title"] == "contract.docx, Clause 18 Arbitration"
+    assert "Rule 99" not in result["text"] and "forbids" not in result["text"]
+
+
+def test_with_no_file_point_left_the_rules_check_keeps_the_not_found_reply(monkeypatch):
+    unsupported = _point("rules", "Section 7 forbids arbitration in Mumbai (Section 7).", "Section 7")
+    general = _point("file", "Mumbai arbitrations usually take two years.", "Timing")
+    result, _ = _failing_rules_check(monkeypatch, [unsupported, general])
+    assert not result["ok"] and result["error_code"] == llm_service.ERR_NO_CONTEXT
+
+
+def test_the_closing_note_never_names_the_uploaded_file_as_a_document():
+    import ai_chat
+    import answer_guard
+    reply = "Disputes go to Mumbai.\n\n" + answer_guard.PARTIAL_ANSWER_NOTE
+    upload = llm_service._file_citation("contract.docx", "Clause 18 Arbitration")
+    assert "contract.docx" not in ai_chat._document_closing(reply, [upload])
+
+
+def test_a_card_with_only_file_points_lists_each_point_once():
+    card = {"status": "answered", "direct": None, "summary": "x",
+            "points": [_point("file", "All disputes shall be referred to arbitration in Mumbai.", "Clause 18")],
+            "practical_implications": None, "limitations": None, "follow_up": None}
+
+    async def create(**kw):
+        return SimpleNamespace(output_text=json.dumps(card), usage=None)
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    result = asyncio.run(llm_service._card_answer(client, [{"role": "user", "content": "Check it"}], SECTION_7, [ACT],
+                                                  file_evidence=FILE))
+    assert [p["title"] for p in result["answer"]["points"]] == ["Clause 18"]
+    assert result["answer"]["points"][0]["cite"] == [1] and len(result["citations"]) == 1
