@@ -714,7 +714,7 @@ def test_groq_generates_answer_with_openai_vector_store_context(monkeypatch):
             "ok": True, "text": "The refund process starts after the cancellation is approved.",
             "sources": ["STANDARD OPERATING PROCEDURE (SOP).docx"],
             # Additive: server-built citation (no rule numbers cited) and no partial-answer note.
-            "citations": [{"title": "Standard Operating Procedure (SOP)", "url": None, "rules": [], "label": "Rule",
+            "citations": [{"title": "Standard Operating Procedure (SOP)", "url": None, "rules": [],
                            "document": "Standard Operating Procedure (SOP)"}],
             "partial": False,
         }

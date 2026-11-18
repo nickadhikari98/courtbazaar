@@ -1097,13 +1097,48 @@ def _rule_instruments(context: str, filename: str) -> Dict[str, set]:
     return found
 
 
+_SUPPORT_WORD_RE = re.compile(r"[a-z]{4,}")
+
+
+def _support_overlap(answer: str, ref: str, body: str) -> float:
+    """Share of the words in the answer's sentences citing `ref` that `body` contains."""
+    cite = re.compile(rf"\b(?:Article|Rule|Paragraph|Section)s?\s+{re.escape(ref)}\b|\({re.escape(ref)}\)", re.IGNORECASE)
+    words = {w for s in re.split(r"(?<=[.!?])\s+|\n+", answer or "") if cite.search(s)
+             for w in _SUPPORT_WORD_RE.findall(s.lower())}
+    if not words:
+        return 0.0
+    body_words = set(_SUPPORT_WORD_RE.findall(body.lower()))
+    return len(words & body_words) / len(words)
+
+
+def _supporting_set(answer: str, ref: str, context: str, filename: str, sets: set) -> Optional[str]:
+    """The one set among `sets` whose retrieved block for `ref` best supports what
+    the answer says about it, or None on a tie / no support."""
+    blocks = list(_CONTEXT_RULE_LABEL_RE.finditer(context or ""))
+    scores: Dict[Optional[str], float] = {}
+    for i, m in enumerate(blocks):
+        if m.group(1).strip() != filename or m.group(2) != ref:
+            continue
+        name = _instrument_for_label(filename, m.group(3))
+        if name in sets:
+            body = context[m.end(): blocks[i + 1].start() if i + 1 < len(blocks) else len(context)]
+            scores[name] = max(scores.get(name, 0.0), _support_overlap(answer, ref, body))
+    ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+    if ranked and ranked[0][1] > 0 and (len(ranked) == 1 or ranked[0][1] > ranked[1][1]):
+        return ranked[0][0]
+    return None
+
+
 def _group_rules_by_instrument(rules: List[str], context: str, filename: str,
-                               appendix_refs: frozenset = frozenset()) -> List[tuple]:
+                               appendix_refs: frozenset = frozenset(), answer: str = "") -> List[tuple]:
     """[(set name or None, [rules])], in the order of each group's lowest
     rule number (`rules` arrives sorted). A rule goes under a
     set only when every retrieved label for it (or, for a bare parent like
     "33", for its sub-rules) names that same set; otherwise it stays with the
-    document as a whole, so a repeated number is never pinned on the wrong set."""
+    document as a whole, so a repeated number is never pinned on the wrong set.
+    A number in several sets: the appendix the answer names decides; otherwise the
+    set whose retrieved text supports the answer's sentences about it (an appendix
+    article's text is never cited as the main rules' article of the same number)."""
     labels = _rule_instruments(context, filename)
     groups: Dict[Optional[str], List[str]] = {}
     for ref in rules:
@@ -1112,8 +1147,9 @@ def _group_rules_by_instrument(rules: List[str], context: str, filename: str,
             # One number in the main rules and an appendix: the answer's own
             # "Appendix IV, Article 7" decides; a bare "Article 31" means the main rules.
             named = {s for s in sets if s and (m := _APPENDIX_TITLE_RE.search(s)) and (m.group(1), ref) in appendix_refs}
+            supported = _supporting_set(answer, ref, context, filename, sets) if not named else None
             plain = {s for s in sets if s and not _APPENDIX_TITLE_RE.search(s)}
-            sets = named or (plain if (None, ref) in appendix_refs else sets)
+            sets = named or ({supported} if supported else plain if (None, ref) in appendix_refs else sets)
         name = next(iter(sets)) if len(sets) == 1 else None
         groups.setdefault(name, []).append(ref)
     return list(groups.items())
@@ -1189,13 +1225,18 @@ def build_citations(answer: str, context: str, sources: List[str]) -> List[Dict[
     for filename in sources:
         display = KB_SOURCE_DISPLAY.get(filename, {"label": filename, "url": None})
         rules = sorted(by_file.get(filename, []), key=_rule_sort_key)
-        groups = _group_rules_by_instrument(rules, context, filename, _appendix_refs(answer)) if rules else [(None, [])]
+        groups = _group_rules_by_instrument(rules, context, filename, _appendix_refs(answer), answer) if rules else [(None, [])]
         word = kb_registry.provision_label(filename) or "Rule"
         # A sub-part's own item word, as its blocks were labelled: "Schedule 1, Paragraph".
         part_words = {m.group(3): m.group(0).split(" | ")[1].split(" ")[0]
                       for m in _CONTEXT_RULE_LABEL_RE.finditer(context or "") if m.group(1).strip() == filename}
         for instrument, group_rules in groups:
             appendix = _APPENDIX_TITLE_RE.search(instrument or "")
+            if not group_rules:
+                # No verified number: the document alone, never "Rule " with an empty number.
+                citations.append({"title": display["label"], "url": display["url"], "rules": [],
+                                  "document": display["label"]})
+                continue
             citations.append({
                 "title": instrument or display["label"],
                 "url": (KB_INSTRUMENT_URLS.get(instrument) or kb_registry.official_url(filename, instrument)
@@ -1338,15 +1379,25 @@ def _source_menu(context: str, sources: List[str]) -> List[str]:
     return menu
 
 
+# "Rule", "Article " or "Rule:" with no number after it (a badge or title written half-way).
+_EMPTY_PROVISION_RE = re.compile(r"\b(?:Rule|Article|Section|Paragraph|Clause)s?\b(?!\s*\(?\d)\s*(?:[:,;.)]|$)", re.IGNORECASE)
+
+
 def _points_with_sources(points: List[Dict[str, Any]], citations: List[Dict[str, Any]],
                          menu: List[str]) -> List[Dict[str, Any]]:
     """Rewrites each `cite` as 1-based positions in `citations`. A rule the
     point states decides its source; the model's numbers count only for a
-    point with no verified rule. A point with no source at all is dropped."""
+    point with no verified rule. A point with no source at all is dropped, and so
+    is one that names a provision whose number is missing ("Rule ") or unverified:
+    it is never shown half-written."""
     kept = []
     for point in points:
+        if _EMPTY_PROVISION_RE.search(" ".join(filter(None, (point["title"], point["badge"])))):
+            continue
         refs = set(answer_guard.point_rule_refs(point))
         cite = [i for i, c in enumerate(citations, 1) if refs & set(c["rules"])]
+        if refs and not cite:
+            continue
         if not cite:
             named = {menu[n - 1] for n in point["cite"] if 0 < n <= len(menu)}
             cite = [i for i, c in enumerate(citations, 1) if c["title"] in named]
