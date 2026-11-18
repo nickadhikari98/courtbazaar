@@ -10,6 +10,7 @@ const GUEST_TEXT = "Sign in to attach documents. File uploads are available to l
 const TOO_LARGE_TEXT = "This file is too large. The limit is 10 MB.";
 const WRONG_TYPE_TEXT = "Only PDF and Word (.docx) files can be attached.";
 const FAILED_TEXT = "Upload failed. Please try again.";
+const UNREADABLE_TEXT = "The server couldn't read this file from the upload. Please choose it again.";
 
 // Checked before uploading; the server checks again (and pages, scans, length).
 export function checkFile(file, signedIn) {
@@ -24,6 +25,7 @@ export function uploadErrorText(err) {
   const status = err?.response?.status;
   const detail = err?.response?.data?.detail;
   if (status === 413 && typeof detail !== "string") return TOO_LARGE_TEXT;
+  if (status === 422 && typeof detail !== "string") return UNREADABLE_TEXT; // a validation list, not a reason
   if (status && status < 500 && typeof detail === "string") return detail;
   return FAILED_TEXT;
 }
@@ -46,10 +48,12 @@ export function FileChip({ name, onRemove, testId }) {
   );
 }
 
-// Above the composer: this chat's files (removable), the one in flight, an inline error,
-// quick actions for files not yet asked about, and the 30-day note once per chat.
-export default function AttachmentBar({ uploads, pending, error, onRemove, onDismissError, quickActions, onQuickAction }) {
-  if (!uploads.length && !pending && !error) return null;
+// Above the composer: this chat's files (removable), the one in flight, each failed file
+// (its name and the reason, no chip), an inline error, quick actions for files not yet
+// asked about, and the 30-day note once per chat.
+export default function AttachmentBar({ uploads, pending, error, onRemove, onDismissError, quickActions, onQuickAction,
+  failed = [], onDismissFailed }) {
+  if (!uploads.length && !pending && !error && !failed.length) return null;
   return (
     <div className="mb-2 space-y-2 px-1" data-testid="chat-uploads">
       {(uploads.length > 0 || pending) && (
@@ -71,6 +75,18 @@ export default function AttachmentBar({ uploads, pending, error, onRemove, onDis
           )}
         </div>
       )}
+      {failed.map((f) => (
+        <div key={f.name} role="alert" className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive" data-testid="chat-upload-failed">
+          <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 flex-1 break-words">
+            <span className="block truncate font-medium" title={f.name} data-testid="chat-upload-failed-name">{f.name}</span>
+            {f.error}
+          </span>
+          <button type="button" onClick={() => onDismissFailed(f.name)} aria-label={`Dismiss the error for ${f.name}`} className="shrink-0 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ))}
       {error && (
         <div role="alert" className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive" data-testid="chat-upload-error">
           <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />

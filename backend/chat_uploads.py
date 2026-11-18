@@ -46,6 +46,21 @@ WRONG_TYPE_MESSAGE = "Only PDF and Word (.docx) files can be attached."
 SCANNED_MESSAGE = ("This PDF looks scanned: it has no readable text layer. "
                    "Please upload a text PDF (for example, one exported from Word) instead.")
 UPLOAD_NOT_FOUND = "File not found."
+NO_FILE_MESSAGE = "No file was received. Please choose the file again."
+UNNAMED_FILE_MESSAGE = "The file arrived without its name, so it couldn't be read. Please choose it again from your device."
+ONE_FILE_MESSAGE = "Upload one file at a time."
+
+
+def single_file(parts: List[Any]) -> Any:
+    """The one named file in an upload form's "file" field, or a 422 saying what
+    was wrong (FastAPI's own 422 for these is a validation list, echoing the bytes)."""
+    if not parts:
+        raise HTTPException(422, NO_FILE_MESSAGE)
+    if len(parts) > 1:
+        raise HTTPException(422, ONE_FILE_MESSAGE)
+    if isinstance(parts[0], str) or not getattr(parts[0], "filename", None):
+        raise HTTPException(422, UNNAMED_FILE_MESSAGE)
+    return parts[0]
 
 _KINDS = {"pdf": "application/pdf",
           "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}

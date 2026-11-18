@@ -231,6 +231,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const [unsent, setUnsent] = useState([]);
   const [pendingUpload, setPendingUpload] = useState(null);
   const [uploadError, setUploadError] = useState(null);
+  const [failedUploads, setFailedUploads] = useState([]); // [{ name, error }]
   const fileRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
@@ -476,6 +477,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
     setMsgs((prev) => [...prev, { role: "user", text: content, files: sentFiles.map((u) => u.file_name) }]);
     setUnsent([]);
     setUploadError(null);
+    setFailedUploads([]);
     setInput("");
     setLoading(true);
     setSteps([FIRST_STEP]);
@@ -561,6 +563,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
     setUnsent([]);
     setPendingUpload(null);
     setUploadError(null);
+    setFailedUploads([]);
     setDrawerOpen(false);
     inputRef.current?.focus();
   };
@@ -589,38 +592,46 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
     }
   };
 
-  // Attach: a brand-new chat is created first (the upload needs its id). Errors show inline.
-  const attach = async (file) => {
+  // A file that failed gets an error row with its name and reason, never a chip.
+  const failUpload = (name, error) => setFailedUploads((prev) => [...prev.filter((f) => f.name !== name), { name, error }]);
+
+  // Attach: each picked file is uploaded on its own, one after another; a brand-new chat is
+  // created first (the upload needs its id). Errors show inline, next to that file's name.
+  const attach = async (picked) => {
     if (fileRef.current) fileRef.current.value = "";
-    if (!file) return;
-    const problem = checkFile(file, !!user);
-    setUploadError(problem);
-    if (problem) return;
+    if (!picked.length) return;
+    setUploadError(null);
     const mySession = sessionRef.current;
-    setPendingUpload({ name: file.name, progress: 0 });
-    try {
-      let id = conversationId;
-      if (!id) {
-        const { data } = await api.post("/ai/chats");
+    let id = conversationId;
+    for (const file of picked) {
+      const problem = checkFile(file, !!user);
+      if (problem) { failUpload(file.name, problem); continue; }
+      setPendingUpload({ name: file.name, progress: 0 });
+      try {
+        if (!id) {
+          const { data } = await api.post("/ai/chats");
+          if (sessionRef.current !== mySession) return;
+          id = data.conversation_id;
+          setConversationId(id);
+        }
+        const form = new FormData();
+        form.append("file", file);
+        const { data } = await api.post(`/ai/chats/${encodeURIComponent(id)}/uploads`, form, {
+          onUploadProgress: (e) => {
+            if (e.total && sessionRef.current === mySession) setPendingUpload({ name: file.name, progress: Math.round((e.loaded / e.total) * 100) });
+          },
+        });
         if (sessionRef.current !== mySession) return;
-        id = data.conversation_id;
-        setConversationId(id);
+        setUploads((prev) => [...prev, data]);
+        setUnsent((prev) => [...prev, data.upload_id]);
+        setFailedUploads((prev) => prev.filter((f) => f.name !== file.name));
+        loadChats();
+      } catch (err) {
+        if (sessionRef.current !== mySession) return;
+        failUpload(file.name, uploadErrorText(err));
+      } finally {
+        if (sessionRef.current === mySession) setPendingUpload(null);
       }
-      const form = new FormData();
-      form.append("file", file);
-      const { data } = await api.post(`/ai/chats/${encodeURIComponent(id)}/uploads`, form, {
-        onUploadProgress: (e) => {
-          if (e.total && sessionRef.current === mySession) setPendingUpload({ name: file.name, progress: Math.round((e.loaded / e.total) * 100) });
-        },
-      });
-      if (sessionRef.current !== mySession) return;
-      setUploads((prev) => [...prev, data]);
-      setUnsent((prev) => [...prev, data.upload_id]);
-      loadChats();
-    } catch (err) {
-      if (sessionRef.current === mySession) setUploadError(uploadErrorText(err));
-    } finally {
-      if (sessionRef.current === mySession) setPendingUpload(null);
     }
   };
 
@@ -906,6 +917,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
           <AttachmentBar
             uploads={uploads} pending={pendingUpload} error={uploadError} onRemove={removeUpload}
             onDismissError={() => setUploadError(null)} onQuickAction={quickAction}
+            failed={failedUploads} onDismissFailed={(name) => setFailedUploads((prev) => prev.filter((f) => f.name !== name))}
             quickActions={msgs.length > 0 && unsent.length > 0 && !loading}
           />
           <div className="rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/20 transition-shadow">
@@ -926,8 +938,8 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
             />
             <div className="flex items-center gap-2 pt-1">
               <input
-                ref={fileRef} type="file" accept={UPLOAD_ACCEPT} className="hidden" tabIndex={-1} aria-hidden="true"
-                onChange={(e) => attach(e.target.files?.[0])} data-testid="instant-legal-help-file-input"
+                ref={fileRef} type="file" accept={UPLOAD_ACCEPT} multiple className="hidden" tabIndex={-1} aria-hidden="true"
+                onChange={(e) => attach([...(e.target.files || [])])} data-testid="instant-legal-help-file-input"
               />
               <button
                 type="button" onClick={() => (user ? fileRef.current?.click() : setUploadError(checkFile(null, false)))}

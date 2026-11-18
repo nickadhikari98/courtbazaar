@@ -85,8 +85,20 @@ async def _new_chat(user):
     return (await server.ai_chat_create(user=user))["conversation_id"]
 
 
+class _FormRequest:
+    """Just enough of a Request for ai_chat_upload: a multipart form with one "file"."""
+
+    def __init__(self, parts):
+        self._parts = parts
+
+    async def form(self):
+        from starlette.datastructures import FormData
+        return FormData([("file", p) for p in self._parts])
+
+
 async def _upload(user, conv, data=LEASE, name="lease.pdf"):
-    return await server.ai_chat_upload(conv, file=UploadFile(io.BytesIO(data), filename=name), user=user)
+    request = _FormRequest([UploadFile(io.BytesIO(data), filename=name)])
+    return await server.ai_chat_upload(conv, request=request, user=user)
 
 
 async def _cleanup(users):
@@ -155,6 +167,38 @@ def test_oversized_and_wrong_type_files_are_rejected():
                 assert exc.value.status_code == status, name
             assert await server.ai_chat_uploads(conv, user=owner) == []
         finally:
+            await _cleanup([owner])
+    asyncio.run(body())
+
+
+def test_a_malformed_upload_request_gets_a_specific_reason_not_a_validation_dump():
+    """Through the real app: what FastAPI used to answer with a bare 422 list
+    (and the file's raw bytes echoed back) now says what was wrong."""
+    import httpx
+    owner = _user()
+    server.app.dependency_overrides[server.get_current_user] = lambda: owner
+    server.app.dependency_overrides[server.get_current_user_optional] = lambda: owner
+    name = "Document-2_ServiceWorkflows(Updated).docx"
+    doc = _docx([("Heading 1", "Service workflows"), (None, "Step one. The vendor files the order.")])
+
+    async def body():
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://t") as c:
+                conv = (await c.post("/api/ai/chats")).json()["conversation_id"]
+                url = f"/api/ai/chats/{conv}/uploads"
+                cases = [
+                    ({"files": {"file": ("", doc)}}, chat_uploads.UNNAMED_FILE_MESSAGE),
+                    ({"files": {"attachment": (name, doc)}}, chat_uploads.NO_FILE_MESSAGE),
+                    ({"files": [("file", ("a.pdf", LEASE)), ("file", (name, doc))]}, chat_uploads.ONE_FILE_MESSAGE),
+                ]
+                for kwargs, message in cases:
+                    r = await c.post(url, **kwargs)
+                    assert r.status_code == 422 and r.json() == {"detail": message}
+                assert (await c.get(url)).json() == []  # nothing stored by a rejected request
+                ok = await c.post(url, files={"file": (name, doc)})  # the name itself is fine
+                assert ok.status_code == 200 and ok.json()["file_name"] == name
+        finally:
+            server.app.dependency_overrides.clear()
             await _cleanup([owner])
     asyncio.run(body())
 

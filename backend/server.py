@@ -1890,11 +1890,13 @@ async def ai_chat_create(user=Depends(get_current_user)):
 
 # ---------- Chat uploads: a signed-in user's PDF/DOCX for one chat (chat_uploads) ----------
 @api_router.post("/ai/chats/{conversation_id}/uploads")
-async def ai_chat_upload(conversation_id: str, file: UploadFile = File(...),
+async def ai_chat_upload(conversation_id: str, request: Request,
                          user: Optional[dict] = Depends(get_current_user_optional)):
     import chat_uploads
     if not user:
         raise HTTPException(403, chat_uploads.GUEST_MESSAGE)  # before reading the body
+    # Parsed here, not by a File(...) parameter, so a malformed upload gets a reason the page can show.
+    file = chat_uploads.single_file((await request.form()).getlist("file"))
     data = await file.read(chat_uploads.MAX_BYTES + 1)
     return await chat_uploads.create_upload(db, user, conversation_id, file.filename, data)
 

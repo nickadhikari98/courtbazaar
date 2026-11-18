@@ -123,7 +123,8 @@ def test_a_failed_rules_check_retries_once_then_returns_the_file_only_points(mon
     both = _point("both", "Clause 18 is in writing and signed by both parties; an arbitration agreement shall be "
                           "in writing (Section 7).", "Complies with Section 7")
     result, calls = _failing_rules_check(monkeypatch, [unsupported, from_file, both])
-    assert calls.count("file_check_card") == 4  # two attempts, then the one retry of two attempts
+    assert calls.count("file_check_card") == 2  # hard ceiling: two generations, no outer retry
+    assert calls.count("answer_verdict") <= 2
     assert set(calls) <= {"file_check_card", "answer_verdict"}  # never the unchecked plain answer
     assert result["ok"] and result["file_only"]
     answer = result["answer"]
@@ -201,6 +202,38 @@ def test_a_retried_file_check_tells_the_user_why_it_is_slower(monkeypatch):
     assert statuses.count("retrying") == 1
 
 
+def test_a_slow_rules_check_returns_the_file_only_points_at_its_deadline(monkeypatch):
+    """The verifier hangs: the check stops at its deadline with the file's own points, not a spinner."""
+    import time
+    point = _point("rules", "An arbitration agreement shall be in writing (Section 7).", "Section 7")
+    from_file = _point("file", "All disputes shall be referred to arbitration in Mumbai.", "Clause 18")
+    card = {"status": "answered", "direct": None, "summary": "An arbitration agreement shall be in writing (Section 7).",
+            "points": [point, from_file],
+            "practical_implications": None, "limitations": None, "follow_up": None}
+
+    async def create(**kw):
+        if kw["text"]["format"]["name"] == "answer_verdict":
+            await asyncio.sleep(30)
+        return SimpleNamespace(output_text=json.dumps(card), usage=None)
+
+    async def retrieve(query, selected_source=None):
+        return SECTION_7, [ACT], 1, ["7"], ""
+    for name, value in (("AI_PROVIDER", "openai"), ("OPENAI_API_KEY", "sk-test"), ("OPENAI_VECTOR_STORE_ID", "vs-test"),
+                        ("FILE_CHECK_DEADLINE_SECONDS", 0.5), ("AI_VERIFIER_TIMEOUT_SECONDS", 30)):
+        monkeypatch.setattr(llm_service, name, value)
+    monkeypatch.setattr(llm_service, "is_configured", lambda: True)
+    monkeypatch.setattr(llm_service, "_retrieve_context", retrieve)
+    monkeypatch.setattr(llm_service, "_get_client", lambda: SimpleNamespace(responses=SimpleNamespace(create=create)))
+    t0 = time.monotonic()
+    result = asyncio.run(llm_service.generate_response(
+        [{"role": "user", "content": "Check it against the rules"}], use_file_search=True,
+        retrieval_query="arbitration agreement writing", file_evidence=FILE))
+    assert time.monotonic() - t0 < 3
+    assert result["ok"] and result["file_only"]
+    assert result["answer"]["limitations"] == llm_service.FILE_CHECK_INCOMPLETE_NOTE
+    assert {p["source"] for p in result["answer"]["points"]} == {"file"}
+
+
 def test_a_claimed_absence_is_checked_by_searching_the_file():
     no_seat = _point("file", "Clause 18 names no seat and no institution.", "Clause 18 — seat")
     kept, _ = llm_service._file_backed_points([no_seat], CONTRACT, SECTION_7, SECTION_7, [ACT])
@@ -249,7 +282,7 @@ def test_a_check_with_only_failing_comparisons_falls_back_to_their_clause_halves
     result, calls = _failing_rules_check_with(monkeypatch, [_point("both", COMPARISON, "Clause 18 — Arbitration")],
                                               file_evidence=CONTRACT, context=NO_SECTION_7)
     assert result["ok"] and result["file_only"]
-    assert calls.count("file_check_card") == 4  # found omissions alone never skip the retry
+    assert calls.count("file_check_card") == 2  # found omissions alone never skip the retry
     assert [p["title"] for p in result["answer"]["points"]] == [
         "Clause 18 — Arbitration", "Clause 18 — seat", "Clause 18 — institution"]
     assert {p["source"] for p in result["answer"]["points"]} == {"file"}

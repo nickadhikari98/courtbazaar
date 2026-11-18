@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 import weakref
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional
 
@@ -67,6 +68,9 @@ AI_RAG_ROUTE_TIMEOUT_SECONDS = float(os.environ.get("AI_RAG_ROUTE_TIMEOUT_SECOND
 # statement rejected, ~3.5s; gpt-4o-mini 6/10, rejects good ones; gpt-5-mini 8/10, 8-12s.
 AI_VERIFIER_MODEL = os.environ.get("AI_VERIFIER_MODEL", "gpt-4o")
 AI_VERIFIER_TIMEOUT_SECONDS = float(os.environ.get("AI_VERIFIER_TIMEOUT_SECONDS", "8"))
+# "Check it against the rules": the whole check (search, card, verifier, one retry)
+# must finish inside this, or the file-only points are returned (_file_only_fallback).
+FILE_CHECK_DEADLINE_SECONDS = float(os.environ.get("FILE_CHECK_DEADLINE_SECONDS", "18"))
 # General legal questions can be answered with OpenAI web search, restricted
 # to official sites (see OFFICIAL_SOURCE_DOMAINS). Off unless enabled: every
 # search is a paid call that sends the user's question to OpenAI.
@@ -646,6 +650,7 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
     Returns a safe status plus text/sources. Error details are for server logs
     only and must never be rendered to the user.
     """
+    started = time.monotonic()
     question = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "") if use_file_search else ""
     query = (retrieval_query or question) if use_file_search else ""
     if not use_file_search:
@@ -727,25 +732,21 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
 
         if AI_PROVIDER == "openai" and use_file_search:
             stage = "OpenAI answer generation"
-            # A file check gets one more structured try (a plain answer can't keep the
-            # file's evidence apart from the rules'), then its checked file points alone.
+            # A file check never falls to the plain answer (it can't keep the file's evidence
+            # apart from the rules'): what's left of its deadline, then its checked file points alone.
             salvage: Dict[str, Any] = {}
-            for card_try in range(2 if file_evidence else 1):
-                try:
-                    # Both attempts share one budget, so the plain fallback below
-                    # still finishes inside the page's request timeout.
-                    card_result = await asyncio.wait_for(_card_answer(client, messages, context, sources, on_status,
-                                                                      action_gap, language, file_evidence, salvage),
-                                                         timeout=AI_TIMEOUT_SECONDS + AI_VERIFIER_TIMEOUT_SECONDS)
-                except asyncio.TimeoutError:
-                    logger.warning("Card fallback: %s (timed out)", "retrying the file check" if file_evidence and not card_try
-                                   else "using the plain answer")
-                    card_result = None
-                if card_result is not None:
-                    return {**card_result, "evidence": context}  # for ai_chat's acronym check
-                if file_evidence and not card_try:
-                    # Up to a minute more: the page says why instead of a silent spinner.
-                    await emit_status(on_status, "retrying", "Retrying the comparison…")
+            budget = (FILE_CHECK_DEADLINE_SECONDS - (time.monotonic() - started) if file_evidence
+                      else AI_TIMEOUT_SECONDS + AI_VERIFIER_TIMEOUT_SECONDS)
+            try:
+                card_result = await asyncio.wait_for(_card_answer(client, messages, context, sources, on_status,
+                                                                  action_gap, language, file_evidence, salvage),
+                                                     timeout=max(budget, 0.1))
+            except asyncio.TimeoutError:
+                logger.warning("Card fallback: %s (timed out after %.1fs)",
+                               "file-only points" if file_evidence else "using the plain answer", max(budget, 0.1))
+                card_result = None
+            if card_result is not None:
+                return {**card_result, "evidence": context}  # for ai_chat's acronym check
             if file_evidence:
                 return {**_file_only_fallback(salvage, sources), "evidence": context}
             await emit_status(on_status, "writing", "Writing answer…")
@@ -1521,7 +1522,10 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
     request = with_language(messages[:last_user] + [{"role": "system", "content": note}] + messages[last_user:], language)
     reason = "no valid output"
     best: Optional[Dict[str, Any]] = None  # a verified card kept while a completeness retry runs
-    for attempt in range(2):
+    for attempt in range(2):  # hard ceiling: two generations, so at most two verifier calls
+        if attempt and file_evidence:
+            # The page says why this is taking longer instead of a silent spinner.
+            await emit_status(on_status, "retrying", "Retrying the comparison…")
         output = await _card_output(
             client, on_status,
             model=AI_MODEL,
@@ -1593,7 +1597,7 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
             answer["status"] = "answered"
         if answer["summary"] is None:
             logger.warning("Structured answer attempt %d: summary rejected", attempt + 1)
-            if attempt == 0:
+            if attempt == 0 and not file_evidence:  # a file check is on a deadline: no regeneration for this
                 # Same request, same output at temperature 0: a retry has to say what was wrong.
                 request = request[:-1] + [{"role": "system", "content": SUMMARY_RETRY_NOTE}, request[-1]]
                 continue
@@ -1614,7 +1618,7 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
             answer["summary"] = f"{_rules_name(citations)} don't mention {action_gap} in this situation. {answer['summary']}"
         result = _card_result(answer, citations, file_points, file_citations, sources)
         missing = []
-        if best is None and attempt == 0:
+        if best is None and attempt == 0 and not file_evidence:  # completeness retry: not inside a file check's deadline
             word = _provision_word(sources)
             missing = [f"{word} {r}" for r in _uncovered_rules(verdict, evidence, answer["points"])] + [
                 f'what the question asks about "{p}"' for p in _unanswered_parts(question, result["text"], evidence)]
