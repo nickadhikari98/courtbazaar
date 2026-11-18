@@ -181,7 +181,7 @@ function MobileNav({ active, signedIn, onChat, onNew, onSearch, onHistory }) {
             key={key} type="button" onClick={onClick} aria-label={label}
             aria-current={active === key ? "page" : undefined}
             className={`flex h-14 min-w-16 flex-1 flex-col items-center justify-center gap-0.5 rounded-full text-2xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-              signedIn ? "" : "max-w-28"} ${active === key ? "bg-accent/10 text-accent" : "text-muted-foreground hover:text-foreground"}`}
+              signedIn ? "" : "max-w-28"} ${active === key ? "bg-accent/10 text-accent dark:bg-accent/15" : "text-muted-foreground hover:text-foreground"}`}
             data-testid={`chat-bottom-${key}`}
           >
             <Icon className="h-5 w-5" aria-hidden="true" />{label}
@@ -946,7 +946,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
                   <button
                     key={m.value} type="button" aria-pressed={mode === m.value} onClick={() => chooseMode(m.value)}
                     className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                      mode === m.value ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                      mode === m.value ? "bg-card text-foreground shadow-sm dark:bg-accent/15 dark:text-accent" : "text-muted-foreground hover:text-foreground"}`}
                     data-testid={`instant-legal-help-mode-${m.value}`}
                   >
                     {m.label}

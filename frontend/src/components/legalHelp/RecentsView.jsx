@@ -9,6 +9,8 @@ import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { ChatMenu } from "./ChatSidebar";
 
 const PAGE = 30;
+// Dark mode: the default bg-background "selected" is nearly invisible on the dark list, so tint it.
+const DARK_ACTIVE_TAB = "dark:data-[state=active]:bg-accent/15 dark:data-[state=active]:text-accent";
 const rtf = typeof Intl !== "undefined" && Intl.RelativeTimeFormat ? new Intl.RelativeTimeFormat("en", { numeric: "always" }) : null;
 
 /* "2 minutes ago", "4 days ago", then "Nov 5" (with the year when it isn't this year). Exported for tests. */
@@ -156,8 +158,8 @@ export default function RecentsView({ onOpen, onNewChat, onSearch, onUpdate, onD
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
           <Tabs value={tab} onValueChange={(v) => { setTab(v); stopSelecting(); }}>
             <TabsList>
-              <TabsTrigger value="active" data-testid="recents-tab-active">Active</TabsTrigger>
-              <TabsTrigger value="archived" data-testid="recents-tab-archived">Archived</TabsTrigger>
+              <TabsTrigger value="active" className={DARK_ACTIVE_TAB} data-testid="recents-tab-active">Active</TabsTrigger>
+              <TabsTrigger value="archived" className={DARK_ACTIVE_TAB} data-testid="recents-tab-archived">Archived</TabsTrigger>
             </TabsList>
           </Tabs>
           <div className="flex items-center gap-1">

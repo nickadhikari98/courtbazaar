@@ -279,7 +279,7 @@ export default function SettingsDialog({ open, onOpenChange, pane, usage, prefs,
             </div>
             <TabsList className="flex h-auto w-full flex-col items-stretch gap-1 bg-transparent px-2 pb-2">
               {PANES.map(([value, label]) => (
-                <TabsTrigger key={value} value={value} className="h-10 justify-between px-3 data-[state=active]:bg-background md:justify-start" data-testid={`settings-tab-${value}`}>
+                <TabsTrigger key={value} value={value} className="h-10 justify-between px-3 data-[state=active]:bg-background dark:data-[state=active]:bg-accent/15 dark:data-[state=active]:text-accent md:justify-start" data-testid={`settings-tab-${value}`}>
                   {label}<ChevronRight className="h-4 w-4 text-muted-foreground md:hidden" aria-hidden="true" />
                 </TabsTrigger>
               ))}

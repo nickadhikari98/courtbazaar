@@ -108,7 +108,7 @@ function ChatRow({ chat, active, onSelect, onUpdate, onDelete, onMove }) {
     );
   }
   return (
-    <div className={`group flex items-center rounded-lg ${active ? "bg-card shadow-sm dark:bg-popover" : "hover:bg-secondary"}`} data-testid="chat-row">
+    <div className={`group flex items-center rounded-lg ${active ? "bg-card shadow-sm dark:bg-accent/15 dark:text-accent" : "hover:bg-secondary"}`} data-testid="chat-row">
       <button
         type="button" onClick={() => onSelect(chat.conversation_id)}
         aria-current={active ? "page" : undefined}
@@ -233,7 +233,7 @@ export default function ChatSidebar({
                         type="button" onClick={() => onOpenMatter(m.matter_id)}
                         aria-current={m.matter_id === activeMatterId ? "page" : undefined}
                         className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                          m.matter_id === activeMatterId ? "bg-card font-semibold shadow-sm dark:bg-popover" : "hover:bg-secondary"}`}
+                          m.matter_id === activeMatterId ? "bg-card font-semibold shadow-sm dark:bg-accent/15 dark:text-accent" : "hover:bg-secondary"}`}
                         data-testid="chat-sidebar-matter"
                       >
                         <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
