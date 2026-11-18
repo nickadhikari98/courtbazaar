@@ -734,7 +734,7 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
             await emit_status(on_status, "writing", "Writing answer…")
             response = await asyncio.wait_for(client.responses.create(
                 model=AI_MODEL,
-                **_responses_input(messages),
+                **_responses_input(with_language(messages, language)),
                 max_output_tokens=AI_RAG_MAX_OUTPUT_TOKENS,
                 temperature=AI_RAG_TEMPERATURE,
             ), timeout=AI_TIMEOUT_SECONDS)
@@ -749,7 +749,7 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
             )
             response = await asyncio.wait_for(client.chat.completions.create(
                 model=AI_MODEL,
-                messages=messages,
+                messages=with_language(messages, language),
                 max_tokens=AI_RAG_MAX_OUTPUT_TOKENS if use_file_search else AI_MAX_OUTPUT_TOKENS,
                 **({"temperature": AI_RAG_TEMPERATURE} if use_file_search else {}),
             ), timeout=AI_TIMEOUT_SECONDS)
@@ -1460,7 +1460,7 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
     note = RAG_CARD_INSTRUCTIONS + "\n\nSOURCES:\n" + "\n".join(f"{i}. {name}" for i, name in enumerate(menu, 1))
     last_user = max(i for i, m in enumerate(messages) if m["role"] == "user")
     question = messages[last_user]["content"]
-    request = messages[:last_user] + [{"role": "system", "content": note}] + messages[last_user:]
+    request = with_language(messages[:last_user] + [{"role": "system", "content": note}] + messages[last_user:], language)
     reason = "no valid output"
     best: Optional[Dict[str, Any]] = None  # a verified card kept while a completeness retry runs
     for attempt in range(2):
@@ -1771,6 +1771,16 @@ def _neutralize_delimiters(text: str) -> str:
     """Retrieved text can't close the data block early and smuggle in
     instructions after it."""
     return re.sub(r"</?\s*untrusted_[a-z_]*\s*>", "[removed]", text, flags=re.IGNORECASE)
+
+
+def with_language(messages: List[Dict[str, str]], language: str) -> List[Dict[str, str]]:
+    """The answer-language setting as the last instruction before the user's
+    question, so no later instruction outranks it ("auto": unchanged)."""
+    reminder = prompt_builder.language_reminder(language)
+    if not reminder:
+        return messages
+    last_user = max((i for i, m in enumerate(messages) if m["role"] == "user"), default=len(messages))
+    return list(messages[:last_user]) + [{"role": "system", "content": reminder}] + list(messages[last_user:])
 
 
 def _with_document_evidence(messages: List[Dict[str, str]], context: str) -> List[Dict[str, str]]:

@@ -82,6 +82,21 @@ LANGUAGE_INSTRUCTIONS = {
 }
 
 
+# Repeated as the last instruction before the question (llm_service.with_language):
+# the evidence and card instructions that come after the first language line say to
+# keep "the document's own words", and that later, more specific instruction won,
+# so a Hindi or Hinglish setting came back in English.
+LANGUAGE_OVER_WORDING = (
+    " This applies to every sentence of the answer, including where the instructions above say to keep the "
+    "document's own words or wording: translate that wording faithfully instead of copying it in English."
+)
+
+
+def language_reminder(language: str) -> Optional[str]:
+    line = LANGUAGE_INSTRUCTIONS.get(language)
+    return line + LANGUAGE_OVER_WORDING if line else None
+
+
 def build_legal_system_messages(subject: str = "Arbitration", mode: str = "layman",
                                 intent: str = "qa", language: str = "auto") -> List[Dict[str, str]]:
     """Master prompt, role line, mode instruction, [language], task instruction — in that order."""
@@ -95,4 +110,5 @@ def build_legal_system_messages(subject: str = "Arbitration", mode: str = "layma
 
 def protected_texts() -> List[str]:
     """Every hidden legal instruction, for answer_guard.check_output."""
-    return [master_prompt(), *MODE_INSTRUCTIONS.values(), *(task_instruction(i) for i in INTENTS)]
+    return [master_prompt(), *MODE_INSTRUCTIONS.values(), *(task_instruction(i) for i in INTENTS),
+            *(language_reminder(lang) for lang in LANGUAGE_INSTRUCTIONS if language_reminder(lang))]

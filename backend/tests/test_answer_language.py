@@ -106,3 +106,41 @@ def test_english_answers_keep_the_english_wording_checks():
     hindi_unsupported = "मध्यस्थ की नियुक्ति हमेशा सर्वोच्च न्यायालय करता है।"
     assert not _kept(hindi_unsupported, "auto", title="सर्वोच्च न्यायालय", badge="")
     assert _kept("नियम 8.1 के अनुसार, अध्यक्ष 15 दिनों के भीतर नियुक्ति करेंगे।", "auto")
+
+
+def test_the_language_setting_is_the_last_instruction_before_the_question():
+    import llm_service
+    msgs = [{"role": "system", "content": prompt_builder.master_prompt()},
+            {"role": "user", "content": "<untrusted_document_excerpts>...</untrusted_document_excerpts>"},
+            {"role": "system", "content": "Keep the document's own wording."},
+            {"role": "user", "content": "What do the DIAC Rules say about the appointment of arbitrators?"}]
+    for language in ("en", "hi", "hinglish"):
+        out = llm_service.with_language(msgs, language)
+        assert out[:-1][:3] == msgs[:3] and out[-1] == msgs[-1]  # only inserted, master prompt untouched
+        assert out[-2] == {"role": "system", "content": prompt_builder.language_reminder(language)}
+        assert out[-2]["content"].startswith(prompt_builder.LANGUAGE_INSTRUCTIONS[language])
+    assert llm_service.with_language(msgs, "auto") == msgs
+
+
+def test_card_and_plain_requests_both_end_with_the_language_setting(monkeypatch):
+    """The card note ("keep the document's words") must not come after the language line."""
+    import llm_service
+    from types import SimpleNamespace
+    seen = []
+
+    async def create(**kwargs):
+        seen.append(kwargs)
+        raise RuntimeError("stop after capturing the request")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    msgs = [{"role": "system", "content": prompt_builder.master_prompt()},
+            {"role": "user", "content": "What do the DIAC Rules say about the appointment of arbitrators?"}]
+    try:
+        asyncio.run(llm_service._card_answer(client, msgs, "[Source: x | Rule 8]\n8. Text.", ["x"], language="hi"))
+    except RuntimeError:
+        pass
+    request = seen[0]["input"]
+    assert request[-1]["content"] == msgs[-1]["content"]
+    assert request[-2]["content"] == prompt_builder.language_reminder("hi")
+    assert any("SOURCES:" in m["content"] for m in request[:-2])  # card note sits before it
+    assert prompt_builder.language_reminder("hi") in prompt_builder.protected_texts()
