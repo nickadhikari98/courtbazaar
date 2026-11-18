@@ -449,7 +449,9 @@ def test_chat_output_has_no_pii_or_internal_ids(monkeypatch):
             for leaked in ("ravi.sharma@gmail.com", "9876543210", "user_1a2b3c4d5e6f", "ORD260101ABCDEF"):
                 assert leaked not in reply
             assert set(result) <= {"conversation_id", "conversation_token", "reply", "degraded", "sources",
-                                   "citations", "grounding", "answer", "error_stage"}
+                                   "citations", "grounding", "answer", "error_stage", "uploads"}
+            for up in result.get("uploads") or []:
+                assert set(up) == {"file_name", "retrieval"}
             for citation in result.get("citations") or []:
                 assert set(citation) <= {"title", "url", "rules"}
             stored = await server.db.ai_chat_messages.find_one(

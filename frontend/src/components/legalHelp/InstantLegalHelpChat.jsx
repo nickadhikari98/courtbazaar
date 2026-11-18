@@ -18,6 +18,7 @@ import { streamChat } from "./chatStream";
 import ChatMarkdown from "./ChatMarkdown";
 import ChatSources, { documentCitationLinks, webCitationLinks } from "./ChatSources";
 import AnswerCard, { AnswerNote, answerPlainText, normalizeAnswer } from "./AnswerCard";
+import AttachmentBar, { ASK_PREFIX, FileChip, QUICK_ACTIONS, UPLOAD_ACCEPT, checkFile, uploadErrorText } from "./ChatUploads";
 
 // Multi-turn conversation via POST /ai/chat/stream. Backend routing (ai_chat.py)
 // transparently grounds some replies in live public CourtBazaar data
@@ -225,6 +226,12 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [steps, setSteps] = useState([]);
+  // This chat's documents (chat_uploads), the ones not yet sent with a message, and the one uploading.
+  const [uploads, setUploads] = useState([]);
+  const [unsent, setUnsent] = useState([]);
+  const [pendingUpload, setPendingUpload] = useState(null);
+  const [uploadError, setUploadError] = useState(null);
+  const fileRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
   // /legal-help/chats: the full Recents list replaces the transcript; the sidebar stays.
@@ -465,7 +472,10 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
     const content = (text ?? input).trim();
     if (!content || loading) return;
     const mySession = sessionRef.current;
-    setMsgs((prev) => [...prev, { role: "user", text: content }]);
+    const sentFiles = uploads.filter((u) => unsent.includes(u.upload_id));
+    setMsgs((prev) => [...prev, { role: "user", text: content, files: sentFiles.map((u) => u.file_name) }]);
+    setUnsent([]);
+    setUploadError(null);
     setInput("");
     setLoading(true);
     setSteps([FIRST_STEP]);
@@ -478,6 +488,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
         mode,
         ...(conversationToken ? { conversation_token: conversationToken } : {}),
         ...(prefs.language !== "auto" ? { language: prefs.language } : {}),
+        ...(sentFiles.length ? { upload_ids: sentFiles.map((u) => u.upload_id) } : {}),
       }, {
         idleMs: CHAT_TIMEOUT_MS,
         signal: controller.signal,
@@ -546,6 +557,10 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
     setConversationToken(null);
     setInput("");
     setLoading(false);
+    setUploads([]);
+    setUnsent([]);
+    setPendingUpload(null);
+    setUploadError(null);
     setDrawerOpen(false);
     inputRef.current?.focus();
   };
@@ -560,12 +575,70 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
       if (sessionRef.current !== mySession) return;
       setConversationId(id);
       setMsgs((Array.isArray(data) ? data : []).map((m) => (m.role === "user"
-        ? { role: "user", text: m.content } : assistantMessageFrom({ reply: m.content }))));
+        ? { role: "user", text: m.content, files: Array.isArray(m.files) ? m.files : [] }
+        : assistantMessageFrom({ reply: m.content }))));
+      if (user) {
+        api.get(`/ai/chats/${encodeURIComponent(id)}/uploads`)
+          .then(({ data: files }) => { if (sessionRef.current === mySession && Array.isArray(files)) setUploads(files); })
+          .catch(() => {});
+      }
     } catch (err) {
       if (sessionRef.current !== mySession) return;
       toast.error(getErrorMessage(err, "Couldn't open that chat."));
       loadChats();
     }
+  };
+
+  // Attach: a brand-new chat is created first (the upload needs its id). Errors show inline.
+  const attach = async (file) => {
+    if (fileRef.current) fileRef.current.value = "";
+    if (!file) return;
+    const problem = checkFile(file, !!user);
+    setUploadError(problem);
+    if (problem) return;
+    const mySession = sessionRef.current;
+    setPendingUpload({ name: file.name, progress: 0 });
+    try {
+      let id = conversationId;
+      if (!id) {
+        const { data } = await api.post("/ai/chats");
+        if (sessionRef.current !== mySession) return;
+        id = data.conversation_id;
+        setConversationId(id);
+      }
+      const form = new FormData();
+      form.append("file", file);
+      const { data } = await api.post(`/ai/chats/${encodeURIComponent(id)}/uploads`, form, {
+        onUploadProgress: (e) => {
+          if (e.total && sessionRef.current === mySession) setPendingUpload({ name: file.name, progress: Math.round((e.loaded / e.total) * 100) });
+        },
+      });
+      if (sessionRef.current !== mySession) return;
+      setUploads((prev) => [...prev, data]);
+      setUnsent((prev) => [...prev, data.upload_id]);
+      loadChats();
+    } catch (err) {
+      if (sessionRef.current === mySession) setUploadError(uploadErrorText(err));
+    } finally {
+      if (sessionRef.current === mySession) setPendingUpload(null);
+    }
+  };
+
+  const removeUpload = async (u) => {
+    try {
+      await api.delete(`/ai/chats/${encodeURIComponent(conversationId)}/uploads/${encodeURIComponent(u.upload_id)}`);
+      setUploads((prev) => prev.filter((x) => x.upload_id !== u.upload_id));
+      setUnsent((prev) => prev.filter((x) => x !== u.upload_id));
+    } catch {
+      setUploadError("Couldn't remove the file. Please try again.");
+    }
+  };
+
+  // "Ask a question about it" starts the question; the other two send straight away.
+  const quickAction = (text) => {
+    if (text !== QUICK_ACTIONS[1]) { send(text); return; }
+    setInput(ASK_PREFIX);
+    inputRef.current?.focus();
   };
 
   // Stop: drop the in-flight answer (it never lands) and offer to resend the question.
@@ -747,9 +820,9 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
                 Tell me what's going on and I'll help you figure out the next step.
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-8 text-left">
-                {SUGGESTIONS.map((text, i) => (
+                {(uploads.length ? QUICK_ACTIONS : SUGGESTIONS).map((text, i) => (
                   <button
-                    key={text} type="button" onClick={() => send(text)}
+                    key={text} type="button" onClick={() => (uploads.length ? quickAction(text) : send(text))}
                     className="rounded-xl border border-border bg-card p-4 text-sm leading-6 hover:border-accent/50 hover:bg-accent/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     data-testid={`instant-legal-help-suggestion-${i}`}
                   >
@@ -761,8 +834,15 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
           )}
           {msgs.map((m, i) => (m.role === "user" ? (
             <div key={i} className="flex justify-end gap-3" data-testid={`instant-legal-help-msg-user-${i}`}>
-              <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-br-md bg-primary text-primary-foreground px-4 py-2.5 text-[15px] leading-7 whitespace-pre-wrap break-words">
-                {m.text}
+              <div className="flex max-w-[85%] sm:max-w-[75%] flex-col items-end gap-1.5">
+                {m.files?.length > 0 && (
+                  <div className="flex flex-wrap justify-end gap-1.5">
+                    {m.files.map((name) => <FileChip key={name} name={name} testId="instant-legal-help-msg-file" />)}
+                  </div>
+                )}
+                <div className="max-w-full rounded-2xl rounded-br-md bg-primary text-primary-foreground px-4 py-2.5 text-[15px] leading-7 whitespace-pre-wrap break-words">
+                  {m.text}
+                </div>
               </div>
               <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary shrink-0 hidden sm:flex items-center justify-center" aria-hidden="true">
                 <User className="w-4 h-4" />
@@ -823,6 +903,11 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
 
       <div className={`shrink-0 bg-background md:pb-[max(env(safe-area-inset-bottom),0.75rem)] ${composerFocused ? "pb-[max(env(safe-area-inset-bottom),0.75rem)]" : "pb-2"}`}>
         <div className="max-w-[760px] mx-auto w-full px-4 pt-2">
+          <AttachmentBar
+            uploads={uploads} pending={pendingUpload} error={uploadError} onRemove={removeUpload}
+            onDismissError={() => setUploadError(null)} onQuickAction={quickAction}
+            quickActions={msgs.length > 0 && unsent.length > 0 && !loading}
+          />
           <div className="rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/20 transition-shadow">
             <textarea
               ref={inputRef}
@@ -840,9 +925,14 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
               data-testid="instant-legal-help-input"
             />
             <div className="flex items-center gap-2 pt-1">
+              <input
+                ref={fileRef} type="file" accept={UPLOAD_ACCEPT} className="hidden" tabIndex={-1} aria-hidden="true"
+                onChange={(e) => attach(e.target.files?.[0])} data-testid="instant-legal-help-file-input"
+              />
               <button
-                type="button" disabled title="Coming soon" aria-label="Attach a file (coming soon)"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground disabled:opacity-50"
+                type="button" onClick={() => (user ? fileRef.current?.click() : setUploadError(checkFile(null, false)))}
+                disabled={!!pendingUpload || loading} title="Attach a PDF or Word file" aria-label="Attach a PDF or Word file"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                 data-testid="instant-legal-help-attach"
               >
                 <Paperclip className="w-4 h-4" />

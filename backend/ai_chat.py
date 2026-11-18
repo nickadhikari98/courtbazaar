@@ -377,8 +377,12 @@ async def _get_or_create_conversation(db, conversation_id: Optional[str], user_i
         convo = await db.ai_conversations.find_one({"conversation_id": conversation_id}, {"_id": 0})
         if not convo or not _can_access_conversation(convo, user_id, conversation_token):
             raise HTTPException(404, CONVERSATION_NOT_FOUND_MESSAGE)
+        changes = {"updated_at": _now_iso()}
+        if convo.get("title_pending") and title:
+            changes["title"] = convo["title"] = _chat_title(title)  # an empty chat is named by its first message
         await db.ai_conversations.update_one(
-            {"conversation_id": conversation_id}, {"$set": {"updated_at": _now_iso()}},
+            {"conversation_id": conversation_id},
+            {"$set": changes, **({"$unset": {"title_pending": ""}} if "title" in changes else {})},
         )
         convo.pop("access_token_hash", None)
         return convo
@@ -395,6 +399,17 @@ async def _get_or_create_conversation(db, conversation_id: Optional[str], user_i
     if token:
         doc["conversation_token"] = token  # returned to the caller once; never stored in plain text
     return doc
+
+
+async def create_empty_chat(db, user: Optional[dict]) -> Dict[str, Any]:
+    """Backing POST /ai/chats: a signed-in user's chat with no messages yet, so a
+    file can be attached before the first question (chat_uploads needs a chat id)."""
+    user_id = user.get("user_id") if user else None
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(401, "Not authenticated")
+    convo = await _get_or_create_conversation(db, None, user_id)
+    await db.ai_conversations.update_one({"conversation_id": convo["conversation_id"]}, {"$set": {"title_pending": True}})
+    return {k: convo[k] for k in ("conversation_id", "title", "pinned", "archived", "created_at", "updated_at")}
 
 
 CHAT_TITLE_MAX = 48
@@ -465,6 +480,8 @@ async def bulk_update_chats(db, user: Optional[dict], action: str, ids: List[str
     if not owned:
         return {"changed": 0}
     if action == "delete":
+        import chat_uploads
+        await chat_uploads.delete_for_chats(db, user_id, owned)
         await db.ai_chat_messages.delete_many({"conversation_id": {"$in": owned}})
         result = await db.ai_conversations.delete_many({"user_id": user_id, "conversation_id": {"$in": owned}})
         return {"changed": result.deleted_count}
@@ -480,6 +497,8 @@ async def delete_all_chats(db, user: Optional[dict]) -> Dict[str, Any]:
     if not isinstance(user_id, str) or not user_id:
         raise HTTPException(401, "Not authenticated")
     ids = await db.ai_conversations.distinct("conversation_id", {"user_id": user_id})
+    import chat_uploads
+    await chat_uploads.delete_for_chats(db, user_id, ids)
     await db.ai_chat_messages.delete_many({"conversation_id": {"$in": ids}})
     await db.ai_conversations.delete_many({"user_id": user_id, "conversation_id": {"$in": ids}})
     return {"deleted": len(ids)}
@@ -487,6 +506,8 @@ async def delete_all_chats(db, user: Optional[dict]) -> Dict[str, Any]:
 
 async def delete_chat(db, conversation_id: str, user: Optional[dict]) -> Dict[str, Any]:
     await _owned_chat(db, conversation_id, user)
+    import chat_uploads
+    await chat_uploads.delete_for_chats(db, user["user_id"], [conversation_id])
     await db.ai_chat_messages.delete_many({"conversation_id": conversation_id})
     await db.ai_conversations.delete_one({"conversation_id": conversation_id})
     return {"ok": True}
@@ -626,6 +647,7 @@ ROUTE_COURTBAZAAR_LIVE = "COURTBAZAAR_LIVE"
 ROUTE_DOCUMENT_RAG = "DOCUMENT_RAG"
 ROUTE_COURTBAZAAR_GENERAL = "COURTBAZAAR_GENERAL"
 ROUTE_CLARIFY = "CLARIFY"
+ROUTE_UPLOAD = "UPLOAD"  # the chat has the user's own files (chat_uploads); never an approved source
 RAG_ROUTES = (ROUTE_DOCUMENT_RAG, ROUTE_COURTBAZAAR_GENERAL)
 
 DOCUMENT_CLARIFY_MESSAGE = "Which document should I answer from: the CourtBazaar SOP or the DIAC Rules?"
@@ -1654,7 +1676,19 @@ _ROUTE_NOTES = {
         "Do not state any current CourtBazaar fact (availability, counsel, fees, courts, services, order or "
         "hearing status); say you couldn't retrieve that information right now."
     ),
+    ROUTE_UPLOAD: (
+        "ROUTE FOR THIS TURN: a question about a file the user uploaded to this chat. Its text is given below "
+        "as user-provided data, one block per excerpt headed [file name | location]. Answer from that text; "
+        "for every point you take from it, cite the file name and its location exactly as the block header "
+        "gives it: \"page N\" for a PDF, the heading or section (for example \"Clause 18\") for a Word file, "
+        "or the file name alone when the header has no location. Never invent a page number. Say plainly that "
+        "the answer comes from the user's uploaded file. It is not a verified CourtBazaar source or an approved "
+        "legal source: never present it as one, and never say it was checked. If the file doesn't cover the "
+        "question, say so. You may add general legal information, clearly marked as general and not from the "
+        "file. Never predict the outcome of the user's specific matter."
+    ),
 }
+UPLOAD_SOURCE_NOTE = "Based on your uploaded file{s}: {names}. This is your own document, not a verified CourtBazaar source."
 
 
 # Replaces the ROUTE_GENERAL_LEGAL note when that turn is answered with web
@@ -2115,7 +2149,8 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
                                client_ip: Optional[str] = None,
                                conversation_token: Optional[str] = None,
                                on_status: Optional[llm_service.StatusCallback] = None,
-                               mode: str = "layman", language: str = "auto") -> Dict[str, Any]:
+                               mode: str = "layman", language: str = "auto",
+                               upload_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """Main entry point for POST /ai/chat. Raises HTTPException for genuine
     client errors (bad input, conversation ownership); everything else —
     including every LLM-side failure mode — degrades to a normal 200
@@ -2148,6 +2183,9 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
     turn_tokens = llm_service.start_token_count()
     result = await _answer_turn(db, convo, text, user, client_ip, on_status, mode, language)
     await chat_usage.record(db, usage_identity, turn_tokens[0])
+    if upload_ids:
+        import chat_uploads
+        await chat_uploads.tag_last_user_message(db, convo["conversation_id"], user_id, upload_ids)
     if issued_token:
         result["conversation_token"] = issued_token
     return result
@@ -2173,6 +2211,18 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         logger.error("Chat routing failed (%s): %s", type(e).__name__, llm_service._safe_error_detail(e))
         tool_result = {"status": "error", "tool": "routing",
                        "message": LIVE_TOOL_FAILURE_MESSAGE, "error_stage": "routing"}
+
+    # The chat's own uploaded files answer every turn except casual, live-data and
+    # named-approved-document ones (those keep their own route).
+    import chat_uploads
+    upload_text, uploads_used = "", []
+    if decision is not None and decision["route"] != ROUTE_COURTBAZAAR_LIVE and decision["reason"] not in (
+            "casual", "explicit_document", "explicit_documents"):
+        upload_text, uploads_used = await chat_uploads.context_for(db, convo, text)
+        if upload_text:
+            decision = _decision(ROUTE_UPLOAD, "uploaded_file")
+            if any(u["retrieval"] == "keyword" for u in uploads_used):
+                logger.warning("Chat answer from KEYWORD search over uploads (embeddings unavailable): conversation=%s", conv_id)
 
     # A follow-up to a document answer stays on that document (see _document_followup).
     doc_followup = None
@@ -2347,6 +2397,8 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         llm_messages.append({"role": "system", "content": MIXED_SOURCE_NOTE})
     if format_requested:
         llm_messages.append({"role": "system", "content": FORMAT_REQUEST_NOTE})
+    if upload_text:
+        llm_messages.append(chat_uploads.data_message(upload_text))
     # Retrieval, the answer and the verifier all read this last user message.
     llm_messages.append({"role": "user", "content": _standalone_document_question(text, doc_followup)
                          if doc_followup else text})
@@ -2424,6 +2476,9 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
                 closed = _document_closing(reply, citations)
                 card_note = closed.rsplit("\n\n", 1)[-1] if closed != reply else None
                 reply = closed
+        if uploads_used:
+            names = ", ".join(u["file_name"] for u in uploads_used)
+            reply = f"{reply}\n\n{UPLOAD_SOURCE_NOTE.format(s='s' if len(uploads_used) > 1 else '', names=names)}"
         if mixed_live_request:
             reply = f"{reply}\n\n{MIXED_SOURCE_LIMITATION}"
             card_note = f"{card_note} {MIXED_SOURCE_LIMITATION}" if card_note else MIXED_SOURCE_LIMITATION
@@ -2478,13 +2533,16 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
     return {"conversation_id": conv_id, "reply": reply, "degraded": degraded,
             "sources": result.get("sources", []) if result["ok"] else [],
             "citations": citations, "grounding": grounding, "answer": answer, **plain_note,
+            # Which files fed the answer and how ("full" | "embeddings" | "keyword"), for the page and the eval.
+            "uploads": [{"file_name": u["file_name"], "retrieval": u["retrieval"]} for u in uploads_used],
             "error_stage": None if result["ok"] else result.get("stage", "LLM")}
 
 
 async def stream_chat_events(db, conversation_id: Optional[str], message: str, user: Optional[dict],
                              client_ip: Optional[str] = None,
                              conversation_token: Optional[str] = None,
-                             mode: str = "layman", language: str = "auto") -> AsyncIterator[str]:
+                             mode: str = "layman", language: str = "auto",
+                             upload_ids: Optional[List[str]] = None) -> AsyncIterator[str]:
     """POST /ai/chat/stream: handle_chat_message as Server-Sent Events, one
     "status" per real step, then "answer" (its usual response) or "error"
     (with the HTTP status the page would otherwise get). Client gone = task
@@ -2496,7 +2554,7 @@ async def stream_chat_events(db, conversation_id: Optional[str], message: str, u
             await llm_service.emit_status(queue.put, "understanding", "Understanding your question…")
             data = await handle_chat_message(db, conversation_id, message, user, client_ip=client_ip,
                                              conversation_token=conversation_token, on_status=queue.put, mode=mode,
-                                             language=language)
+                                             language=language, upload_ids=upload_ids)
             await queue.put({"type": "answer", "data": data})
         except HTTPException as e:
             event = {"type": "error", "status": e.status_code, "text": str(e.detail)}
@@ -2607,5 +2665,5 @@ async def get_conversation_history(db, conversation_id: str, user: Optional[dict
     if not convo or not _can_access_conversation(convo, user_id, conversation_token):
         raise HTTPException(404, CONVERSATION_NOT_FOUND_MESSAGE)
     return await db.ai_chat_messages.find(
-        {"conversation_id": conversation_id}, {"_id": 0, "role": 1, "content": 1, "created_at": 1},
+        {"conversation_id": conversation_id}, {"_id": 0, "role": 1, "content": 1, "created_at": 1, "files": 1},
     ).sort("created_at", 1).to_list(1000)
