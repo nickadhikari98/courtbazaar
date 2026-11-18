@@ -1680,6 +1680,17 @@ _ROUTE_NOTES = {
     ),
 }
 UPLOAD_SOURCE_NOTE = "Based on your uploaded file{s}: {names}. This is your own document, not a verified CourtBazaar source."
+# "Check it against the rules" over an uploaded file: answered from the approved sources only.
+UPLOAD_RULES_CHECK_RE = re.compile(r"\bcheck\b.{0,40}\bagainst\b.{0,20}\brules?\b", re.IGNORECASE)
+UPLOAD_RULES_CHECK_NOTE = (
+    "TASK FOR THIS TURN: the user asks you to check the file they uploaded (given as user-provided data) "
+    "against the rules. The rules are ONLY the approved document excerpts provided to you: never use general "
+    "legal knowledge, memory or any other source for what a rule says. For each point in the file that an "
+    "excerpt covers, name the provision and say whether the file is consistent with it. If no excerpt covers "
+    "the file's subject, say the available documents don't cover it."
+)
+UPLOAD_RULES_CHECK_SOURCE_NOTE = ("Checked your uploaded file{s} ({names}) against the approved sources cited above. "
+                                  "Your file itself is not a verified CourtBazaar source.")
 
 
 # Replaces the ROUTE_GENERAL_LEGAL note when that turn is answered with web
@@ -1765,7 +1776,7 @@ MIXED_SOURCE_LIMITATION = (
 def _protected_texts() -> List[str]:
     """Hidden instructions the reply must never reproduce (see
     answer_guard.check_output)."""
-    return [SYSTEM_PROMPT, *prompt_builder.protected_texts(), MIXED_SOURCE_NOTE, FORMAT_REQUEST_NOTE, WEB_SEARCH_LEGAL_NOTE, WEB_SEARCH_RETRY_NOTE,
+    return [SYSTEM_PROMPT, *prompt_builder.protected_texts(), MIXED_SOURCE_NOTE, UPLOAD_RULES_CHECK_NOTE, FORMAT_REQUEST_NOTE, WEB_SEARCH_LEGAL_NOTE, WEB_SEARCH_RETRY_NOTE,
             llm_service.RAG_EVIDENCE_INSTRUCTIONS, llm_service.RAG_CARD_INSTRUCTIONS,
             _tool_result_system_message({"tool": None})["content"], *_ROUTE_NOTES.values()]
 
@@ -2206,11 +2217,16 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
     # The chat's own uploaded files answer every turn except casual, live-data and
     # named-approved-document ones (those keep their own route).
     import chat_uploads
-    upload_text, uploads_used = "", []
+    upload_text, uploads_used, rules_check_query = "", [], None
     if decision is not None and decision["route"] != ROUTE_COURTBAZAAR_LIVE and decision["reason"] not in (
             "casual", "explicit_document", "explicit_documents"):
         upload_text, uploads_used = await chat_uploads.context_for(db, convo, text)
-        if upload_text:
+        if upload_text and UPLOAD_RULES_CHECK_RE.search(text):
+            # The rules come from the approved sources only (all of them, searched with the
+            # file's own words), never general knowledge: no evidence, no answer.
+            decision = _decision(ROUTE_DOCUMENT_RAG, "upload_rules_check")
+            rules_check_query = chat_uploads.search_query(upload_text)
+        elif upload_text:
             decision = _decision(ROUTE_UPLOAD, "uploaded_file")
             if any(u["retrieval"] == "keyword" for u in uploads_used):
                 logger.warning("Chat answer from KEYWORD search over uploads (embeddings unavailable): conversation=%s", conv_id)
@@ -2388,11 +2404,17 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         llm_messages.append({"role": "system", "content": MIXED_SOURCE_NOTE})
     if format_requested:
         llm_messages.append({"role": "system", "content": FORMAT_REQUEST_NOTE})
-    if upload_text:
-        llm_messages.append(chat_uploads.data_message(upload_text))
-    # Retrieval, the answer and the verifier all read this last user message.
-    llm_messages.append({"role": "user", "content": _standalone_document_question(text, doc_followup)
-                         if doc_followup else text})
+    if rules_check_query:
+        # The file goes inside the question itself (still tagged, user-role data), so the
+        # answer and the verifier both see what is being checked against the rule excerpts.
+        llm_messages.append({"role": "system", "content": UPLOAD_RULES_CHECK_NOTE})
+        llm_messages.append({"role": "user", "content": f"{text}\n\n{chat_uploads.data_message(upload_text)['content']}"})
+    else:
+        if upload_text:
+            llm_messages.append(chat_uploads.data_message(upload_text))
+        # Retrieval, the answer and the verifier all read this last user message.
+        llm_messages.append({"role": "user", "content": _standalone_document_question(text, doc_followup)
+                             if doc_followup else text})
 
     # Document/product questions are grounded only in the one approved
     # document the router selected — retrieval never falls back to another,
@@ -2427,6 +2449,7 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         result = await llm_service.generate_response(
             llm_messages, use_file_search=use_rag, selected_source=decision["source"] if use_rag else None,
             on_status=on_status, **({"language": language} if language != "auto" else {}),
+            **({"retrieval_query": rules_check_query} if rules_check_query else {}),
         )
     finally:
         rag_provisions.RESERVED_CHARS.reset(reserved)
@@ -2469,7 +2492,8 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
                 reply = closed
         if uploads_used:
             names = ", ".join(u["file_name"] for u in uploads_used)
-            reply = f"{reply}\n\n{UPLOAD_SOURCE_NOTE.format(s='s' if len(uploads_used) > 1 else '', names=names)}"
+            note = UPLOAD_RULES_CHECK_SOURCE_NOTE if rules_check_query else UPLOAD_SOURCE_NOTE
+            reply = f"{reply}\n\n{note.format(s='s' if len(uploads_used) > 1 else '', names=names)}"
         if mixed_live_request:
             reply = f"{reply}\n\n{MIXED_SOURCE_LIMITATION}"
             card_note = f"{card_note} {MIXED_SOURCE_LIMITATION}" if card_note else MIXED_SOURCE_LIMITATION

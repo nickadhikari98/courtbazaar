@@ -286,3 +286,69 @@ def test_chunks_never_span_two_labels():
     assert chunks[0] == ("page 1", "a" * 10 + "\nb")
     assert [label for label, _ in chunks[1:]] == ["page 2"] * 3
     assert all(len(t) <= chat_uploads.CHUNK_CHARS for _, t in chunks)
+
+
+def test_check_against_the_rules_uses_only_the_approved_sources(monkeypatch):
+    seen = _capture_llm(monkeypatch)
+    owner = _user()
+    contract = _docx([("Heading 1", "Clause 18 Arbitration"),
+                      (None, "Disputes go to a sole arbitrator appointed by the DIAC within 30 days.")])
+
+    async def body():
+        try:
+            conv = await _new_chat(owner)
+            await _upload(owner, conv, contract, "contract.docx")
+            result = await ai_chat.handle_chat_message(server.db, conv, "Check it against the rules", owner)
+            kw, msgs = seen["kwargs"], seen["messages"]
+            # Approved-source RAG over every approved document, searched with the file's own words.
+            assert kw["use_file_search"] is True and kw["selected_source"] is None
+            assert "sole arbitrator appointed by the DIAC" in kw["retrieval_query"]
+            assert "[contract.docx" not in kw["retrieval_query"]
+            systems = [m["content"] for m in msgs if m["role"] == "system"]
+            assert ai_chat.UPLOAD_RULES_CHECK_NOTE in systems
+            assert ai_chat._ROUTE_NOTES[ai_chat.ROUTE_UPLOAD] not in systems  # no "general legal information" licence
+            assert not any("sole arbitrator" in s for s in systems)  # file text stays user-role data
+            # The file rides inside the question, tagged, so the verifier sees what is checked.
+            assert msgs[-1]["role"] == "user" and msgs[-1]["content"].startswith("Check it against the rules\n\n")
+            assert "<untrusted_uploaded_document>" in msgs[-1]["content"] and "sole arbitrator" in msgs[-1]["content"]
+            assert result["reply"].endswith("Your file itself is not a verified CourtBazaar source.")
+        finally:
+            await _cleanup([owner])
+    asyncio.run(body())
+
+
+def test_rules_check_with_no_approved_evidence_never_falls_back_to_general_knowledge(monkeypatch):
+    monkeypatch.setattr(llm_service, "is_configured", lambda: True)
+
+    async def no_evidence(messages, **kwargs):
+        return {"ok": False, "error_code": llm_service.ERR_NO_CONTEXT, "stage": "rag"}
+    monkeypatch.setattr(llm_service, "generate_response", no_evidence)
+    owner = _user()
+
+    async def body():
+        try:
+            conv = await _new_chat(owner)
+            await _upload(owner, conv)
+            result = await ai_chat.handle_chat_message(server.db, conv, "Check this document against the rules", owner)
+            assert result["reply"] == ai_chat.document_not_found_message(None)
+            assert result["grounding"] == "insufficient"
+        finally:
+            await _cleanup([owner])
+    asyncio.run(body())
+
+
+def test_retrieval_query_drives_the_search_but_not_the_verifier_question(monkeypatch):
+    monkeypatch.setattr(llm_service, "OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(llm_service, "OPENAI_VECTOR_STORE_ID", "vs-test")
+    monkeypatch.setattr(llm_service, "is_configured", lambda: True)
+    monkeypatch.setattr(llm_service, "_get_client", lambda: object())
+    searched = []
+
+    async def retrieve(query, selected_source=None):
+        searched.append((query, selected_source))
+        return "", [], 0, [], ""
+    monkeypatch.setattr(llm_service, "_retrieve_context", retrieve)
+    msgs = [{"role": "user", "content": "Check it against the rules"}]
+    result = asyncio.run(llm_service.generate_response(msgs, use_file_search=True, retrieval_query="sole arbitrator DIAC"))
+    assert searched == [("sole arbitrator DIAC", llm_service.SOURCE_DIAC)]  # source inferred from the file's words
+    assert result["error_code"] == llm_service.ERR_NO_CONTEXT

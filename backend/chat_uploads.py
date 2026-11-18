@@ -360,6 +360,13 @@ async def context_for(db, convo: dict, query: str) -> Tuple[str, List[Dict[str, 
     return "\n\n".join(blocks), used
 
 
+def search_query(text: str, limit: int = 1000) -> str:
+    """The file's own words (block headers removed) as the approved-source search
+    text for "Check it against the rules". shortcut: the first `limit` characters
+    (or of the retrieved excerpts, for a long file); search per section if checks miss later clauses."""
+    return re.sub(r"(?m)^\[[^\]\n]*\]$", "", text).strip()[:limit]
+
+
 def data_message(text: str) -> Dict[str, str]:
     """The user-role message that carries uploaded text: same authority as the user's own words."""
     import llm_service

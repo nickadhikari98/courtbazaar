@@ -625,8 +625,13 @@ def _reading_text(query: str, rules: List[str], sources: List[str]) -> str:
 async def generate_response(messages: List[Dict[str, str]], use_file_search: bool = False,
                             selected_source: str | None = None,
                             on_status: Optional[StatusCallback] = None,
-                            language: str = "auto") -> Dict[str, Any]:
+                            language: str = "auto", retrieval_query: str | None = None) -> Dict[str, Any]:
     """Generate a reply, optionally grounding it in hosted vector-store results.
+
+    `retrieval_query` replaces the user's message as the search text (and for
+    choosing the source) when that message can't be searched on its own, such
+    as "Check it against the rules" over an uploaded file. The verifier still
+    judges the answer against the user's own question.
 
     `selected_source` is the one approved document to search, as decided by
     ai_chat.route_message; retrieval is then restricted to that file and never
@@ -635,7 +640,8 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
     Returns a safe status plus text/sources. Error details are for server logs
     only and must never be rendered to the user.
     """
-    query = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "") if use_file_search else ""
+    question = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "") if use_file_search else ""
+    query = (retrieval_query or question) if use_file_search else ""
     if not use_file_search:
         selected_source = None
     elif selected_source is None:
@@ -815,7 +821,7 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
                 attributed += "\n\n" + answer_guard.PARTIAL_ANSWER_NOTE
         text = attributed
         # The plain fallback gets the same logic check as a card.
-        verdict = await _verify_answer(client, query, context, {"summary": text, "points": []})
+        verdict = await _verify_answer(client, question, context, {"summary": text, "points": []})
         wrong_action = answer_guard.starts_with_yes_or_no(text) and (
             action_gap or (verdict and not verdict["direct_matches_action"]))
         if wrong_action or (verdict and verdict["summary"] != "SUPPORTED"):
