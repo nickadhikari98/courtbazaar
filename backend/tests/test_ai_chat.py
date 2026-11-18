@@ -710,6 +710,7 @@ def test_groq_generates_answer_with_openai_vector_store_context(monkeypatch):
             {"role": "system", "content": "Use approved sources only."},
             {"role": "user", "content": "What is the refund process mentioned in the SOP?"},
         ], use_file_search=True)
+        assert result.pop("evidence").startswith("[Source: STANDARD OPERATING PROCEDURE")  # internal: for the acronym check
         assert result == {
             "ok": True, "text": "The refund process starts after the cancellation is approved.",
             "sources": ["STANDARD OPERATING PROCEDURE (SOP).docx"],

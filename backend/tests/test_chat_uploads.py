@@ -17,6 +17,8 @@ import chat_uploads  # noqa: E402
 import llm_service  # noqa: E402
 import server  # noqa: E402
 import storage  # noqa: E402
+import prompt_builder  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -352,3 +354,37 @@ def test_retrieval_query_drives_the_search_but_not_the_verifier_question(monkeyp
     result = asyncio.run(llm_service.generate_response(msgs, use_file_search=True, retrieval_query="sole arbitrator DIAC"))
     assert searched == [("sole arbitrator DIAC", llm_service.SOURCE_DIAC)]  # source inferred from the file's words
     assert result["error_code"] == llm_service.ERR_NO_CONTEXT
+
+
+def test_a_hindi_summary_of_an_mcia_file_keeps_names_and_labels_untranslated(monkeypatch):
+    """The request: the names rule is the last instruction before the question."""
+    seen = {}
+
+    async def create(**kw):
+        seen["messages"] = kw["messages"]
+        # The real run's invented full form, kept out by the acronym check.
+        reply = ("MCIA (मदीर परामर्श इंदौर अधिवक्ता) के नियमों के अनुसार, मध्यस्थ की नियुक्ति Rule 8.6 के तहत होती है "
+                 "(mcia.pdf, page 1)।")
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))], usage=None)
+
+    for name, value in (("AI_PROVIDER", "groq"), ("AI_MODEL", "test"), ("GROQ_API_KEY", "gsk-test")):
+        monkeypatch.setattr(llm_service, name, value)
+    monkeypatch.setattr(llm_service, "_get_client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    owner = _user()
+    mcia = _pdf(["MCIA Arbitration Rules 2025. Rule 8.6 The Council of MCIA shall appoint the arbitrator.", "Rule 9."])
+
+    async def body():
+        try:
+            conv = await _new_chat(owner)
+            await _upload(owner, conv, mcia, "mcia.pdf")
+            result = await ai_chat.handle_chat_message(server.db, conv, "Summarise this document", owner, language="hi")
+            msgs = seen["messages"]
+            assert msgs[-1] == {"role": "user", "content": "Summarise this document"}
+            assert msgs[-2] == {"role": "system", "content": prompt_builder.language_reminder("hi")}
+            assert result["reply"].startswith("MCIA के नियमों के अनुसार") and "Rule 8.6" in result["reply"]
+            assert "(mcia.pdf, page 1)" in result["reply"]  # a citation in brackets stays
+        finally:
+            await _cleanup([owner])
+    asyncio.run(body())
+

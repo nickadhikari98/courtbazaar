@@ -742,9 +742,9 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
                                    else "using the plain answer")
                     card_result = None
                 if card_result is not None:
-                    return card_result
+                    return {**card_result, "evidence": context}  # for ai_chat's acronym check
             if file_evidence:
-                return _file_only_fallback(salvage, sources)
+                return {**_file_only_fallback(salvage, sources), "evidence": context}
             await emit_status(on_status, "writing", "Writing answer…")
             response = await asyncio.wait_for(client.responses.create(
                 model=AI_MODEL,
@@ -849,6 +849,8 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
             if not verdict["main_ask_answered"]:
                 text += "\n\n" + answer_guard.PARTIAL_ANSWER_NOTE
     result: Dict[str, Any] = {"ok": True, "text": text, "sources": sources}
+    if use_file_search:
+        result["evidence"] = context  # the retrieved text, for ai_chat's acronym check
     if use_file_search:
         import answer_guard
         result["citations"] = build_citations(text, context, sources)

@@ -1240,3 +1240,39 @@ def check_output(text: str, protected_texts: Iterable[str] = ()) -> Tuple[str, L
         flags.append("internal_name")
         cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     return cleaned.strip(), flags
+
+
+# "MCIA (Mediation and Conciliation Institute of India)", "MCIA (महाद्वीपीय मध्यस्थता संस्थान)":
+# any 2-6 letter all-caps token followed by a bracketed text.
+_ACRONYM_EXPANSION_RE = re.compile(r"\b([A-Z]{2,6})\b(\s*)\(([^()\n]{2,160})\)")
+_CITATION_LIKE_RE = re.compile(r"\d|\.(?:pdf|docx)\b", re.IGNORECASE)  # "(Rule 8.6)", "(mcia.pdf, page 3)"
+
+
+def _normalized(text: str) -> str:
+    return " ".join((text or "").casefold().split())
+
+
+def strip_invented_expansions(text: str, sources: Iterable[str],
+                              known: Optional[dict] = None) -> Tuple[str, List[str]]:
+    """Removes a bracketed full form after an acronym unless those exact words
+    are in `sources` (the retrieved source text, the uploaded file) or are the
+    acronym's own name in `known` ({"MCIA": ["Mumbai Centre for International
+    Arbitration"]}). Nothing is put in its place: removing beats guessing. A
+    bracket holding a number or a file name is a citation, not a full form, and
+    stays. Returns (text, removed "ACRONYM (words)" items)."""
+    if not text:
+        return text, []
+    haystack = _normalized(" ".join(s for s in sources if s))
+    removed: List[str] = []
+
+    def keep_or_drop(m: "re.Match") -> str:
+        acronym, inner = m.group(1), m.group(3).strip()
+        if _CITATION_LIKE_RE.search(inner):
+            return m.group(0)
+        words = _normalized(inner)
+        if words and (words in haystack or words in {_normalized(n) for n in (known or {}).get(acronym, [])}):
+            return m.group(0)
+        removed.append(f"{acronym} ({inner})")
+        return acronym
+
+    return _ACRONYM_EXPANSION_RE.sub(keep_or_drop, text), removed

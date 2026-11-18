@@ -144,3 +144,17 @@ def test_card_and_plain_requests_both_end_with_the_language_setting(monkeypatch)
     assert request[-2]["content"] == prompt_builder.language_reminder("hi")
     assert any("SOURCES:" in m["content"] for m in request[:-2])  # card note sits before it
     assert prompt_builder.language_reminder("hi") in prompt_builder.protected_texts()
+
+
+def test_names_acronyms_and_provision_labels_are_never_translated_or_expanded():
+    for language in ("hi", "hinglish"):
+        line = prompt_builder.LANGUAGE_INSTRUCTIONS[language]
+        reminder = prompt_builder.language_reminder(language)
+        for rule in ("Translate only the explanation, never a name or a number", "MCIA, DIAC, SIAC, ICC, LCIA, ICA",
+                     "Never invent a full form for an acronym", '"Rule 8.6"', '"Section 29A"', '"Article 31"',
+                     '"Appendix IV, Article 7"', "court names, party names and defined terms"):
+            assert rule in line, (language, rule)
+        assert reminder.startswith(line) and "provision labels are not translated" in reminder
+    assert prompt_builder.NO_INVENTED_EXPANSION in prompt_builder.LANGUAGE_INSTRUCTIONS["en"]
+    assert "Never invent a full form" not in prompt_builder.master_prompt()  # master prompt unchanged
+

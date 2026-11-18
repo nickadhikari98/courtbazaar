@@ -22,6 +22,7 @@ from fastapi import HTTPException
 
 import answer_guard
 import court_bazaar_tools
+import kb_registry
 import llm_service
 import prompt_builder
 from rate_limiter import get_limiter
@@ -2509,6 +2510,11 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         if use_rag or format_requested:
             # After the guards: a removed section can leave "1, 3, 4" behind.
             reply = renumber_heading_sequences(reply)
+        # A full form after an acronym stays only if the sources say it, in every language.
+        expansion_sources = [result.get("evidence") or "", upload_text]
+        reply = _without_invented_expansions(reply, expansion_sources, decision["route"])
+        if result.get("answer"):
+            result["answer"] = _card_without_invented_expansions(result["answer"], expansion_sources, decision["route"])
         reply, flags = answer_guard.check_output(reply, _protected_texts())
         if flags:
             logger.warning("Reply output check (%s): %s", decision["route"], ",".join(flags))
@@ -2631,6 +2637,20 @@ def _display_card(card: Dict[str, Any], note: Optional[str], citations: List[Dic
 WEB_USED_SUPERSEDED_RULES = object()
 
 
+def _without_invented_expansions(text: str, sources: List[str], where: str) -> str:
+    """answer_guard.strip_invented_expansions with the registry's institution names; logs each removal."""
+    cleaned, removed = answer_guard.strip_invented_expansions(text, sources, kb_registry.institution_names())
+    for item in removed:
+        logger.warning("Removed an acronym expansion not in the sources (%s): %s", where, item)
+    return cleaned
+
+
+def _card_without_invented_expansions(card: Dict[str, Any], sources: List[str], where: str) -> Dict[str, Any]:
+    clean = lambda v: _without_invented_expansions(v, sources, where) if isinstance(v, str) else v
+    return {**{k: clean(v) for k, v in card.items() if k != "points"},
+            "points": [{**p, **{f: clean(p.get(f)) for f in ("title", "badge", "text")}} for p in card.get("points") or []]}
+
+
 def _finish_web_answer(result: Dict[str, Any], question: str, format_requested: bool) -> tuple:
     """The general-answer guards over a web answer, then its citations: a
     sentence the guards remove takes its [n] and source with it. Returns
@@ -2640,6 +2660,8 @@ def _finish_web_answer(result: Dict[str, Any], question: str, format_requested: 
     reply = answer_guard.guard_general_answer(reply, legal=True, question=question, verified_markers=markers)
     if format_requested:
         reply = renumber_heading_sequences(reply)
+    # No retrieved text to match here: only the registry's own institution names count.
+    reply = _without_invented_expansions(reply, [], "web search")
     reply, flags = answer_guard.check_output(reply, _protected_texts())
     if flags:
         logger.warning("Reply output check (web search): %s", ",".join(flags))
