@@ -16,6 +16,7 @@ const BADGE_TONES = {
   warning: "bg-warning/10 text-warning-foreground border-warning/40",
   neutral: "bg-secondary text-muted-foreground border-border",
 };
+const POINT_SOURCES = { file: "From your file", both: "Your file + verified source" };
 const text = (value) => (typeof value === "string" ? value.trim() : "");
 
 /* Exported for tests. */
@@ -31,6 +32,8 @@ export function normalizeAnswer(raw) {
       badge: text(p.badge),
       text: text(p.text),
       cite: Array.isArray(p.cite) ? p.cite.filter(Number.isInteger) : [],
+      // Checked against the user's uploaded file ("file") or the file and an approved source ("both").
+      source: POINT_SOURCES[p.source] ? p.source : null,
     }));
   if (!points.length) return null;
   return {
@@ -95,6 +98,11 @@ export default function AnswerCard({ answer, citeLinks, clean }) {
           const chips = point.cite.filter((n) => citeLinks.has(n)).map((n) => `[${n}]`).join("");
           return (
             <Section key={`${i}-${point.title}`} label={clean(point.title)} testId="instant-legal-help-answer-point">
+              {point.source && (
+                <span className="mb-1 inline-block rounded-full border border-border bg-muted px-2 py-0.5 text-2xs font-semibold text-muted-foreground" data-testid="instant-legal-help-point-source">
+                  {POINT_SOURCES[point.source]}
+                </span>
+              )}
               <ChatMarkdown text={clean(`${point.text}${chips}`)} citeLinks={citeLinks} />
             </Section>
           );

@@ -625,13 +625,18 @@ def _reading_text(query: str, rules: List[str], sources: List[str]) -> str:
 async def generate_response(messages: List[Dict[str, str]], use_file_search: bool = False,
                             selected_source: str | None = None,
                             on_status: Optional[StatusCallback] = None,
-                            language: str = "auto", retrieval_query: str | None = None) -> Dict[str, Any]:
+                            language: str = "auto", retrieval_query: str | None = None,
+                            file_evidence: str | None = None) -> Dict[str, Any]:
     """Generate a reply, optionally grounding it in hosted vector-store results.
 
     `retrieval_query` replaces the user's message as the search text (and for
     choosing the source) when that message can't be searched on its own, such
     as "Check it against the rules" over an uploaded file. The verifier still
     judges the answer against the user's own question.
+
+    `file_evidence` (the user's uploaded file) may evidence statements about that
+    file only (_file_backed_points). Such an answer is a card or nothing: a plain
+    answer can't keep the file's evidence apart from the rules'.
 
     `selected_source` is the one approved document to search, as decided by
     ai_chat.route_message; retrieval is then restricted to that file and never
@@ -724,13 +729,17 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
             try:
                 # Both attempts share one budget, so the plain fallback below
                 # still finishes inside the page's request timeout.
-                card_result = await asyncio.wait_for(_card_answer(client, messages, context, sources, on_status, action_gap, language),
+                card_result = await asyncio.wait_for(_card_answer(client, messages, context, sources, on_status, action_gap,
+                                                                  language, file_evidence),
                                                      timeout=AI_TIMEOUT_SECONDS + AI_VERIFIER_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 logger.warning("Card fallback: using the plain answer (timed out)")
                 card_result = None
             if card_result is not None:
                 return card_result
+            if file_evidence:
+                return {"ok": False, "error_code": ERR_NO_CONTEXT, "stage": "rag", "exception_type": "UnsupportedAnswer",
+                        "detail": "No checked card for a file check", "fallback_reason": "file_check_without_card"}
             await emit_status(on_status, "writing", "Writing answer…")
             response = await asyncio.wait_for(client.responses.create(
                 model=AI_MODEL,
@@ -1278,6 +1287,16 @@ class AnswerCard(BaseModel):
     follow_up: Optional[str]
 
 
+class FileCheckPoint(AnswerPoint):
+    """A point of a "check my file against the rules" answer, with what backs it:
+    the approved rules, the user's own file, or both (a compliance statement)."""
+    basis: Literal["rules", "file", "both"]
+
+
+class FileCheckCard(AnswerCard):
+    points: List[FileCheckPoint]
+
+
 class PointVerdict(BaseModel):
     model_config = ConfigDict(extra="forbid")
     index: int
@@ -1298,6 +1317,24 @@ class AnswerVerdict(BaseModel):
 
 _ANSWER_CARD_FORMAT = {"format": {"type": "json_schema", "name": "answer_card", "strict": True,
                                   "schema": AnswerCard.model_json_schema()}}
+_FILE_CHECK_CARD_FORMAT = {"format": {"type": "json_schema", "name": "file_check_card", "strict": True,
+                                      "schema": FileCheckCard.model_json_schema()}}
+FILE_EVIDENCE_CARD_NOTE = (
+    "THE USER'S UPLOADED FILE is given as user-provided data. Give every point a basis:\n"
+    "- \"file\": the point only describes the user's file (what a clause says, or that it says nothing about "
+    "something). Its evidence is the file alone: no rule, section or article of the law in it.\n"
+    "- \"rules\": the point only states what the approved rules or law require, cited to its provision. Its "
+    "evidence is the approved excerpts alone: nothing about the user's file in it.\n"
+    "- \"both\": only for a direct comparison (\"Clause 18 is in writing, as Section 7 requires\"), which must "
+    "quote the file's words and cite the provision.\n"
+    "A sentence that mixes a fact about the file with a statement of the law is split into two points. Nothing "
+    "may come from general knowledge: say what neither the file nor the excerpts cover.\n"
+    "A check against the rules is about the user's file, so it is never only a list of rules: for each term of "
+    "the file that an excerpt covers, give a \"file\" point stating what the file says, in its own words and "
+    "naming its clause, then the \"rules\" point with the provision it is checked against, then (when the "
+    "excerpts settle it) a \"both\" point saying whether the file matches. Title a \"file\" point with the "
+    "file's clause (\"Clause 18 — fees\")."
+)
 _ANSWER_VERDICT_FORMAT = {"format": {"type": "json_schema", "name": "answer_verdict", "strict": True,
                                      "schema": AnswerVerdict.model_json_schema()}}
 # JSON punctuation and field names on top of the same answer text.
@@ -1444,8 +1481,12 @@ def _rules_name(citations: List[Dict[str, Any]]) -> str:
 
 async def _card_answer(client, messages: List[Dict[str, str]], context: str, sources: List[str],
                        on_status: Optional[StatusCallback] = None,
-                       action_gap: Optional[str] = None, language: str = "auto") -> Optional[Dict[str, Any]]:
+                       action_gap: Optional[str] = None, language: str = "auto",
+                       file_evidence: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """A document answer as a validated card, or None to use the plain answer.
+    With `file_evidence` (the user's uploaded file, as labelled blocks) points
+    carry a basis: "rules" points take the usual checks, "file" and "both"
+    points take _file_backed_points; see FILE_EVIDENCE_CARD_NOTE.
     One retry when the output isn't valid or doesn't survive the evidence
     checks; provider errors propagate to generate_response as usual.
     `action_gap` is the action asked about that the rules don't provide: the
@@ -1458,6 +1499,8 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
     menu = _source_menu(context, sources)
     lawyer = any(m["role"] == "system" and m["content"] == prompt_builder.MODE_INSTRUCTIONS["lawyer"] for m in messages)
     note = RAG_CARD_INSTRUCTIONS + "\n\nSOURCES:\n" + "\n".join(f"{i}. {name}" for i, name in enumerate(menu, 1))
+    if file_evidence:
+        note += "\n\n" + FILE_EVIDENCE_CARD_NOTE
     last_user = max(i for i, m in enumerate(messages) if m["role"] == "user")
     question = messages[last_user]["content"]
     request = with_language(messages[:last_user] + [{"role": "system", "content": note}] + messages[last_user:], language)
@@ -1470,10 +1513,10 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
             **_responses_input(request),
             max_output_tokens=AI_RAG_MAX_OUTPUT_TOKENS + _CARD_EXTRA_OUTPUT_TOKENS,
             temperature=0,  # the same question should cite the same rules every time
-            text=_ANSWER_CARD_FORMAT,
+            text=_FILE_CHECK_CARD_FORMAT if file_evidence else _ANSWER_CARD_FORMAT,
         )
         try:
-            card = AnswerCard.model_validate_json(output).model_dump()
+            card = (FileCheckCard if file_evidence else AnswerCard).model_validate_json(output).model_dump()
         except ValidationError as e:
             reason = f"invalid JSON ({e.error_count()} errors)"
             logger.warning("Structured answer attempt %d was invalid: %d error(s)", attempt + 1, e.error_count())
@@ -1487,6 +1530,20 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
         if card["status"] == "not_found":
             return {"ok": False, "error_code": ERR_NO_CONTEXT, "detail": "Model found no answer in the evidence",
                     "stage": "rag", "exception_type": "NoContextError", "fallback_reason": "model_not_found"}
+        file_points: List[Dict[str, Any]] = []
+        file_citations: List[Dict[str, Any]] = []
+        if file_evidence:
+            file_points, file_citations = _file_backed_points(
+                [p for p in card["points"] if p["basis"] != "rules"], file_evidence, evidence, context, sources)
+            proposed = sum(p["basis"] != "rules" for p in card["points"])
+            card["points"] = [{k: v for k, v in p.items() if k != "basis"} for p in card["points"] if p["basis"] == "rules"]
+            logger.info("File check attempt %d: %d rules point(s), %d file/both proposed, %d kept",
+                        attempt + 1, len(card["points"]), proposed, len(file_points))
+            if not card["points"]:
+                if file_points:
+                    return _card_result(_file_only_card(card, file_points), [], file_points, file_citations, sources)
+                reason = "no point passed the evidence checks"
+                continue
         answer = answer_guard.validate_answer_card(card, evidence, provisions, language=language)
         if answer is None:
             reason = "no point passed the evidence checks"
@@ -1529,8 +1586,7 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
         answer["points"] = points
         if action_gap:
             answer["summary"] = f"{_rules_name(citations)} don't mention {action_gap} in this situation. {answer['summary']}"
-        result = {"ok": True, "text": answer_guard.card_markdown(answer), "sources": sources, "citations": citations,
-                  "partial": answer["status"] == "partial", "answer": answer}
+        result = _card_result(answer, citations, file_points, file_citations, sources)
         missing = []
         if best is None and attempt == 0:
             word = _provision_word(sources)
@@ -1551,6 +1607,112 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
         return best
     logger.warning("Card fallback: using the plain answer (%s)", reason)
     return None
+
+
+def _card_result(answer: Dict[str, Any], citations: List[Dict[str, Any]], file_points: List[Dict[str, Any]],
+                 file_citations: List[Dict[str, Any]], sources: List[str]) -> Dict[str, Any]:
+    """The card answer, with any file-backed points added after the rules points
+    and their citations after the rules citations (cite numbers follow)."""
+    if file_points:
+        citations = list(citations)
+        points = list(answer["points"])
+        for point in file_points:
+            cite = []
+            for c in point.pop("_citations"):
+                same = next((i for i, x in enumerate(citations, 1) if x["title"] == c["title"]
+                             and x.get("kind") == c.get("kind")), None)
+                if same is None:
+                    citations.append(c)
+                    same = len(citations)
+                else:
+                    citations[same - 1] = {**citations[same - 1], "rules": sorted(
+                        set(citations[same - 1]["rules"]) | set(c["rules"]), key=_rule_sort_key)}
+                cite.append(same)
+            points.append({**point, "cite": cite})
+        answer = {**answer, "points": points}
+    return {"ok": True, "text": answer_guard.card_markdown(answer), "sources": sources, "citations": citations,
+            "partial": answer["status"] == "partial", "answer": answer}
+
+
+def _file_only_card(card: Dict[str, Any], points: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Every point is about the file: the summary is the first checked point,
+    never unchecked model text."""
+    return {**card, "status": "partial", "direct": None, "summary": points[0]["text"], "points": points,
+            "practical_implications": None, "limitations": None, "follow_up": None}
+
+
+_FILE_BLOCK_RE = re.compile(r"(?m)^\[([^\]\n|]+?)(?: \| ([^\]\n]+))?\]$")
+_CONTENT_WORD_RE = re.compile(r"[a-z]{4,}")
+
+
+def _file_blocks(file_evidence: str) -> List[tuple]:
+    """[(file name, location or None, text)] from chat_uploads' "[name | page 2]" blocks."""
+    marks = list(_FILE_BLOCK_RE.finditer(file_evidence or ""))
+    return [(m.group(1).strip(), (m.group(2) or "").strip() or None,
+             file_evidence[m.end(): marks[i + 1].start() if i + 1 < len(marks) else len(file_evidence)].strip())
+            for i, m in enumerate(marks)]
+
+
+def _file_citation(name: str, location: Optional[str]) -> Dict[str, Any]:
+    """The user's own file as a source: never a verified one, never a link."""
+    return {"title": f"{name}, {location}" if location else name, "url": None, "rules": [],
+            "document": name, "kind": "upload"}
+
+
+def _file_backed_points(points: List[Dict[str, Any]], file_evidence: str, kb_evidence: str, context: str,
+                        sources: List[str]) -> tuple:
+    """(kept points, their file citations) for "file" and "both" points.
+    A "file" point is evidenced by the file alone and may not state the law: a
+    provision it names must be the file's own text. A "both" point needs a
+    provision verified in the approved excerpts (whose text passes the attribution
+    check) AND the file's words, and cites both. Unsupported sentences go, as for
+    rules points; a point with nothing left is dropped. Each kept point carries
+    `source` ("file" | "both") for the page and `_citations` for _card_result."""
+    import rag_provisions
+    blocks = _file_blocks(file_evidence)
+    # Headings included: "Clause 18" and "page 2" are the file's own words.
+    file_lower = file_evidence.lower()
+    kept, all_citations = [], []
+    for point in points:
+        basis = point["basis"]
+        body = f"{point['title']}. {point['text']}"
+        refs = [m.group(0) for m in _RULE_REF_RE.finditer(body)]
+        # A Section/Rule/Article is the law's, even when the file quotes one ("Section 7 requires...");
+        # only the file's own clauses and paragraphs ("Clause 18") can be facts about the file.
+        law_refs = [r for r in refs if not re.match(r"(?:clause|paragraph)s?\b", r, re.IGNORECASE)
+                    or r.lower() not in file_lower]
+        if basis == "file":
+            if law_refs:
+                logger.info("File point dropped (states the law %s): %.80s", law_refs, point["title"])
+                continue  # states the law: belongs in a "rules" point with an approved source
+            text = answer_guard.validate_grounded_answer(point["text"], file_evidence, document_evidence=True)
+            kb_citations = []
+        else:
+            kb_citations = [c for c in build_citations(body, context, sources) if c["rules"]]
+            attributed, _ = answer_guard.validate_rule_attribution(
+                point["text"], rag_provisions.provision_map(kb_evidence))
+            if not law_refs or not kb_citations or attributed is None:
+                logger.info("File+rules point dropped (no verified provision): %.80s", point["title"])
+                continue  # the legal half has no verified provision
+            # Each part is evidenced by one side: the file's words, or the provision's.
+            parts = [x for x in re.split(r";\s*|(?<=[.!?])\s+", point["text"].strip()) if x.strip()]
+            sides = [("file" if answer_guard.validate_grounded_answer(x, file_evidence, document_evidence=True)
+                      else "rules" if answer_guard.validate_grounded_answer(x, kb_evidence, document_evidence=True)
+                      else None) for x in parts]
+            text = point["text"] if None not in sides and {"file", "rules"} <= set(sides) else None
+        if not text:
+            logger.info("%s point dropped (not supported by its evidence): %.80s", basis, point["title"])
+            continue
+        words = set(_CONTENT_WORD_RE.findall(text.lower()))
+        # The file block the point's words come from gives its page / heading.
+        best = max(blocks, key=lambda b: len(words & set(_CONTENT_WORD_RE.findall(b[2].lower()))), default=None)
+        if best is None or not words & set(_CONTENT_WORD_RE.findall(best[2].lower())):
+            continue  # nothing in it is from the file
+        citations = [_file_citation(best[0], best[1])] + kb_citations
+        kept.append({**{k: v for k, v in point.items() if k != "basis"}, "text": text, "source": basis,
+                     "_citations": citations})
+        all_citations.extend(citations)
+    return kept, all_citations
 
 
 def _cited_rules(result: Dict[str, Any]) -> set:

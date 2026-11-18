@@ -71,7 +71,8 @@ export function normalizeCitations(raw) {
   if (!Array.isArray(raw)) return [];
   const byTitle = new Map();
   for (const c of raw) {
-    if (!c || typeof c !== "object" || (c.kind !== undefined && c.kind !== "document")) continue;
+    // "upload": the user's own file, listed so card numbers line up, marked as unverified.
+    if (!c || typeof c !== "object" || (c.kind !== undefined && c.kind !== "document" && c.kind !== "upload")) continue;
     const title = typeof c.title === "string" ? c.title.trim().slice(0, MAX_TITLE_LENGTH) : "";
     if (!title) continue;
     // `rule_labels` cites the clause ("4(i)") when the answer did.
@@ -93,6 +94,7 @@ export function normalizeCitations(raw) {
       rules: [...new Set(rules)],
       label: typeof c.label === "string" && RULE_LABEL_RE.test(c.label) ? c.label : "Rule",
       document: document && document !== title ? document : null,
+      upload: c.kind === "upload",
     });
   }
   return [...byTitle.values()];
@@ -187,7 +189,9 @@ export default function ChatSources({ citations, idPrefix }) {
                 {s.rules.length > 0 && (
                   <>, <span className="text-muted-foreground" data-testid="instant-legal-help-source-detail">{ruleLabel(s.rules, s.label)}</span></>
                 )}
-                {s.document && (
+                {s.upload ? (
+                  <span className="block text-xs text-muted-foreground" data-testid="instant-legal-help-source-upload">Your uploaded file · not a verified source</span>
+                ) : s.document && (
                   <span className="block text-xs text-muted-foreground" data-testid="instant-legal-help-source-document">From: {s.document}</span>
                 )}
               </span>

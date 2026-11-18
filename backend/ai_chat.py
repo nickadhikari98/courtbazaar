@@ -1690,7 +1690,8 @@ UPLOAD_RULES_CHECK_NOTE = (
     "the file's subject, say the available documents don't cover it."
 )
 UPLOAD_RULES_CHECK_SOURCE_NOTE = ("Checked your uploaded file{s} ({names}) against the approved sources cited above. "
-                                  "Your file itself is not a verified CourtBazaar source.")
+                                  "Points marked as from your file come from your own document, which is not a "
+                                  "verified CourtBazaar source.")
 
 
 # Replaces the ROUTE_GENERAL_LEGAL note when that turn is answered with web
@@ -2449,7 +2450,7 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         result = await llm_service.generate_response(
             llm_messages, use_file_search=use_rag, selected_source=decision["source"] if use_rag else None,
             on_status=on_status, **({"language": language} if language != "auto" else {}),
-            **({"retrieval_query": rules_check_query} if rules_check_query else {}),
+            **({"retrieval_query": rules_check_query, "file_evidence": upload_text} if rules_check_query else {}),
         )
     finally:
         rag_provisions.RESERVED_CHARS.reset(reserved)
@@ -2493,7 +2494,10 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         if uploads_used:
             names = ", ".join(u["file_name"] for u in uploads_used)
             note = UPLOAD_RULES_CHECK_SOURCE_NOTE if rules_check_query else UPLOAD_SOURCE_NOTE
-            reply = f"{reply}\n\n{note.format(s='s' if len(uploads_used) > 1 else '', names=names)}"
+            note = note.format(s="s" if len(uploads_used) > 1 else "", names=names)
+            reply = f"{reply}\n\n{note}"
+            # The card shows its own note, not the reply's last line: it says so too.
+            card_note = f"{card_note} {note}" if card_note else note
         if mixed_live_request:
             reply = f"{reply}\n\n{MIXED_SOURCE_LIMITATION}"
             card_note = f"{card_note} {MIXED_SOURCE_LIMITATION}" if card_note else MIXED_SOURCE_LIMITATION
@@ -2509,7 +2513,8 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         # The reply holds every card field, so its output check covers the
         # card; anything flagged shows only the checked reply.
         if result.get("answer") and grounding != "insufficient" and not flags:
-            answer = _display_card(result["answer"], card_note, citations, keep_note=mixed_live_request or bool(intent_note))
+            answer = _display_card(result["answer"], card_note, citations,
+                                   keep_note=mixed_live_request or bool(intent_note) or bool(uploads_used))
         elif (use_rag and card_note and not flags and not mixed_live_request and not intent_note
               and reply.endswith(card_note)):
             # A plain document answer carries the same note as a card, under the text.

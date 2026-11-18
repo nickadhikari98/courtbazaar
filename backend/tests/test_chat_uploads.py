@@ -311,7 +311,7 @@ def test_check_against_the_rules_uses_only_the_approved_sources(monkeypatch):
             # The file rides inside the question, tagged, so the verifier sees what is checked.
             assert msgs[-1]["role"] == "user" and msgs[-1]["content"].startswith("Check it against the rules\n\n")
             assert "<untrusted_uploaded_document>" in msgs[-1]["content"] and "sole arbitrator" in msgs[-1]["content"]
-            assert result["reply"].endswith("Your file itself is not a verified CourtBazaar source.")
+            assert result["reply"].endswith("which is not a verified CourtBazaar source.")
         finally:
             await _cleanup([owner])
     asyncio.run(body())
