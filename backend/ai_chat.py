@@ -1683,6 +1683,24 @@ _ROUTE_NOTES = {
     ),
 }
 UPLOAD_SOURCE_NOTE = "Based on your uploaded file{s}: {names}. This is your own document, not a verified CourtBazaar source."
+# A summary reads the document (chat_uploads._structural_sample), never a search.
+STRUCTURAL_SAMPLE_NOTE = (
+    "TASK FOR THIS TURN: summarise the user's uploaded document. The file text below is a structural sample of a "
+    "long document: its opening in full, then the first lines of every later page or section and every heading or "
+    "clause title with the line under it. Summarise the whole document from it, citing each point as its block "
+    "header gives it ([file | page N] or [file | heading]). It is never empty: do not say you found nothing."
+)
+LONG_SUMMARY_PROMPT_NOTE = (
+    "TASK FOR THIS TURN: summarise the user's uploaded document. It is too long to read at once, so the text below "
+    "holds summaries of its parts, in order, each citing [file | page N] or [file | heading]. Combine them into one "
+    "summary of the whole document, keeping those citations. Say that this is a summary of a long document."
+)
+PART_SUMMARY_NOTE = (
+    "TASK: summarise only this part of the user's uploaded document, in order, in a few short paragraphs. Cite each "
+    "point with its block header as given ([file | page N] or [file | heading]). Keep names, acronyms and clause "
+    "labels exactly as written."
+)
+LONG_SUMMARY_NOTE = "This is a summary of a long document, made from summaries of its parts."
 # "Check it against the rules" over an uploaded file: answered from the approved sources only.
 # What an ad hoc arbitration clause is checked against under the Act. Naming the
 # sections makes retrieval read them from the Act's own text; search by the clause's
@@ -2226,10 +2244,14 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
     # The chat's own uploaded files answer every turn except casual, live-data and
     # named-approved-document ones (those keep their own route).
     import chat_uploads
-    upload_text, uploads_used, rules_check_query = "", [], None
+    upload_text, uploads_used, rules_check_query, long_summary = "", [], None, False
+    summary_parts_text: List[str] = []
     if decision is not None and decision["route"] != ROUTE_COURTBAZAAR_LIVE and decision["reason"] not in (
             "casual", "explicit_document", "explicit_documents"):
-        upload_text, uploads_used = await chat_uploads.context_for(db, convo, text)
+        upload_text, uploads_used, summary_parts = await chat_uploads.context_for(db, convo, text)
+        summary_parts_text = summary_parts
+        if summary_parts:
+            upload_text, long_summary = await _summarise_parts(summary_parts, language, on_status), True
         if upload_text and UPLOAD_RULES_CHECK_RE.search(text):
             # The rules come from the approved sources only (all of them, searched with the
             # file's own words), never general knowledge: no evidence, no answer.
@@ -2425,6 +2447,9 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         llm_messages.append({"role": "system", "content": UPLOAD_RULES_CHECK_NOTE})
         llm_messages.append({"role": "user", "content": f"{text}\n\n{chat_uploads.data_message(upload_text)['content']}"})
     else:
+        if any(u["retrieval"].startswith("structure") for u in uploads_used):
+            llm_messages.append({"role": "system", "content": LONG_SUMMARY_PROMPT_NOTE if long_summary
+                                 else STRUCTURAL_SAMPLE_NOTE})
         if upload_text:
             llm_messages.append(chat_uploads.data_message(upload_text))
         # Retrieval, the answer and the verifier all read this last user message.
@@ -2509,6 +2534,8 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
             names = ", ".join(u["file_name"] for u in uploads_used)
             note = UPLOAD_RULES_CHECK_SOURCE_NOTE if rules_check_query else UPLOAD_SOURCE_NOTE
             note = note.format(s="s" if len(uploads_used) > 1 else "", names=names)
+            if long_summary:
+                note = f"{LONG_SUMMARY_NOTE} {note}"
             reply = f"{reply}\n\n{note}"
             # The card shows its own note, not the reply's last line: it says so too.
             card_note = f"{card_note} {note}" if card_note else note
@@ -2522,7 +2549,9 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
             # After the guards: a removed section can leave "1, 3, 4" behind.
             reply = renumber_heading_sequences(reply)
         # A full form after an acronym stays only if the sources say it, in every language.
-        expansion_sources = [result.get("evidence") or "", upload_text]
+        # The file's own text, never the model's part summaries, decides a full form.
+        expansion_sources = [result.get("evidence") or "", upload_text if not long_summary else "",
+                             *summary_parts_text]
         reply = _without_invented_expansions(reply, expansion_sources, decision["route"])
         if result.get("answer"):
             result["answer"] = _card_without_invented_expansions(result["answer"], expansion_sources, decision["route"])
@@ -2646,6 +2675,26 @@ def _display_card(card: Dict[str, Any], note: Optional[str], citations: List[Dic
 
 
 WEB_USED_SUPERSEDED_RULES = object()
+
+
+async def _summarise_parts(parts: List[str], language: str,
+                           on_status: Optional[llm_service.StatusCallback] = None) -> str:
+    """First pass of a long-document summary: one summary per budget-sized part.
+    A part whose call fails is skipped; if every one fails, the first part itself
+    is returned, so a file we read never comes back as "nothing found"."""
+    import chat_uploads
+    summaries = []
+    for i, part in enumerate(parts, 1):
+        await llm_service.emit_status(on_status, "reading", f"Reading part {i} of {len(parts)} of your document…")
+        result = await llm_service.generate_response(
+            [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": PART_SUMMARY_NOTE},
+             chat_uploads.data_message(part), {"role": "user", "content": "Summarise this part of the document."}],
+            **({"language": language} if language != "auto" else {}))
+        if result.get("ok") and (result.get("text") or "").strip():
+            summaries.append(f"[Part {i} of {len(parts)}]\n{result['text'].strip()}")
+        else:
+            logger.warning("Long-document summary: part %d of %d failed (%s)", i, len(parts), result.get("error_code"))
+    return "\n\n".join(summaries) or parts[0]
 
 
 def _without_invented_expansions(text: str, sources: List[str], where: str) -> str:

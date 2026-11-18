@@ -409,3 +409,86 @@ def test_a_rules_check_of_a_file_naming_no_institution_searches_the_arbitration_
         finally:
             await _cleanup([owner])
     asyncio.run(body())
+
+
+def _long_rules_pdf(pages=12):
+    """No page uses the words of "Summarise this document"."""
+    import fitz
+    doc = fitz.open()
+    for i in range(1, pages + 1):
+        page = doc.new_page()
+        page.insert_textbox(fitz.Rect(50, 50, 550, 800),
+                            f"Rule {i} Deposit and costs\nThe parties shall pay the deposit within {i * 3} days of the "
+                            f"Registrar's notice, failing which the tribunal may suspend the reference under Rule {i}.",
+                            fontsize=10)
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_a_summary_of_a_long_file_reads_its_structure_even_when_no_request_word_is_in_it(monkeypatch):
+    seen = _capture_llm(monkeypatch)
+    monkeypatch.setattr(chat_uploads, "SHORT_FILE_CHARS", 300)  # make it a long (chunked) file
+    monkeypatch.setattr(chat_uploads, "SAMPLE_OPENING_CHARS", 400)
+
+    async def no_embeddings(texts):
+        raise RuntimeError("insufficient_quota")
+    monkeypatch.setattr(chat_uploads, "_embed", no_embeddings)
+    owner = _user()
+
+    async def body():
+        try:
+            conv = await _new_chat(owner)
+            await _upload(owner, conv, _long_rules_pdf(), "rules.pdf")
+            result = await ai_chat.handle_chat_message(server.db, conv, "Summarise this document", owner)
+            assert result["uploads"] == [{"file_name": "rules.pdf", "retrieval": "structure"}]
+            data = next(m["content"] for m in seen["messages"] if "<untrusted_uploaded_document>" in m["content"])
+            assert "[rules.pdf | page 1]" in data and "[rules.pdf | page 12]" in data  # opening and the last page
+            assert "Rule 12 Deposit and costs" in data  # a heading from the end of the file
+            assert ai_chat.STRUCTURAL_SAMPLE_NOTE in [m["content"] for m in seen["messages"] if m["role"] == "system"]
+            assert "not a verified CourtBazaar source" in result["reply"]
+        finally:
+            await _cleanup([owner])
+    asyncio.run(body())
+
+
+def test_a_summary_too_long_for_one_read_is_made_in_two_passes(monkeypatch):
+    calls = []
+
+    async def fake(messages, **kwargs):
+        calls.append(messages)
+        task = "part" if any(m["content"] == ai_chat.PART_SUMMARY_NOTE for m in messages) else "final"
+        return {"ok": True, "text": f"{task} summary (rules.pdf, page 1).", "sources": []}
+    monkeypatch.setattr(llm_service, "is_configured", lambda: True)
+    monkeypatch.setattr(llm_service, "generate_response", fake)
+    monkeypatch.setattr(chat_uploads, "SHORT_FILE_CHARS", 300)
+    monkeypatch.setattr(chat_uploads, "SAMPLE_OPENING_CHARS", 400)
+    monkeypatch.setattr(chat_uploads, "CONTEXT_MAX_CHARS", 700)  # the sample overflows: two passes
+    owner = _user()
+
+    async def body():
+        try:
+            conv = await _new_chat(owner)
+            await _upload(owner, conv, _long_rules_pdf(), "rules.pdf")
+            result = await ai_chat.handle_chat_message(server.db, conv, "Give me an overview", owner)
+            parts = [m for m in calls if any(x["content"] == ai_chat.PART_SUMMARY_NOTE for x in m)]
+            assert 1 < len(parts) <= chat_uploads.MAX_SUMMARY_PARTS and len(calls) == len(parts) + 1
+            final = calls[-1]
+            assert ai_chat.LONG_SUMMARY_PROMPT_NOTE in [m["content"] for m in final if m["role"] == "system"]
+            assert "[Part 1 of" in next(m["content"] for m in final if "<untrusted_uploaded_document>" in m["content"])
+            assert ai_chat.LONG_SUMMARY_NOTE in result["reply"]
+            assert result["uploads"] == [{"file_name": "rules.pdf", "retrieval": "structure-two-pass"}]
+        finally:
+            await _cleanup([owner])
+    asyncio.run(body())
+
+
+def test_the_structural_sample_keeps_the_opening_headings_and_the_line_under_each(monkeypatch):
+    monkeypatch.setattr(chat_uploads, "SAMPLE_OPENING_CHARS", 20)
+    chunks = [{"idx": 0, "label": "page 1", "text": "Opening words of the rules."},
+              {"idx": 1, "label": "page 2", "text": "Body text first.\nmore body\nClause 18 Arbitration\nDisputes go to Mumbai."},
+              {"idx": 2, "label": "page 2", "text": "plain middle text\nwith nothing to note"}]
+    sample = chat_uploads._structural_sample(chunks)
+    assert [c["label"] for c in sample] == ["page 1", "page 2"]
+    assert "Clause 18 Arbitration\nDisputes go to Mumbai." in sample[1]["text"]
+    assert sample[1]["text"].startswith("Body text first.")

@@ -184,10 +184,57 @@ def keyword_rank(query: str, chunks: List[dict]) -> List[dict]:
     return [chunks[i] for i in order if scores[i] > 0] or chunks  # no match ("summarise it"): the start of the file
 
 
-async def _retrieve(upload: dict, chunks: List[dict], query: str) -> Tuple[List[dict], str]:
-    """(chunks for this question in document order, "full" | "embeddings" | "keyword")."""
+SUMMARY_REQUEST_RE = re.compile(
+    r"\bsummar(?:y|ies|ise|ize|ised|ized|ising|izing)\b|\boverview\b|\bgist\b|\boutline\b|\bsum (?:it|this) up\b"
+    r"|\bwhat(?:'s| is| does) (?:this|the|my) (?:document|file|agreement|contract)(?: say| about)?\b|सारांश|सार\b",
+    re.IGNORECASE)
+SAMPLE_OPENING_CHARS = 6000  # the opening pages, whole
+SAMPLE_LEAD_CHARS = 300      # the first lines of each later page / section
+MAX_SUMMARY_PARTS = 6        # a two-pass summary reads at most this many budget-sized parts
+# Case matters for the last branch: an ALL-CAPS line is a heading, an ordinary line is not.
+_HEADING_LINE_RE = re.compile(
+    r"^(?:(?i:rule|article|section|clause|part|chapter|schedule|annexure|appendix)\s+[\w.()-]+|\d{1,3}[A-Z]?\.\s+[A-Z]"
+    r"|[A-Z][A-Z ,&'-]{5,80}$)")
+
+
+def is_summary_request(query: str) -> bool:
+    return bool(SUMMARY_REQUEST_RE.search(query or ""))
+
+
+def _structural_sample(chunks: List[dict]) -> List[dict]:
+    """A summary reads the document, it doesn't search it: the opening whole, then
+    for each later page / section its first lines, and every heading or clause title
+    in the file with the line under it. Labels (page / heading) are kept for citing."""
+    picked: List[dict] = []
+    seen_labels: set = set()
+    opening = 0
+    for c in chunks:
+        if opening < SAMPLE_OPENING_CHARS:
+            picked.append(c)
+            opening += len(c["text"])
+            seen_labels.add(c.get("label"))
+            continue
+        lines = [ln.strip() for ln in c["text"].split("\n") if ln.strip()]
+        keep: List[str] = []
+        if c.get("label") not in seen_labels:
+            seen_labels.add(c.get("label"))
+            keep.append(c["text"].strip()[:SAMPLE_LEAD_CHARS])
+        for i, line in enumerate(lines):
+            if _HEADING_LINE_RE.match(line) and len(line) <= 120:
+                keep += [line] + ([lines[i + 1][:200]] if i + 1 < len(lines) else [])
+        text = "\n".join(dict.fromkeys(k for k in keep if k))
+        if text:
+            picked.append({**c, "text": text})
+    return picked
+
+
+async def _retrieve(upload: dict, chunks: List[dict], query: str,
+                    summary: bool = False) -> Tuple[List[dict], str]:
+    """(chunks for this question in document order, "full" | "structure" | "embeddings" | "keyword")."""
     if upload.get("mode") == "full":
         return chunks, "full"
+    if summary:
+        return _structural_sample(chunks), "structure"
     reason = None
     if upload.get("embedded") and all(c.get("embedding") for c in chunks):
         try:
@@ -330,12 +377,16 @@ async def tag_last_user_message(db, conversation_id: str, user_id: Optional[str]
 
 # ---------- answer context ----------
 
-async def context_for(db, convo: dict, query: str) -> Tuple[str, List[Dict[str, Any]]]:
-    """("" or the chat's file text for this question, [{file_name, retrieval}]).
-    Only the chat's own owner's unexpired files; a guest chat has none."""
+async def context_for(db, convo: dict, query: str) -> Tuple[str, List[Dict[str, Any]], List[str]]:
+    """("" or the chat's file text for this question, [{file_name, retrieval}], parts).
+    Only the chat's own owner's unexpired files; a guest chat has none. A summary
+    reads each long file's structure, never a search; when even that overflows the
+    budget, the text is "" and `parts` holds budget-sized pieces for a two-pass
+    summary (retrieval "structure-two-pass")."""
     user_id = convo.get("user_id")
     if not user_id:
-        return "", []
+        return "", [], []
+    summary = is_summary_request(query)
     uploads = await db.ai_chat_uploads.find(_active_query(convo["conversation_id"], user_id), {"_id": 0}) \
         .sort("created_at", 1).to_list(MAX_UPLOADS_PER_CHAT)
     blocks: List[str] = []
@@ -347,17 +398,34 @@ async def context_for(db, convo: dict, query: str) -> Tuple[str, List[Dict[str, 
             {"_id": 0}).sort("idx", 1).to_list(None)
         if not chunks:
             continue
-        picked, retrieval = await _retrieve(u, chunks, query)
+        picked, retrieval = await _retrieve(u, chunks, query, summary)
         for c in picked:
             label = f" | {c['label']}" if c.get("label") else ""
             block = f"[{u['file_name']}{label}]\n{c['text']}"
+            if summary:
+                blocks.append(block)  # whole sample; split into parts below if it overflows
+                continue
             if len(block) > budget:
                 logger.warning("Upload context budget reached: upload=%s truncated", u["upload_id"])
                 break
             blocks.append(block)
             budget -= len(block)
         used.append({"upload_id": u["upload_id"], "file_name": u["file_name"], "retrieval": retrieval})
-    return "\n\n".join(blocks), used
+    if summary and sum(len(b) + 2 for b in blocks) > CONTEXT_MAX_CHARS:
+        parts: List[str] = [""]
+        for b in blocks:
+            if parts[-1] and len(parts[-1]) + len(b) + 2 > CONTEXT_MAX_CHARS:
+                parts.append("")
+            parts[-1] = f"{parts[-1]}\n\n{b}" if parts[-1] else b[:CONTEXT_MAX_CHARS]
+        if len(parts) > MAX_SUMMARY_PARTS:
+            logger.warning("Long-document summary: %d parts, reading the first %d", len(parts), MAX_SUMMARY_PARTS)
+        for u in used:
+            u["retrieval"] = "structure-two-pass" if u["retrieval"] == "structure" else u["retrieval"]
+        logger.info("Upload summary in two passes: %d part(s)", min(len(parts), MAX_SUMMARY_PARTS))
+        return "", used, parts[:MAX_SUMMARY_PARTS]
+    if summary and any(u["retrieval"] == "structure" for u in used):
+        logger.info("Upload summary from a structural sample: %d chars", sum(len(b) for b in blocks))
+    return "\n\n".join(blocks), used, []
 
 
 _DISPUTE_TERMS_RE = re.compile(r"arbitra|dispute|\bseat\b|\bvenue\b|tribunal|governing law|jurisdiction|mediat|"
