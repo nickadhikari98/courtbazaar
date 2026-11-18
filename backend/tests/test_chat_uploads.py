@@ -332,7 +332,9 @@ def test_rules_check_with_no_approved_evidence_never_falls_back_to_general_knowl
             conv = await _new_chat(owner)
             await _upload(owner, conv)
             result = await ai_chat.handle_chat_message(server.db, conv, "Check this document against the rules", owner)
-            assert result["reply"] == ai_chat.document_not_found_message(None)
+            # The lease names no institution, so the Act was the source searched.
+            assert result["reply"] == ai_chat.document_not_found_message(
+                "Arbitration-And-Conciliation-Act-1996-as-on-2026-06-01.pdf")
             assert result["grounding"] == "insufficient"
         finally:
             await _cleanup([owner])
@@ -388,3 +390,22 @@ def test_a_hindi_summary_of_an_mcia_file_keeps_names_and_labels_untranslated(mon
             await _cleanup([owner])
     asyncio.run(body())
 
+
+def test_a_rules_check_of_a_file_naming_no_institution_searches_the_arbitration_act(monkeypatch):
+    seen = _capture_llm(monkeypatch)
+    owner = _user()
+    clause = _docx([("Heading 1", "18. Arbitration"),
+                    (None, "Any dispute shall be referred to arbitration by a sole arbitrator appointed mutually.")])
+
+    async def body():
+        try:
+            conv = await _new_chat(owner)
+            await _upload(owner, conv, clause, "supply.docx")
+            await ai_chat.handle_chat_message(server.db, conv, "Check it against the rules", owner)
+            assert seen["kwargs"]["selected_source"] == "Arbitration-And-Conciliation-Act-1996-as-on-2026-06-01.pdf"
+            query = seen["kwargs"]["retrieval_query"]
+            assert "Any dispute shall be referred to arbitration" in query
+            assert query.endswith(ai_chat.ACT_CLAUSE_CHECKS)  # Sections 7, 11, 20 are read from the Act itself
+        finally:
+            await _cleanup([owner])
+    asyncio.run(body())

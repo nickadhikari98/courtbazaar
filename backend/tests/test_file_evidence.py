@@ -75,7 +75,9 @@ def test_the_card_marks_file_points_and_keeps_the_rules_pipeline(monkeypatch):
     assert sent[0]["text"]["format"]["name"] == "file_check_card"
     assert llm_service.FILE_EVIDENCE_CARD_NOTE in sent[0]["instructions"]
     points = result["answer"]["points"]
-    assert [(p["title"], p.get("source")) for p in points] == [("Section 7", None), ("Clause 18", "file")]
+    # FILE names a place (Mumbai) but no institution: that omission is found by searching the file.
+    assert [(p["title"], p.get("source")) for p in points] == [
+        ("Section 7", None), ("Clause 18", "file"), ("Clause 18 — institution", "file")]
     cited = [result["citations"][i - 1] for i in points[1]["cite"]]
     assert [c.get("kind") for c in cited] == ["upload"] and "basis" not in points[0]
     assert any(c["rules"] == ["7"] for c in result["citations"] if c.get("kind") is None)
@@ -126,7 +128,8 @@ def test_a_failed_rules_check_retries_once_then_returns_the_file_only_points(mon
     assert result["ok"] and result["file_only"]
     answer = result["answer"]
     # Only what the file itself evidences: the comparison's legal half was never verified.
-    assert [(p["title"], p["source"]) for p in answer["points"]] == [("Clause 18", "file")]
+    assert [(p["title"], p["source"]) for p in answer["points"]] == [("Clause 18", "file"),
+                                                                    ("Clause 18 — institution", "file")]
     assert answer["limitations"] == llm_service.FILE_CHECK_INCOMPLETE_NOTE
     assert [c.get("kind") for c in result["citations"]] == ["upload"]
     assert result["citations"][0]["title"] == "contract.docx, Clause 18 Arbitration"
@@ -158,5 +161,131 @@ def test_a_card_with_only_file_points_lists_each_point_once():
     client = SimpleNamespace(responses=SimpleNamespace(create=create))
     result = asyncio.run(llm_service._card_answer(client, [{"role": "user", "content": "Check it"}], SECTION_7, [ACT],
                                                   file_evidence=FILE))
-    assert [p["title"] for p in result["answer"]["points"]] == ["Clause 18"]
-    assert result["answer"]["points"][0]["cite"] == [1] and len(result["citations"]) == 1
+    # FILE names no institution: that found omission follows the model's point; each listed once.
+    assert [p["title"] for p in result["answer"]["points"]] == ["Clause 18", "Clause 18 — institution"]
+    assert [p["cite"] for p in result["answer"]["points"]] == [[1], [1]] and len(result["citations"]) == 1
+
+
+CONTRACT = ("[supply.docx | 1. Scope]\nThe Supplier shall supply packaging components as described in Schedule A.\n\n"
+            "[supply.docx | 2. Delivery]\nDelivery shall be completed within 30 days of each purchase order.\n\n"
+            "[supply.docx | 18. Arbitration]\nAny dispute arising out of or in connection with this Agreement shall be "
+            "referred to arbitration. The arbitration shall be conducted by a sole arbitrator appointed mutually by "
+            "the parties.")
+
+
+def test_clause_n_is_the_files_own_when_the_file_numbers_a_heading_n():
+    lower = CONTRACT.lower()
+    assert llm_service._file_has_clause("Clause 18", lower) and llm_service._file_has_clause("Clause 1", lower)
+    assert not llm_service._file_has_clause("Clause 99", lower) and not llm_service._file_has_clause("Clause 30", lower)
+    point = _point("file", "Any dispute arising out of or in connection with this Agreement shall be referred to "
+                           "arbitration (Clause 18).", "Clause 18 — Arbitration")
+    kept, _ = llm_service._file_backed_points([point], CONTRACT, SECTION_7, SECTION_7, [ACT])
+    assert [p["_citations"][0]["title"] for p in kept] == ["supply.docx, 18. Arbitration"]
+
+
+def test_the_rules_search_uses_the_files_dispute_clause_not_its_opening():
+    import chat_uploads
+    query = chat_uploads.search_query(CONTRACT)
+    assert query.startswith("Any dispute arising out of") and "packaging" not in query and "[supply" not in query
+    assert chat_uploads.search_query("[a.docx | 1. Scope]\nPackaging only.").startswith("Packaging")  # nothing relevant: start
+
+
+def test_a_retried_file_check_tells_the_user_why_it_is_slower(monkeypatch):
+    statuses = []
+
+    async def record(event):
+        statuses.append(event["step"])
+    unsupported = _point("rules", "Section 7 forbids arbitration in Mumbai (Section 7).", "Section 7")
+    monkeypatch.setattr(llm_service, "emit_status", lambda on_status, step, text: record({"step": step, "text": text}))
+    _failing_rules_check(monkeypatch, [unsupported])
+    assert statuses.count("retrying") == 1
+
+
+def test_a_claimed_absence_is_checked_by_searching_the_file():
+    no_seat = _point("file", "Clause 18 names no seat and no institution.", "Clause 18 — seat")
+    kept, _ = llm_service._file_backed_points([no_seat], CONTRACT, SECTION_7, SECTION_7, [ACT])
+    assert [p["text"] for p in kept] == ["Clause 18 names no seat and no institution."]
+    # Wrong when the file does name one: dropped.
+    with_diac = CONTRACT + " The arbitration shall be held under the rules of DIAC."
+    assert llm_service._file_backed_points([no_seat], with_diac, SECTION_7, SECTION_7, [ACT])[0] == []
+    with_seat = CONTRACT + " The seat of arbitration is Mumbai."
+    assert llm_service._file_backed_points([no_seat], with_seat, SECTION_7, SECTION_7, [ACT])[0] == []
+
+
+def test_an_absence_is_cited_to_the_clause_it_names():
+    no_seat = _point("file", "Clause 18 names no seat and no institution.", "Clause 18 — seat")
+    kept, _ = llm_service._file_backed_points([no_seat], CONTRACT, SECTION_7, SECTION_7, [ACT])
+    assert kept[0]["_citations"][0]["title"] == "supply.docx, 18. Arbitration"
+
+
+COMPARISON = ("Any dispute arising out of or in connection with this Agreement shall be referred to arbitration, which is "
+              "consistent with the requirement that an arbitration agreement shall be in writing (Section 7).")
+
+
+def test_a_one_sentence_comparison_is_split_at_its_connective_and_cites_both():
+    """Real model output: "[clause words], which is consistent with [Section 7]"."""
+    halves = []
+    kept, _ = llm_service._file_backed_points([_point("both", COMPARISON, "Clause 18 — Arbitration")],
+                                              CONTRACT, SECTION_7, SECTION_7, [ACT], halves)
+    kept = [p for p in kept if not p.get("_omission")]  # CONTRACT also names no seat / institution
+    assert len(kept) == 1 and kept[0]["source"] == "both"
+    assert [c.get("kind") or c["rules"] for c in kept[0]["_citations"]] == ["upload", ["7"]]
+    assert [h["text"] for h in halves if not h.get("_omission")] == [
+        "Any dispute arising out of or in connection with this Agreement shall be referred to arbitration."]
+
+
+def test_a_failed_comparison_still_leaves_its_clause_half_for_the_fallback():
+    halves = []
+    # Section 7 was not retrieved: the comparison goes, the clause half (from the file) stays.
+    kept, _ = llm_service._file_backed_points([_point("both", COMPARISON, "Clause 18 — Arbitration")],
+                                              CONTRACT, NO_SECTION_7, NO_SECTION_7, [ACT], halves)
+    assert [p for p in kept if not p.get("_omission")] == []
+    clause = [h for h in halves if not h.get("_omission")]
+    assert len(clause) == 1 and clause[0]["source"] == "file"
+    assert clause[0]["_citations"][0]["title"] == "supply.docx, 18. Arbitration"
+
+
+def test_a_check_with_only_failing_comparisons_falls_back_to_their_clause_halves(monkeypatch):
+    result, calls = _failing_rules_check_with(monkeypatch, [_point("both", COMPARISON, "Clause 18 — Arbitration")],
+                                              file_evidence=CONTRACT, context=NO_SECTION_7)
+    assert result["ok"] and result["file_only"]
+    assert calls.count("file_check_card") == 4  # found omissions alone never skip the retry
+    assert [p["title"] for p in result["answer"]["points"]] == [
+        "Clause 18 — Arbitration", "Clause 18 — seat", "Clause 18 — institution"]
+    assert {p["source"] for p in result["answer"]["points"]} == {"file"}
+    assert result["answer"]["limitations"] == llm_service.FILE_CHECK_INCOMPLETE_NOTE
+
+
+def _failing_rules_check_with(monkeypatch, points, file_evidence, context):
+    card = {"status": "answered", "direct": None, "summary": "x", "points": points,
+            "practical_implications": None, "limitations": None, "follow_up": None}
+    calls = []
+
+    async def create(**kw):
+        calls.append(kw["text"]["format"]["name"])
+        return SimpleNamespace(output_text=json.dumps(card), usage=None)
+
+    async def retrieve(query, selected_source=None):
+        return context, [ACT], 1, [], ""
+    for name, value in (("AI_PROVIDER", "openai"), ("OPENAI_API_KEY", "sk-test"), ("OPENAI_VECTOR_STORE_ID", "vs-test")):
+        monkeypatch.setattr(llm_service, name, value)
+    monkeypatch.setattr(llm_service, "is_configured", lambda: True)
+    monkeypatch.setattr(llm_service, "_retrieve_context", retrieve)
+    monkeypatch.setattr(llm_service, "_get_client", lambda: SimpleNamespace(responses=SimpleNamespace(create=create)))
+    result = asyncio.run(llm_service.generate_response(
+        [{"role": "user", "content": "Check it against the rules"}], use_file_search=True,
+        retrieval_query="arbitration agreement", file_evidence=file_evidence))
+    return result, calls
+
+
+def test_a_missing_seat_or_institution_is_found_by_searching_the_file_not_by_the_model():
+    halves = []
+    kept, _ = llm_service._file_backed_points([], CONTRACT, SECTION_7, SECTION_7, [ACT], halves)
+    assert [(p["title"], p["text"]) for p in kept] == [
+        ("Clause 18 — seat", "Clause 18 names no seat of arbitration."),
+        ("Clause 18 — institution", "Clause 18 names no institution to administer the arbitration.")]
+    assert {c["title"] for p in kept for c in p["_citations"]} == {"supply.docx, 18. Arbitration"}
+    named = CONTRACT + " The arbitration shall be held in Delhi under the rules of the DIAC."
+    assert llm_service._file_backed_points([], named, SECTION_7, SECTION_7, [ACT], [])[0] == []
+    # Not a file check's top-level call: nothing added.
+    assert llm_service._file_backed_points([], CONTRACT, SECTION_7, SECTION_7, [ACT])[0] == []

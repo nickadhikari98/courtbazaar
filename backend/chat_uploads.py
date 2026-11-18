@@ -360,11 +360,19 @@ async def context_for(db, convo: dict, query: str) -> Tuple[str, List[Dict[str, 
     return "\n\n".join(blocks), used
 
 
+_DISPUTE_TERMS_RE = re.compile(r"arbitra|dispute|\bseat\b|\bvenue\b|tribunal|governing law|jurisdiction|mediat|"
+                               r"concilia", re.IGNORECASE)
+
+
 def search_query(text: str, limit: int = 1000) -> str:
-    """The file's own words (block headers removed) as the approved-source search
-    text for "Check it against the rules". shortcut: the first `limit` characters
-    (or of the retrieved excerpts, for a long file); search per section if checks miss later clauses."""
-    return re.sub(r"(?m)^\[[^\]\n]*\]$", "", text).strip()[:limit]
+    """The approved-source search text for "Check it against the rules": the
+    file's dispute-resolution blocks (arbitration, seat, venue, governing law),
+    which is what the approved rules cover, else the file's start. Block headers
+    are removed. A supply contract's arbitration clause sits at the end, so the
+    file's opening (parties, delivery) found unrelated rules and missed Section 7."""
+    blocks = [b.split("\n", 1)[-1] for b in re.split(r"\n\n(?=\[)", text)]
+    relevant = [b for b in blocks if _DISPUTE_TERMS_RE.search(b)]
+    return re.sub(r"(?m)^\[[^\]\n]*\]$", "", "\n".join(relevant or blocks)).strip()[:limit]
 
 
 def data_message(text: str) -> Dict[str, str]:

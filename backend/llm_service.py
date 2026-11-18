@@ -743,6 +743,9 @@ async def generate_response(messages: List[Dict[str, str]], use_file_search: boo
                     card_result = None
                 if card_result is not None:
                     return {**card_result, "evidence": context}  # for ai_chat's acronym check
+                if file_evidence and not card_try:
+                    # Up to a minute more: the page says why instead of a silent spinner.
+                    await emit_status(on_status, "retrying", "Retrying the comparison…")
             if file_evidence:
                 return {**_file_only_fallback(salvage, sources), "evidence": context}
             await emit_status(on_status, "writing", "Writing answer…")
@@ -1340,7 +1343,9 @@ FILE_EVIDENCE_CARD_NOTE = (
     "the file that an excerpt covers, give a \"file\" point stating what the file says, in its own words and "
     "naming its clause, then the \"rules\" point with the provision it is checked against, then (when the "
     "excerpts settle it) a \"both\" point saying whether the file matches. Title a \"file\" point with the "
-    "file's clause (\"Clause 18 — fees\")."
+    "file's clause (\"Clause 18 — fees\"). Also report what the file leaves out that the excerpts deal with, "
+    "each as its own \"file\" point in the form \"Clause 18 names no seat\" or \"Clause 18 names no institution\" "
+    "(the file is searched to confirm it)."
 )
 _ANSWER_VERDICT_FORMAT = {"format": {"type": "json_schema", "name": "answer_verdict", "strict": True,
                                      "schema": AnswerVerdict.model_json_schema()}}
@@ -1543,17 +1548,25 @@ async def _card_answer(client, messages: List[Dict[str, str]], context: str, sou
         file_points: List[Dict[str, Any]] = []
         file_citations: List[Dict[str, Any]] = []
         if file_evidence:
+            halves: List[Dict[str, Any]] = []
             file_points, file_citations = _file_backed_points(
-                [p for p in card["points"] if p["basis"] != "rules"], file_evidence, evidence, context, sources)
+                [p for p in card["points"] if p["basis"] != "rules"], file_evidence, evidence, context, sources, halves)
             proposed = sum(p["basis"] != "rules" for p in card["points"])
             card["points"] = [{k: v for k, v in p.items() if k != "basis"} for p in card["points"] if p["basis"] == "rules"]
             logger.info("File check attempt %d: %d rules point(s), %d file/both proposed, %d kept",
                         attempt + 1, len(card["points"]), proposed, len(file_points))
-            only_file = [p for p in file_points if p["source"] == "file"]
-            if salvage is not None and len(only_file) > len(salvage.get("points", [])):
-                salvage.update(card=copy.deepcopy(card), points=copy.deepcopy(only_file))
+            # The fallback's material: the model's own file points, then the clause halves of its
+            # comparisons (once each). Found omissions ride along but never make a fallback alone.
+            only_file = [p for p in file_points if p["source"] == "file" and not p.get("_omission")]
+            only_file += [h for h in halves if not h.get("_omission") and h["text"] not in {p["text"] for p in only_file}]
+            if salvage is not None and only_file and len(only_file) > len(salvage.get("real", [])):
+                omitted = [p for p in file_points if p.get("_omission")]
+                salvage.update(card=copy.deepcopy(card), real=copy.deepcopy(only_file),
+                               points=copy.deepcopy(only_file + omitted))
             if not card["points"]:
-                if file_points:
+                # Only the model's own file points answer on their own; found omissions don't
+                # (with every comparison dropped, the retry and the incomplete-check line apply).
+                if [p for p in file_points if not p.get("_omission")]:
                     return _card_result(_file_only_card(card, file_points), [], file_points, file_citations, sources)
                 reason = "no point passed the evidence checks"
                 continue
@@ -1630,6 +1643,7 @@ def _card_result(answer: Dict[str, Any], citations: List[Dict[str, Any]], file_p
         citations = list(citations)
         points = list(answer["points"])
         for point in file_points:
+            point.pop("_omission", None)
             cite = []
             for c in point.pop("_citations"):
                 same = next((i for i, x in enumerate(citations, 1) if x["title"] == c["title"]
@@ -1690,9 +1704,80 @@ def _file_citation(name: str, location: Optional[str]) -> Dict[str, Any]:
             "document": name, "kind": "upload"}
 
 
+# The things an arbitration clause may leave out, and every way a file could name them.
+# "arbitration in Mumbai" names a place; "in accordance with" / "in connection with" don't.
+_PLACE_TERMS = (r"\bseat\b|\bvenue\b|place of arbitration|\b(?:held|conducted|seated) (?:in|at)\b"
+                r"|\barbitration (?:shall be )?(?:held |conducted |seated )?(?:in|at) (?!accordance|connection|writing|"
+                r"respect|relation|terms|case|any|the event|which|all\b|such\b|this\b|that\b)[a-z]{3,}")
+_ABSENCE_TERMS = {
+    "seat": _PLACE_TERMS,
+    "venue": _PLACE_TERMS,
+    "place": _PLACE_TERMS,
+    "institution": r"institution|\bcent(?:re|er)\b|council|\bchamber\b|\b(?:diac|ica|icc|siac|lcia|mcia)\b|rules of",
+    "governing law": r"governing law|governed by",
+    "language": r"\blanguage\b|\benglish\b|\bhindi\b",
+    "number of arbitrators": r"sole arbitrator|three arbitrators|\barbitrators?\b",
+}
+_ABSENCE_CLAIM_RE = re.compile(
+    r"\b(?:names|specifies|states|mentions|provides|designates|has|contains)\s+no\s+(" + "|".join(_ABSENCE_TERMS) + r")\b"
+    r"|\b(?:does not|doesn't|do not|fails to)\s+(?:name|specify|state|mention|provide|designate)\s+(?:a|an|the|any)?\s*("
+    + "|".join(_ABSENCE_TERMS) + r")\b"
+    r"|\b(?:is )?silent (?:on|about) (?:the )?(" + "|".join(_ABSENCE_TERMS) + r")\b"
+    r"|\b(?:and|or|nor|,)\s+(?:no|any)\s+(" + "|".join(_ABSENCE_TERMS) + r")\b",  # "no seat and no institution"
+    re.IGNORECASE)
+
+
+def _omission_points(blocks: List[tuple], file_lower: str, existing: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """"Clause 18 names no seat" / "... no institution": found by searching the
+    file, never by the model (which kept leaving them out), for the file's
+    arbitration clause. Skipped when a point already says it."""
+    clause = next((b for b in blocks if re.search(r"arbitra", b[2], re.IGNORECASE)), None)
+    if clause is None:
+        return []
+    number = re.match(r"(?:clause\s+)?(\d+)\b", clause[1] or "", re.IGNORECASE)
+    name = f"Clause {number.group(1)}" if number else "The arbitration clause"
+    said = " ".join(p["text"].lower() for p in existing)
+    out = []
+    for key, text in (("seat", f"{name} names no seat of arbitration."),
+                      ("institution", f"{name} names no institution to administer the arbitration.")):
+        if not re.search(_ABSENCE_TERMS[key], file_lower) and f"no {key}" not in said:
+            out.append({"icon": "warning", "title": f"{name} — {key}", "badge": None, "tone": "warning", "text": text,
+                        "cite": [], "source": "file", "_omission": True,
+                        "_citations": [_file_citation(clause[0], clause[1])]})
+    return out
+
+
+def _absence_supported(text: str, file_lower: str) -> Optional[bool]:
+    """For a point saying the file lacks something ("names no seat"): True when
+    the file contains none of that thing's terms, False when it does (the claim is
+    wrong), None when the point claims no absence (the usual checks apply)."""
+    claims = [next(g for g in m.groups() if g).lower() for m in _ABSENCE_CLAIM_RE.finditer(text or "")]
+    if not claims:
+        return None
+    return not any(re.search(_ABSENCE_TERMS[c], file_lower) for c in claims)
+
+
+def _file_has_clause(ref: str, file_lower: str) -> bool:
+    """"Clause 18" names the file's own clause when the file says "Clause 18" or
+    numbers a heading 18 ("[contract.docx | 18. Arbitration]", "18. Arbitration")."""
+    number = re.search(r"\d+[A-Za-z]?(?:\.\d+)?", ref)
+    if not number:
+        return False
+    n = re.escape(number.group(0).lower())
+    return bool(ref.lower() in file_lower or re.search(rf"(?m)(?:^|\| )(?:clause\s+)?{n}[.)]?\s", file_lower))
+
+
+_COMPARISON_RE = re.compile(
+    r",?\s*(?:which|and this|this|and so|so)?\s*(?:is\s+|are\s+)?(?:fully\s+)?(?:consistent with|in line with|"
+    r"in accordance with|aligns? with|complies with|compliant with|conforms? to|satisfies|meets|as required by|"
+    r"as permitted by|as provided (?:in|by)|as per)\b", re.IGNORECASE)
+
+
 def _file_backed_points(points: List[Dict[str, Any]], file_evidence: str, kb_evidence: str, context: str,
-                        sources: List[str]) -> tuple:
+                        sources: List[str], halves: Optional[List[Dict[str, Any]]] = None) -> tuple:
     """(kept points, their file citations) for "file" and "both" points.
+    `halves` collects the checked clause half of each comparison as a file point,
+    for _file_only_fallback when every comparison fails.
     A "file" point is evidenced by the file alone and may not state the law: a
     provision it names must be the file's own text. A "both" point needs a
     provision verified in the approved excerpts (whose text passes the attribution
@@ -1711,14 +1796,28 @@ def _file_backed_points(points: List[Dict[str, Any]], file_evidence: str, kb_evi
         # A Section/Rule/Article is the law's, even when the file quotes one ("Section 7 requires...");
         # only the file's own clauses and paragraphs ("Clause 18") can be facts about the file.
         law_refs = [r for r in refs if not re.match(r"(?:clause|paragraph)s?\b", r, re.IGNORECASE)
-                    or r.lower() not in file_lower]
+                    or not _file_has_clause(r, file_lower)]
+        absent = _absence_supported(point["text"], file_lower) if basis == "file" else None
+        if basis == "file" and absent is False:
+            logger.info("File point dropped (claims an absence the file contradicts): %.80s", point["title"])
+            continue
         if basis == "file":
             if law_refs:
                 logger.info("File point dropped (states the law %s): %.80s", law_refs, point["title"])
                 continue  # states the law: belongs in a "rules" point with an approved source
-            text = answer_guard.validate_grounded_answer(point["text"], file_evidence, document_evidence=True)
+            # "Names no seat": words that aren't in the file can't be matched against it, so an
+            # absence is checked by searching the file for every term of the missing thing.
+            text = point["text"] if absent else answer_guard.validate_grounded_answer(
+                point["text"], file_evidence, document_evidence=True)
             kb_citations = []
         else:
+            # "[clause words], which is consistent with [Section 7 ...]": one sentence, two halves.
+            split = _COMPARISON_RE.search(point["text"])
+            if split and halves is not None:
+                # The clause half stands on its own as a file point (the fallback's), whatever the law half does.
+                half = point["text"][:split.start()].strip().rstrip(",;") + "."
+                halves.extend(_file_backed_points([{**point, "basis": "file", "text": half}], file_evidence,
+                                                  kb_evidence, context, sources)[0])
             kb_citations = [c for c in build_citations(body, context, sources) if c["rules"]]
             attributed, _ = answer_guard.validate_rule_attribution(
                 point["text"], rag_provisions.provision_map(kb_evidence))
@@ -1726,10 +1825,15 @@ def _file_backed_points(points: List[Dict[str, Any]], file_evidence: str, kb_evi
                 logger.info("File+rules point dropped (no verified provision): %.80s", point["title"])
                 continue  # the legal half has no verified provision
             # Each part is evidenced by one side: the file's words, or the provision's.
-            parts = [x for x in re.split(r";\s*|(?<=[.!?])\s+", point["text"].strip()) if x.strip()]
+            parts = ([point["text"][:split.start()], point["text"][split.end():]] if split else
+                     [x for x in re.split(r";\s*|(?<=[.!?])\s+", point["text"].strip()) if x.strip()])
             sides = [("file" if answer_guard.validate_grounded_answer(x, file_evidence, document_evidence=True)
                       else "rules" if answer_guard.validate_grounded_answer(x, kb_evidence, document_evidence=True)
                       else None) for x in parts]
+            if split:  # each half on its own side, never the other way round
+                sides = [sides[0] if sides[0] == "file" else None,
+                         "rules" if answer_guard.validate_grounded_answer(parts[1], kb_evidence, document_evidence=True)
+                         else None]
             text = point["text"] if None not in sides and {"file", "rules"} <= set(sides) else None
         if not text:
             logger.info("%s point dropped (not supported by its evidence): %.80s", basis, point["title"])
@@ -1737,12 +1841,24 @@ def _file_backed_points(points: List[Dict[str, Any]], file_evidence: str, kb_evi
         words = set(_CONTENT_WORD_RE.findall(text.lower()))
         # The file block the point's words come from gives its page / heading.
         best = max(blocks, key=lambda b: len(words & set(_CONTENT_WORD_RE.findall(b[2].lower()))), default=None)
-        if best is None or not words & set(_CONTENT_WORD_RE.findall(best[2].lower())):
+        if absent:
+            # An absence shares no words with the file: cite the clause it names, else the file's first block.
+            named = [m.group(1) for m in re.finditer(r"\bclauses?\s+(\d+)", body, re.IGNORECASE)]
+            best = next((b for b in blocks for n in named if re.match(rf"(?:clause\s+)?{n}\b", b[1] or "", re.IGNORECASE)),
+                        blocks[0] if blocks else None)
+        elif best is None or not words & set(_CONTENT_WORD_RE.findall(best[2].lower())):
             continue  # nothing in it is from the file
+        if best is None:
+            continue
         citations = [_file_citation(best[0], best[1])] + kb_citations
         kept.append({**{k: v for k, v in point.items() if k != "basis"}, "text": text, "source": basis,
                      "_citations": citations})
         all_citations.extend(citations)
+    if halves is not None:  # the top-level call of a file check (not a clause-half recheck)
+        omissions = _omission_points(blocks, file_lower, kept)
+        kept += omissions
+        halves += copy.deepcopy(omissions)  # they hold in the fallback too
+        all_citations.extend(c for p in omissions for c in p["_citations"])
     return kept, all_citations
 
 

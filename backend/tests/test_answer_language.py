@@ -158,3 +158,16 @@ def test_names_acronyms_and_provision_labels_are_never_translated_or_expanded():
     assert prompt_builder.NO_INVENTED_EXPANSION in prompt_builder.LANGUAGE_INSTRUCTIONS["en"]
     assert "Never invent a full form" not in prompt_builder.master_prompt()  # master prompt unchanged
 
+
+def test_a_documents_own_clause_labels_are_never_translated():
+    for language in ("hi", "hinglish"):
+        line = prompt_builder.LANGUAGE_INSTRUCTIONS[language]
+        for rule in ("Clause, Schedule, Annexure, Section, Part", '"Clause 18" stays "Clause 18"',
+                     '"Schedule A" stays "Schedule A"', 'never "नियम 18"'):
+            assert rule in line, (language, rule)
+
+
+def test_the_reminder_ends_by_keeping_every_sentence_in_the_chosen_language():
+    for language in ("hi", "hinglish"):
+        assert prompt_builder.language_reminder(language).endswith(prompt_builder.LANGUAGE_CLOSING[language])
+    assert not prompt_builder.language_reminder("en").endswith(prompt_builder.LANGUAGE_CLOSING["hi"])

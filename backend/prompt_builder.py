@@ -82,7 +82,10 @@ NAMES_STAY_AS_SOURCE = (
     "writes it, in Latin script, untranslated and unexpanded: institution names and their acronyms (MCIA, DIAC, "
     "SIAC, ICC, LCIA, ICA), document titles, court names, party names and defined terms. "
     + NO_INVENTED_EXPANSION + " Keep provision labels and numbers in their source form, in English, so they match "
-    "the citations: \"Rule 8.6\", \"Section 29A\", \"Article 31\", \"Appendix IV, Article 7\"."
+    "the citations: \"Rule 8.6\", \"Section 29A\", \"Article 31\", \"Appendix IV, Article 7\". The same goes for a "
+    "document's own structural labels (Clause, Schedule, Annexure, Section, Part) every time they appear: "
+    "\"Clause 18\" stays \"Clause 18\" and \"Schedule A\" stays \"Schedule A\", never \"नियम 18\" (नियम means Rule, a "
+    "different thing from a contract clause)."
 )
 LANGUAGE_INSTRUCTIONS = {
     "auto": None,
@@ -105,9 +108,19 @@ LANGUAGE_OVER_WORDING = (
 )
 
 
+# Last, so "keep it as in the source" can't spread from the names to the sentences:
+# a clause-by-clause Hindi summary copied "1. Scope" and then wrote the rest in English.
+LANGUAGE_CLOSING = {
+    "hi": " Every sentence, heading and list item is in Hindi (Devanagari); after a kept label such as \"Clause 1\" "
+          "or \"1. Scope\", the text continues in Hindi.",
+    "hinglish": " Every sentence, heading and list item is in Hinglish; after a kept label such as \"Clause 1\" or "
+                "\"1. Scope\", the text continues in Hinglish.",
+}
+
+
 def language_reminder(language: str) -> Optional[str]:
     line = LANGUAGE_INSTRUCTIONS.get(language)
-    return line + LANGUAGE_OVER_WORDING if line else None
+    return line + LANGUAGE_OVER_WORDING + LANGUAGE_CLOSING.get(language, "") if line else None
 
 
 def build_legal_system_messages(subject: str = "Arbitration", mode: str = "layman",

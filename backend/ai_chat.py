@@ -1684,6 +1684,11 @@ _ROUTE_NOTES = {
 }
 UPLOAD_SOURCE_NOTE = "Based on your uploaded file{s}: {names}. This is your own document, not a verified CourtBazaar source."
 # "Check it against the rules" over an uploaded file: answered from the approved sources only.
+# What an ad hoc arbitration clause is checked against under the Act. Naming the
+# sections makes retrieval read them from the Act's own text; search by the clause's
+# words alone found its incidental terms (language, Section 22) instead.
+ACT_CLAUSE_CHECKS = ("Arbitration agreement in writing (Section 7). Appointment of arbitrators (Section 11). "
+                     "Place of arbitration (Section 20).")
 UPLOAD_RULES_CHECK_RE = re.compile(r"\bcheck\b.{0,40}\bagainst\b.{0,20}\brules?\b", re.IGNORECASE)
 UPLOAD_RULES_CHECK_NOTE = (
     "TASK FOR THIS TURN: the user asks you to check the file they uploaded (given as user-provided data) "
@@ -2228,8 +2233,14 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         if upload_text and UPLOAD_RULES_CHECK_RE.search(text):
             # The rules come from the approved sources only (all of them, searched with the
             # file's own words), never general knowledge: no evidence, no answer.
-            decision = _decision(ROUTE_DOCUMENT_RAG, "upload_rules_check")
             rules_check_query = chat_uploads.search_query(upload_text)
+            # A file that names no institution is an ad hoc agreement: the Arbitration Act
+            # governs it, and the institutions' rules would only add unrelated provisions.
+            act = None if kb_registry.detect_institutions(rules_check_query) - {kb_registry.ACT} else next(
+                iter(kb_registry.files_for(kb_registry.ACT)), None)
+            if act:
+                rules_check_query = f"{rules_check_query}\n{ACT_CLAUSE_CHECKS}"
+            decision = _decision(ROUTE_DOCUMENT_RAG, "upload_rules_check", source=act)
         elif upload_text:
             decision = _decision(ROUTE_UPLOAD, "uploaded_file")
             if any(u["retrieval"] == "keyword" for u in uploads_used):
