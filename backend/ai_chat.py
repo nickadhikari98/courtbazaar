@@ -22,6 +22,7 @@ from fastapi import HTTPException
 
 import answer_guard
 import court_bazaar_tools
+import kb_registry
 import llm_service
 import prompt_builder
 from rate_limiter import get_limiter
@@ -123,12 +124,6 @@ PENDING_HEARINGS_UNAVAILABLE_MESSAGE = (
     "courts, or Proxy Counsel."
 )
 COUNSEL_CHOICE_MESSAGE = "Which Proxy Counsel would you like details about? You can say “the first one” or name one from the list."
-# No-match replies are chosen by route (see _no_context_reply): a question
-# about CourtBazaar itself and one about a named document read differently.
-COURTBAZAAR_INFO_UNAVAILABLE_MESSAGE = (
-    "I don’t have verified information about that yet. Could you ask about a specific CourtBazaar service or "
-    "feature?"
-)
 # Master Prompt section 2, shortened.
 DOCUMENT_NOT_FOUND_MESSAGE = (
     "The CourtBazaar verified database doesn’t have enough authoritative material to answer this reliably. "
@@ -232,6 +227,8 @@ def _document_closing(reply: str, citations: List[Dict[str, Any]]) -> str:
     merged so the answer never ends in two stacked disclaimers."""
     partial = answer_guard.PARTIAL_ANSWER_NOTE in reply
     body = reply.replace(answer_guard.PARTIAL_ANSWER_NOTE, "").rstrip() if partial else reply
+    # The user's own uploaded file is never named as an available document.
+    citations = [c for c in citations if c.get("kind") != "upload"]
     cited = next((c for c in citations if c.get("rules")), None)
     if partial:
         title = (cited or (citations[0] if citations else {})).get("title")
@@ -242,20 +239,9 @@ def _document_closing(reply: str, citations: List[Dict[str, Any]]) -> str:
     if cited:
         return f"{body}\n\n{DOCUMENT_VERIFY_NOTE.format(title=cited['title'])}"
     return body
-_SPECIFIC_FACT_RE = re.compile(
-    r"\b(?:how many|how much|number of|count|total|percent(?:age)?|fees?|prices?|pricing|costs?|charges?|rates?|"
-    r"when|dates?|deadline|how long)\b|%",
-    re.IGNORECASE,
-)
-
-
 def _no_context_reply(decision: Optional[Dict[str, Any]], text: str) -> str:
     """The "nothing verified to answer with" reply for a retrieval turn,
     worded for what was asked — never naming the retrieval machinery."""
-    if decision and decision["route"] == ROUTE_COURTBAZAAR_GENERAL:
-        if _SPECIFIC_FACT_RE.search(text):
-            return answer_guard.UNVERIFIED_COURTBAZAAR_MESSAGE
-        return COURTBAZAAR_INFO_UNAVAILABLE_MESSAGE
     return document_not_found_message(decision.get("source") if decision else None)
 
 
@@ -377,8 +363,12 @@ async def _get_or_create_conversation(db, conversation_id: Optional[str], user_i
         convo = await db.ai_conversations.find_one({"conversation_id": conversation_id}, {"_id": 0})
         if not convo or not _can_access_conversation(convo, user_id, conversation_token):
             raise HTTPException(404, CONVERSATION_NOT_FOUND_MESSAGE)
+        changes = {"updated_at": _now_iso()}
+        if convo.get("title_pending") and title:
+            changes["title"] = convo["title"] = _chat_title(title)  # an empty chat is named by its first message
         await db.ai_conversations.update_one(
-            {"conversation_id": conversation_id}, {"$set": {"updated_at": _now_iso()}},
+            {"conversation_id": conversation_id},
+            {"$set": changes, **({"$unset": {"title_pending": ""}} if "title" in changes else {})},
         )
         convo.pop("access_token_hash", None)
         return convo
@@ -395,6 +385,17 @@ async def _get_or_create_conversation(db, conversation_id: Optional[str], user_i
     if token:
         doc["conversation_token"] = token  # returned to the caller once; never stored in plain text
     return doc
+
+
+async def create_empty_chat(db, user: Optional[dict]) -> Dict[str, Any]:
+    """Backing POST /ai/chats: a signed-in user's chat with no messages yet, so a
+    file can be attached before the first question (chat_uploads needs a chat id)."""
+    user_id = user.get("user_id") if user else None
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(401, "Not authenticated")
+    convo = await _get_or_create_conversation(db, None, user_id)
+    await db.ai_conversations.update_one({"conversation_id": convo["conversation_id"]}, {"$set": {"title_pending": True}})
+    return {k: convo[k] for k in ("conversation_id", "title", "pinned", "archived", "created_at", "updated_at")}
 
 
 CHAT_TITLE_MAX = 48
@@ -465,6 +466,8 @@ async def bulk_update_chats(db, user: Optional[dict], action: str, ids: List[str
     if not owned:
         return {"changed": 0}
     if action == "delete":
+        import chat_uploads
+        await chat_uploads.delete_for_chats(db, user_id, owned)
         await db.ai_chat_messages.delete_many({"conversation_id": {"$in": owned}})
         result = await db.ai_conversations.delete_many({"user_id": user_id, "conversation_id": {"$in": owned}})
         return {"changed": result.deleted_count}
@@ -480,6 +483,8 @@ async def delete_all_chats(db, user: Optional[dict]) -> Dict[str, Any]:
     if not isinstance(user_id, str) or not user_id:
         raise HTTPException(401, "Not authenticated")
     ids = await db.ai_conversations.distinct("conversation_id", {"user_id": user_id})
+    import chat_uploads
+    await chat_uploads.delete_for_chats(db, user_id, ids)
     await db.ai_chat_messages.delete_many({"conversation_id": {"$in": ids}})
     await db.ai_conversations.delete_many({"user_id": user_id, "conversation_id": {"$in": ids}})
     return {"deleted": len(ids)}
@@ -487,6 +492,8 @@ async def delete_all_chats(db, user: Optional[dict]) -> Dict[str, Any]:
 
 async def delete_chat(db, conversation_id: str, user: Optional[dict]) -> Dict[str, Any]:
     await _owned_chat(db, conversation_id, user)
+    import chat_uploads
+    await chat_uploads.delete_for_chats(db, user["user_id"], [conversation_id])
     await db.ai_chat_messages.delete_many({"conversation_id": conversation_id})
     await db.ai_conversations.delete_one({"conversation_id": conversation_id})
     return {"ok": True}
@@ -609,10 +616,11 @@ def _is_casual_message(text: str) -> bool:
 #   2. A follow-up that refers to results this conversation already showed.
 #   3. An explicit request for CourtBazaar data (personal, or a live
 #      search/list/availability question)                   -> COURTBAZAAR_LIVE
-#   4. An SOP process topic                                   -> DOCUMENT_RAG (SOP)
-#   5. A question about CourtBazaar itself                    -> COURTBAZAAR_GENERAL (SOP)
-#   6. A legal-information question                           -> GENERAL_LEGAL
-#   7. Anything else harmless                                 -> GENERAL
+#   4. A question about CourtBazaar itself or its processes   -> COURTBAZAAR_LIVE (service
+#      catalogue) for offerings/prices, else GENERAL. Never the "SOP" file: it is DIAC's
+#      internal Deputy Counsel procedure, searched only when the user names it (step 1).
+#   5. A legal-information question                           -> GENERAL_LEGAL
+#   6. Anything else harmless                                 -> GENERAL
 #
 # A bare keyword ("court", "counsel", "service", "order", "refund",
 # "complaint") is never enough for a live tool: the message has to actually
@@ -624,9 +632,9 @@ ROUTE_GENERAL = "GENERAL"
 ROUTE_GENERAL_LEGAL = "GENERAL_LEGAL"
 ROUTE_COURTBAZAAR_LIVE = "COURTBAZAAR_LIVE"
 ROUTE_DOCUMENT_RAG = "DOCUMENT_RAG"
-ROUTE_COURTBAZAAR_GENERAL = "COURTBAZAAR_GENERAL"
 ROUTE_CLARIFY = "CLARIFY"
-RAG_ROUTES = (ROUTE_DOCUMENT_RAG, ROUTE_COURTBAZAAR_GENERAL)
+ROUTE_UPLOAD = "UPLOAD"  # the chat has the user's own files (chat_uploads); never an approved source
+RAG_ROUTES = (ROUTE_DOCUMENT_RAG,)
 
 DOCUMENT_CLARIFY_MESSAGE = "Which document should I answer from: the CourtBazaar SOP or the DIAC Rules?"
 UNDERSPECIFIED_QUESTION_MESSAGE = (
@@ -751,6 +759,11 @@ _COURTBAZAAR_CONTEXT_RE = re.compile(
     r"your (?:platform|app|website|site|company)|this (?:platform|app|website|site)|on the platform|"
     r"(?:do|does|can) you (?:offer|provide)|"
     r"hire (?:a |an )?proxy[- ]counsel)\b",
+    re.IGNORECASE,
+)
+_PRODUCT_CATALOGUE_RE = re.compile(
+    r"\b(?:services?|e[- ]?filing|print\w*|photocop\w*|offer|offers|provide|provides|"
+    r"cost|costs|fees?|prices?|pricing|charges?|how much)\b",
     re.IGNORECASE,
 )
 _LEGAL_TERMS_RE = re.compile(
@@ -995,10 +1008,13 @@ def route_message(text: str, convo: Optional[dict] = None) -> Dict[str, Any]:
     if _is_underspecified_question(value):
         return _decision(ROUTE_CLARIFY, "underspecified_question")
 
-    if llm_service.is_sop_knowledge_question(value):
-        return _decision(ROUTE_DOCUMENT_RAG, "sop_topic", source=llm_service.SOURCE_SOP)
-    if _COURTBAZAAR_CONTEXT_RE.search(value):
-        return _decision(ROUTE_COURTBAZAAR_GENERAL, "courtbazaar_product_question", source=llm_service.SOURCE_SOP)
+    if llm_service.is_sop_knowledge_question(value) or _COURTBAZAAR_CONTEXT_RE.search(value):
+        # The KB "SOP" is DIAC's internal Deputy Counsel procedure, not a CourtBazaar services
+        # document, so product questions never search it: offerings and prices come from the
+        # live service catalogue, anything else gets a general answer with no CourtBazaar facts.
+        if _PRODUCT_CATALOGUE_RE.search(value) and not _LEGAL_SERVICE_RE.search(value):
+            return _decision(ROUTE_COURTBAZAAR_LIVE, "courtbazaar_service_question", live_intent="services")
+        return _decision(ROUTE_GENERAL, "courtbazaar_product_question")
     if _is_legal_question(value):
         return _decision(ROUTE_GENERAL_LEGAL, "legal_information_question")
     return _decision(ROUTE_GENERAL, "general_question")
@@ -1654,7 +1670,54 @@ _ROUTE_NOTES = {
         "Do not state any current CourtBazaar fact (availability, counsel, fees, courts, services, order or "
         "hearing status); say you couldn't retrieve that information right now."
     ),
+    ROUTE_UPLOAD: (
+        "ROUTE FOR THIS TURN: a question about a file the user uploaded to this chat. Its text is given below "
+        "as user-provided data, one block per excerpt headed [file name | location]. Answer from that text; "
+        "for every point you take from it, cite the file name and its location exactly as the block header "
+        "gives it: \"page N\" for a PDF, the heading or section (for example \"Clause 18\") for a Word file, "
+        "or the file name alone when the header has no location. Never invent a page number. Say plainly that "
+        "the answer comes from the user's uploaded file. It is not a verified CourtBazaar source or an approved "
+        "legal source: never present it as one, and never say it was checked. If the file doesn't cover the "
+        "question, say so. You may add general legal information, clearly marked as general and not from the "
+        "file. Never predict the outcome of the user's specific matter."
+    ),
 }
+UPLOAD_SOURCE_NOTE = "Based on your uploaded file{s}: {names}. This is your own document, not a verified CourtBazaar source."
+# A summary reads the document (chat_uploads._structural_sample), never a search.
+STRUCTURAL_SAMPLE_NOTE = (
+    "TASK FOR THIS TURN: summarise the user's uploaded document. The file text below is a structural sample of a "
+    "long document: its opening in full, then the first lines of every later page or section and every heading or "
+    "clause title with the line under it. Summarise the whole document from it, citing each point as its block "
+    "header gives it ([file | page N] or [file | heading]). It is never empty: do not say you found nothing."
+)
+LONG_SUMMARY_PROMPT_NOTE = (
+    "TASK FOR THIS TURN: summarise the user's uploaded document. It is too long to read at once, so the text below "
+    "holds summaries of its parts, in order, each citing [file | page N] or [file | heading]. Combine them into one "
+    "summary of the whole document, keeping those citations. Say that this is a summary of a long document."
+)
+PART_SUMMARY_NOTE = (
+    "TASK: summarise only this part of the user's uploaded document, in order, in a few short paragraphs. Cite each "
+    "point with its block header as given ([file | page N] or [file | heading]). Keep names, acronyms and clause "
+    "labels exactly as written."
+)
+LONG_SUMMARY_NOTE = "This is a summary of a long document, made from summaries of its parts."
+# "Check it against the rules" over an uploaded file: answered from the approved sources only.
+# What an ad hoc arbitration clause is checked against under the Act. Naming the
+# sections makes retrieval read them from the Act's own text; search by the clause's
+# words alone found its incidental terms (language, Section 22) instead.
+ACT_CLAUSE_CHECKS = ("Arbitration agreement in writing (Section 7). Appointment of arbitrators (Section 11). "
+                     "Place of arbitration (Section 20).")
+UPLOAD_RULES_CHECK_RE = re.compile(r"\bcheck\b.{0,40}\bagainst\b.{0,20}\brules?\b", re.IGNORECASE)
+UPLOAD_RULES_CHECK_NOTE = (
+    "TASK FOR THIS TURN: the user asks you to check the file they uploaded (given as user-provided data) "
+    "against the rules. The rules are ONLY the approved document excerpts provided to you: never use general "
+    "legal knowledge, memory or any other source for what a rule says. For each point in the file that an "
+    "excerpt covers, name the provision and say whether the file is consistent with it. If no excerpt covers "
+    "the file's subject, say the available documents don't cover it."
+)
+UPLOAD_RULES_CHECK_SOURCE_NOTE = ("Checked your uploaded file{s} ({names}) against the approved sources cited above. "
+                                  "Points marked as from your file come from your own document, which is not a "
+                                  "verified CourtBazaar source.")
 
 
 # Replaces the ROUTE_GENERAL_LEGAL note when that turn is answered with web
@@ -1740,7 +1803,7 @@ MIXED_SOURCE_LIMITATION = (
 def _protected_texts() -> List[str]:
     """Hidden instructions the reply must never reproduce (see
     answer_guard.check_output)."""
-    return [SYSTEM_PROMPT, *prompt_builder.protected_texts(), MIXED_SOURCE_NOTE, FORMAT_REQUEST_NOTE, WEB_SEARCH_LEGAL_NOTE, WEB_SEARCH_RETRY_NOTE,
+    return [SYSTEM_PROMPT, *prompt_builder.protected_texts(), MIXED_SOURCE_NOTE, UPLOAD_RULES_CHECK_NOTE, FORMAT_REQUEST_NOTE, WEB_SEARCH_LEGAL_NOTE, WEB_SEARCH_RETRY_NOTE,
             llm_service.RAG_EVIDENCE_INSTRUCTIONS, llm_service.RAG_CARD_INSTRUCTIONS,
             _tool_result_system_message({"tool": None})["content"], *_ROUTE_NOTES.values()]
 
@@ -2115,7 +2178,8 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
                                client_ip: Optional[str] = None,
                                conversation_token: Optional[str] = None,
                                on_status: Optional[llm_service.StatusCallback] = None,
-                               mode: str = "layman", language: str = "auto") -> Dict[str, Any]:
+                               mode: str = "layman", language: str = "auto",
+                               upload_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """Main entry point for POST /ai/chat. Raises HTTPException for genuine
     client errors (bad input, conversation ownership); everything else —
     including every LLM-side failure mode — degrades to a normal 200
@@ -2148,6 +2212,9 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
     turn_tokens = llm_service.start_token_count()
     result = await _answer_turn(db, convo, text, user, client_ip, on_status, mode, language)
     await chat_usage.record(db, usage_identity, turn_tokens[0])
+    if upload_ids:
+        import chat_uploads
+        await chat_uploads.tag_last_user_message(db, convo["conversation_id"], user_id, upload_ids)
     if issued_token:
         result["conversation_token"] = issued_token
     return result
@@ -2173,6 +2240,33 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         logger.error("Chat routing failed (%s): %s", type(e).__name__, llm_service._safe_error_detail(e))
         tool_result = {"status": "error", "tool": "routing",
                        "message": LIVE_TOOL_FAILURE_MESSAGE, "error_stage": "routing"}
+
+    # The chat's own uploaded files answer every turn except casual, live-data and
+    # named-approved-document ones (those keep their own route).
+    import chat_uploads
+    upload_text, uploads_used, rules_check_query, long_summary = "", [], None, False
+    summary_parts_text: List[str] = []
+    if decision is not None and decision["route"] != ROUTE_COURTBAZAAR_LIVE and decision["reason"] not in (
+            "casual", "explicit_document", "explicit_documents"):
+        upload_text, uploads_used, summary_parts = await chat_uploads.context_for(db, convo, text)
+        summary_parts_text = summary_parts
+        if summary_parts:
+            upload_text, long_summary = await _summarise_parts(summary_parts, language, on_status), True
+        if upload_text and UPLOAD_RULES_CHECK_RE.search(text):
+            # The rules come from the approved sources only (all of them, searched with the
+            # file's own words), never general knowledge: no evidence, no answer.
+            rules_check_query = chat_uploads.search_query(upload_text)
+            # A file that names no institution is an ad hoc agreement: the Arbitration Act
+            # governs it, and the institutions' rules would only add unrelated provisions.
+            act = None if kb_registry.detect_institutions(rules_check_query) - {kb_registry.ACT} else next(
+                iter(kb_registry.files_for(kb_registry.ACT)), None)
+            if act:
+                rules_check_query = f"{rules_check_query}\n{ACT_CLAUSE_CHECKS}"
+            decision = _decision(ROUTE_DOCUMENT_RAG, "upload_rules_check", source=act)
+        elif upload_text:
+            decision = _decision(ROUTE_UPLOAD, "uploaded_file")
+            if any(u["retrieval"] == "keyword" for u in uploads_used):
+                logger.warning("Chat answer from KEYWORD search over uploads (embeddings unavailable): conversation=%s", conv_id)
 
     # A follow-up to a document answer stays on that document (see _document_followup).
     doc_followup = None
@@ -2347,9 +2441,20 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         llm_messages.append({"role": "system", "content": MIXED_SOURCE_NOTE})
     if format_requested:
         llm_messages.append({"role": "system", "content": FORMAT_REQUEST_NOTE})
-    # Retrieval, the answer and the verifier all read this last user message.
-    llm_messages.append({"role": "user", "content": _standalone_document_question(text, doc_followup)
-                         if doc_followup else text})
+    if rules_check_query:
+        # The file goes inside the question itself (still tagged, user-role data), so the
+        # answer and the verifier both see what is being checked against the rule excerpts.
+        llm_messages.append({"role": "system", "content": UPLOAD_RULES_CHECK_NOTE})
+        llm_messages.append({"role": "user", "content": f"{text}\n\n{chat_uploads.data_message(upload_text)['content']}"})
+    else:
+        if any(u["retrieval"].startswith("structure") for u in uploads_used):
+            llm_messages.append({"role": "system", "content": LONG_SUMMARY_PROMPT_NOTE if long_summary
+                                 else STRUCTURAL_SAMPLE_NOTE})
+        if upload_text:
+            llm_messages.append(chat_uploads.data_message(upload_text))
+        # Retrieval, the answer and the verifier all read this last user message.
+        llm_messages.append({"role": "user", "content": _standalone_document_question(text, doc_followup)
+                             if doc_followup else text})
 
     # Document/product questions are grounded only in the one approved
     # document the router selected — retrieval never falls back to another,
@@ -2384,6 +2489,7 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         result = await llm_service.generate_response(
             llm_messages, use_file_search=use_rag, selected_source=decision["source"] if use_rag else None,
             on_status=on_status, **({"language": language} if language != "auto" else {}),
+            **({"retrieval_query": rules_check_query, "file_evidence": upload_text} if rules_check_query else {}),
         )
     finally:
         rag_provisions.RESERVED_CHARS.reset(reserved)
@@ -2424,6 +2530,15 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
                 closed = _document_closing(reply, citations)
                 card_note = closed.rsplit("\n\n", 1)[-1] if closed != reply else None
                 reply = closed
+        if uploads_used:
+            names = ", ".join(u["file_name"] for u in uploads_used)
+            note = UPLOAD_RULES_CHECK_SOURCE_NOTE if rules_check_query else UPLOAD_SOURCE_NOTE
+            note = note.format(s="s" if len(uploads_used) > 1 else "", names=names)
+            if long_summary:
+                note = f"{LONG_SUMMARY_NOTE} {note}"
+            reply = f"{reply}\n\n{note}"
+            # The card shows its own note, not the reply's last line: it says so too.
+            card_note = f"{card_note} {note}" if card_note else note
         if mixed_live_request:
             reply = f"{reply}\n\n{MIXED_SOURCE_LIMITATION}"
             card_note = f"{card_note} {MIXED_SOURCE_LIMITATION}" if card_note else MIXED_SOURCE_LIMITATION
@@ -2433,13 +2548,21 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         if use_rag or format_requested:
             # After the guards: a removed section can leave "1, 3, 4" behind.
             reply = renumber_heading_sequences(reply)
+        # A full form after an acronym stays only if the sources say it, in every language.
+        # The file's own text, never the model's part summaries, decides a full form.
+        expansion_sources = [result.get("evidence") or "", upload_text if not long_summary else "",
+                             *summary_parts_text]
+        reply = _without_invented_expansions(reply, expansion_sources, decision["route"])
+        if result.get("answer"):
+            result["answer"] = _card_without_invented_expansions(result["answer"], expansion_sources, decision["route"])
         reply, flags = answer_guard.check_output(reply, _protected_texts())
         if flags:
             logger.warning("Reply output check (%s): %s", decision["route"], ",".join(flags))
         # The reply holds every card field, so its output check covers the
         # card; anything flagged shows only the checked reply.
         if result.get("answer") and grounding != "insufficient" and not flags:
-            answer = _display_card(result["answer"], card_note, citations, keep_note=mixed_live_request or bool(intent_note))
+            answer = _display_card(result["answer"], card_note, citations,
+                                   keep_note=mixed_live_request or bool(intent_note) or bool(uploads_used))
         elif (use_rag and card_note and not flags and not mixed_live_request and not intent_note
               and reply.endswith(card_note)):
             # A plain document answer carries the same note as a card, under the text.
@@ -2478,13 +2601,16 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
     return {"conversation_id": conv_id, "reply": reply, "degraded": degraded,
             "sources": result.get("sources", []) if result["ok"] else [],
             "citations": citations, "grounding": grounding, "answer": answer, **plain_note,
+            # Which files fed the answer and how ("full" | "embeddings" | "keyword"), for the page and the eval.
+            "uploads": [{"file_name": u["file_name"], "retrieval": u["retrieval"]} for u in uploads_used],
             "error_stage": None if result["ok"] else result.get("stage", "LLM")}
 
 
 async def stream_chat_events(db, conversation_id: Optional[str], message: str, user: Optional[dict],
                              client_ip: Optional[str] = None,
                              conversation_token: Optional[str] = None,
-                             mode: str = "layman", language: str = "auto") -> AsyncIterator[str]:
+                             mode: str = "layman", language: str = "auto",
+                             upload_ids: Optional[List[str]] = None) -> AsyncIterator[str]:
     """POST /ai/chat/stream: handle_chat_message as Server-Sent Events, one
     "status" per real step, then "answer" (its usual response) or "error"
     (with the HTTP status the page would otherwise get). Client gone = task
@@ -2496,7 +2622,7 @@ async def stream_chat_events(db, conversation_id: Optional[str], message: str, u
             await llm_service.emit_status(queue.put, "understanding", "Understanding your question…")
             data = await handle_chat_message(db, conversation_id, message, user, client_ip=client_ip,
                                              conversation_token=conversation_token, on_status=queue.put, mode=mode,
-                                             language=language)
+                                             language=language, upload_ids=upload_ids)
             await queue.put({"type": "answer", "data": data})
         except HTTPException as e:
             event = {"type": "error", "status": e.status_code, "text": str(e.detail)}
@@ -2551,6 +2677,40 @@ def _display_card(card: Dict[str, Any], note: Optional[str], citations: List[Dic
 WEB_USED_SUPERSEDED_RULES = object()
 
 
+async def _summarise_parts(parts: List[str], language: str,
+                           on_status: Optional[llm_service.StatusCallback] = None) -> str:
+    """First pass of a long-document summary: one summary per budget-sized part.
+    A part whose call fails is skipped; if every one fails, the first part itself
+    is returned, so a file we read never comes back as "nothing found"."""
+    import chat_uploads
+    summaries = []
+    for i, part in enumerate(parts, 1):
+        await llm_service.emit_status(on_status, "reading", f"Reading part {i} of {len(parts)} of your document…")
+        result = await llm_service.generate_response(
+            [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": PART_SUMMARY_NOTE},
+             chat_uploads.data_message(part), {"role": "user", "content": "Summarise this part of the document."}],
+            **({"language": language} if language != "auto" else {}))
+        if result.get("ok") and (result.get("text") or "").strip():
+            summaries.append(f"[Part {i} of {len(parts)}]\n{result['text'].strip()}")
+        else:
+            logger.warning("Long-document summary: part %d of %d failed (%s)", i, len(parts), result.get("error_code"))
+    return "\n\n".join(summaries) or parts[0]
+
+
+def _without_invented_expansions(text: str, sources: List[str], where: str) -> str:
+    """answer_guard.strip_invented_expansions with the registry's institution names; logs each removal."""
+    cleaned, removed = answer_guard.strip_invented_expansions(text, sources, kb_registry.institution_names())
+    for item in removed:
+        logger.warning("Removed an acronym expansion not in the sources (%s): %s", where, item)
+    return cleaned
+
+
+def _card_without_invented_expansions(card: Dict[str, Any], sources: List[str], where: str) -> Dict[str, Any]:
+    clean = lambda v: _without_invented_expansions(v, sources, where) if isinstance(v, str) else v
+    return {**{k: clean(v) for k, v in card.items() if k != "points"},
+            "points": [{**p, **{f: clean(p.get(f)) for f in ("title", "badge", "text")}} for p in card.get("points") or []]}
+
+
 def _finish_web_answer(result: Dict[str, Any], question: str, format_requested: bool) -> tuple:
     """The general-answer guards over a web answer, then its citations: a
     sentence the guards remove takes its [n] and source with it. Returns
@@ -2560,6 +2720,8 @@ def _finish_web_answer(result: Dict[str, Any], question: str, format_requested: 
     reply = answer_guard.guard_general_answer(reply, legal=True, question=question, verified_markers=markers)
     if format_requested:
         reply = renumber_heading_sequences(reply)
+    # No retrieved text to match here: only the registry's own institution names count.
+    reply = _without_invented_expansions(reply, [], "web search")
     reply, flags = answer_guard.check_output(reply, _protected_texts())
     if flags:
         logger.warning("Reply output check (web search): %s", ",".join(flags))
@@ -2607,5 +2769,5 @@ async def get_conversation_history(db, conversation_id: str, user: Optional[dict
     if not convo or not _can_access_conversation(convo, user_id, conversation_token):
         raise HTTPException(404, CONVERSATION_NOT_FOUND_MESSAGE)
     return await db.ai_chat_messages.find(
-        {"conversation_id": conversation_id}, {"_id": 0, "role": 1, "content": 1, "created_at": 1},
+        {"conversation_id": conversation_id}, {"_id": 0, "role": 1, "content": 1, "created_at": 1, "files": 1},
     ).sort("created_at", 1).to_list(1000)

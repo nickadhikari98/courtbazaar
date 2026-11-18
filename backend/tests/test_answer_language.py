@@ -106,3 +106,68 @@ def test_english_answers_keep_the_english_wording_checks():
     hindi_unsupported = "मध्यस्थ की नियुक्ति हमेशा सर्वोच्च न्यायालय करता है।"
     assert not _kept(hindi_unsupported, "auto", title="सर्वोच्च न्यायालय", badge="")
     assert _kept("नियम 8.1 के अनुसार, अध्यक्ष 15 दिनों के भीतर नियुक्ति करेंगे।", "auto")
+
+
+def test_the_language_setting_is_the_last_instruction_before_the_question():
+    import llm_service
+    msgs = [{"role": "system", "content": prompt_builder.master_prompt()},
+            {"role": "user", "content": "<untrusted_document_excerpts>...</untrusted_document_excerpts>"},
+            {"role": "system", "content": "Keep the document's own wording."},
+            {"role": "user", "content": "What do the DIAC Rules say about the appointment of arbitrators?"}]
+    for language in ("en", "hi", "hinglish"):
+        out = llm_service.with_language(msgs, language)
+        assert out[:-1][:3] == msgs[:3] and out[-1] == msgs[-1]  # only inserted, master prompt untouched
+        assert out[-2] == {"role": "system", "content": prompt_builder.language_reminder(language)}
+        assert out[-2]["content"].startswith(prompt_builder.LANGUAGE_INSTRUCTIONS[language])
+    assert llm_service.with_language(msgs, "auto") == msgs
+
+
+def test_card_and_plain_requests_both_end_with_the_language_setting(monkeypatch):
+    """The card note ("keep the document's words") must not come after the language line."""
+    import llm_service
+    from types import SimpleNamespace
+    seen = []
+
+    async def create(**kwargs):
+        seen.append(kwargs)
+        raise RuntimeError("stop after capturing the request")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    msgs = [{"role": "system", "content": prompt_builder.master_prompt()},
+            {"role": "user", "content": "What do the DIAC Rules say about the appointment of arbitrators?"}]
+    try:
+        asyncio.run(llm_service._card_answer(client, msgs, "[Source: x | Rule 8]\n8. Text.", ["x"], language="hi"))
+    except RuntimeError:
+        pass
+    request = seen[0]["input"]
+    assert request[-1]["content"] == msgs[-1]["content"]
+    assert request[-2]["content"] == prompt_builder.language_reminder("hi")
+    assert any("SOURCES:" in m["content"] for m in request[:-2])  # card note sits before it
+    assert prompt_builder.language_reminder("hi") in prompt_builder.protected_texts()
+
+
+def test_names_acronyms_and_provision_labels_are_never_translated_or_expanded():
+    for language in ("hi", "hinglish"):
+        line = prompt_builder.LANGUAGE_INSTRUCTIONS[language]
+        reminder = prompt_builder.language_reminder(language)
+        for rule in ("Translate only the explanation, never a name or a number", "MCIA, DIAC, SIAC, ICC, LCIA, ICA",
+                     "Never invent a full form for an acronym", '"Rule 8.6"', '"Section 29A"', '"Article 31"',
+                     '"Appendix IV, Article 7"', "court names, party names and defined terms"):
+            assert rule in line, (language, rule)
+        assert reminder.startswith(line) and "provision labels are not translated" in reminder
+    assert prompt_builder.NO_INVENTED_EXPANSION in prompt_builder.LANGUAGE_INSTRUCTIONS["en"]
+    assert "Never invent a full form" not in prompt_builder.master_prompt()  # master prompt unchanged
+
+
+def test_a_documents_own_clause_labels_are_never_translated():
+    for language in ("hi", "hinglish"):
+        line = prompt_builder.LANGUAGE_INSTRUCTIONS[language]
+        for rule in ("Clause, Schedule, Annexure, Section, Part", '"Clause 18" stays "Clause 18"',
+                     '"Schedule A" stays "Schedule A"', 'never "नियम 18"'):
+            assert rule in line, (language, rule)
+
+
+def test_the_reminder_ends_by_keeping_every_sentence_in_the_chosen_language():
+    for language in ("hi", "hinglish"):
+        assert prompt_builder.language_reminder(language).endswith(prompt_builder.LANGUAGE_CLOSING[language])
+    assert not prompt_builder.language_reminder("en").endswith(prompt_builder.LANGUAGE_CLOSING["hi"])

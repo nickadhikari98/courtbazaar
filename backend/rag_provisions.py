@@ -267,6 +267,29 @@ def parse_provisions(doc: str, word: Optional[str] = None) -> List[Dict[str, Any
     return accepted
 
 
+def _main_run(provisions: List[Dict[str, Any]]) -> int:
+    """How far the first rule set numbers 1, 2, 3... without a gap."""
+    tops = {p["number"] for p in provisions if p["instrument"] == 0 and p["number"] == p["parent"]}
+    run = 0
+    while str(run + 1) in tops:
+        run += 1
+    return run
+
+
+def parse_for_label(doc: str, label: str) -> List[Dict[str, Any]]:
+    """parse_provisions with the heading mode the document actually uses. Article
+    documents print the word; a "Rule" document may ("Rule 44 Fast Track", ICA) or
+    may not ("33.1 The Centre", DIAC): read without the word, ICA's numbering broke
+    at Rule 24 and Rules 25-80 (Rule 44 among them) were never found."""
+    if label == "Article":
+        return parse_provisions(doc, "Article")
+    bare = parse_provisions(doc)
+    if label != "Rule":
+        return bare
+    worded = parse_provisions(doc, "Rule")
+    return worded if _main_run(worded) > _main_run(bare) else bare
+
+
 def locate(chunk: str, doc: str) -> Optional[Tuple[int, int]]:
     """Span of `chunk` (already normalized like `doc`) inside `doc`, found
     from its longest full lines (a chunk's first and last lines may be cut)."""
@@ -389,7 +412,7 @@ def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: s
     1/share of the block and character caps (a second institution in a
     comparison was getting none)."""
     label = kb_registry.provision_label(filename) or "Rule"
-    provisions = parse_provisions(doc, "Article" if label == "Article" else None) if doc else []
+    provisions = parse_for_label(doc, label) if doc else []
     blocked, unsafe = _blocked_indices(filename, provisions, doc, query, pages)
     named = {num for word, num in exact_refs(query) if word == label}
     exact = [k for k, p in enumerate(provisions) if p["number"] in named]

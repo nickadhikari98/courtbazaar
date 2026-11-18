@@ -71,15 +71,56 @@ def role_line(subject: str) -> str:
 # nothing (today's behaviour: the model follows the message). Each is a
 # separate system message right after the mode instruction, so it can only
 # add to the master prompt, never replace or reorder it.
+# Never translated, transliterated or expanded, in any language: a Hindi answer once
+# rendered MCIA as "MCIA (मदीर परामर्श इंदौर अधिवक्ता)", an invented full form.
+NO_INVENTED_EXPANSION = ("Never invent a full form for an acronym: if the source doesn't spell it out, write the "
+                         "acronym alone; if it does, use the source's own words. Never put words in brackets after "
+                         "an acronym (\"MCIA (...)\") unless those exact words appear in the text you were given, "
+                         "and never guess what an acronym stands for from its letters.")
+NAMES_STAY_AS_SOURCE = (
+    "Translate only the explanation, never a name or a number. Keep every proper noun exactly as the source "
+    "writes it, in Latin script, untranslated and unexpanded: institution names and their acronyms (MCIA, DIAC, "
+    "SIAC, ICC, LCIA, ICA), document titles, court names, party names and defined terms. "
+    + NO_INVENTED_EXPANSION + " Keep provision labels and numbers in their source form, in English, so they match "
+    "the citations: \"Rule 8.6\", \"Section 29A\", \"Article 31\", \"Appendix IV, Article 7\". The same goes for a "
+    "document's own structural labels (Clause, Schedule, Annexure, Section, Part) every time they appear: "
+    "\"Clause 18\" stays \"Clause 18\" and \"Schedule A\" stays \"Schedule A\", never \"नियम 18\" (नियम means Rule, a "
+    "different thing from a contract clause)."
+)
 LANGUAGE_INSTRUCTIONS = {
     "auto": None,
-    "en": "Answer language: write the answer in English.",
-    "hi": ("Answer language: write the answer in Hindi (Devanagari script). Keep rule, section and article "
-           "numbers, and the names of statutes, rules and institutions, exactly as they appear in the sources."),
+    "en": "Answer language: write the answer in English. " + NO_INVENTED_EXPANSION,
+    "hi": "Answer language: write the answer in Hindi (Devanagari script). " + NAMES_STAY_AS_SOURCE,
     "hinglish": ("Answer language: write the answer in Hinglish (Hindi in Latin script, with English legal terms). "
-                 "Keep rule, section and article numbers, and the names of statutes, rules and institutions, "
-                 "exactly as they appear in the sources."),
+                 + NAMES_STAY_AS_SOURCE),
 }
+
+
+# Repeated as the last instruction before the question (llm_service.with_language):
+# the evidence and card instructions that come after the first language line say to
+# keep "the document's own words", and that later, more specific instruction won,
+# so a Hindi or Hinglish setting came back in English.
+LANGUAGE_OVER_WORDING = (
+    " This applies to every sentence of the answer, including where the instructions above say to keep the "
+    "document's own words or wording: translate the meaning of that wording faithfully instead of copying it in "
+    "English. Names, acronyms, defined terms and provision labels are not translated: they stay exactly as in the "
+    "source."
+)
+
+
+# Last, so "keep it as in the source" can't spread from the names to the sentences:
+# a clause-by-clause Hindi summary copied "1. Scope" and then wrote the rest in English.
+LANGUAGE_CLOSING = {
+    "hi": " Every sentence, heading and list item is in Hindi (Devanagari); after a kept label such as \"Clause 1\" "
+          "or \"1. Scope\", the text continues in Hindi.",
+    "hinglish": " Every sentence, heading and list item is in Hinglish; after a kept label such as \"Clause 1\" or "
+                "\"1. Scope\", the text continues in Hinglish.",
+}
+
+
+def language_reminder(language: str) -> Optional[str]:
+    line = LANGUAGE_INSTRUCTIONS.get(language)
+    return line + LANGUAGE_OVER_WORDING + LANGUAGE_CLOSING.get(language, "") if line else None
 
 
 def build_legal_system_messages(subject: str = "Arbitration", mode: str = "layman",
@@ -95,4 +136,5 @@ def build_legal_system_messages(subject: str = "Arbitration", mode: str = "layma
 
 def protected_texts() -> List[str]:
     """Every hidden legal instruction, for answer_guard.check_output."""
-    return [master_prompt(), *MODE_INSTRUCTIONS.values(), *(task_instruction(i) for i in INTENTS)]
+    return [master_prompt(), *MODE_INSTRUCTIONS.values(), *(task_instruction(i) for i in INTENTS),
+            *(language_reminder(lang) for lang in LANGUAGE_INSTRUCTIONS if language_reminder(lang))]

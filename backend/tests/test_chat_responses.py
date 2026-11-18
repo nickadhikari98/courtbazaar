@@ -67,7 +67,7 @@ def test_model_wording_about_retrieval_is_rephrased(fake_rag):
     fake_rag["items"] = [_chunk(SOP, _SOP_SLA)]
     fake_rag["answer"] = ("According to the retrieved excerpts, the printing vendor must accept the order within 2 "
                           "hours and deliver within 24 hours.")
-    reply = _chat("What is the SLA for Printing Service?")["reply"]
+    reply = _chat("According to the SOP, what is the SLA for Printing Service?")["reply"]
     assert not INTERNAL_TERMS.search(reply), reply
     assert "within 2 hours" in reply and "available documents" in reply
 
@@ -76,9 +76,7 @@ def _fallback_replies(monkeypatch, fake_rag):
     fake_rag["items"] = []
     replies = {
         "document": _chat("What does the DIAC Rules say about space law?")["reply"],
-        "sop topic": _chat("What is the SLA for Printing Service?")["reply"],
-        "courtbazaar info": _chat("How does proxy counsel hiring work?")["reply"],
-        "courtbazaar fact": _chat("How much does CourtBazaar charge for proxy counsel?")["reply"],
+        "sop": _chat("According to the SOP, what is the SLA for Printing Service?")["reply"],
     }
     _fake_llm(monkeypatch, "See Sharma v. Union of India (2021) 4 SCC 99.")
     replies["legal"] = _chat("What does the law say about adverse possession?")["reply"]
@@ -95,22 +93,14 @@ def test_no_fallback_or_clarification_uses_internal_terms(monkeypatch, fake_rag)
 def test_fallbacks_are_chosen_by_context_not_one_message(monkeypatch, fake_rag):
     replies = _fallback_replies(monkeypatch, fake_rag)
     assert replies["document"] == ai_chat.document_not_found_message(DIAC)
-    assert replies["courtbazaar info"] == ai_chat.COURTBAZAAR_INFO_UNAVAILABLE_MESSAGE
-    assert replies["courtbazaar fact"] == answer_guard.UNVERIFIED_COURTBAZAAR_MESSAGE
+    assert replies["sop"] == ai_chat.document_not_found_message(SOP)
     assert replies["legal"] == answer_guard.UNVERIFIED_LEGAL_MESSAGE
-    assert len({replies["document"], replies["courtbazaar info"], replies["courtbazaar fact"], replies["legal"]}) == 4
+    assert len({replies["document"], replies["sop"], replies["legal"]}) == 3
 
 
 # ---------------------------------------------------------------------------
 # The four fallbacks
 # ---------------------------------------------------------------------------
-
-def test_courtbazaar_no_match_fallback(fake_rag):
-    fake_rag["items"] = []
-    assert _chat("How does proxy counsel hiring work?")["reply"] == (
-        "I don’t have verified information about that yet. Could you ask about a specific CourtBazaar service or "
-        "feature?")
-
 
 def test_document_no_match_fallback(fake_rag):
     fake_rag["items"] = [_chunk(DIAC, "Rule 12: The emergency arbitrator shall be appointed within one day.")]
@@ -135,7 +125,8 @@ def test_non_legal_general_fallback_is_unchanged(monkeypatch):
 def test_unsupported_courtbazaar_fact(monkeypatch, fake_rag):
     expected = ("I don’t have verified information about that at the moment. You can ask me about CourtBazaar "
                 "services, courts, or Proxy Counsel.")
-    fake_rag["items"] = []
+    # Product questions get a general answer: a CourtBazaar fact in it can't be verified.
+    _fake_llm(monkeypatch, "CourtBazaar has onboarded 1,200 proxy counsels.")
     assert _chat("How many proxy counsels has CourtBazaar onboarded?")["reply"] == expected
     _fake_llm(monkeypatch, "CourtBazaar refunds 100% of fees within 24 hours.")
     assert _chat("What is a refund?")["reply"] == expected

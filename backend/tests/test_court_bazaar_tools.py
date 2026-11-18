@@ -1387,17 +1387,18 @@ def test_district_search_finds_counsel_state_extraction_does_not():
     run(body())
 
 
-def test_proxy_counsel_hiring_explanation_routes_to_rag_not_live_search(monkeypatch):
+def test_proxy_counsel_hiring_explanation_is_not_a_live_search(monkeypatch):
     query = "How does Proxy Counsel hiring work?"
-    assert ai_chat._is_static_product_question(query) is True
-    assert ai_chat._needs_product_rag(query) is True
+    # A general explanation: not the DIAC SOP (not CourtBazaar's document), not a live search.
+    assert ai_chat.route_message(query)["route"] == ai_chat.ROUTE_GENERAL
+    assert ai_chat._needs_product_rag(query) is False
 
     async def unexpected_search(*_args, **_kwargs):
         raise AssertionError("static hiring explanation must not call live counsel search")
 
     monkeypatch.setattr(court_bazaar_tools, "search_proxy_counsels", unexpected_search)
     result = run(ai_chat._route_tool_call(object(), query, {}, "127.0.0.1"))
-    assert result is None  # orchestration continues to RAG
+    assert result is None  # no live tool for an explanation
 
 
 def test_explicit_proxy_counsel_find_uses_live_tool(monkeypatch):

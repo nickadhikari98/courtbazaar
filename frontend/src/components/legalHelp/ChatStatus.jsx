@@ -16,6 +16,8 @@ const CARD_STEPS = ["writing", "verifying"];
 /* Exported for tests: a step's line, past tense (no "…") once it is done. */
 export function stepLabel(step, done) {
   if (step.step === "verifying") return done ? "Verified citations" : "Verifying citations…";
+  // A file check's second try (up to a minute): say why it is taking longer.
+  if (step.step === "retrying") return done ? "Retried the comparison" : String(step.text || "Retrying the comparison…");
   if (!done) return String(step.text || "");
   const text = String(step.text || "").replace(/…$/, "");
   if (step.step === "searching") return text.replace(/^Searching\b/, "Searched");

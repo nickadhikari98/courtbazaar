@@ -216,3 +216,15 @@ def excluded(rec: Optional[dict], query: str) -> bool:
     if rec.get("status") != "in_force":
         return True
     return "mediation" in (rec.get("doc_type") or "") and not re.search(r"mediat", query or "", re.IGNORECASE)
+
+
+def institution_names() -> dict:
+    """{"MCIA": ["Mumbai Centre for International Arbitration"], ...} from the
+    records' own "Name (ACRONYM)" institution field."""
+    names: dict = {}
+    for filename in approved_files():
+        for rec in records_for_file(filename) or []:
+            m = re.match(r"(.+?)\s*\(([A-Z]{2,6})\)$", rec.get("institution") or "")
+            if m and m.group(1) not in names.setdefault(m.group(2), []):
+                names[m.group(2)].append(m.group(1))
+    return names

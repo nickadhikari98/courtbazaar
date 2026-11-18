@@ -334,6 +334,8 @@ class ChatSendRequest(BaseModel):
     mode: Literal["layman", "lawyer"] = "layman"
     # Preferred answer language from chat Settings (prompt_builder.LANGUAGE_INSTRUCTIONS).
     language: Literal["auto", "en", "hi", "hinglish"] = "auto"
+    # Files attached to this message (chat_uploads); only labels the sent message, never grants access.
+    upload_ids: List[str] = Field(default_factory=list, max_length=5)
 
 class RatingCreate(BaseModel):
     order_id: str
@@ -553,6 +555,8 @@ async def seed_initial_data():
     await chat_usage.ensure_indexes(db)
     import chat_matters
     await chat_matters.ensure_indexes(db)
+    import chat_uploads
+    await chat_uploads.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -1815,7 +1819,7 @@ async def ai_chat(req: ChatSendRequest, user: Optional[dict] = Depends(get_curre
     ai_chat_svc.check_chat_rate_limit(rate_key)
     return await ai_chat_svc.handle_chat_message(
         db, req.conversation_id, req.message, user, client_ip=client_ip, conversation_token=req.conversation_token,
-        mode=req.mode, language=req.language,
+        mode=req.mode, language=req.language, upload_ids=req.upload_ids,
     )
 
 @api_router.post("/ai/chat/stream")
@@ -1826,7 +1830,7 @@ async def ai_chat_stream(req: ChatSendRequest, user: Optional[dict] = Depends(ge
     return StreamingResponse(
         ai_chat_svc.stream_chat_events(db, req.conversation_id, req.message, user, client_ip=client_ip,
                                        conversation_token=req.conversation_token, mode=req.mode,
-                                       language=req.language),
+                                       language=req.language, upload_ids=req.upload_ids),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},  # proxies must not hold events back
     )
@@ -1878,6 +1882,34 @@ async def ai_chats(user: Optional[dict] = Depends(get_current_user_optional), ar
                    matter_id: Annotated[Optional[str], Query(max_length=64)] = None):
     import ai_chat as ai_chat_svc
     return await ai_chat_svc.list_chats(db, user, archived=archived, limit=limit, offset=offset, matter_id=matter_id)
+
+@api_router.post("/ai/chats")
+async def ai_chat_create(user=Depends(get_current_user)):
+    import ai_chat as ai_chat_svc
+    return await ai_chat_svc.create_empty_chat(db, user)
+
+# ---------- Chat uploads: a signed-in user's PDF/DOCX for one chat (chat_uploads) ----------
+@api_router.post("/ai/chats/{conversation_id}/uploads")
+async def ai_chat_upload(conversation_id: str, request: Request,
+                         user: Optional[dict] = Depends(get_current_user_optional)):
+    import chat_uploads
+    if not user:
+        raise HTTPException(403, chat_uploads.GUEST_MESSAGE)  # before reading the body
+    # Parsed here, not by a File(...) parameter, so a malformed upload gets a reason the page can show.
+    file = chat_uploads.single_file((await request.form()).getlist("file"))
+    data = await file.read(chat_uploads.MAX_BYTES + 1)
+    return await chat_uploads.create_upload(db, user, conversation_id, file.filename, data)
+
+@api_router.get("/ai/chats/{conversation_id}/uploads")
+async def ai_chat_uploads(conversation_id: str, user: Optional[dict] = Depends(get_current_user_optional)):
+    import chat_uploads
+    return await chat_uploads.list_uploads(db, user, conversation_id)
+
+@api_router.delete("/ai/chats/{conversation_id}/uploads/{upload_id}")
+async def ai_chat_upload_delete(conversation_id: str, upload_id: str,
+                                user: Optional[dict] = Depends(get_current_user_optional)):
+    import chat_uploads
+    return await chat_uploads.delete_upload(db, user, conversation_id, upload_id)
 
 # ---------- Matters: owner-only chat folders with custom instructions (chat_matters) ----------
 class MatterCreateRequest(BaseModel):
@@ -4395,6 +4427,27 @@ async def schedule_matching_waterfall():
         logger.info("Matching waterfall scheduler started (poll every 10s)")
     except Exception as e:
         logger.warning(f"Matching waterfall scheduler not started: {e}")
+
+
+@app.on_event("startup")
+async def schedule_chat_upload_cleanup():
+    """Chat uploads are kept 30 days (chat_uploads): daily at 03:00 UTC the
+    expired ones leave R2 and the database. Same pattern as the schedulers above."""
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+        import chat_uploads
+        async def _job():
+            try:
+                await chat_uploads.cleanup_expired(db)
+            except Exception as e:
+                logger.error(f"Scheduled chat upload cleanup error: {e}")
+        sched = AsyncIOScheduler()
+        sched.add_job(_job, CronTrigger(hour=3, minute=0), max_instances=1)
+        sched.start()
+        logger.info("Chat upload cleanup scheduler started (daily 03:00 UTC)")
+    except Exception as e:
+        logger.warning(f"Chat upload cleanup scheduler not started: {e}")
 
 
 @app.on_event("startup")
