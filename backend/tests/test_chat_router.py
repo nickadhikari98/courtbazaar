@@ -126,11 +126,7 @@ def test_explicit_courtbazaar_data_requests_route_live(query, live_intent):
 
 
 @pytest.mark.parametrize("query,source", [
-    ("What is the SLA for Printing Service?", SOP),
-    ("What are the responsibilities of an E-Filing Partner?", SOP),
-    ("What are the responsibilities of a Proxy Counsel?", SOP),
     ("According to the SOP, what is the refund policy?", SOP),
-    ("How are complaints handled?", SOP),
     ("What does the DIAC Rules say about appointment of arbitrators?", DIAC),
     ("What is arbitration under the DIAC Rules?", DIAC),
 ])
@@ -140,16 +136,23 @@ def test_document_questions_route_to_their_own_source(query, source):
     assert decision["source"] == source
 
 
-@pytest.mark.parametrize("query", [
-    "How does Proxy Counsel hiring work on CourtBazaar?",
-    "What services does CourtBazaar provide?",
-    "How does the CourtBazaar workflow work?",
-    "How can I hire a proxy counsel?",
+# The KB "SOP" is DIAC's internal Deputy Counsel procedure: no CourtBazaar product
+# question may search it. Offerings and prices: the live service catalogue.
+@pytest.mark.parametrize("query,route,live_intent", [
+    ("When should I hire a proxy counsel for a hearing?", ai_chat.ROUTE_GENERAL, None),
+    ("How does Proxy Counsel hiring work on CourtBazaar?", ai_chat.ROUTE_GENERAL, None),
+    ("How does the CourtBazaar workflow work?", ai_chat.ROUTE_GENERAL, None),
+    ("How can I hire a proxy counsel?", ai_chat.ROUTE_GENERAL, None),
+    ("What services does CourtBazaar provide?", ai_chat.ROUTE_COURTBAZAAR_LIVE, "services"),
+    ("Does CourtBazaar offer e-filing?", ai_chat.ROUTE_COURTBAZAAR_LIVE, "services"),
+    ("Can CourtBazaar print and deliver my documents?", ai_chat.ROUTE_COURTBAZAAR_LIVE, "services"),
+    ("How much does a proxy counsel cost?", ai_chat.ROUTE_COURTBAZAAR_LIVE, "services"),
+    ("What is the SLA for Printing Service?", ai_chat.ROUTE_COURTBAZAAR_LIVE, "services"),
+    ("Which courts does CourtBazaar cover?", ai_chat.ROUTE_COURTBAZAAR_LIVE, "courts"),
 ])
-def test_courtbazaar_product_questions_use_the_courtbazaar_source(query):
+def test_courtbazaar_product_questions_never_search_the_diac_sop(query, route, live_intent):
     decision = ai_chat.route_message(query)
-    assert decision["route"] == ai_chat.ROUTE_COURTBAZAAR_GENERAL
-    assert decision["source"] == SOP
+    assert (decision["route"], decision["live_intent"], decision["source"]) == (route, live_intent, None)
 
 
 def test_naming_both_documents_asks_which_one_instead_of_guessing():
@@ -255,9 +258,8 @@ def test_general_legal_answer_is_held_to_no_invented_law_rules(monkeypatch):
 
 
 @pytest.mark.parametrize("query,source", [
-    ("What is the SLA for Printing Service?", SOP),
+    ("According to the SOP, what is the refund policy?", SOP),
     ("What does the DIAC Rules say about appointment of arbitrators?", DIAC),
-    ("What services does CourtBazaar provide?", SOP),
 ])
 def test_rag_turns_pass_the_routers_exact_source(monkeypatch, query, source):
     llm = _capture_llm("Grounded answer.")
@@ -414,7 +416,7 @@ def test_without_prior_results_the_same_followup_is_not_a_live_search():
     ("What is anticipatory bail?", ai_chat.ROUTE_GENERAL_LEGAL),
     ("What is Python?", ai_chat.ROUTE_GENERAL),
     ("What is the court fee for filing a suit?", ai_chat.ROUTE_GENERAL_LEGAL),
-    ("What is the SLA for Printing Service?", ai_chat.ROUTE_DOCUMENT_RAG),
+    ("What does the DIAC Rules say about appointment of arbitrators?", ai_chat.ROUTE_DOCUMENT_RAG),
 ])
 def test_new_topic_after_results_does_not_inherit_the_old_context(query, route):
     assert ai_chat.route_message(query, _ACTIVE_RESULTS)["route"] == route

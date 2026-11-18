@@ -123,12 +123,6 @@ PENDING_HEARINGS_UNAVAILABLE_MESSAGE = (
     "courts, or Proxy Counsel."
 )
 COUNSEL_CHOICE_MESSAGE = "Which Proxy Counsel would you like details about? You can say “the first one” or name one from the list."
-# No-match replies are chosen by route (see _no_context_reply): a question
-# about CourtBazaar itself and one about a named document read differently.
-COURTBAZAAR_INFO_UNAVAILABLE_MESSAGE = (
-    "I don’t have verified information about that yet. Could you ask about a specific CourtBazaar service or "
-    "feature?"
-)
 # Master Prompt section 2, shortened.
 DOCUMENT_NOT_FOUND_MESSAGE = (
     "The CourtBazaar verified database doesn’t have enough authoritative material to answer this reliably. "
@@ -242,20 +236,9 @@ def _document_closing(reply: str, citations: List[Dict[str, Any]]) -> str:
     if cited:
         return f"{body}\n\n{DOCUMENT_VERIFY_NOTE.format(title=cited['title'])}"
     return body
-_SPECIFIC_FACT_RE = re.compile(
-    r"\b(?:how many|how much|number of|count|total|percent(?:age)?|fees?|prices?|pricing|costs?|charges?|rates?|"
-    r"when|dates?|deadline|how long)\b|%",
-    re.IGNORECASE,
-)
-
-
 def _no_context_reply(decision: Optional[Dict[str, Any]], text: str) -> str:
     """The "nothing verified to answer with" reply for a retrieval turn,
     worded for what was asked — never naming the retrieval machinery."""
-    if decision and decision["route"] == ROUTE_COURTBAZAAR_GENERAL:
-        if _SPECIFIC_FACT_RE.search(text):
-            return answer_guard.UNVERIFIED_COURTBAZAAR_MESSAGE
-        return COURTBAZAAR_INFO_UNAVAILABLE_MESSAGE
     return document_not_found_message(decision.get("source") if decision else None)
 
 
@@ -630,10 +613,11 @@ def _is_casual_message(text: str) -> bool:
 #   2. A follow-up that refers to results this conversation already showed.
 #   3. An explicit request for CourtBazaar data (personal, or a live
 #      search/list/availability question)                   -> COURTBAZAAR_LIVE
-#   4. An SOP process topic                                   -> DOCUMENT_RAG (SOP)
-#   5. A question about CourtBazaar itself                    -> COURTBAZAAR_GENERAL (SOP)
-#   6. A legal-information question                           -> GENERAL_LEGAL
-#   7. Anything else harmless                                 -> GENERAL
+#   4. A question about CourtBazaar itself or its processes   -> COURTBAZAAR_LIVE (service
+#      catalogue) for offerings/prices, else GENERAL. Never the "SOP" file: it is DIAC's
+#      internal Deputy Counsel procedure, searched only when the user names it (step 1).
+#   5. A legal-information question                           -> GENERAL_LEGAL
+#   6. Anything else harmless                                 -> GENERAL
 #
 # A bare keyword ("court", "counsel", "service", "order", "refund",
 # "complaint") is never enough for a live tool: the message has to actually
@@ -645,10 +629,9 @@ ROUTE_GENERAL = "GENERAL"
 ROUTE_GENERAL_LEGAL = "GENERAL_LEGAL"
 ROUTE_COURTBAZAAR_LIVE = "COURTBAZAAR_LIVE"
 ROUTE_DOCUMENT_RAG = "DOCUMENT_RAG"
-ROUTE_COURTBAZAAR_GENERAL = "COURTBAZAAR_GENERAL"
 ROUTE_CLARIFY = "CLARIFY"
 ROUTE_UPLOAD = "UPLOAD"  # the chat has the user's own files (chat_uploads); never an approved source
-RAG_ROUTES = (ROUTE_DOCUMENT_RAG, ROUTE_COURTBAZAAR_GENERAL)
+RAG_ROUTES = (ROUTE_DOCUMENT_RAG,)
 
 DOCUMENT_CLARIFY_MESSAGE = "Which document should I answer from: the CourtBazaar SOP or the DIAC Rules?"
 UNDERSPECIFIED_QUESTION_MESSAGE = (
@@ -773,6 +756,11 @@ _COURTBAZAAR_CONTEXT_RE = re.compile(
     r"your (?:platform|app|website|site|company)|this (?:platform|app|website|site)|on the platform|"
     r"(?:do|does|can) you (?:offer|provide)|"
     r"hire (?:a |an )?proxy[- ]counsel)\b",
+    re.IGNORECASE,
+)
+_PRODUCT_CATALOGUE_RE = re.compile(
+    r"\b(?:services?|e[- ]?filing|print\w*|photocop\w*|offer|offers|provide|provides|"
+    r"cost|costs|fees?|prices?|pricing|charges?|how much)\b",
     re.IGNORECASE,
 )
 _LEGAL_TERMS_RE = re.compile(
@@ -1017,10 +1005,13 @@ def route_message(text: str, convo: Optional[dict] = None) -> Dict[str, Any]:
     if _is_underspecified_question(value):
         return _decision(ROUTE_CLARIFY, "underspecified_question")
 
-    if llm_service.is_sop_knowledge_question(value):
-        return _decision(ROUTE_DOCUMENT_RAG, "sop_topic", source=llm_service.SOURCE_SOP)
-    if _COURTBAZAAR_CONTEXT_RE.search(value):
-        return _decision(ROUTE_COURTBAZAAR_GENERAL, "courtbazaar_product_question", source=llm_service.SOURCE_SOP)
+    if llm_service.is_sop_knowledge_question(value) or _COURTBAZAAR_CONTEXT_RE.search(value):
+        # The KB "SOP" is DIAC's internal Deputy Counsel procedure, not a CourtBazaar services
+        # document, so product questions never search it: offerings and prices come from the
+        # live service catalogue, anything else gets a general answer with no CourtBazaar facts.
+        if _PRODUCT_CATALOGUE_RE.search(value) and not _LEGAL_SERVICE_RE.search(value):
+            return _decision(ROUTE_COURTBAZAAR_LIVE, "courtbazaar_service_question", live_intent="services")
+        return _decision(ROUTE_GENERAL, "courtbazaar_product_question")
     if _is_legal_question(value):
         return _decision(ROUTE_GENERAL_LEGAL, "legal_information_question")
     return _decision(ROUTE_GENERAL, "general_question")

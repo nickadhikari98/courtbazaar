@@ -56,12 +56,13 @@ def test_attached_document_questions_route_to_rag(query):
     "What does the E-Filing Partner do?",
     "What does the delivery partner do?",
 ])
-def test_sop_topics_are_routed_to_sop_rag_before_live_tools(query):
+def test_courtbazaar_process_topics_never_search_the_diac_sop(query):
+    # The KB "SOP" is DIAC's internal Deputy Counsel procedure, not CourtBazaar's own
+    # documentation: these get the live service catalogue or a general answer, never that file.
     assert llm_service.is_sop_knowledge_question(query) is True
-    assert ai_chat._needs_product_rag(query) is True
-    assert llm_service._select_knowledge_source(query) == "STANDARD OPERATING PROCEDURE (SOP).docx"
-    # None means the live-tool router deliberately leaves this request for RAG.
-    assert asyncio.run(ai_chat._route_tool_call(None, query, {}, None)) is None
+    decision = ai_chat.route_message(query)
+    assert decision["source"] is None and ai_chat._needs_product_rag(query) is False
+    assert decision["route"] in (ai_chat.ROUTE_GENERAL, ai_chat.ROUTE_COURTBAZAAR_LIVE)
 
 
 def test_explicitly_named_document_takes_precedence_over_sop_topic():

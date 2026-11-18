@@ -74,7 +74,7 @@ def test_document_answer_uses_master_prompt_and_stores_mode(monkeypatch):
 
 def test_product_routes_keep_the_product_prompt(monkeypatch):
     fake = _fake_llm(monkeypatch, "Hello! How can I help?")
-    _ask("What is the SLA for Printing Service?")
+    _ask("According to the SOP, what is the SLA for Printing Service?")
     assert fake.calls[-1]["messages"][0]["content"] == ai_chat.SYSTEM_PROMPT
 
 
