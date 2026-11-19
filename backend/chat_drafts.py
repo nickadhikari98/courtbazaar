@@ -30,6 +30,7 @@ import prompt_builder
 
 GUEST_MESSAGE = "Sign in to create drafts. Drafting is available to logged-in users only."
 DRAFT_NOT_FOUND = "Draft not found."
+PDF_UNAVAILABLE = "PDF isn't available for Hindi drafts yet. Download the Word file instead."
 MAX_VALUE_CHARS = 500
 SUPPORTED_INSTITUTIONS = ("DIAC", "ICA", "MCIA")
 PLACEHOLDER_RE = re.compile(r"\[([^\[\]\n]{1,80})\]")
@@ -105,6 +106,21 @@ def supported_message(closest: str, unsupported_institution: bool = False) -> st
             if unsupported_institution else "I can't draft that kind of document yet.")
     return (f"{lead} I can draft these three:\n\n{lines}\n\n"
             f"The closest to what you asked for is: {TYPES[closest]['name']}. Ask for it by name and I'll prepare it.")
+
+
+# A draft request that mentions arbitration (or an institution) gets the closest type; anything else is
+# outside the knowledge base. shortcut: keyword rule, so a Hindi phrasing of "arbitration" reads as outside.
+_ARBITRATION_RE = re.compile(r"\barbitra\w*|\btribunal\b|\bawards?\b|\ba\s*&\s*c act\b", re.IGNORECASE)
+
+
+def is_arbitration_request(text: str) -> bool:
+    return bool(_ARBITRATION_RE.search(text) or kb_registry.detect_institutions(text) - {kb_registry.ACT})
+
+
+def out_of_scope_message() -> str:
+    lines = "\n".join(f"{i}. {t['name']}" for i, t in enumerate(TYPES.values(), 1))
+    return ("I can't draft that. The knowledge base covers Indian arbitration law, and these are the drafts "
+            f"I can prepare:\n\n{lines}")
 
 
 INSTITUTION_MISSING_MESSAGE = ("Which institution should the request for arbitration go to: DIAC, ICA or MCIA? "
@@ -378,6 +394,8 @@ async def compose(text: str, language: str = "auto",
     Raises nothing for model failures: they come back as a reply with `error_code`."""
     dtype, extra = classify(text)
     if dtype is None:
+        if not is_arbitration_request(text):
+            return {"reply": out_of_scope_message()}
         return {"reply": supported_message(extra, unsupported_institution=bool(
             kb_registry.detect_institutions(text) - {kb_registry.ACT}))}
     if dtype == "institution_request" and extra is None:
@@ -484,7 +502,13 @@ def render_docx(draft: Dict[str, Any], values: Dict[str, str]) -> bytes:
 def render_pdf(draft: Dict[str, Any], values: Dict[str, str]) -> bytes:
     if not draft.get("pdf"):
         # shortcut: no Devanagari font or text shaping in the backend yet; add both before enabling Hindi PDFs.
-        raise HTTPException(409, "PDF isn't available for Hindi drafts yet. Download the Word file instead.")
+        raise HTTPException(409, PDF_UNAVAILABLE)
+    filled = _filled_blocks(draft, values)
+    try:
+        # The built-in font is WinAnsi (cp1252): anything else would print as boxes, e.g. a name in Devanagari.
+        "\n".join([draft["disclaimer"], *(b["text"] for b in filled)]).replace("₹", "Rs. ").encode("cp1252")
+    except UnicodeEncodeError:
+        raise HTTPException(409, PDF_UNAVAILABLE)
     from reportlab.lib.enums import TA_CENTER
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -505,7 +529,7 @@ def render_pdf(draft: Dict[str, Any], values: Dict[str, str]) -> bytes:
         return Paragraph(escape(text.replace("₹", "Rs. ")).replace("\n", "<br/>"), styles[style])
 
     flow = [para(draft["disclaimer"], "disclaimer"), Spacer(1, 4)]
-    flow += [para(b["text"], b["style"] if b["style"] in styles else "para") for b in _filled_blocks(draft, values)]
+    flow += [para(b["text"], b["style"] if b["style"] in styles else "para") for b in filled]
     buf = io.BytesIO()
     SimpleDocTemplate(buf, pagesize=A4, title=draft["title"], leftMargin=60, rightMargin=60,
                       topMargin=56, bottomMargin=56).build(flow)

@@ -33,7 +33,7 @@ _INTENT_RES = (
         re.IGNORECASE)),
     ("draft", re.compile(r"\b(?:draft|drafting|prepare|write|format|template)\b.{0,40}"
                          r"\b(?:notice|petition|application|agreement|clause|reply|statement|affidavit|letter)\b"
-                         r"|\bdraft\b", re.IGNORECASE)),
+                         r"|\bdraf(?:t|ts|ting)?\b", re.IGNORECASE)),  # "draf": a typo seen in QA
     ("case_research", re.compile(
         r"\b(?:case ?laws?|judg(?:e)?ments?|precedents?|rulings?|citations?|landmark|decided cases?)\b"
         r"|\b(?:supreme|high) court\b.{0,30}\b(?:held|says|said|decided|view)\b|\bv(?:s)?\.\s", re.IGNORECASE)),

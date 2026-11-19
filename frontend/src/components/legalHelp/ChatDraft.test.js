@@ -150,6 +150,15 @@ test("a failed download shows an error and the buttons come back", async () => {
   expect($("chat-draft-docx").disabled).toBe(false);
 });
 
+test("a PDF the server refuses (409) shows the Word-file message, not a generic failure", async () => {
+  api.post.mockRejectedValue({ response: { status: 409 } });
+  await renderDraft();
+  await act(async () => setValue(field("Claimant name")[0], "आशा राव"));
+  await act(async () => $("chat-draft-pdf").click());
+  await flush();
+  expect($("chat-draft-error").textContent).toBe(NO_HINDI_PDF);
+});
+
 test("a Hindi draft keeps the Word download and explains why PDF is off", async () => {
   await renderDraft({ ...DRAFT, pdf: false });
   expect($("chat-draft-pdf").disabled).toBe(true);

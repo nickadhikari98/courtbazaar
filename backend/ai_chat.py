@@ -2535,10 +2535,14 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
                 closed = _document_closing(reply, citations)
                 card_note = closed.rsplit("\n\n", 1)[-1] if closed != reply else None
                 reply = closed
-        if uploads_used:
-            names = ", ".join(u["file_name"] for u in uploads_used)
+        # A file check or a summary is about the file by construction; any other answer carries the note
+        # only for the files it names (the upload prompt makes it cite each point's file).
+        summary = long_summary or any(u["retrieval"].startswith("structure") for u in uploads_used)
+        noted = uploads_used if (rules_check_query or summary) else _files_named(reply, uploads_used)
+        if noted:
+            names = ", ".join(u["file_name"] for u in noted)
             note = UPLOAD_RULES_CHECK_SOURCE_NOTE if rules_check_query else UPLOAD_SOURCE_NOTE
-            note = note.format(s="s" if len(uploads_used) > 1 else "", names=names)
+            note = note.format(s="s" if len(noted) > 1 else "", names=names)
             if long_summary:
                 note = f"{LONG_SUMMARY_NOTE} {note}"
             reply = f"{reply}\n\n{note}"
@@ -2609,6 +2613,13 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
             # Which files fed the answer and how ("full" | "embeddings" | "keyword"), for the page and the eval.
             "uploads": [{"file_name": u["file_name"], "retrieval": u["retrieval"]} for u in uploads_used],
             "error_stage": None if result["ok"] else result.get("stage", "LLM")}
+
+
+def _files_named(reply: str, uploads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The uploaded files the reply cites, by full name or by name without its extension."""
+    low = (reply or "").lower()
+    return [u for u in uploads if u["file_name"].lower() in low
+            or (len(stem := os.path.splitext(u["file_name"])[0].lower()) >= 4 and stem in low)]
 
 
 async def _draft_turn(db, conv_id: str, text: str, user: Optional[dict], language: str,

@@ -161,16 +161,47 @@ def test_guest_gets_the_sign_in_message_and_no_model_call(fake_model):
 
 
 @pytest.mark.parametrize("message,closest", [
-    ("Draft a rent agreement for my flat", "section_21_notice"),
-    ("Draft a writ petition for the High Court", "section_11_application"),
+    ("Draft a statement of claim for my arbitration", "section_21_notice"),
+    ("Draft a petition to set aside an arbitral award", "section_11_application"),
     ("Draft a request for arbitration to SIAC", "institution_request"),
 ])
-def test_a_fourth_kind_lists_the_three_and_offers_the_closest(fake_model, message, closest):
+def test_an_unsupported_arbitration_draft_lists_the_three_and_offers_the_closest(fake_model, message, closest):
     result = _ask(message)
     assert result["draft"] is None and fake_model["calls"] == []
     for t in chat_drafts.TYPES.values():
         assert t["name"] in result["reply"]
     assert f"closest to what you asked for is: {chat_drafts.TYPES[closest]['name']}" in result["reply"]
+
+
+@pytest.mark.parametrize("message", [
+    "Please make a draf for criminal case",  # the typo seen in QA: it used to take the general path and time out
+    "Draft a rent agreement for my flat",
+    "Draft a writ petition for the High Court",
+    "Draft a bail application under Section 438",
+])
+def test_a_draft_outside_arbitration_is_refused_at_once_naming_the_kb_and_the_three(fake_model, message):
+    import time
+    started = time.monotonic()
+    result = _ask(message)
+    assert time.monotonic() - started < 2
+    assert result["reply"] == chat_drafts.out_of_scope_message()
+    assert "Indian arbitration law" in result["reply"] and "closest" not in result["reply"]
+    for t in chat_drafts.TYPES.values():
+        assert t["name"] in result["reply"]
+    assert result["draft"] is None and fake_model["calls"] == [] and fake_model["retrievals"] == []
+
+
+def test_pdf_is_refused_when_a_value_cannot_be_printed_and_docx_keeps_it(fake_model):
+    case = CASES["section_21_notice"]
+    fake_model.update(context=case["context"], source=case["source"], answer=case["supported"])
+    draft = _ask(case["message"])["draft"]
+    values = {"Claimant name": "आशा राव", "Amount claimed": "₹5,00,000"}
+    with pytest.raises(HTTPException) as e:
+        _download(draft["draft_id"], "pdf", values)
+    assert e.value.status_code == 409 and e.value.detail == chat_drafts.PDF_UNAVAILABLE
+    assert "आशा राव" in _docx_text(_download(draft["draft_id"], "docx", values)[0])
+    # ₹ alone is printable (as "Rs."), so that PDF still goes through.
+    assert "Rs. 5,00,000" in _pdf_text(_download(draft["draft_id"], "pdf", {"Amount claimed": "₹5,00,000"})[0])
 
 
 def test_no_draft_when_the_anchor_provision_is_not_verified(fake_model):

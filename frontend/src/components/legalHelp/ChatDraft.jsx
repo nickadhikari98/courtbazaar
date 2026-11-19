@@ -76,8 +76,9 @@ export default function ChatDraft({ draft }) {
       a.download = `${draft.fileStem}.${fmt}`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch {
-      setError(DOWNLOAD_FAILED);
+    } catch (err) {
+      // 409: the PDF font can't print a value (e.g. a name in Devanagari); the Word file still works.
+      setError(err?.response?.status === 409 ? NO_HINDI_PDF : DOWNLOAD_FAILED);
     } finally {
       setBusy(null);
     }
