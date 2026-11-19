@@ -564,6 +564,8 @@ def test_is_configured_accepts_groq_with_groq_key(monkeypatch):
     assert llm_service.is_configured() is True
 
 def test_get_client_uses_groq_sdk_for_groq_provider(monkeypatch):
+    # Groq is a local-development option only; production installs no groq package.
+    pytest.importorskip("groq")
     monkeypatch.setattr(llm_service, "AI_PROVIDER", "groq")
     monkeypatch.setattr(llm_service, "GROQ_API_KEY", "gsk-test")
     client = llm_service._get_client()
