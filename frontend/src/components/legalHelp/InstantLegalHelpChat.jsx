@@ -18,6 +18,7 @@ import { streamChat } from "./chatStream";
 import ChatMarkdown from "./ChatMarkdown";
 import ChatSources, { documentCitationLinks, webCitationLinks } from "./ChatSources";
 import AnswerCard, { AnswerNote, answerPlainText, normalizeAnswer } from "./AnswerCard";
+import ChatDraft, { normalizeDraft } from "./ChatDraft";
 import AttachmentBar, { ASK_PREFIX, FileChip, QUICK_ACTIONS, UPLOAD_ACCEPT, checkFile, uploadErrorText } from "./ChatUploads";
 
 // Multi-turn conversation via POST /ai/chat/stream. Backend routing (ai_chat.py)
@@ -108,6 +109,7 @@ export function assistantMessageFrom(data) {
     citations: Array.isArray(data?.citations) ? data.citations : [],
     grounding: GROUNDING_STATES.includes(data?.grounding) ? data.grounding : null,
     answer: normalizeAnswer(data?.answer),
+    draft: normalizeDraft(data?.draft),
   };
 }
 
@@ -579,7 +581,7 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
       setConversationId(id);
       setMsgs((Array.isArray(data) ? data : []).map((m) => (m.role === "user"
         ? { role: "user", text: m.content, files: Array.isArray(m.files) ? m.files : [] }
-        : assistantMessageFrom({ reply: m.content }))));
+        : assistantMessageFrom({ reply: m.content, draft: m.draft }))));
       if (user) {
         api.get(`/ai/chats/${encodeURIComponent(id)}/uploads`)
           .then(({ data: files }) => { if (sessionRef.current === mySession && Array.isArray(files)) setUploads(files); })
@@ -876,6 +878,8 @@ export default function InstantLegalHelpChat({ initialMessage, fullScreen = fals
                       <div className="mt-1"><ChatMarkdown text={cleanAssistantText(m.text)} citeLinks={webCitationLinks(m.citations)} /></div>
                     </div>
                   </div>
+                ) : m.draft ? (
+                  <ChatDraft draft={m.draft} />
                 ) : m.answer ? (
                   <AnswerCard answer={m.answer} citeLinks={documentCitationLinks(m.citations, `${chatId}-msg-${i}`)} clean={cleanAssistantText} />
                 ) : (

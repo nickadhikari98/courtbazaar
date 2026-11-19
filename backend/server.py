@@ -557,6 +557,8 @@ async def seed_initial_data():
     await chat_matters.ensure_indexes(db)
     import chat_uploads
     await chat_uploads.ensure_indexes(db)
+    import chat_drafts
+    await chat_drafts.ensure_indexes(db)
     # Re-seed states/courts from expanded dataset (idempotent: upserts; preserves serviceable flag)
     from court_seed_expanded import COURT_DATA
     from court_seed import SERVICE_CATALOG
@@ -1910,6 +1912,22 @@ async def ai_chat_upload_delete(conversation_id: str, upload_id: str,
                                 user: Optional[dict] = Depends(get_current_user_optional)):
     import chat_uploads
     return await chat_uploads.delete_upload(db, user, conversation_id, upload_id)
+
+# ---------- Chat drafts: DOCX/PDF of a signed-in user's draft with their filled fields (chat_drafts) ----------
+class DraftDownloadRequest(BaseModel):
+    values: Dict[str, Any] = Field(default_factory=dict, max_length=60)
+
+@api_router.post("/ai/drafts/{draft_id}/{fmt}")
+async def ai_draft_download(draft_id: str, fmt: str, req: DraftDownloadRequest,
+                            user: Optional[dict] = Depends(get_current_user_optional)):
+    import ai_chat as ai_chat_svc
+    import chat_drafts
+    if not user:
+        raise HTTPException(403, chat_drafts.GUEST_MESSAGE)
+    ai_chat_svc.check_history_rate_limit(f"draft:{user['user_id']}")
+    data, name, media_type = await chat_drafts.download(db, user, draft_id, fmt, req.values)
+    return Response(content=data, media_type=media_type,
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 # ---------- Matters: owner-only chat folders with custom instructions (chat_matters) ----------
 class MatterCreateRequest(BaseModel):
