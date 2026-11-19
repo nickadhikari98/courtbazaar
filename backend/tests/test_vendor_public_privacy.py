@@ -70,6 +70,10 @@ def run(body):
                 vendor("Pending Steno", "stenographer", 5.0, [COURT_A], kyc_status="pending")]
         users = {role: f"user_p1_{role}_{uuid.uuid4().hex[:8]}" for role in ("client", "vendor", "admin")}
         await db.vendors.insert_many([dict(r) for r in rows])
+        # Each listing belongs to a live account: a vendor row without one is a deleted user's leftover
+        # and is hidden from clients (server._drop_deactivated_vendors).
+        await db.users.insert_many([{"user_id": r["user_id"], "email": f"{r['user_id']}@example.com",
+                                     "name": r["owner_name"], "role": "vendor"} for r in rows])
         await db.users.insert_many([{"user_id": uid, "email": f"{uid}@example.com", "name": f"P1 {role}", "role": role}
                                     for role, uid in users.items()])
         tokens = {role: server.make_jwt(uid, role) for role, uid in users.items()}
@@ -78,7 +82,7 @@ def run(body):
                 await body(db, rows, tokens)
             finally:
                 await db.vendors.delete_many({"vendor_id": {"$in": [r["vendor_id"] for r in rows]}})
-                await db.users.delete_many({"user_id": {"$in": list(users.values())}})
+                await db.users.delete_many({"user_id": {"$in": list(users.values()) + [r["user_id"] for r in rows]}})
     asyncio.run(wrapper())
 
 

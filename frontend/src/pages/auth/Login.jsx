@@ -44,8 +44,11 @@ export default function Login() {
     // Set by server.py's /auth/google/callback redirecting back here on a
     // failed/misconfigured Google sign-in (it's a real page navigation by
     // that point, not something a JS catch block can report directly).
-    if (new URLSearchParams(location.search).get("error") === "google_auth_failed") {
+    const authError = new URLSearchParams(location.search).get("error");
+    if (authError === "google_auth_failed") {
       toast.error("Google sign-in failed");
+    } else if (authError === "account_deactivated") {
+      toast.error("Your account has been deactivated. Please contact the administrator.");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, off whatever query string this landing navigation carried
   }, []);

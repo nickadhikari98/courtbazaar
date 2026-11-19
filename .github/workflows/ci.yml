@@ -1,0 +1,105 @@
+name: CI
+
+# Tests and build only. This workflow never deploys — production deploys are
+# deploy.yml's job alone (push to `main` / manual dispatch) — and it uses no
+# repository secrets.
+#
+# Deliberately no `paths:` filters: both jobs are meant to be required status
+# checks, and a required check that is skipped by a path filter stays
+# "pending" forever and blocks the PR.
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+
+# A new push to the same PR (or to develop) supersedes the run still in
+# progress for the previous commit.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The suite needs a real MongoDB on loopback: tests/conftest.py points
+    # DB_NAME at a throwaway courtbazaar_pytest_<id> database (dropped at the
+    # end), blanks the email/SMS/WhatsApp/Razorpay keys so those run mocked /
+    # simulated, and blocks every non-loopback socket connection.
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval \"db.adminCommand('ping').ok\""
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MONGO_URL: mongodb://localhost:27017
+      # server.py refuses to import without a JWT_SECRET. CI-only throwaway
+      # value — not a secret, and not used by any real environment.
+      JWT_SECRET: ci-only-throwaway-jwt-secret-not-used-anywhere-else
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run backend tests
+        run: pytest
+
+  frontend:
+    name: Frontend tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Placeholder so the bundle has a backend URL; nothing is served or
+      # called from this job.
+      REACT_APP_BACKEND_URL: http://localhost:8000
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+
+      # Node 20 matches the production VPS (DEPLOYMENT.md §1).
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Install frontend dependencies
+        run: yarn install --frozen-lockfile
+
+      # CI=true (set by GitHub Actions) makes jest run once and exit.
+      - name: Run frontend tests
+        run: yarn test --watchAll=false
+
+      # CI=false here on purpose: with CI=true, react-scripts turns every
+      # ESLint warning into a build error, and craco.config.js keeps the
+      # design-system rules at "warn" deliberately. deploy/deploy.sh builds
+      # without CI set, so this is the same build production runs. Real
+      # compile errors still fail the step.
+      - name: Build frontend (production)
+        run: yarn build
+        env:
+          CI: "false"

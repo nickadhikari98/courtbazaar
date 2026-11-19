@@ -65,6 +65,8 @@ class _Ctx:
         user = {"user_id": _uid("counsel"), "role": "proxy_counsel",
                 "capabilities": ["can_practice_proxy_counsel", "can_hire_proxy_counsel"]}
         self.user_ids.append(user["user_id"])
+        # A counsel is only offered while its account exists (counsel_matching.deactivated_user_ids).
+        await self.db.users.insert_one({"user_id": user["user_id"], "name": "Dedupe Counsel", "role": "proxy_counsel"})
         await verify_counsel(self.db, user["user_id"])
         return user
 

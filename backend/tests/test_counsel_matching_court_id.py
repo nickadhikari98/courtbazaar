@@ -33,11 +33,25 @@ def _db():
     return client[os.environ.get("DB_NAME", "courtbazaar")]
 
 
+async def _insert_counsel_profile(db, profile):
+    """Counsels are only listed/matched while their account exists
+    (counsel_matching.deactivated_user_ids hides orphaned profiles), so each
+    fixture profile gets a matching live users row. Upsert: never touches a
+    users row a test created itself."""
+    await db.users.update_one(
+        {"user_id": profile["user_id"]},
+        {"$setOnInsert": {"user_id": profile["user_id"], "name": "Test Counsel", "role": "proxy_counsel"}},
+        upsert=True,
+    )
+    await db.proxy_counsel_profiles.insert_one(profile)
+
+
 async def _cleanup(db, court_ids=(), user_ids=()):
     if court_ids:
         await db.courts.delete_many({"court_id": {"$in": list(court_ids)}})
     if user_ids:
         await db.proxy_counsel_profiles.delete_many({"user_id": {"$in": list(user_ids)}})
+        await db.users.delete_many({"user_id": {"$in": list(user_ids)}, "name": "Test Counsel"})
 
 
 def test_profile_courts_matches_by_real_court_id():
@@ -51,7 +65,7 @@ def test_profile_courts_matches_by_real_court_id():
                 "court_id": court_id, "name": "Test Gujarat High Court", "type": "high_court",
                 "state_id": state_id, "serviceable": True,
             })
-            await db.proxy_counsel_profiles.insert_one({
+            await _insert_counsel_profile(db, {
                 "user_id": user_id, "kyc_status": "approved", "bar_council_verified": True,
                 "courts": [court_id], "practice_areas": [], "languages": [],
                 "pricing": {}, "availability_mode": False, "rating": 0, "cases_completed": 0,
@@ -85,7 +99,7 @@ def test_profile_courts_as_free_text_does_not_match_court_search():
                 "court_id": court_id, "name": "Test Gujarat High Court", "type": "high_court",
                 "state_id": state_id, "serviceable": True,
             })
-            await db.proxy_counsel_profiles.insert_one({
+            await _insert_counsel_profile(db, {
                 "user_id": user_id, "kyc_status": "approved", "bar_council_verified": True,
                 "courts": ["Test Gujarat High Court"],  # free text, not the court_id — the bug
                 "practice_areas": [], "languages": [],

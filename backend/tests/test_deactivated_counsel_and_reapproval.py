@@ -209,7 +209,7 @@ async def _approved_and_edited(db):
     user_id = lead["converted_user_id"]
     await practice_svc.update_profile(db, user_id, {**EDITS, **{k: v for k, v in USER_MANAGED.items() if k != "pricing"}})
     await practice_svc.update_profile(db, user_id, {"pricing": USER_MANAGED["pricing"]})
-    slot = await practice_svc.add_slot(db, user_id, "recurring_weekly", 2, None, None, "morning", None)
+    slot = await practice_svc.add_slot(db, user_id, "recurring_weekly", 2, None, None, "10 AM – 1 PM", None)
     return lead, user_id, slot
 
 

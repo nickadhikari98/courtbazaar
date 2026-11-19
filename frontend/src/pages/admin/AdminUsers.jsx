@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Search, Trash2 } from "lucide-react";
 import PageContainer from "@/components/layout/PageContainer";
@@ -50,23 +51,104 @@ function DeactivateUserDialog({ targetUser, open, onOpenChange, onDeactivated })
   );
 }
 
+/* "Delete selected" is a real, permanent delete (POST
+   /admin/users/bulk-delete) for active and deactivated users alike — unlike
+   the per-row button, which only deactivates. The backend decides per id
+   and reports what it skipped (self, admins, money still in escrow/wallet),
+   so skipped users stay in the list and stay selected. */
+function BulkDeleteUsersDialog({ users, open, onOpenChange, onDeleted }) {
+  const [busy, setBusy] = useState(false);
+  const count = users.length;
+
+  const confirmDelete = async () => {
+    if (!count) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post("/admin/users/bulk-delete", { user_ids: users.map((u) => u.user_id) });
+      const deletedIds = data?.deleted || [];
+      const skipped = data?.skipped || [];
+
+      if (deletedIds.length) {
+        toast.success(`${deletedIds.length} user${deletedIds.length === 1 ? "" : "s"} permanently deleted`);
+        onDeleted?.(deletedIds);
+      }
+      if (skipped.length) {
+        const reasons = [...new Set(skipped.map((s) => s.reason))].join("; ");
+        toast.error(`${skipped.length} user${skipped.length === 1 ? "" : "s"} could not be deleted: ${reasons}`);
+      }
+      if (deletedIds.length > 0 || skipped.length === 0) onOpenChange(false);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not delete the selected users");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <ConfirmDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      busy={busy}
+      title="ARE YOU SURE?"
+      description="This will permanently delete the selected users and cannot be undone."
+      confirmLabel={`Delete selected${count > 1 ? ` (${count})` : ""}`}
+      confirmIcon={Trash2}
+      onConfirm={confirmDelete}
+    />
+  );
+}
+
 export default function AdminUsers() {
   const { user: currentAdmin } = useAuth();
   const [users, setUsers] = useState([]);
   const [q, setQ] = useState("");
   const [deactivateTarget, setDeactivateTarget] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
-  const load = () => { api.get("/admin/users").then(r => setUsers(r.data)); };
+  const load = () => api.get("/admin/users").then(r => setUsers(r.data));
 
   useEffect(() => { load(); }, []);
 
   const handleDeactivated = (userId) => {
     setUsers((prev) => prev.map((u) => (u.user_id === userId ? { ...u, deleted: true } : u)));
+    setSelectedIds((prev) => { const next = new Set(prev); next.delete(userId); return next; });
   };
+
+  const handleBulkDeleted = (userIds) => {
+    const idSet = new Set(userIds);
+    setUsers((prev) => prev.filter((u) => !idSet.has(u.user_id)));
+    setSelectedIds((prev) => { const next = new Set(prev); userIds.forEach((id) => next.delete(id)); return next; });
+    load().catch(() => toast.error("Could not refresh the user list"));
+  };
+
+  // The signed-in admin and other admins are never selectable. Deactivated
+  // accounts can be selected, but only active ones get the per-row
+  // deactivate button.
+  const canSelect = (u) => u.role !== "admin" && u.user_id !== currentAdmin?.user_id;
+  const canDeactivate = (u) => !u.deleted && canSelect(u);
 
   const filtered = users.filter(u =>
     !q || u.name?.toLowerCase().includes(q.toLowerCase()) || u.email?.toLowerCase().includes(q.toLowerCase())
   );
+
+  // Selection is always read through the visible, selectable rows, so a user
+  // hidden by the search box (or one that became protected after a refresh)
+  // can never be part of a bulk delete.
+  const selectable = filtered.filter(canSelect);
+  const selectedUsers = selectable.filter((u) => selectedIds.has(u.user_id));
+  const allVisibleSelected = selectable.length > 0 && selectedUsers.length === selectable.length;
+
+  const toggleSelect = (userId) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(userId)) next.delete(userId); else next.add(userId);
+      return next;
+    });
+  };
+  const toggleSelectAll = () => {
+    setSelectedIds(allVisibleSelected ? new Set() : new Set(selectable.map((u) => u.user_id)));
+  };
 
   return (
     <PageContainer className="max-w-6xl">
@@ -78,12 +160,32 @@ export default function AdminUsers() {
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name or email…" className="pl-10" data-testid="admin-users-search" />
       </div>
 
+      {selectable.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2 px-1" data-testid="admin-users-bulk-toolbar">
+          <label className="flex items-center gap-2 text-sm text-muted-foreground font-semibold cursor-pointer select-none">
+            <Checkbox checked={allVisibleSelected} onCheckedChange={toggleSelectAll} data-testid="admin-users-select-all" />
+            Select all
+          </label>
+          {selectedUsers.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold" data-testid="admin-users-selected-count">{selectedUsers.length} selected</span>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())} data-testid="admin-users-clear-selection">
+                Clear
+              </Button>
+              <Button type="button" variant="destructive" size="sm" className="font-bold" onClick={() => setBulkDeleteOpen(true)} data-testid="admin-users-delete-selected">
+                <Trash2 className="w-4 h-4 mr-1.5" /> Delete selected
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
       <Card className="dashboard-card border-none">
         <CardContent className="p-0">
           <div className="divide-y divide-border">
             {filtered.map(u => {
               const initials = initialsOf(u.name || "U");
-              const canDeactivate = !u.deleted && u.role !== "admin" && u.user_id !== currentAdmin?.user_id;
+              const selectableRow = canSelect(u);
               return (
                 <div key={u.user_id} className="p-4 flex flex-wrap items-center gap-x-4 gap-y-2" data-testid={`admin-user-${u.user_id}`}>
                   {/* This group takes the full row on mobile (basis-full) so the
@@ -93,6 +195,15 @@ export default function AdminUsers() {
                       and before truncate existed at all a long name/email simply
                       overflowed underneath the badges (see git history). */}
                   <div className="flex items-center gap-4 min-w-0 flex-1 basis-full sm:basis-auto">
+                    {/* Protected (admin) rows keep a disabled box so the
+                        avatars stay aligned with the selectable ones. */}
+                    <Checkbox
+                      checked={selectableRow && selectedIds.has(u.user_id)}
+                      onCheckedChange={() => selectableRow && toggleSelect(u.user_id)}
+                      disabled={!selectableRow}
+                      aria-label={`Select ${u.name || "user"}`}
+                      data-testid={`admin-user-select-${u.user_id}`}
+                    />
                     <Avatar className="w-10 h-10 flex-shrink-0"><AvatarFallback className="bg-primary text-white text-xs">{initials}</AvatarFallback></Avatar>
                     <div className="min-w-0 flex-1">
                       <div className="font-display font-bold text-sm truncate">{u.name}</div>
@@ -105,7 +216,7 @@ export default function AdminUsers() {
                     {u.deleted && (
                       <Badge className="bg-red-100 text-red-700 border-0 font-bold uppercase text-2xs">Deactivated</Badge>
                     )}
-                    {canDeactivate && (
+                    {canDeactivate(u) && (
                       <button
                         type="button"
                         title="Deactivate user"
@@ -129,6 +240,13 @@ export default function AdminUsers() {
         open={!!deactivateTarget}
         onOpenChange={(v) => !v && setDeactivateTarget(null)}
         onDeactivated={handleDeactivated}
+      />
+
+      <BulkDeleteUsersDialog
+        users={selectedUsers}
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+        onDeleted={handleBulkDeleted}
       />
     </PageContainer>
   );
