@@ -266,8 +266,9 @@ def _provider_key() -> str | None:
 
 
 def is_configured() -> bool:
-    """Whether the selected generation provider has its required settings."""
-    return bool(AI_MODEL and _provider_key())
+    """Whether the selected generation provider has its required settings, and the KB registry
+    loaded (a bad KB metadata file disables the chatbot, see kb_registry.load_error)."""
+    return bool(AI_MODEL and _provider_key()) and not kb_registry.load_error()
 
 
 # Building a provider client builds an SSL context — about a second of

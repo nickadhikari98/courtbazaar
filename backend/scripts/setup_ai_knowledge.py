@@ -59,6 +59,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="print what would be uploaded, change nothing")
     dry_run = parser.parse_args().dry_run
+    if kb_registry.load_error():
+        # An empty registry would report every store file as "not in registry" and upload nothing useful.
+        raise SystemExit(f"KB metadata failed to load, fix it first: {kb_registry.load_error()}")
     env_path = ROOT / ".env"
     load_dotenv(env_path)
     if not os.environ.get("OPENAI_API_KEY"):

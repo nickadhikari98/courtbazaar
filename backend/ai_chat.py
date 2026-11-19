@@ -2193,8 +2193,11 @@ async def handle_chat_message(db, conversation_id: Optional[str], message: str, 
 
     # Checked before the conversation is looked up or created, so a request
     # the feature can't serve at all never writes anything to the database.
-    if not llm_service.is_configured() and not _is_casual_message(text):
-        logger.error("Instant Legal Help unavailable: provider configuration is incomplete")
+    # A KB registry that failed to load disables the chatbot entirely, small talk included.
+    kb_error = kb_registry.load_error()
+    if kb_error or (not llm_service.is_configured() and not _is_casual_message(text)):
+        logger.error("Instant Legal Help unavailable: %s",
+                     f"KB registry failed to load ({kb_error})" if kb_error else "provider configuration is incomplete")
         raise HTTPException(503, NOT_CONFIGURED_MESSAGE)
 
     # Daily limit (chat_usage): checked before anything is written, so a

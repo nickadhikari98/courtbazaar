@@ -5,6 +5,7 @@ rule set; a PDF bundling several sets has several records with `page_range`).
 The CourtBazaar SOP is internal and has no record there, so it is built here.
 """
 import json
+import logging
 import os
 import re
 from functools import lru_cache
@@ -21,14 +22,62 @@ _SOP_LABEL = "Standard Operating Procedure (SOP)"
 _LEGACY_SOURCE_IDS = {"DIAC Rules conclusive_UsingOCR.pdf": "diac_rules"}
 
 
+# Where a source's law applies (`jurisdiction` on every record). Statutes: India. Institutional rules:
+# the institution's own seat. Judgments: their court's jurisdiction.
+STATUTE_JURISDICTION = "India"
+INSTITUTION_SEATS = {"DIAC": "Delhi", "ICA": "Delhi", "MCIA": "Mumbai", "SIAC": "Singapore",
+                     "ICC": "Paris", "LCIA": "London"}
+COURT_JURISDICTIONS = {"Supreme Court of India": "India", "Supreme Court": "India",
+                       "Delhi High Court": "Delhi", "High Court of Delhi": "Delhi"}
+
+
+def _check_jurisdiction(record: dict) -> None:
+    """A record without its jurisdiction, or with one that breaks the rule above, fails the load:
+    a wrong jurisdiction would go on to tell a user that some law applies where it doesn't."""
+    found = record.get("jurisdiction")
+    doc = record.get("doc_id") or record.get("file_name")
+    if not isinstance(found, str) or not found.strip():
+        raise ValueError(f"KB record {doc}: missing jurisdiction")
+    if record.get("court"):
+        expected = COURT_JURISDICTIONS.get(record["court"])
+        if expected is None:
+            raise ValueError(f"KB record {doc}: court {record['court']!r} has no jurisdiction; add it to COURT_JURISDICTIONS")
+    elif record.get("doc_type") == "statute":
+        expected = STATUTE_JURISDICTION
+    else:
+        expected = INSTITUTION_SEATS.get(record_code(record))  # an institution not listed yet: any non-empty value
+    if expected is not None and found != expected:
+        raise ValueError(f"KB record {doc}: jurisdiction {found!r}, expected {expected!r}")
+
+
+_load_error: list = [None]  # why the registry failed to load, or None
+
+
+def load_error() -> Optional[str]:
+    """Set when the KB metadata couldn't be loaded; the chatbot is then disabled (llm_service.is_configured)."""
+    _records_by_file()
+    return _load_error[0]
+
+
 @lru_cache(maxsize=1)
 def _records_by_file() -> dict:
+    # The backend serves the whole site: a bad KB file disables only the chatbot (an empty registry
+    # and load_error()), loudly, and never raises into a startup or a non-chat request.
     path = Path(os.environ.get("KB_METADATA_PATH") or _DEFAULT_PATH)
-    with path.open(encoding="utf-8") as fh:
-        records = json.load(fh)
+    _load_error[0] = None
     by_file: dict = {}
-    for record in records:
-        by_file.setdefault(record["file_name"], []).append(record)
+    try:
+        with path.open(encoding="utf-8") as fh:
+            records = json.load(fh)
+        for record in records:
+            _check_jurisdiction(record)
+            by_file.setdefault(record["file_name"], []).append(record)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        _load_error[0] = f"{path.name}: {e}"
+        logging.getLogger(__name__).critical(
+            "KB registry failed to load, Instant Legal Help is DISABLED until it is fixed and the backend restarted: %s",
+            _load_error[0])
+        return {}
     for recs in by_file.values():
         recs.sort(key=lambda r: (r.get("page_range") or [0])[0])
     return by_file
