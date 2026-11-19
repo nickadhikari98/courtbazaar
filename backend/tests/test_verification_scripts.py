@@ -178,23 +178,24 @@ def test_backfill_dry_run_reports_all_eligible_and_writes_nothing(db, capsys):
     assert _run(backfill) == 0
     out = capsys.readouterr().out
     assert _profiles_now() == before
-    assert "Summary: 3 eligible, 0 skipped, 0 updated (dry run: no changes made)." in out
+    assert "Summary: 2 eligible, 0 skipped, 0 updated (dry run: no changes made)." in out
+    assert "user_1043859e9824" not in out  # Temp-JD left the allowlist in #72: never touched
 
 
 @pytest.mark.parametrize("label,coll,flt,change", [
-    ("deactivated", "users", {"user_id": "user_1043859e9824"}, {"$set": {"deleted": True}}),
-    ("name mismatch", "users", {"user_id": "user_1043859e9824"}, {"$set": {"name": "Other"}}),
-    ("source already set", "proxy_counsel_profiles", {"user_id": "user_1043859e9824"}, {"$set": {"verification_source": {"type": "admin"}}}),
-    ("not verified", "proxy_counsel_profiles", {"user_id": "user_1043859e9824"}, {"$set": {"kyc_status": "rejected"}}),
-    ("lead not approved", "leads", {"lead_id": "lead_1273623cebbe"}, {"$set": {"status": "rejected"}}),
-    ("lead linked elsewhere", "leads", {"lead_id": "lead_1273623cebbe"}, {"$set": {"converted_user_id": "user_x"}}),
+    ("deactivated", "users", {"user_id": "user_d5a6ff2cbd29"}, {"$set": {"deleted": True}}),
+    ("name mismatch", "users", {"user_id": "user_d5a6ff2cbd29"}, {"$set": {"name": "Other"}}),
+    ("source already set", "proxy_counsel_profiles", {"user_id": "user_d5a6ff2cbd29"}, {"$set": {"verification_source": {"type": "admin"}}}),
+    ("not verified", "proxy_counsel_profiles", {"user_id": "user_d5a6ff2cbd29"}, {"$set": {"kyc_status": "rejected"}}),
+    ("lead not approved", "leads", {"lead_id": "lead_646da4df651b"}, {"$set": {"status": "rejected"}}),
+    ("lead linked elsewhere", "leads", {"lead_id": "lead_646da4df651b"}, {"$set": {"converted_user_id": "user_x"}}),
 ])
 def test_backfill_skips_any_record_failing_validation(db, capsys, label, coll, flt, change):
     _sync(lambda d: d[coll].update_one(flt, change))
     assert _run(backfill) == 0
     out = capsys.readouterr().out
-    assert "SKIP     user_1043859e9824" in out, f"{label}: not skipped"
-    assert "Summary: 2 eligible, 1 skipped" in out
+    assert "SKIP     user_d5a6ff2cbd29" in out, f"{label}: not skipped"
+    assert "Summary: 1 eligible, 1 skipped" in out
 
 
 def test_backfill_skips_multiple_applications_and_admin_audit_evidence(db, capsys):
@@ -205,22 +206,22 @@ def test_backfill_skips_multiple_applications_and_admin_audit_evidence(db, capsy
     out = capsys.readouterr().out
     assert "SKIP     user_a30f64eea1a9" in out and "ambiguous" in out
     assert "SKIP     user_d5a6ff2cbd29" in out and "independently verified" in out
-    assert "Summary: 1 eligible, 2 skipped" in out
+    assert "Summary: 0 eligible, 2 skipped" in out
 
 
 def test_backfill_apply_needs_matching_confirm_count(db):
     before = _profiles_now()
     assert _run(backfill, "--apply") == 2
-    assert _run(backfill, "--apply", "--confirm-count", "2") == 2
+    assert _run(backfill, "--apply", "--confirm-count", "3") == 2
     assert _profiles_now() == before
 
 
 def test_backfill_apply_sets_only_verification_source_on_eligible_records(db, capsys):
     _sync(lambda d: d.users.update_one({"user_id": "user_d5a6ff2cbd29"}, {"$set": {"deleted": True}}))  # one skipped
     before = _profiles_now()
-    assert _run(backfill, "--apply", "--confirm-count", "2") == 0
+    assert _run(backfill, "--apply", "--confirm-count", "1") == 0
     after = _profiles_now()
-    assert "Summary: 2 eligible, 1 skipped, 2 updated." in capsys.readouterr().out
+    assert "Summary: 1 eligible, 1 skipped, 1 updated." in capsys.readouterr().out
     for user_id, lead_id, _n in backfill.ALLOWLIST:
         changed = {k for k in set(before[user_id]) | set(after[user_id]) if before[user_id].get(k) != after[user_id].get(k)}
         if user_id == "user_d5a6ff2cbd29":
