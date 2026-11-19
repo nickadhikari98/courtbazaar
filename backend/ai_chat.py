@@ -499,13 +499,14 @@ async def delete_chat(db, conversation_id: str, user: Optional[dict]) -> Dict[st
     return {"ok": True}
 
 
-async def _append_message(db, conversation_id: str, role: str, content: str) -> None:
+async def _append_message(db, conversation_id: str, role: str, content: str, **extra: Any) -> None:
     await db.ai_chat_messages.insert_one({
         "message_id": f"msg_{uuid.uuid4().hex[:12]}",
         "conversation_id": conversation_id,
         "role": role,
         "content": content,
         "created_at": _now_iso(),
+        **extra,
     })
 
 
@@ -1790,7 +1791,6 @@ MIXED_SOURCE_NOTE = (
 )
 # Shown under a document answer to a request the chat can't fully serve yet.
 INTENT_COMING_SOON_NOTES = {
-    "draft": "Full drafting support is coming soon; for now this covers only what the rules say.",
     "case_research": "Full case-law research is coming soon; for now this covers only what the rules say.",
     "document_analysis": "Full document analysis is coming soon; for now this covers only what the rules say.",
 }
@@ -2241,6 +2241,11 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
         tool_result = {"status": "error", "tool": "routing",
                        "message": LIVE_TOOL_FAILURE_MESSAGE, "error_stage": "routing"}
 
+    # Drafts have their own path (chat_drafts), for signed-in users only.
+    if (decision is not None and decision["route"] != ROUTE_COURTBAZAAR_LIVE and decision["reason"] != "casual"
+            and prompt_builder.detect_intent(text) == "draft"):
+        return await _draft_turn(db, conv_id, text, user, language, on_status)
+
     # The chat's own uploaded files answer every turn except casual, live-data and
     # named-approved-document ones (those keep their own route).
     import chat_uploads
@@ -2530,10 +2535,14 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
                 closed = _document_closing(reply, citations)
                 card_note = closed.rsplit("\n\n", 1)[-1] if closed != reply else None
                 reply = closed
-        if uploads_used:
-            names = ", ".join(u["file_name"] for u in uploads_used)
+        # A file check or a summary is about the file by construction; any other answer carries the note
+        # only for the files it names (the upload prompt makes it cite each point's file).
+        summary = long_summary or any(u["retrieval"].startswith("structure") for u in uploads_used)
+        noted = uploads_used if (rules_check_query or summary) else _files_named(reply, uploads_used)
+        if noted:
+            names = ", ".join(u["file_name"] for u in noted)
             note = UPLOAD_RULES_CHECK_SOURCE_NOTE if rules_check_query else UPLOAD_SOURCE_NOTE
-            note = note.format(s="s" if len(uploads_used) > 1 else "", names=names)
+            note = note.format(s="s" if len(noted) > 1 else "", names=names)
             if long_summary:
                 note = f"{LONG_SUMMARY_NOTE} {note}"
             reply = f"{reply}\n\n{note}"
@@ -2604,6 +2613,31 @@ async def _answer_turn(db, convo: dict, text: str, user: Optional[dict], client_
             # Which files fed the answer and how ("full" | "embeddings" | "keyword"), for the page and the eval.
             "uploads": [{"file_name": u["file_name"], "retrieval": u["retrieval"]} for u in uploads_used],
             "error_stage": None if result["ok"] else result.get("stage", "LLM")}
+
+
+def _files_named(reply: str, uploads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The uploaded files the reply cites, by full name or by name without its extension."""
+    low = (reply or "").lower()
+    return [u for u in uploads if u["file_name"].lower() in low
+            or (len(stem := os.path.splitext(u["file_name"])[0].lower()) >= 4 and stem in low)]
+
+
+async def _draft_turn(db, conv_id: str, text: str, user: Optional[dict], language: str,
+                      on_status: Optional[llm_service.StatusCallback]) -> Dict[str, Any]:
+    import chat_drafts
+    if not (user or {}).get("user_id"):
+        out: Dict[str, Any] = {"reply": chat_drafts.GUEST_MESSAGE}
+    else:
+        out = await chat_drafts.compose(text, language, on_status)
+        if out.get("error_code") == llm_service.ERR_NOT_CONFIGURED:
+            raise HTTPException(503, NOT_CONFIGURED_MESSAGE)
+    reply = out["reply"] or _FALLBACK_TEXT.get(out.get("error_code"), _DEFAULT_FALLBACK)
+    draft = out.get("draft")
+    await _append_message(db, conv_id, "user", text)
+    await _append_message(db, conv_id, "assistant", reply, **({"draft": draft} if draft else {}))
+    return {"conversation_id": conv_id, "reply": reply, "degraded": out.get("degraded", False), "sources": [],
+            "citations": out.get("citations", []), "grounding": out.get("grounding"), "draft": draft,
+            "error_stage": None}
 
 
 async def stream_chat_events(db, conversation_id: Optional[str], message: str, user: Optional[dict],
@@ -2769,5 +2803,5 @@ async def get_conversation_history(db, conversation_id: str, user: Optional[dict
     if not convo or not _can_access_conversation(convo, user_id, conversation_token):
         raise HTTPException(404, CONVERSATION_NOT_FOUND_MESSAGE)
     return await db.ai_chat_messages.find(
-        {"conversation_id": conversation_id}, {"_id": 0, "role": 1, "content": 1, "created_at": 1, "files": 1},
+        {"conversation_id": conversation_id}, {"_id": 0, "role": 1, "content": 1, "created_at": 1, "files": 1, "draft": 1},
     ).sort("created_at", 1).to_list(1000)
