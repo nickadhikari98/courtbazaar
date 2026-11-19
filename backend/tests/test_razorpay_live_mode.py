@@ -147,13 +147,13 @@ async def _cleanup(db, hearing_ids=(), order_ids=()):
         await db.payment_transactions.delete_many({"order_id": {"$in": list(order_ids)}})
 
 
-async def _hearing_awaiting_confirmation(db, requester, fee=1500.0):
+async def _hearing_awaiting_confirmation(db, requester, fee=1500.0, hearing_date="2026-08-01"):
     """create_hearing_request -> initiate_payment gets a hearing to
     "payment_pending", the real precondition _finalize_hearing_payment's
     call into mark_payment_confirmed requires (confirm_payment is only
     legal from payment_pending) — no state is skipped/faked."""
     hearing = await hearings.create_hearing_request(
-        db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", fee, None,
+        db, requester["user_id"], "court_tishazari", hearing_date, "Test case", fee, None,
     )
     hearing_id = hearing["hearing_id"]
     await hearings.initiate_payment(db, hearing_id, requester)
@@ -364,7 +364,7 @@ def test_finalize_error_is_surfaced_in_admin_reconciliation():
         hearing_id = hearing["hearing_id"]
         order_id = tx["razorpay_order_id"]
         # A normal, successfully finalized payment alongside it must stay unflagged.
-        ok_hearing, ok_tx = await _hearing_awaiting_confirmation(db, requester)
+        ok_hearing, ok_tx = await _hearing_awaiting_confirmation(db, requester, hearing_date="2026-08-02")  # first one is still active
         now = "9999-12-31T00:00:00+00:00"  # sort both rows to the top of the reconciliation window
         await db.payment_transactions.update_many(
             {"razorpay_order_id": {"$in": [order_id, ok_tx["razorpay_order_id"]]}}, {"$set": {"created_at": now}},

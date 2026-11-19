@@ -8,9 +8,16 @@ export const api = axios.create({
   withCredentials: true,
 });
 
+// This tab's own token. localStorage is shared by every tab, so reading it per
+// request let a login in another tab silently swap the identity behind this
+// tab's requests while its UI still showed the old user. Another tab's change
+// is only adopted via AuthContext's storage listener, after /auth/me confirms
+// who the new token belongs to (see adoptToken).
+let tabToken = localStorage.getItem("cb_token");
+
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("cb_token");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+  // An explicit header (AuthContext probing a not-yet-adopted token) wins.
+  if (tabToken && !config.headers.Authorization) config.headers.Authorization = `Bearer ${tabToken}`;
   return config;
 });
 
@@ -26,10 +33,13 @@ api.interceptors.response.use(
     // would silently log that other tab out.
     const isLoginRequest = err.config?.url?.includes("/auth/login");
     if (err?.response?.status === 401 && !isLoginRequest) {
-      const hadToken = !!localStorage.getItem("cb_token");
+      const sentToken = String(err.config?.headers?.Authorization || "").replace(/^Bearer /, "");
       const detail = err.response?.data?.detail;
-      if (hadToken) {
-        localStorage.removeItem("cb_token");
+      if (sentToken) {
+        if (sentToken === tabToken) tabToken = null;
+        // Only drop the shared token if it is still the one that just failed —
+        // another tab may have since stored a different, valid login.
+        if (localStorage.getItem("cb_token") === sentToken) localStorage.removeItem("cb_token");
         // A deactivated/deleted account (see server.py's get_current_user) is
         // the one 401 case that needs an explicit explanation + a forced,
         // full-page redirect (not client-side navigate — there's no router
@@ -46,12 +56,17 @@ api.interceptors.response.use(
   }
 );
 
+// This tab's login/logout: pins the token here and shares it with other tabs.
 export const setToken = (token) => {
+  tabToken = token || null;
   if (token) localStorage.setItem("cb_token", token);
   else localStorage.removeItem("cb_token");
 };
 
-export const getToken = () => localStorage.getItem("cb_token");
+// Another tab's login/logout: pin only, localStorage already holds it.
+export const adoptToken = (token) => { tabToken = token || null; };
+
+export const getToken = () => tabToken;
 
 export const formatINR = (n) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(n || 0);

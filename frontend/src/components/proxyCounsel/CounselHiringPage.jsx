@@ -27,7 +27,7 @@ import Loading from "@/components/shared/Loading";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { SERVICE_CONFIGS } from "@/config/serviceRequestFields";
 import { PRICING_SLOTS, PRICING_SLOT_LABELS, EXPERIENCE_BRACKETS } from "@/config/proxyCounselPricing";
-import { resolveDateBound } from "@/lib/utils";
+import { indiaToday } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
 import useClientCancelWindowExpiry from "@/hooks/useClientCancelWindowExpiry";
 import {
@@ -38,8 +38,6 @@ import {
 } from "@/lib/hearingLifecycle";
 
 const HEARING_TAB_LABELS = { active: "Active", completed: "Completed", cancelled: "Cancelled" };
-
-const TODAY = resolveDateBound("today");
 
 // UX fix: "Select Counsel" while anonymous sends the visitor to /login with
 // only the return *path* in router state (see requireLogin below) — every
@@ -218,7 +216,7 @@ export default function CounselHiringPage({ serviceType }) {
     // if time passed between picking and finishing login and the date's now
     // stale, don't surface a confirm step that would just fail; the visitor
     // still gets their filters back and can pick a fresh date manually.
-    if (!restoredFilters.court_id || !restoredFilters.hearing_date || restoredFilters.hearing_date < TODAY) return;
+    if (!restoredFilters.court_id || !restoredFilters.hearing_date || restoredFilters.hearing_date < indiaToday()) return;
     getAdvocateProfile(pending.advocateId)
       .then(setResumedConfirmTarget)
       .catch(() => toast.error("That counsel is no longer available — please pick again."));
@@ -249,7 +247,7 @@ export default function CounselHiringPage({ serviceType }) {
       toast.error("Pick a court and hearing date above first");
       return;
     }
-    if (filters.hearing_date < TODAY) {
+    if (filters.hearing_date < indiaToday()) {
       toast.error("Hearing date can't be in the past");
       return;
     }
@@ -345,10 +343,10 @@ export default function CounselHiringPage({ serviceType }) {
             <div className="max-w-xs">
               <Label>Hearing Date <span className="text-muted-foreground font-normal">(needed to book)</span></Label>
               <Input
-                type="date" value={filters.hearing_date} min={TODAY}
+                type="date" value={filters.hearing_date} min={indiaToday()}
                 onChange={(e) => {
                   const v = e.target.value;
-                  if (v && v < TODAY) { toast.error("Hearing date can't be in the past"); return; }
+                  if (v && v < indiaToday()) { toast.error("Hearing date can't be in the past"); return; }
                   setFilters((f) => ({ ...f, hearing_date: v }));
                 }}
                 data-testid="proxy-counsel-hearing-date"

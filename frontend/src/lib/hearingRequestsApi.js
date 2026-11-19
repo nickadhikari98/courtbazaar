@@ -40,6 +40,19 @@ export async function cancelHearingRequest(hearingId) {
   return data;
 }
 
+// Escalated paid targeted requests (D3): the client approves or declines the
+// replacement counsel CourtBazaar proposed. Nothing is reassigned until approved.
+export async function respondToReassignment(hearingId, approve) {
+  const { data } = await api.post(`/hearing-requests/${hearingId}/reassignment`, { approve });
+  return data;
+}
+
+// Admin only (D3): propose a replacement counsel for an escalated request.
+export async function adminProposeReassignment(hearingId, counselUserId) {
+  const { data } = await api.post(`/admin/hearing-requests/${hearingId}/propose-reassignment`, { counsel_user_id: counselUserId });
+  return data;
+}
+
 // Fee negotiation toggle (founder direction, 2026-09) — the targeted
 // advocate's one-click Accept at their own listed rate, skipping the
 // Negotiation Module entirely. Always available regardless of whether this

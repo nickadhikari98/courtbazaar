@@ -34,6 +34,7 @@ import razorpay_svc  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 from datetime import datetime, timedelta  # noqa: E402
+from tests._verified_counsel import verify_counsel  # noqa: E402
 
 PAID_FEE = 3000.0
 ONE_HOUR = timedelta(hours=1)
@@ -108,9 +109,12 @@ class _Fixture:
     async def locked_hearing(self, db):
         """Targeted hearing with a fee agreed through real negotiation —
         status "requested", commercially_locked True, nothing paid."""
+        await verify_counsel(db, self.counsel["user_id"])
+        # A new date per call: an earlier one may still be active, and the
+        # same requester/counsel/court/date can't be requested twice.
         hearing = await hearings.create_hearing_request(
-            db, self.requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
-            target_advocate_id=self.counsel["user_id"],
+            db, self.requester["user_id"], "court_tishazari", f"2026-08-{len(self.hearing_ids) + 1:02d}",
+            "Test case", 1500.0, None, target_advocate_id=self.counsel["user_id"],
         )
         hearing_id = hearing["hearing_id"]
         self.hearing_ids.append(hearing_id)

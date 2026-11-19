@@ -48,11 +48,12 @@ absent, the request behaves exactly as the broadcast case above always has.
 import inspect
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 
 from fastapi import HTTPException
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from workflow import StateMachine, IllegalTransition
 from file_meta import detect_page_count
@@ -144,6 +145,60 @@ CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE = (
     "Please contact admin for cancellation after this period."
 )
 
+# Paid targeted requests (founder decisions D1–D4, 2026-11): a request whose
+# chosen counsel is no longer eligible, or hasn't accepted within this long of
+# payment, is escalated to admin (counsel_matching.check_stalled_targeted_requests).
+TARGETED_ACCEPT_TIMEOUT = timedelta(hours=24)
+TARGET_UNAVAILABLE_MESSAGE = (
+    "The counsel you selected is no longer available for this request. "
+    "You can cancel it and choose another counsel."
+)
+
+
+# Hearing dates are Indian court dates: "today" is India's date, whatever the
+# server's or browser's timezone. Fixed offset (India has no DST), so no tzdata.
+INDIA_UTC_OFFSET = timedelta(hours=5, minutes=30)
+INVALID_HEARING_DATE_MESSAGE = "Please choose a valid hearing date (YYYY-MM-DD)."
+PAST_HEARING_DATE_MESSAGE = "Hearing date can't be in the past."
+DUPLICATE_HEARING_MESSAGE = ("You already have an active request with this counsel for this court and "
+                             "hearing date. Open it from your dashboard instead of sending a new one.")
+FALLBACK_SKIPPED_PAST_DATE_MESSAGE = "Hearing date has already passed, so no replacement requests were created."
+
+# dedupe_key (requester + target counsel + court + date) is set on create and
+# unset when the request reaches one of these, freeing the combination for a
+# new request. Every other status — including all post-accept work and
+# "disputed" — keeps it. "rated" only follows "completed", already released.
+DEDUPE_RELEASE_STATUSES = ("cancelled", "rejected", "expired", "completed")
+
+
+def dedupe_key_for(requesting_user_id: str, target_advocate_id: Optional[str], court_id: str,
+                   hearing_date: str) -> str:
+    """Duplicate identity: requester + target counsel ("" = broadcast) + court + date."""
+    return "|".join((requesting_user_id, target_advocate_id or "", court_id, hearing_date))
+
+
+def india_today() -> date:
+    return (_utcnow() + INDIA_UTC_OFFSET).date()
+
+
+def parse_hearing_date(value: Any) -> date:
+    """Strict YYYY-MM-DD. The round-trip check matters: on Python 3.11+
+    date.fromisoformat also accepts e.g. "20261108" or "2026-W45-1"."""
+    try:
+        parsed = date.fromisoformat(value)
+    except (TypeError, ValueError):
+        parsed = None
+    if parsed is None or parsed.isoformat() != value:
+        raise HTTPException(400, INVALID_HEARING_DATE_MESSAGE)
+    return parsed
+
+
+def is_escalated_unassigned(hearing: dict) -> bool:
+    """A paid targeted request escalated to admin and still not taken by any
+    counsel — the one case where the client may cancel after the 1-hour window."""
+    return (hearing.get("status") == "broadcast" and bool(hearing.get("targeted_escalated_at"))
+            and not hearing.get("proxy_counsel_user_id"))
+
 
 def _utcnow() -> datetime:
     """Server clock for the client cancellation window — a function (not an
@@ -186,6 +241,14 @@ async def ensure_indexes(db) -> None:
         [("status", 1), ("proxy_counsel_user_id", 1), ("match_tier_deadline_at", 1)],
         name="match_tier_deadline",
     )
+    # Race-proof duplicate guard (see create_hearing_request). Partial on
+    # $type string, same idiom as leads.ensure_indexes: rows without the field
+    # (every request created before it existed, and released ones) aren't
+    # indexed, so building it needs no backfill and can't hit old duplicates.
+    await db.hearing_requests.create_index(
+        "dedupe_key", unique=True, partialFilterExpression={"dedupe_key": {"$type": "string"}},
+        name="uniq_active_dedupe_key",
+    )
     await db.hearing_messages.create_index([("hearing_id", 1), ("created_at", 1)], name="hearing_thread")
     await db.professional_ratings.create_index([("rated_user_id", 1)], name="rated_user")
 
@@ -199,6 +262,8 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
                                   fallback_group_id: Optional[str] = None) -> dict:
     if not court_id or not hearing_date:
         raise HTTPException(400, "Court and hearing date are required")
+    if parse_hearing_date(hearing_date) < india_today():
+        raise HTTPException(400, PAST_HEARING_DATE_MESSAGE)
     # Fee negotiation toggle (founder direction, 2026-09): a snapshot of the
     # target advocate's own proxy_counsel_profiles.negotiation_enabled at
     # creation time, not a live join — a counsel flipping the toggle later
@@ -209,8 +274,17 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
     # anything already in flight when this shipped.
     negotiation_enabled = True
     if target_advocate_id:
-        profile = await db.proxy_counsel_profiles.find_one({"user_id": target_advocate_id}, {"_id": 0, "negotiation_enabled": 1})
-        negotiation_enabled = bool(profile.get("negotiation_enabled")) if profile else False
+        import counsel_matching
+        # Same trust gate as the public listing and broadcast matching: a
+        # counsel who isn't (or is no longer) verified can't be sent a new
+        # request just because the caller knows their user_id.
+        profile = await db.proxy_counsel_profiles.find_one(
+            await counsel_matching.eligible_counsel_query(db, user_id=target_advocate_id),
+            {"_id": 0, "user_id": 1, "negotiation_enabled": 1},
+        )
+        if profile is None:  # not `not profile`: a match lacking negotiation_enabled projects to a falsy {}
+            raise HTTPException(400, "This counsel isn't available for new requests. Please choose another counsel.")
+        negotiation_enabled = bool(profile.get("negotiation_enabled"))
     now = datetime.now(timezone.utc)
     doc = {
         "hearing_id": new_hearing_id(),
@@ -228,6 +302,10 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
         "fallback_group_id": fallback_group_id,
         "court_id": court_id,
         "hearing_date": hearing_date,
+        # Enforced by the uniq_active_dedupe_key index; _transition unsets it
+        # on DEDUPE_RELEASE_STATUSES, counsel_matching.respond_to_reassignment
+        # moves it to the new counsel.
+        "dedupe_key": dedupe_key_for(requesting_user_id, target_advocate_id, court_id, hearing_date),
         # BlaBlaCar-style flow (founder direction): the intake form now only
         # collects location + hearing date to get matched and paid — the
         # actual case brief (title, type, instructions, work required, ...)
@@ -285,7 +363,13 @@ async def create_hearing_request(db, requesting_user_id: str, court_id: str, hea
     # stays at "requested" until the requester pays; see mark_payment_confirmed
     # for where broadcast (and the targeted-vs-broadcast timeline note that
     # used to live here) now happens.
-    await db.hearing_requests.insert_one(doc)
+    # Runs after the eligibility check above, so an ineligible counsel always
+    # gets that error rather than this one. The index (not a pre-read) is the
+    # guard: of two concurrent creates, exactly one insert succeeds.
+    try:
+        await db.hearing_requests.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(409, DUPLICATE_HEARING_MESSAGE)
     doc.pop("_id", None)
     return doc
 
@@ -345,9 +429,12 @@ async def _transition(db, sm: StateMachine, entity: dict, from_status: str, acti
         # the standard 409 below.
         query["payment_claim_order_id"] = None
     now = datetime.now(timezone.utc).isoformat()
-    updated = await db.hearing_requests.find_one_and_update(
-        query, {"$set": {"status": to_status, "updated_at": now}}, projection={"_id": 0},
-    )
+    update: Dict[str, Any] = {"$set": {"status": to_status, "updated_at": now}}
+    if to_status in DEDUPE_RELEASE_STATUSES:
+        # Every hearing status change goes through here, so this is the one
+        # place a closed request frees its duplicate slot.
+        update["$unset"] = {"dedupe_key": ""}
+    updated = await db.hearing_requests.find_one_and_update(query, update, projection={"_id": 0})
     if not updated:
         raise HTTPException(409, "This request's status changed — please refresh and try again.")
     if sm.on_transition:
@@ -359,24 +446,44 @@ async def _transition(db, sm: StateMachine, entity: dict, from_status: str, acti
     return to_status
 
 
+INELIGIBLE_COUNSEL_MESSAGE = "Your Proxy Counsel verification isn't active, so you can't accept requests."
+
+
+async def is_eligible_counsel(db, user_id: str) -> bool:
+    """Current-DB check that this counsel may be offered or take on new work:
+    the same gate as the public listing and matching (verified + not
+    deactivated, see counsel_matching.eligible_counsel_query). The
+    can_practice_proxy_counsel capability alone isn't enough — it comes from
+    professional_profile_types and survives a verification revocation."""
+    import counsel_matching  # lazy: counsel_matching imports this module lazily too
+    query = await counsel_matching.eligible_counsel_query(db, user_id=user_id)
+    return await db.proxy_counsel_profiles.find_one(query, {"_id": 1}) is not None
+
+
 async def list_hearing_requests(db, user: dict) -> List[dict]:
     capabilities = user.get("capabilities") or []
     clauses = [{"requesting_user_id": user["user_id"]}]
     if "can_practice_proxy_counsel" in capabilities:
-        clauses.append({
-            "status": "broadcast", "declined_by": {"$ne": user["user_id"]},
-            "$or": [{"target_advocate_id": None}, {"target_advocate_id": user["user_id"]}],
-        })
+        # Hearings already assigned to this counsel stay visible even if their
+        # verification lapses, so current work can be finished or handed over.
         clauses.append({"proxy_counsel_user_id": user["user_id"]})
-        # Negotiation Module: a hearing targeted at this advocate is invisible
-        # everywhere else above until it reaches "broadcast" (post-payment) —
-        # but negotiation happens BEFORE payment, so without this clause the
-        # advocate would have no way to even discover a pending negotiation.
-        clauses.append({"target_advocate_id": user["user_id"], "status": {"$in": ["requested", "payment_pending"]}})
+        # New work (the open pool and requests targeted at them) only while
+        # they're currently eligible.
+        if await is_eligible_counsel(db, user["user_id"]):
+            clauses.append({
+                "status": "broadcast", "declined_by": {"$ne": user["user_id"]},
+                "$or": [{"target_advocate_id": None}, {"target_advocate_id": user["user_id"]}],
+            })
+            # Negotiation Module: a hearing targeted at this advocate is invisible
+            # everywhere else above until it reaches "broadcast" (post-payment) —
+            # but negotiation happens BEFORE payment, so without this clause the
+            # advocate would have no way to even discover a pending negotiation.
+            clauses.append({"target_advocate_id": user["user_id"], "status": {"$in": ["requested", "payment_pending"]}})
     hearings = await db.hearing_requests.find({"$or": clauses}, {"_id": 0}).sort("created_at", -1).to_list(200)
     await _attach_negotiation_action_flags(db, hearings, user["user_id"])
     await _attach_decline_flags(db, hearings, user["user_id"])
     await _attach_listed_rates(db, hearings, user["user_id"])
+    await _attach_target_availability(db, hearings, user["user_id"])
     return hearings
 
 
@@ -431,9 +538,17 @@ async def get_hearing_request(db, hearing_id: str, user: dict) -> dict:
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
-    _check_visible(hearing, user)
+    # Eligibility only decides access to the open pool / targeted requests, so
+    # it's only looked up there — requester, assigned counsel and admin don't pay
+    # for the extra query and are never affected by it.
+    eligible = True
+    if (hearing["status"] in ("broadcast", "requested", "payment_pending") and user.get("role") != "admin"
+            and user["user_id"] not in (hearing["requesting_user_id"], hearing.get("proxy_counsel_user_id"))):
+        eligible = await is_eligible_counsel(db, user["user_id"])
+    _check_visible(hearing, user, eligible_counsel=eligible)
     await _attach_decline_flags(db, [hearing], user["user_id"])
     await _attach_listed_rates(db, [hearing], user["user_id"])
+    await _attach_target_availability(db, [hearing], user["user_id"])
     return hearing
 
 
@@ -464,6 +579,21 @@ async def _attach_decline_flags(db, hearings: List[dict], user_id: str) -> None:
         h["viewer_can_decline"] = user_id in notified.get(h["hearing_id"], set())
 
 
+async def _attach_target_availability(db, hearings: List[dict], user_id: str) -> None:
+    """Sets `target_unavailable` on the requester's own still-unassigned
+    targeted requests: whether their chosen counsel is no longer eligible, so
+    the UI hides Pay and offers Cancel instead (D2). Display only — the
+    backend enforces both rules itself. Requester-only, never to the counsel."""
+    cache: Dict[str, bool] = {}
+    for h in hearings:
+        target = h.get("target_advocate_id")
+        if (target and h.get("requesting_user_id") == user_id and not h.get("proxy_counsel_user_id")
+                and h.get("status") in ("requested", "payment_pending", "broadcast")):
+            if target not in cache:
+                cache[target] = not await is_eligible_counsel(db, target)
+            h["target_unavailable"] = cache[target]
+
+
 async def _attach_listed_rates(db, hearings: List[dict], user_id: str) -> None:
     """Sets `listed_rate` on a fixed-price (negotiation_enabled false),
     not-yet-accepted targeted hearing, for its two participants only — the
@@ -481,19 +611,22 @@ async def _attach_listed_rates(db, hearings: List[dict], user_id: str) -> None:
                 h["listed_rate"] = None
 
 
-def _check_visible(hearing: dict, user: dict) -> None:
+def _check_visible(hearing: dict, user: dict, eligible_counsel: bool = True) -> None:
+    """eligible_counsel: is_eligible_counsel(viewer), computed by the async
+    caller. It gates only the open pool and targeted-pending access — never
+    the requester, the assigned counsel or admin."""
     is_requester = hearing["requesting_user_id"] == user["user_id"]
     is_assigned = hearing.get("proxy_counsel_user_id") == user["user_id"]
     is_targeted_at_me = hearing.get("target_advocate_id") in (None, user["user_id"])
-    is_open_to_me = hearing["status"] == "broadcast" and "can_practice_proxy_counsel" in (user.get("capabilities") or []) \
-        and is_targeted_at_me
+    is_open_to_me = eligible_counsel and hearing["status"] == "broadcast" \
+        and "can_practice_proxy_counsel" in (user.get("capabilities") or []) and is_targeted_at_me
     # Negotiation Module: unlike the broadcast pool above, a hearing
     # specifically targeted at this advocate (not the None/broadcast-to-all
     # case) must be visible to them BEFORE payment too, while status is still
     # "requested"/"payment_pending" — that's the whole pre-payment negotiation
     # window. Deliberately narrower than is_open_to_me: only the exact
     # targeted advocate, never every can_practice_proxy_counsel account.
-    is_targeted_pending = hearing.get("target_advocate_id") == user["user_id"] \
+    is_targeted_pending = eligible_counsel and hearing.get("target_advocate_id") == user["user_id"] \
         and "can_practice_proxy_counsel" in (user.get("capabilities") or []) \
         and hearing["status"] in ("requested", "payment_pending")
     if not (is_requester or is_assigned or is_open_to_me or is_targeted_pending or user.get("role") == "admin"):
@@ -504,6 +637,9 @@ async def accept_hearing_request(db, hearing_id: str, user: dict) -> dict:
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
+    # Also covers counsel_matching.admin_assign_counsel, which accepts through here.
+    if not await is_eligible_counsel(db, user["user_id"]):
+        raise HTTPException(403, INELIGIBLE_COUNSEL_MESSAGE)
     # Conditional update on status=="broadcast" (+ target match) is what makes
     # this race-safe: two proxy counsel accepting at the same moment can't
     # both win — whichever commits first flips status away from "broadcast",
@@ -627,8 +763,8 @@ async def reject_hearing_request(db, hearing_id: str, user: dict) -> dict:
     # so a fallback-fanout failure must never surface as this call failing.
     try:
         await _create_fallback_requests(db, hearing)
-    except Exception as e:
-        logger.error(f"fallback request creation failed for {hearing_id}: {e}")
+    except Exception:
+        logger.exception(f"fallback request creation failed for {hearing_id}")
     return {"ok": True, "status": "rejected"}
 
 
@@ -651,8 +787,6 @@ async def _create_fallback_requests(db, original_hearing: dict) -> None:
         return
     import counsel_matching
     from notifications import notify, record_notification_event, get_hearing_email_thread
-    exclude_ids = {original_hearing.get("target_advocate_id"), original_hearing.get("requesting_user_id")}
-    candidates = await counsel_matching.top_fallback_candidates(db, original_hearing, exclude_ids)
     requester = await db.users.find_one({"user_id": original_hearing["requesting_user_id"]})
 
     async def _notify(recipient: dict, hearing_id: str, title: str, body: str) -> None:
@@ -663,6 +797,22 @@ async def _create_fallback_requests(db, original_hearing: dict) -> None:
             )
         notify(recipient, "hearing_event", ctx)
         await record_notification_event(db, recipient["user_id"], "hearing_event", title, body, "hearing", hearing_id)
+
+    # A copy would fail create_hearing_request's past-date check anyway; say
+    # so once instead of five logged failures and silence for the requester.
+    # A malformed legacy date isn't "past": the copies then report it themselves.
+    try:
+        date_passed = parse_hearing_date(original_hearing.get("hearing_date")) < india_today()
+    except HTTPException:
+        date_passed = False
+    if date_passed:
+        if requester:
+            await _notify(requester, original_hearing["hearing_id"], "No replacement requests created",
+                           FALLBACK_SKIPPED_PAST_DATE_MESSAGE)
+        return
+
+    exclude_ids = {original_hearing.get("target_advocate_id"), original_hearing.get("requesting_user_id")}
+    candidates = await counsel_matching.top_fallback_candidates(db, original_hearing, exclude_ids)
 
     if not candidates:
         if requester:
@@ -687,8 +837,8 @@ async def _create_fallback_requests(db, original_hearing: dict) -> None:
             if recipient:
                 await _notify(recipient, fallback["hearing_id"], "New hearing request",
                                f"You've been requested for a hearing at {original_hearing['court_id']}. Open Negotiation to respond.")
-        except Exception as e:
-            logger.error(f"fallback request creation failed for candidate {candidate.get('user_id')}: {e}")
+        except Exception:
+            logger.exception(f"fallback request creation failed for candidate {candidate.get('user_id')}")
             continue
     if requester and created:
         await _notify(requester, original_hearing["hearing_id"], "Finding you alternative counsels",
@@ -772,19 +922,32 @@ async def cancel_hearing_request(db, hearing_id: str, user: dict) -> dict:
     if (hearing["status"], "cancel") not in HEARING_TRANSITIONS:
         raise HTTPException(400, "This request can no longer be cancelled")
     paid = hearing["status"] in CANCEL_REQUIRES_REFUND
+    # D2: a fee locked with a targeted counsel who has since become ineligible
+    # can't be paid (initiate_payment), so it must stay cancellable. Nothing
+    # was paid, so there's nothing to refund.
+    target_lapsed = False
     if hearing.get("commercially_locked") and not paid:
-        raise HTTPException(400, "A fee has been agreed through negotiation — this request is "
-                                  "commercially locked and can no longer be cancelled. Proceed to payment.")
-    extra_guard: Optional[Dict[str, Any]] = None if paid else {"commercially_locked": {"$ne": True}}
+        target_lapsed = bool(hearing.get("target_advocate_id")) \
+            and not await is_eligible_counsel(db, hearing["target_advocate_id"])
+        if not target_lapsed:
+            raise HTTPException(400, "A fee has been agreed through negotiation — this request is "
+                                      "commercially locked and can no longer be cancelled. Proceed to payment.")
+    extra_guard: Optional[Dict[str, Any]] = None if (paid or target_lapsed) else {"commercially_locked": {"$ne": True}}
     if paid and not is_admin:
         now = _utcnow()
-        if not _within_client_cancel_window(hearing.get("payment_confirmed_at"), now):
-            raise HTTPException(400, CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE)
-        # Same boundary, re-checked atomically in the write itself.
-        # payment_confirmed_at is always datetime.isoformat() UTC, which sorts
-        # chronologically as a string; a null never matches $gt.
-        cutoff = (now - CLIENT_CANCEL_WINDOW).isoformat(timespec="microseconds")
-        extra_guard = {"payment_confirmed_at": {"$gt": cutoff}}
+        if is_escalated_unassigned(hearing):
+            # D4: escalated and still unassigned — the 1-hour window doesn't
+            # apply. Folded into the same atomic write, so a counsel being
+            # assigned in the meantime makes this cancel lose (409).
+            extra_guard = {"targeted_escalated_at": {"$ne": None}, "proxy_counsel_user_id": None}
+        else:
+            if not _within_client_cancel_window(hearing.get("payment_confirmed_at"), now):
+                raise HTTPException(400, CLIENT_CANCEL_WINDOW_EXPIRED_MESSAGE)
+            # Same boundary, re-checked atomically in the write itself.
+            # payment_confirmed_at is always datetime.isoformat() UTC, which sorts
+            # chronologically as a string; a null never matches $gt.
+            cutoff = (now - CLIENT_CANCEL_WINDOW).isoformat(timespec="microseconds")
+            extra_guard = {"payment_confirmed_at": {"$gt": cutoff}}
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
         await _transition(db, sm, hearing, hearing["status"], "cancel", user, extra_guard=extra_guard)
@@ -993,15 +1156,18 @@ async def set_negotiated_fee(db, hearing_id: str, amount: float, activity_note: 
     return True
 
 
-async def unlock_commercially(db, hearing_id: str) -> None:
+async def unlock_commercially(db, hearing_id: str, locked_amount: float, previous_fee: Optional[float]) -> None:
     """Compensating rollback for the narrow window where set_negotiated_fee
     above already locked the hearing but negotiation.accept_offer's own
     optimistic-concurrency write then lost (a counter-offer raced in first,
     so no agreement actually landed) — without this the hearing would be
     stuck uncancellable with no agreed fee to show for it."""
+    # Undoes only this caller's own lock (still at the amount it wrote, payment
+    # not started) and puts the fee back, so the request never keeps the fee of
+    # an offer that was not actually accepted.
     await db.hearing_requests.update_one(
-        {"hearing_id": hearing_id},
-        {"$set": {"commercially_locked": False, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        {"hearing_id": hearing_id, "commercially_locked": True, "fee": locked_amount, "status": "requested"},
+        {"$set": {"commercially_locked": False, "fee": previous_fee, "updated_at": datetime.now(timezone.utc).isoformat()}},
     )
 
 
@@ -1068,6 +1234,8 @@ async def accept_at_listed_rate(db, hearing_id: str, user: dict) -> dict:
         raise HTTPException(404, "Hearing request not found")
     if hearing.get("target_advocate_id") != user["user_id"]:
         raise HTTPException(403, "Only the advocate this request was sent to can accept it")
+    if not await is_eligible_counsel(db, user["user_id"]):
+        raise HTTPException(403, INELIGIBLE_COUNSEL_MESSAGE)
     if hearing.get("commercially_locked"):
         raise HTTPException(400, "A fee has already been agreed for this request.")
     if hearing["status"] not in ("requested", "payment_pending"):
@@ -1107,6 +1275,9 @@ async def initiate_payment(db, hearing_id: str, user: dict) -> dict:
     # None) never negotiate, so they're exempt.
     if hearing.get("target_advocate_id") and not hearing.get("commercially_locked"):
         raise HTTPException(400, "A fee must be agreed before payment can be collected")
+    # D2: never take money for a counsel who can no longer accept it.
+    if hearing.get("target_advocate_id") and not await is_eligible_counsel(db, hearing["target_advocate_id"]):
+        raise HTTPException(400, TARGET_UNAVAILABLE_MESSAGE)
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:
         await _transition(db, sm, hearing, hearing["status"], "initiate_payment", user)
@@ -1269,6 +1440,9 @@ async def reject_order_sheet(db, hearing_id: str, user: dict, remark: Optional[s
     return {"ok": True, "status": "disputed"}
 
 
+DISPUTE_RESOLUTIONS = ("resubmit", "refund")
+
+
 async def resolve_dispute(db, hearing_id: str, user: dict, action: str, remark: Optional[str] = None) -> dict:
     """`action`: "resubmit" (back to verification_pending for another look)
     or "refund" (refund escrow, close the request as cancelled)."""
@@ -1276,6 +1450,8 @@ async def resolve_dispute(db, hearing_id: str, user: dict, action: str, remark: 
     hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id})
     if not hearing:
         raise HTTPException(404, "Hearing request not found")
+    if action not in DISPUTE_RESOLUTIONS:  # never fall through to a refund on an unknown action
+        raise HTTPException(400, f"Unknown dispute resolution. Allowed: {', '.join(DISPUTE_RESOLUTIONS)}")
     sm_action = "resubmit" if action == "resubmit" else "refund_and_cancel"
     sm = StateMachine(HEARING_TRANSITIONS, _make_timeline_hook(db))
     try:

@@ -23,6 +23,7 @@ import hearings  # noqa: E402
 import escrow  # noqa: E402
 import razorpay_svc  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
+from tests._verified_counsel import verify_counsel  # noqa: E402
 
 
 def _db():
@@ -51,6 +52,7 @@ async def _make_hearing_awaiting_verification(db, requester, counsel, fee=1500.0
     already covered by other test files; jumping here via a direct write
     keeps this file focused on verify_and_release_payout/check_pending_
     order_sheets themselves."""
+    await verify_counsel(db, counsel["user_id"])
     hearing = await hearings.create_hearing_request(
         db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", fee, None,
         target_advocate_id=counsel["user_id"],
@@ -83,7 +85,11 @@ def test_verify_and_release_payout_happy_path():
         requester, counsel = _user("requester"), _user("counsel")
         hearing_id = await _make_hearing_awaiting_verification(db, requester, counsel)
         try:
-            await db.proxy_counsel_profiles.insert_one({"user_id": counsel["user_id"], "cases_completed": 0})
+            # _make_hearing_awaiting_verification already created this counsel's
+            # profile (verify_counsel); update it rather than add a second one.
+            await db.proxy_counsel_profiles.update_one(
+                {"user_id": counsel["user_id"]}, {"$set": {"cases_completed": 0}}, upsert=True,
+            )
             result = await hearings.verify_and_release_payout(db, hearing_id, requester)
             assert result["status"] == "completed"
             assert result["escrow"]["status"] == "released"
@@ -91,6 +97,7 @@ def test_verify_and_release_payout_happy_path():
             fetched = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
             assert fetched["status"] == "completed"
 
+            assert await db.proxy_counsel_profiles.count_documents({"user_id": counsel["user_id"]}) == 1
             profile = await db.proxy_counsel_profiles.find_one({"user_id": counsel["user_id"]}, {"_id": 0})
             assert profile["cases_completed"] == 1
 
@@ -147,6 +154,7 @@ def test_check_pending_order_sheets_notifies_after_three_days():
     async def body():
         db = _db()
         requester, counsel = _user("requester"), _user("counsel")
+        await verify_counsel(db, counsel["user_id"])
         hearing = await hearings.create_hearing_request(
             db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
             target_advocate_id=counsel["user_id"],
@@ -188,6 +196,7 @@ def test_check_pending_order_sheets_skips_recent_payment():
     async def body():
         db = _db()
         requester, counsel = _user("requester"), _user("counsel")
+        await verify_counsel(db, counsel["user_id"])
         hearing = await hearings.create_hearing_request(
             db, requester["user_id"], "court_tishazari", "2026-08-01", "Test case", 1500.0, None,
             target_advocate_id=counsel["user_id"],

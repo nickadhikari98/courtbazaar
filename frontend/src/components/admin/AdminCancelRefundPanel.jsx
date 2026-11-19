@@ -1,11 +1,14 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { formatINR, getErrorMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Ban, RotateCcw } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Ban, RotateCcw, UserPlus } from "lucide-react";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
-import { cancelHearingRequest, adminRetryEscrowRefund } from "@/lib/hearingRequestsApi";
+import { cancelHearingRequest, adminRetryEscrowRefund, adminProposeReassignment } from "@/lib/hearingRequestsApi";
+import { getPublicProxyCounsels } from "@/lib/advocateRecommendationsApi";
+import { isEscalatedUnassignedHearing } from "@/lib/hearingLifecycle";
 import { escrowStatusLabel, escrowStatusClasses } from "@/config/escrowStatus";
 import { adminCancelRefundState, adminCancelResultMessage } from "@/lib/adminHearingCancel";
 
@@ -25,6 +28,18 @@ export default function AdminCancelRefundPanel({ hearing, escrow, onChanged }) {
   // would still see busy=false. The ref closes that gap.
   const inFlight = useRef(false);
   const state = adminCancelRefundState(hearing, escrow);
+  // Escalated paid targeted request (D3): propose a replacement for the
+  // client to approve. The list is the same eligible pool the public listing
+  // shows; the backend re-checks eligibility on propose and on approval.
+  const escalated = isEscalatedUnassignedHearing(hearing);
+  const [counselOptions, setCounselOptions] = useState(null);
+  const [replacementId, setReplacementId] = useState("");
+  useEffect(() => {
+    if (!escalated || hearing.reassignment_proposal || counselOptions) return;
+    getPublicProxyCounsels({ limit: 100 })
+      .then(({ advocates }) => setCounselOptions(advocates.filter((a) => a.advocate_id !== hearing.target_advocate_id)))
+      .catch(() => setCounselOptions([]));
+  }, [escalated, hearing.reassignment_proposal, hearing.target_advocate_id, counselOptions]);
 
   if (state === "unavailable" && !escrow) return null;
 
@@ -63,6 +78,16 @@ export default function AdminCancelRefundPanel({ hearing, escrow, onChanged }) {
     }
   });
 
+  const proposeReplacement = () => guarded(async () => {
+    try {
+      await adminProposeReassignment(hearing.hearing_id, replacementId);
+      toast.success("Replacement proposed — waiting for the client's approval");
+      setReplacementId("");
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Could not propose this counsel"));
+    }
+  });
+
   const amount = escrow?.amount ?? hearing.fee;
 
   return (
@@ -88,6 +113,38 @@ export default function AdminCancelRefundPanel({ hearing, escrow, onChanged }) {
       )}
       {state === "refund_in_progress" && (
         <p className="text-xs text-muted-foreground">A refund is already in progress — nothing to start here. Stuck refunds can be retried from Reconciliation.</p>
+      )}
+
+      {escalated && (
+        <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-2" data-testid="admin-escalation">
+          <p className="text-xs">
+            <b>Escalated:</b> the client&apos;s selected counsel{" "}
+            {hearing.targeted_escalation_reason === "targeted_accept_timeout" ? "didn't accept within 24 hours" : "is no longer eligible"}.
+            {" "}Propose a replacement (the client must approve) or cancel &amp; refund.
+          </p>
+          {hearing.reassignment_proposal ? (
+            <p className="text-xs text-muted-foreground" data-testid="admin-proposal-pending">
+              Awaiting the client&apos;s answer on {hearing.reassignment_proposal.counsel_name || hearing.reassignment_proposal.counsel_user_id}.
+            </p>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <Select value={replacementId} onValueChange={setReplacementId} disabled={busy || !counselOptions?.length}>
+                <SelectTrigger className="w-64" aria-label="Replacement counsel" data-testid="admin-replacement-select">
+                  <SelectValue placeholder={counselOptions?.length === 0 ? "No eligible counsel available" : "Choose a replacement counsel"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {(counselOptions || []).map((a) => (
+                    <SelectItem key={a.advocate_id} value={a.advocate_id}>{a.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button type="button" variant="outline" disabled={busy || !replacementId} onClick={proposeReplacement}
+                      className="font-bold" data-testid="admin-propose-replacement">
+                <UserPlus className="w-4 h-4 mr-1.5" /> Propose to client
+              </Button>
+            </div>
+          )}
+        </div>
       )}
 
       {state === "cancellable" && (
