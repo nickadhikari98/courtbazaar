@@ -37,7 +37,7 @@ def test_lettered_and_sub_numbered_provisions_are_cited_whole():
     for sources, answer in cases:
         got.update(_rules(llm_service.build_citations(answer, context, sources)))
     labels = {s: llm_service.KB_SOURCE_DISPLAY[s]["label"] for s in (ACT, LCIA, DIAC)}
-    assert got[labels[ACT]] == ["29A"]
+    assert got[labels[ACT]] == ["29A(1)"]  # the number whole, shown with the sub-section the answer cites
     assert set(got[labels[LCIA]]) == {"9B", "9.8"}
     assert set(got[labels[DIAC]]) == {"3(i)", "33.1"}
 

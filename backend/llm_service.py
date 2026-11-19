@@ -1823,14 +1823,16 @@ def _file_backed_points(points: List[Dict[str, Any]], file_evidence: str, kb_evi
                 halves.extend(_file_backed_points([{**point, "basis": "file", "text": half}], file_evidence,
                                                   kb_evidence, context, sources)[0])
             kb_citations = [c for c in build_citations(body, context, sources) if c["rules"]]
-            attributed, _ = answer_guard.validate_rule_attribution(
-                point["text"], rag_provisions.provision_map(kb_evidence))
-            if not law_refs or not kb_citations or attributed is None:
-                logger.info("File+rules point dropped (no verified provision): %.80s", point["title"])
-                continue  # the legal half has no verified provision
             # Each part is evidenced by one side: the file's words, or the provision's.
             parts = ([point["text"][:split.start()], point["text"][split.end():]] if split else
                      [x for x in re.split(r";\s*|(?<=[.!?])\s+", point["text"].strip()) if x.strip()])
+            # Only the law's part is held to the cited provision's own text: the file's part never is in it.
+            law_text = parts[1] if split else " ".join(x for x in parts if any(r in x for r in law_refs))
+            attributed, _ = answer_guard.validate_rule_attribution(
+                law_text or point["text"], rag_provisions.provision_map(kb_evidence))
+            if not law_refs or not kb_citations or attributed is None:
+                logger.info("File+rules point dropped (no verified provision): %.80s", point["title"])
+                continue  # the legal half has no verified provision
             sides = [("file" if answer_guard.validate_grounded_answer(x, file_evidence, document_evidence=True)
                       else "rules" if answer_guard.validate_grounded_answer(x, kb_evidence, document_evidence=True)
                       else None) for x in parts]

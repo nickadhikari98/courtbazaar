@@ -56,7 +56,13 @@ _AMENDMENT_NOTE_RE = re.compile(
 _SMALL_WORDS = {"Of", "The", "And", "For", "To", "In", "On"}
 # "[Source: <file> | Rule 33.1]" / "| Article 9B" / "| Section 11A" / "| Paragraph 3" block label written by expand_chunks.
 _BLOCK_LABEL_RE = re.compile(
-    r"(?m)^\[Source: [^\]|]+\| (?:Rule|Article|Section|Paragraph) (\d{1,3}[A-Z]?(?:\.\d{1,2})?)(?: \| [^\]\n]*)?\]\n")
+    r"(?m)^\[Source: [^\]|]+\| (Rule|Article|Section|Paragraph) (\d{1,3}[A-Z]?(?:\.\d{1,2})?)(?: \| [^\]\n]*)?\]\n")
+# A numbered sub-section opening a line or right after the heading's dash, with an amendment's
+# bracket in front where the Act has one: "(2) ...", ".—(1) ...", "1[(1)] ...", "2[(6A) ...", "3 [(1) ...".
+# "[(2)" marks an amended sub-section's start wherever it falls (page-margin letters can come before it
+# on the same line: "... aC [(2) Where ..."); a quoted "sub-section (2)" never has the bracket.
+_SUBSECTION_RE = re.compile(
+    r"(?m)(?:(?:^|(?<=\.—)|(?<=\.-)|(?<=:—))[ \t]*(?:\d{1,2}[ \t]?\[[ \t]?)?|\[[ \t]?)\((\d{1,2})([A-Z]{0,2})\)\]?[ \t]")
 # "Section 11", "Rule 14.2", "Article 9B" named in a question.
 EXACT_REF_RE = re.compile(
     r"\b(Rule|Article|Section|Sec\b\.?|S\.)s?\s*(\d{1,3}[A-Za-z]?(?:\.\d{1,2})?)\b", re.IGNORECASE)
@@ -463,16 +469,37 @@ def expand_chunks(filename: str, chunks: List[str], doc: Optional[str], query: s
 
 
 def provision_map(context: str) -> Dict[str, str]:
-    """Rule number -> that rule's own text, from the labelled blocks in a
-    built context. A top-level rule ("33") also gets the text of its
-    sub-rules that are present, since "Rule 33" covers them all."""
+    """Provision -> its own text, from the labelled blocks in a built context:
+    by bare number ("33.1"), by label ("rule 33.1", "section 11") and by
+    numbered sub-section ("section 11(6)"). A top-level rule ("33") also gets
+    the text of its sub-rules that are present, since "Rule 33" covers them all."""
     out: Dict[str, List[str]] = {}
     labels = list(_BLOCK_LABEL_RE.finditer(context or ""))
     for i, m in enumerate(labels):
         end = context.find("\n[Source: ", m.end())
         text = context[m.end():end if end >= 0 else len(context)].strip()
-        number = m.group(1)
-        out.setdefault(number, []).append(text)
+        word, number = m.group(1).lower(), m.group(2)
+        # Bare numbers, as before; "section 11" / "article 9.8" by label as well, so a Section 11
+        # of the Act and a Rule 11 of a set of rules retrieved together are told apart.
+        keys = [number, f"{word} {number}"]
         if "." in number:
-            out.setdefault(number.split(".")[0], []).append(text)
+            keys += [number.split(".")[0], f"{word} {number.split('.')[0]}"]
+        for key in keys:
+            out.setdefault(key, []).append(text)
+        for sub, sub_text in sub_sections(text):
+            out.setdefault(f"{word} {number}{sub}", []).append(sub_text)
     return {k: "\n".join(v) for k, v in out.items()}
+
+
+def sub_sections(text: str) -> List[Tuple[str, str]]:
+    """[("(1)", its text), ("(6A)", ...)] for a provision's numbered sub-sections, in order; [] when
+    it has none. A marker out of sequence (a "(2)" quoted at a line start, a footnote) is ignored."""
+    marks: List[Tuple[int, str]] = []
+    last = 0
+    for m in _SUBSECTION_RE.finditer(text or ""):
+        n = int(m.group(1))
+        if last <= n <= last + 3:
+            marks.append((m.start(), f"({m.group(1)}{m.group(2)})"))
+            last = n
+    return [(label, text[start:marks[i + 1][0] if i + 1 < len(marks) else len(text)].strip())
+            for i, (start, label) in enumerate(marks)]
