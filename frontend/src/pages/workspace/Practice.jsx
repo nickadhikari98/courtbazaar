@@ -30,6 +30,7 @@ import HearingActivityPreview from "@/components/shared/HearingActivityPreview";
 import CapabilitiesCard from "@/components/shared/CapabilitiesCard";
 import StatGrid from "@/components/shared/StatGrid";
 import Loading from "@/components/shared/Loading";
+import EmptyState from "@/components/shared/EmptyState";
 import { useAuth } from "@/context/AuthContext";
 import {
   HEARING_STATUS_BADGE_COLOR, roleAwareStatusLabel, getViewerRole,
@@ -237,6 +238,9 @@ function ProfileTab({ profile, onSaved }) {
         negotiation_enabled: form.negotiation_enabled,
       });
       onSaved(updated);
+      // Show what was actually stored, not what was typed — a save that didn't
+      // persist (or was cleaned server-side) must not still look saved.
+      setForm(updated);
       toast.success("Profile saved");
     } catch (err) {
       toast.error(getErrorMessage(err, "Could not save profile"));
@@ -587,7 +591,8 @@ export function ClientVisibilityCard({ visibility }) {
 
 export function AvailabilityTab() {
   const [slots, setSlots] = useState(null);
-  const [loadError, setLoadError] = useState(false);
+  // null, or why the load failed (the server's reason when it gave one).
+  const [loadError, setLoadError] = useState(null);
   const [form, setForm] = useState(EMPTY_SLOT_FORM);
   // slot_id being edited, or null when the card is adding a new slot.
   const [editingId, setEditingId] = useState(null);
@@ -601,10 +606,11 @@ export function AvailabilityTab() {
   // The visibility check is advisory: if it fails to load, the card just
   // stays hidden rather than blocking the tab.
   const load = () => {
+    setLoadError(null);
     getPracticeVisibility().then(setVisibility).catch(() => setVisibility(null));
     return listAvailabilitySlots()
-      .then((rows) => { setSlots(rows); setLoadError(false); })
-      .catch(() => { setSlots([]); setLoadError(true); });
+      .then(setSlots)
+      .catch((err) => setLoadError(getErrorMessage(err, "Couldn't load your availability.")));
   };
   useEffect(() => { load(); }, []);
 
@@ -779,12 +785,14 @@ export function AvailabilityTab() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {slots === null && <TableLoading colSpan={5} />}
-            {slots?.length === 0 && (
+            {slots === null && !loadError && <TableLoading colSpan={5} />}
+            {loadError && (
               <TableEmpty colSpan={5}>
-                {loadError ? "Couldn't load your availability. Refresh the page to try again." : "No availability set yet"}
+                {loadError}{" "}
+                <button type="button" onClick={load} className="font-semibold text-accent hover:underline">Try again</button>
               </TableEmpty>
             )}
+            {slots?.length === 0 && <TableEmpty colSpan={5}>No availability set yet</TableEmpty>}
             {orderedSlots?.map((s) => (
               <TableRow
                 key={s.slot_id}
@@ -829,9 +837,30 @@ export function AvailabilityTab() {
   );
 }
 
+// A failed load (e.g. a 403 "Not available for this account") shows the
+// server's reason and a retry instead of an endless loading skeleton.
+function LoadError({ message, onRetry }) {
+  return (
+    <EmptyState
+      size="sm"
+      title="Couldn't load this"
+      description={message}
+      testId="practice-load-error"
+      action={<Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button>}
+    />
+  );
+}
+
 function PerformanceTab() {
   const [perf, setPerf] = useState(null);
-  useEffect(() => { getPracticePerformance().then(setPerf); }, []);
+  const [loadError, setLoadError] = useState(null);
+  const load = () => {
+    setLoadError(null);
+    getPracticePerformance().then(setPerf)
+      .catch((err) => setLoadError(getErrorMessage(err, "Could not load your performance")));
+  };
+  useEffect(() => { load(); }, []);
+  if (loadError) return <LoadError message={loadError} onRetry={load} />;
   if (!perf) return <Loading />;
 
   const stats = [
@@ -849,7 +878,12 @@ export function HearingsTab({ initialActiveId = null }) {
   const [hearings, setHearings] = useState(null);
   const [activeId, setActiveId] = useState(initialActiveId);
 
-  const load = () => listHearingRequests().then(setHearings);
+  const [loadError, setLoadError] = useState(null);
+  const load = () => {
+    setLoadError(null);
+    return listHearingRequests().then(setHearings)
+      .catch((err) => setLoadError(getErrorMessage(err, "Could not load hearings")));
+  };
   useEffect(() => { load(); }, []);
 
   // Negotiation Module: a hearing targeted at this advocate is invisible
@@ -934,13 +968,13 @@ export function HearingsTab({ initialActiveId = null }) {
       )}
       <div>
         <div className="font-display font-bold mb-2">Open Requests</div>
-        {hearings === null && <Loading size="sm" />}
+        {hearings === null && (loadError ? <LoadError message={loadError} onRetry={load} /> : <Loading size="sm" />)}
         {hearings && open.length === 0 && <p className="text-sm text-muted-foreground">No open requests right now.</p>}
         <div className="space-y-2">{open.map((h) => renderCard(h, () => setActiveId(h.hearing_id)))}</div>
       </div>
       <div>
         <div className="font-display font-bold mb-2">My Hearings</div>
-        {hearings === null && <Loading size="sm" />}
+        {hearings === null && !loadError && <Loading size="sm" />}
         {hearings && mine.length === 0 && <p className="text-sm text-muted-foreground">Nothing accepted yet.</p>}
         {hearings && mine.length > 0 && (
           <Tabs defaultValue="active">
@@ -978,7 +1012,13 @@ export default function Practice() {
     if (location.state?.openHearingId) navigate(location.pathname, { replace: true, state: null });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { getPracticeProfile().then(setProfile); }, []);
+  const [profileError, setProfileError] = useState(null);
+  const loadProfile = () => {
+    setProfileError(null);
+    getPracticeProfile().then(setProfile)
+      .catch((err) => setProfileError(getErrorMessage(err, "Could not load your profile")));
+  };
+  useEffect(() => { loadProfile(); }, []);
 
   return (
     <PageContainer className="max-w-4xl">
@@ -991,7 +1031,8 @@ export default function Practice() {
           <TabsTrigger value="performance">Performance</TabsTrigger>
         </TabsList>
         <TabsContent value="profile" className="mt-4">
-          {profile ? <ProfileTab profile={profile} onSaved={setProfile} /> : <Loading />}
+          {profile ? <ProfileTab profile={profile} onSaved={setProfile} />
+            : profileError ? <LoadError message={profileError} onRetry={loadProfile} /> : <Loading />}
         </TabsContent>
         <TabsContent value="availability" className="mt-4">
           <AvailabilityTab />

@@ -489,7 +489,7 @@ class HearingCaseDetailsUpdate(BaseModel):
     work_required_notes: Optional[str] = None
 
 class HearingDisputeResolve(BaseModel):
-    action: str  # "resubmit" | "refund"
+    action: Literal["resubmit", "refund"]
     remark: Optional[str] = None
 
 class HearingVerificationReject(BaseModel):
@@ -504,9 +504,15 @@ class HearingNoteCreate(BaseModel):
 class HearingMessageCreate(BaseModel):
     text: str
 
+# AWAITING BUSINESS APPROVAL: Rs. 1 crore is a developer-chosen safety ceiling
+# for one negotiation offer, not a founder-approved limit. Change this constant
+# once the business decides the real limit.
+NEGOTIATION_OFFER_MAX_INR = 10_000_000
+NEGOTIATION_NOTE_MAX_CHARS = 1000
+
 class NegotiationOfferCreate(BaseModel):
-    amount: float = Field(gt=0)
-    note: Optional[str] = None
+    amount: float = Field(gt=0, le=NEGOTIATION_OFFER_MAX_INR, allow_inf_nan=False)
+    note: Optional[str] = Field(default=None, max_length=NEGOTIATION_NOTE_MAX_CHARS)
 
 class HearingRatingCreate(BaseModel):
     rating: int
@@ -1079,6 +1085,23 @@ async def vendor_onboard(payload: VendorOnboard, user=Depends(get_current_user))
     doc.pop("_id", None)
     return doc
 
+# These two lists need no login, so they return listing fields only — never the
+# KYC and payout details a vendor record also holds (phone, address, PAN, GST,
+# Aadhaar, bank account). Admin reads the full record via /admin/vendors.
+PUBLIC_VENDOR_FIELDS = ("vendor_id", "shop_name", "vendor_category", "court_ids", "service_ids",
+                        "rating", "bio", "hourly_rate", "sponsored")
+PUBLIC_VENDOR_PROJECTION = {"_id": 0, **{f: 1 for f in PUBLIC_VENDOR_FIELDS}}
+
+
+def _public_vendor(row: dict) -> dict:
+    """The projection picks the fields; this keeps only plain values in them
+    (text, number, flag, or a list of those), so an object stored under a
+    listed field can't carry anything else out."""
+    plain = (str, int, float, bool)
+    return {k: v for k, v in row.items()
+            if k in PUBLIC_VENDOR_FIELDS and (isinstance(v, plain) or (isinstance(v, list) and all(isinstance(i, plain) for i in v)))}
+
+
 async def _drop_deactivated_vendors(vendors: list) -> list:
     """Client-facing vendor lists and auto-assignment skip vendors whose
     account is deactivated or no longer exists — same rule as counsels
@@ -1098,8 +1121,9 @@ async def list_vendors(court_id: Optional[str] = None, service_id: Optional[str]
         query["court_ids"] = court_id
     if service_id:
         query["service_ids"] = service_id
-    vendors = await db.vendors.find(query, {"_id": 0}).sort("rating", -1).to_list(200)
-    return await _drop_deactivated_vendors(vendors)
+    # user_id only for the deactivated-account check; _public_vendor drops it from the response.
+    vendors = await db.vendors.find(query, {**PUBLIC_VENDOR_PROJECTION, "user_id": 1}).sort("rating", -1).to_list(200)
+    return [_public_vendor(v) for v in await _drop_deactivated_vendors(vendors)]
 
 @api_router.get("/vendors/me")
 async def my_vendor(user=Depends(get_current_user)):
@@ -2870,6 +2894,8 @@ async def admin_approve_practice_kyc(user_id: str, user=Depends(get_current_user
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
     profile = await practice_svc.approve_kyc(db, user_id)
+    # Independent of any application: a later lead rejection must not revoke it.
+    await practice_svc.set_verification_source(db, user_id, {"type": "admin"})
     try:
         from audit_log import log_audit
         await log_audit(db, "practice.approve_kyc", user, {"target_user_id": user_id})
@@ -2882,6 +2908,7 @@ async def admin_verify_practice_bar_council(user_id: str, user=Depends(get_curre
     if user["role"] != "admin":
         raise HTTPException(403, "Admin only")
     profile = await practice_svc.verify_bar_council(db, user_id)
+    await practice_svc.set_verification_source(db, user_id, {"type": "admin"})
     try:
         from audit_log import log_audit
         await log_audit(db, "practice.verify_bar_council", user, {"target_user_id": user_id})
@@ -2991,7 +3018,7 @@ async def _advocate_profile_or_404(advocate_id: str) -> dict:
     verified_counsel_query() match, same trust gate as the browse list."""
     import counsel_matching
     profile = await db.proxy_counsel_profiles.find_one(
-        {"user_id": advocate_id, **counsel_matching.verified_counsel_query()}, {"_id": 0},
+        await counsel_matching.eligible_counsel_query(db, user_id=advocate_id), {"_id": 0},
     )
     if not profile or await counsel_matching.deactivated_user_ids(db, [advocate_id]):
         raise HTTPException(404, "Counsel profile not found")
@@ -3035,10 +3062,11 @@ async def get_advocate_profile(advocate_id: str, user=Depends(get_current_user))
 import hearings as hearings_svc
 import escrow as escrow_svc
 
-async def _notify_hearing_event(user_id: str, title: str, body: str, hearing_id: str) -> None:
+async def _notify_hearing_event(user_id: str, title: str, body: str, hearing_id: str, db=None) -> None:
     """Fire-and-forget in-app + SMS/WhatsApp/email notification for a hearing
     lifecycle event — same try/except-log, non-fatal pattern as every other
     notify() call site in this file."""
+    db = db if db is not None else globals()["db"]  # a caller that already holds a handle passes it
     try:
         from notifications import notify, record_notification_event, get_hearing_email_thread
         recipient = await db.users.find_one({"user_id": user_id})
@@ -3122,8 +3150,12 @@ async def reject_hearing_request(hearing_id: str, user=Depends(get_current_user)
     """Targeted requests only — a global, terminal reject. Broadcast requests
     use /decline (personal, non-terminal) instead — see hearings.py."""
     _require_capability(user, "can_practice_proxy_counsel")
-    hearing = await hearings_svc.get_hearing_request(db, hearing_id, user)
+    # reject_hearing_request does its own authorization (404, targeted advocate
+    # only, not fee-locked). Deliberately not get_hearing_request first: that
+    # hides a targeted request from a target whose verification lapsed, and
+    # rejecting must stay available to them so the client can choose again.
     result = await hearings_svc.reject_hearing_request(db, hearing_id, user)
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0, "requesting_user_id": 1, "court_id": 1})
     await _notify_hearing_event(hearing["requesting_user_id"], "Request declined",
                                  f"Your hearing request for {hearing['court_id']} was declined by the advocate.",
                                  hearing_id)
@@ -3174,17 +3206,51 @@ async def cancel_hearing_request(hearing_id: str, user=Depends(get_current_user)
             hearing_id,
         )
     if by_admin and hearing.get("requesting_user_id"):
-        refund_note = ""
-        if refund_status == "refunded":
-            refund_note = " Your payment has been refunded to your original payment method."
-        elif refund_status:
-            refund_note = " Your refund has been initiated and will reach your original payment method shortly."
         await _notify_hearing_event(
             hearing["requesting_user_id"], "Hearing cancelled",
-            f"Your hearing at {hearing['court_id']} was cancelled by CourtBazaar support." + refund_note,
-            hearing_id,
+            f"Your hearing at {hearing['court_id']} was cancelled by CourtBazaar support.", hearing_id,
         )
+    # How the refund went (initiated, completed or delayed) reaches the client
+    # separately, for every paid cancel — see _notify_refund_status. This also
+    # covers D5 (a client cancelling an escalated request).
     return result
+
+# Where the client's refund stands, in the client's words. One notice per stage
+# and per escrow (claimed on the escrow row), so repeated retries, syncs and
+# duplicate webhooks never tell the client the same thing twice. "Completed"
+# is only ever sent for a stored status of refunded.
+REFUND_NOTICES = {
+    "refund_processing": ("Refund initiated",
+                          "Your refund of Rs.{amount:g} for the hearing at {court} has been initiated and is being "
+                          "processed. We will let you know when it is completed."),
+    "refunded": ("Refund completed",
+                 "Your refund of Rs.{amount:g} for the hearing at {court} has been completed and sent to your original "
+                 "payment method. It can take a few working days to show in your account."),
+    "refund_failed": ("Refund delayed",
+                      "Your refund of Rs.{amount:g} for the hearing at {court} could not be completed automatically. "
+                      "Our team is working on it and you do not need to do anything."),
+}
+
+
+async def _notify_refund_status(db, escrow: dict) -> None:
+    status = escrow.get("status")
+    if status not in REFUND_NOTICES or escrow.get("context_type") != "hearing" or not escrow.get("payer_user_id"):
+        return
+    claimed = await db.escrow_transactions.update_one(
+        {"escrow_id": escrow["escrow_id"], "refund_notified": {"$ne": status}},
+        {"$addToSet": {"refund_notified": status}},
+    )
+    if claimed.modified_count != 1:
+        return  # this stage was already announced
+    hearing = await db.hearing_requests.find_one({"hearing_id": escrow["context_id"]}, {"_id": 0}) or {}
+    court = ((hearing.get("request_details") or {}).get("common") or {}).get("court_name") or hearing.get("court_id") or "your court"
+    title, body = REFUND_NOTICES[status]
+    await _notify_hearing_event(escrow["payer_user_id"], title,
+                                body.format(amount=float(escrow.get("amount") or 0), court=court), escrow["context_id"], db=db)
+
+
+escrow_svc.refund_status_listener = _notify_refund_status
+
 
 async def _finalize_hearing_payment(hearing: dict, tx: dict, rzp_payment_id: str) -> bool:
     return await payment_svc.finalize_hearing_payment(
@@ -3252,7 +3318,9 @@ async def get_hearing_escrow(hearing_id: str, user=Depends(get_current_user)):
     the requester/advocate's own detail view and the admin verification
     queue (see escrow_svc.get_for_context)."""
     await hearings_svc.get_hearing_request(db, hearing_id, user)  # visibility check
-    return await escrow_svc.get_for_context(db, "hearing", hearing_id)
+    escrow = await escrow_svc.get_for_context(db, "hearing", hearing_id)
+    # Gateway ids, refund errors and retry history are admin-only.
+    return escrow if user.get("role") == "admin" else escrow_svc.party_view(escrow)
 
 @api_router.put("/hearing-requests/{hearing_id}/mark-conducted")
 async def mark_hearing_conducted(hearing_id: str, user=Depends(get_current_user)):
@@ -3349,7 +3417,11 @@ async def get_hearing_counsel_profile(hearing_id: str, user=Depends(get_current_
         c["court_id"]: c["name"]
         for c in (await db.courts.find({"court_id": {"$in": court_ids}}, {"_id": 0, "court_id": 1, "name": 1}).to_list(len(court_ids)) if court_ids else [])
     }
-    return counsel_matching.build_advocate_card(profile, name_doc.get("name") if name_doc else None, court_names_by_id)
+    card = counsel_matching.build_advocate_card(profile, name_doc.get("name") if name_doc else None, court_names_by_id)
+    # This lookup also serves a counsel who has since lost verification, so the
+    # badge reports the present state instead of the card's default.
+    card["verified"] = await hearings_svc.is_eligible_counsel(db, advocate_id)
+    return card
 
 @api_router.get("/hearing-requests/{hearing_id}/documents")
 async def get_hearing_documents(hearing_id: str, user=Depends(get_current_user)):
@@ -3422,6 +3494,81 @@ async def admin_list_hearing_requests(user=Depends(get_current_user), status: Op
         return results
     return await hearings_svc.list_hearings_for_admin(db, status)
 
+async def _notify_admins_hearing(title: str, body: str, hearing_id: str) -> None:
+    """In-app + email to every active admin account (same channel as any
+    hearing event), so an escalation can't go unseen."""
+    async for admin_user in db.users.find({"role": "admin", "deleted": {"$ne": True}}, {"_id": 0, "user_id": 1}):
+        await _notify_hearing_event(admin_user["user_id"], title, body, hearing_id)
+
+
+async def _notify_targeted_escalation(hearing: dict, reason: str) -> None:
+    import counsel_matching
+    hearing_id = hearing["hearing_id"]
+    why = ("is no longer available" if reason == counsel_matching.TARGETED_INELIGIBLE
+           else "hasn't accepted within 24 hours of your payment")
+    await _notify_hearing_event(
+        hearing["requesting_user_id"], "We're arranging your counsel",
+        f"The counsel you selected for your hearing at {hearing['court_id']} {why}. Your payment is safely held. "
+        "Our team will propose a replacement counsel for your approval, or you can cancel this request for a full refund.",
+        hearing_id,
+    )
+    await _notify_admins_hearing(
+        "Paid request needs action",
+        f"Paid targeted request {hearing_id} ({hearing['court_id']}, {hearing.get('hearing_date')}) was escalated: "
+        f"the selected counsel {why.replace('your payment', 'payment')}. Propose a replacement counsel or cancel and refund.",
+        hearing_id,
+    )
+
+
+@api_router.post("/admin/hearing-requests/{hearing_id}/propose-reassignment")
+async def admin_propose_reassignment(hearing_id: str, payload: AdminAssignCounsel, user=Depends(get_current_user)):
+    """D3: admin proposes a replacement counsel for an escalated targeted
+    request. The client must approve before anything is assigned."""
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin only")
+    import counsel_matching
+    hearing = await counsel_matching.propose_reassignment(db, hearing_id, payload.counsel_user_id, user)
+    name = hearing["reassignment_proposal"].get("counsel_name") or "another verified counsel"
+    await _notify_hearing_event(
+        hearing["requesting_user_id"], "Approve your replacement counsel",
+        f"CourtBazaar has proposed {name} for your hearing at {hearing['court_id']}. "
+        "Open your request to approve or decline. Nothing changes until you approve.",
+        hearing_id,
+    )
+    return hearing
+
+
+class ReassignmentResponse(BaseModel):
+    approve: bool
+
+
+@api_router.post("/hearing-requests/{hearing_id}/reassignment")
+async def respond_to_reassignment(hearing_id: str, payload: ReassignmentResponse, user=Depends(get_current_user)):
+    """D3: the client approves or declines the admin's proposed replacement."""
+    import counsel_matching
+    pending = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0, "reassignment_proposal": 1})
+    result = await counsel_matching.respond_to_reassignment(db, hearing_id, user, payload.approve)
+    if not payload.approve:
+        await _notify_admins_hearing(
+            "Replacement counsel declined",
+            f"The client declined the proposed replacement for request {hearing_id}. "
+            "Propose another counsel or cancel and refund.",
+            hearing_id,
+        )
+        return result
+    name = ((pending or {}).get("reassignment_proposal") or {}).get("counsel_name") or "your new counsel"
+    await _notify_hearing_event(
+        result["requesting_user_id"], "Counsel assigned",
+        f"Your hearing at {result['court_id']} is now assigned to {name}.", hearing_id,
+    )
+    await _notify_hearing_event(
+        result["proxy_counsel_user_id"], "New hearing assigned",
+        f"You've been assigned a hearing at {result['court_id']} on {result.get('hearing_date')}. Open it to review the details.",
+        hearing_id,
+    )
+    return result
+
+
 @api_router.post("/admin/hearing-requests/{hearing_id}/assign")
 async def admin_assign_hearing_counsel(hearing_id: str, payload: AdminAssignCounsel, user=Depends(get_current_user)):
     if user["role"] != "admin":
@@ -3493,16 +3640,15 @@ async def resolve_hearing_dispute(hearing_id: str, payload: HearingDisputeResolv
                                      + (f" Note: {payload.remark}" if payload.remark else ""),
                                      hearing_id)
     else:
-        # Only say "issued" once the refund actually completed (escrow.refund
-        # outcomes); a pending/failed refund is still owed and gets retried.
-        issued = result.get("refund_status") == "refunded"
-        await _notify_hearing_event(hearing["requesting_user_id"], "Refund issued" if issued else "Refund initiated",
-                                     f"Your dispute for the hearing at {hearing['court_id']} was resolved with a refund."
-                                     + ("" if issued else " The refund is being processed and may take a few working days.")
+        # The decision only. Where the refund itself stands (initiated,
+        # completed, delayed) is the separate notice from _notify_refund_status,
+        # which follows the gateway's actual answer.
+        await _notify_hearing_event(hearing["requesting_user_id"], "Dispute resolved — refund approved",
+                                     f"Your dispute for the hearing at {hearing['court_id']} was resolved in your favour and a refund was approved."
                                      + (f" Note: {payload.remark}" if payload.remark else ""),
                                      hearing_id)
         await _notify_hearing_event(hearing["proxy_counsel_user_id"], "Dispute resolved — no payout",
-                                     f"The dispute for the hearing at {hearing['court_id']} was resolved in the requester's favor; the amount was refunded to them.",
+                                     f"The dispute for the hearing at {hearing['court_id']} was resolved in the requester's favor; the payment is being returned to them.",
                                      hearing_id)
     return result
 
@@ -4189,7 +4335,8 @@ async def list_stenographers(court_id: Optional[str] = None):
     q = {"vendor_category": "stenographer", "kyc_status": "approved"}
     if court_id:
         q["court_ids"] = court_id
-    return await _drop_deactivated_vendors(await db.vendors.find(q, {"_id": 0}).sort("rating", -1).to_list(100))
+    vendors = await db.vendors.find(q, {**PUBLIC_VENDOR_PROJECTION, "user_id": 1}).sort("rating", -1).to_list(100)
+    return [_public_vendor(v) for v in await _drop_deactivated_vendors(vendors)]
 
 
 @api_router.post("/stenographers/book")
@@ -4439,6 +4586,13 @@ async def schedule_matching_waterfall():
                 await counsel_matching.check_stalled_matches(db)
             except Exception as e:
                 logger.error(f"Scheduled matching waterfall error: {e}")
+            try:
+                # Paid targeted requests (D1): only requests THIS run escalated
+                # come back, so each escalation is notified exactly once.
+                for item in await counsel_matching.check_stalled_targeted_requests(db):
+                    await _notify_targeted_escalation(item["hearing"], item["reason"])
+            except Exception as e:
+                logger.error(f"Scheduled targeted escalation error: {e}")
         sched = AsyncIOScheduler()
         sched.add_job(_job, IntervalTrigger(seconds=10), max_instances=1)
         sched.start()

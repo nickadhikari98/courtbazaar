@@ -19,6 +19,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import hearings  # noqa: E402
 import negotiation  # noqa: E402
+from tests._verified_counsel import verify_counsel  # noqa: E402
 
 LISTED_RATE = 2500.0
 
@@ -51,8 +52,10 @@ class _Setup:
             upsert=True,
         )
         self.profile_ids.append(self.counsel["user_id"])
+        await verify_counsel(db, self.counsel["user_id"])
+        # A new date per call: same requester/counsel/court/date can't be active twice.
         hearing = await hearings.create_hearing_request(
-            db, self.requester["user_id"], "court_tishazari", "2026-10-01", "Test case", 1500.0, None,
+            db, self.requester["user_id"], "court_tishazari", f"2026-10-{len(self.hearing_ids) + 1:02d}", "Test case", 1500.0, None,
             target_advocate_id=self.counsel["user_id"],
         )
         assert hearing["negotiation_enabled"] is negotiation_enabled

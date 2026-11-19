@@ -124,12 +124,15 @@ async def discover_candidates(db, hearing_id: str) -> List[dict]:
         raise HTTPException(404, "Hearing not found")
 
     if hearing.get("target_advocate_id"):
+        # Verified gate only (no availability_mode, the client picked them
+        # directly). A counsel revoked after this request was created gets []
+        # here, so run_matching escalates to an admin instead of notifying them.
         profile = await db.proxy_counsel_profiles.find_one(
-            {"user_id": hearing["target_advocate_id"]}, {"_id": 0},
+            await eligible_counsel_query(db, user_id=hearing["target_advocate_id"]), {"_id": 0},
         )
         return await drop_deactivated(db, [profile] if profile else [])
 
-    query = {**verified_counsel_query(), "availability_mode": True}
+    query = await eligible_counsel_query(db, availability_mode=True)
     return await drop_deactivated(db, await db.proxy_counsel_profiles.find(query, {"_id": 0}).to_list(500))
 
 
@@ -142,6 +145,24 @@ def verified_counsel_query() -> Dict[str, Any]:
     on top of this — see its docstring for why that one stays hearing-time
     only."""
     return {"kyc_status": "approved", "bar_council_verified": True}
+
+
+async def eligible_counsel_query(db, **extra) -> Dict[str, Any]:
+    """verified_counsel_query() plus "the account isn't deactivated" — the one
+    gate for every surface that offers a counsel to clients or matching
+    (public listing, public profile, broadcast/targeted/fallback matching).
+    Deactivation (audit_log.deactivate_user) lives on users.deleted, not on
+    the profile, so it's applied as a user_id exclusion: a missing or false
+    `deleted` field stays eligible, and no profile or account data changes.
+    `extra` is merged in; a plain user_id value is kept as an $eq alongside
+    the exclusion so single-counsel lookups still work."""
+    query: Dict[str, Any] = {**verified_counsel_query(), **extra}
+    deactivated = await db.users.distinct("user_id", {"deleted": True})
+    if deactivated:
+        uid = query.get("user_id")
+        cond = uid if isinstance(uid, dict) else ({} if uid is None else {"$eq": uid})
+        query["user_id"] = {**cond, "$nin": deactivated}
+    return query
 
 
 async def deactivated_user_ids(db, user_ids: List[str]) -> set:
@@ -450,7 +471,7 @@ async def list_and_recommend(
     date (and, if set, a time slot) isn't shown, and can't select, someone
     who actually can't take it then."""
     import practice
-    query: Dict[str, Any] = verified_counsel_query()
+    query: Dict[str, Any] = await eligible_counsel_query(db)
     if specialization:
         query["practice_areas"] = {"$elemMatch": {"$regex": re.escape(specialization), "$options": "i"}}
     if min_experience_years is not None:
@@ -1119,3 +1140,198 @@ async def admin_assign_counsel(db, hearing_id: str, counsel_user_id: str, admin_
         "hearing_id": hearing_id, "counsel_user_id": counsel_user_id,
     })
     return result
+
+
+# ---------------------------------------------------------------------------
+# Paid targeted requests (founder decisions D1/D3, 2026-11)
+#
+# A targeted request never opens a matching session (mark_payment_confirmed
+# skips run_matching), so neither check_stalled_matches nor escalate_to_admin
+# ever reached it: if the chosen counsel lapsed or simply never accepted, the
+# paid request sat in "broadcast" with nobody able to take it. This watchdog
+# runs on the same 10s scheduler and reuses the existing escalation machinery
+# (session + escalate_to_admin), so escalated targeted requests show up in
+# ?escalated=true and the Order Agent exactly like broadcast ones.
+# ---------------------------------------------------------------------------
+
+TARGETED_INELIGIBLE = "targeted_counsel_ineligible"
+TARGETED_TIMEOUT = "targeted_accept_timeout"
+TARGETED_RETRY_AFTER = timedelta(minutes=5)
+
+
+async def escalate_targeted_request(db, hearing_id: str, reason: str) -> Optional[dict]:
+    """Idempotent: the atomic claim on targeted_escalated_at means only one
+    caller (one watchdog run, one server instance) ever escalates a given
+    request; every other caller gets None. Conditional on still being an
+    unassigned "broadcast", so a counsel accepting first wins. Returns the
+    claimed hearing (the caller notifies once, only on that result)."""
+    from pymongo import ReturnDocument
+    now = datetime.now(timezone.utc).isoformat()
+    claimed = await db.hearing_requests.find_one_and_update(
+        {"hearing_id": hearing_id, "status": "broadcast", "target_advocate_id": {"$ne": None},
+         "proxy_counsel_user_id": None, "targeted_escalated_at": None},
+        {"$set": {"targeted_escalated_at": now, "targeted_escalation_reason": reason, "updated_at": now}},
+        projection={"_id": 0}, return_document=ReturnDocument.AFTER,
+    )
+    if not claimed:
+        return None
+    await _record_targeted_escalation(db, claimed, reason)
+    return claimed
+
+
+async def _record_targeted_escalation(db, hearing: dict, reason: str) -> None:
+    """The escalated matching session + admin grace deadline + audit entry,
+    via the existing escalate_to_admin. Safe to repeat: the session is
+    get-or-create (unique per hearing) — see the retry pass below."""
+    await get_or_create_matching_session(db, hearing["hearing_id"])
+    await escalate_to_admin(db, hearing, reason=reason)
+    await db.hearing_requests.update_one(
+        {"hearing_id": hearing["hearing_id"]}, {"$set": {"targeted_escalation_recorded": True}},
+    )
+
+
+async def check_stalled_targeted_requests(db, now: Optional[datetime] = None) -> List[dict]:
+    """Poll entry point, called from server.py's matching scheduler. Escalates
+    every paid, unassigned targeted request whose counsel is no longer
+    eligible (immediately) or hasn't accepted within hearings.TARGETED_ACCEPT_TIMEOUT
+    of payment. Returns [{"hearing": ..., "reason": ...}] for requests THIS
+    run escalated, so the caller notifies exactly once per escalation."""
+    import hearings
+    from audit_log import log_audit
+    now = now or datetime.now(timezone.utc)
+    cutoff = (now - hearings.TARGETED_ACCEPT_TIMEOUT).isoformat()
+    candidates = await db.hearing_requests.find(
+        {"status": "broadcast", "target_advocate_id": {"$ne": None}, "proxy_counsel_user_id": None,
+         "targeted_escalated_at": None},
+        {"_id": 0, "hearing_id": 1, "target_advocate_id": 1, "payment_confirmed_at": 1},
+    ).to_list(500)
+    escalated = []
+    for h in candidates:
+        if not await hearings.is_eligible_counsel(db, h["target_advocate_id"]):
+            reason = TARGETED_INELIGIBLE
+        elif h.get("payment_confirmed_at") and h["payment_confirmed_at"] < cutoff:
+            reason = TARGETED_TIMEOUT
+        else:
+            continue
+        try:
+            claimed = await escalate_targeted_request(db, h["hearing_id"], reason)
+        except Exception as e:
+            await log_audit(db, "matching.targeted_escalation_error", None, {"hearing_id": h["hearing_id"], "error": str(e)})
+            continue
+        if claimed:
+            escalated.append({"hearing": claimed, "reason": reason})
+    # Retry pass: a claim whose session/audit step failed is finished here
+    # (no second notification — that only follows a successful claim above).
+    # Only claims older than a few minutes, so a concurrent run never
+    # re-records one another run is still in the middle of recording.
+    stale_claim = (now - TARGETED_RETRY_AFTER).isoformat()
+    unfinished = await db.hearing_requests.find(
+        {"status": "broadcast", "targeted_escalated_at": {"$ne": None, "$lt": stale_claim},
+         "targeted_escalation_recorded": {"$ne": True}},
+        {"_id": 0},
+    ).to_list(100)
+    for h in unfinished:
+        try:
+            await _record_targeted_escalation(db, h, h.get("targeted_escalation_reason") or TARGETED_INELIGIBLE)
+        except Exception as e:
+            await log_audit(db, "matching.targeted_escalation_error", None, {"hearing_id": h["hearing_id"], "error": str(e)})
+    return escalated
+
+
+REASSIGN_NOT_OPEN = "Only an escalated, unassigned targeted request can be reassigned."
+REASSIGN_COUNSEL_INELIGIBLE = "This counsel isn't eligible for new requests."
+REASSIGN_DUPLICATE = ("You already have an active request with this counsel for this court and hearing date, "
+                      "so this replacement can't be approved. Decline it, or cancel that other request first.")
+
+
+async def propose_reassignment(db, hearing_id: str, counsel_user_id: str, admin_user: dict) -> dict:
+    """D3 step 1 (admin): propose a replacement counsel. Nothing changes for
+    the counsel yet — the client must approve first (respond_to_reassignment).
+    One pending proposal at a time (atomic), so a double click can't send the
+    client two consent requests."""
+    import hearings
+    from pymongo import ReturnDocument
+    from audit_log import log_audit
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    if not hearings.is_escalated_unassigned(hearing):
+        raise HTTPException(400, REASSIGN_NOT_OPEN)
+    if counsel_user_id in (hearing.get("target_advocate_id"), hearing.get("requesting_user_id")):
+        raise HTTPException(400, "Choose a different counsel from the one originally selected.")
+    if not await hearings.is_eligible_counsel(db, counsel_user_id):
+        raise HTTPException(403, REASSIGN_COUNSEL_INELIGIBLE)
+    counsel = await db.users.find_one({"user_id": counsel_user_id}, {"_id": 0, "name": 1})
+    now = datetime.now(timezone.utc).isoformat()
+    proposal = {"counsel_user_id": counsel_user_id, "counsel_name": (counsel or {}).get("name"),
+                "proposed_by": admin_user["user_id"], "proposed_at": now}
+    updated = await db.hearing_requests.find_one_and_update(
+        {"hearing_id": hearing_id, "status": "broadcast", "proxy_counsel_user_id": None,
+         "targeted_escalated_at": {"$ne": None}, "reassignment_proposal": None},
+        {"$set": {"reassignment_proposal": proposal, "updated_at": now}},
+        projection={"_id": 0}, return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(409, "A replacement is already awaiting the client's answer, or this request "
+                                 "changed — refresh and try again.")
+    await log_audit(db, "matching.reassignment_proposed", admin_user, {
+        "hearing_id": hearing_id, "counsel_user_id": counsel_user_id,
+        "original_counsel_user_id": hearing.get("target_advocate_id"),
+    })
+    return updated
+
+
+async def respond_to_reassignment(db, hearing_id: str, user: dict, approve: bool) -> dict:
+    """D3 step 2 (client): approve or decline the proposed replacement.
+    Approving re-targets the request at the replacement (atomic, conditional on
+    the same pending proposal and still unassigned) and then assigns them via
+    accept_hearing_request — which re-checks their eligibility and keeps its
+    own race-safe claim. Declining just clears the proposal."""
+    import hearings
+    from audit_log import log_audit
+    hearing = await db.hearing_requests.find_one({"hearing_id": hearing_id}, {"_id": 0})
+    if not hearing:
+        raise HTTPException(404, "Hearing request not found")
+    if hearing["requesting_user_id"] != user["user_id"]:
+        raise HTTPException(403, "Only the client who made this request can answer this.")
+    proposal = hearing.get("reassignment_proposal")
+    if not proposal or not hearings.is_escalated_unassigned(hearing):
+        raise HTTPException(400, "There's no replacement counsel awaiting your answer.")
+    counsel_id = proposal["counsel_user_id"]
+    pending = {"hearing_id": hearing_id, "status": "broadcast", "proxy_counsel_user_id": None,
+               "reassignment_proposal.counsel_user_id": counsel_id}
+    now = datetime.now(timezone.utc).isoformat()
+    changed = "This request changed — refresh and try again."
+
+    if not approve:
+        result = await db.hearing_requests.update_one(pending, {"$set": {"reassignment_proposal": None, "updated_at": now}})
+        if not result.modified_count:
+            raise HTTPException(409, changed)
+        await log_audit(db, "matching.reassignment_declined", user, {"hearing_id": hearing_id, "counsel_user_id": counsel_id})
+        return {"ok": True, "status": "declined"}
+
+    if not await hearings.is_eligible_counsel(db, counsel_id):
+        await db.hearing_requests.update_one(pending, {"$set": {"reassignment_proposal": None, "updated_at": now}})
+        raise HTTPException(409, "The proposed counsel is no longer available. Our team will propose someone "
+                                 "else, or you can cancel this request for a full refund.")
+    retarget = {
+        "target_advocate_id": counsel_id, "previous_target_advocate_id": hearing.get("target_advocate_id"),
+        "reassigned_at": now, "reassignment_proposal": None, "updated_at": now,
+    }
+    if hearing.get("dedupe_key"):  # legacy rows created before the key existed stay keyless
+        # Same write as the re-target: the old counsel's slot is freed and the
+        # new one reserved together. A clash with another active request of
+        # this client's fails the whole write, leaving the request as it was.
+        retarget["dedupe_key"] = hearings.dedupe_key_for(
+            hearing["requesting_user_id"], counsel_id, hearing["court_id"], hearing["hearing_date"])
+    try:
+        result = await db.hearing_requests.update_one(pending, {"$set": retarget})
+    except DuplicateKeyError:
+        raise HTTPException(409, REASSIGN_DUPLICATE)
+    if not result.modified_count:
+        raise HTTPException(409, changed)
+    await log_audit(db, "matching.reassigned", user, {
+        "hearing_id": hearing_id, "from_counsel_user_id": hearing.get("target_advocate_id"),
+        "to_counsel_user_id": counsel_id, "approved_by_client": True,
+    })
+    return await hearings.accept_hearing_request(db, hearing_id, {"user_id": counsel_id})

@@ -165,9 +165,11 @@ def test_discover_candidates_targeted_hearing_returns_only_target_advocate():
                 "hearing_id": hearing_id, "court_id": "court_tishazari", "status": "requested",
                 "target_advocate_id": target_id,
             })
-            # target advocate need not even pass the broadcast-pool eligibility
-            # gates — manual selection bypasses discovery filtering entirely.
-            await _insert_counsel_profile(db, _profile(target_id, kyc_status="pending"))
+            # A manually selected advocate skips the broadcast-pool
+            # availability_mode gate, but must still be verified — the same
+            # trust gate as the public listing (an unverified target is
+            # covered by test_lead_rejection_visibility.py).
+            await _insert_counsel_profile(db, _profile(target_id, availability_mode=False))
             await _insert_counsel_profile(db, _profile(other_id))
             results = await counsel_matching.discover_candidates(db, hearing_id)
             found = {c["user_id"] for c in results}

@@ -39,6 +39,14 @@ const STATUS_TABS = [
   { value: "cancelled", label: "Cancelled" },
 ];
 
+// Says "refunded" only when the refund actually completed; an accepted or
+// failed refund is still owed (see escrow.refund's outcomes).
+export function disputeRefundMessage(result) {
+  if (result?.refund_status === "refunded") return "Refunded & cancelled";
+  if (result?.refund_status === "refund_processing") return "Cancelled — refund initiated, awaiting bank processing";
+  return "Cancelled — the refund did not complete. Retry it from Cancelled → this hearing.";
+}
+
 export function listAdminHearingsForTab(status) {
   if (status !== PAID_ACTIVE) return adminListHearingRequests(status);
   return Promise.all(PAID_CANCELLABLE_HEARING_STATUSES.map((s) => adminListHearingRequests(s)))
@@ -117,8 +125,8 @@ function HearingVerificationDialog({ hearingId, open, onOpenChange, onChanged })
   const run = async (fn, successMsg) => {
     setBusy(true);
     try {
-      await fn();
-      toast.success(successMsg);
+      const result = await fn();
+      toast.success(typeof successMsg === "function" ? successMsg(result) : successMsg);
       onChanged?.();
       load();
     } catch (err) {
@@ -214,7 +222,7 @@ function HearingVerificationDialog({ hearingId, open, onOpenChange, onChanged })
               <Button type="button" disabled={busy} onClick={() => run(() => adminResolveHearingDispute(hearingId, "resubmit", remark), "Back to verification")} className="bg-primary font-bold">
                 Resubmit for review
               </Button>
-              <Button type="button" disabled={busy} variant="outline" onClick={() => run(() => adminResolveHearingDispute(hearingId, "refund", remark), "Refunded & cancelled")} className="font-bold text-red-600 border-red-200 hover:bg-red-50">
+              <Button type="button" disabled={busy} variant="outline" onClick={() => run(() => adminResolveHearingDispute(hearingId, "refund", remark), disputeRefundMessage)} className="font-bold text-red-600 border-red-200 hover:bg-red-50">
                 Refund & cancel
               </Button>
             </>

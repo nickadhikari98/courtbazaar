@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 
 StatusCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 
-AI_PROVIDER = os.environ.get("AI_PROVIDER", "groq").strip().lower()
-AI_MODEL = os.environ.get("AI_MODEL", "llama-3.3-70b-versatile")
+# OpenAI unless set otherwise: production never uses Groq, and the groq package isn't installed.
+AI_PROVIDER = os.environ.get("AI_PROVIDER", "openai").strip().lower()
+AI_MODEL = os.environ.get("AI_MODEL", "gpt-4o-mini")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_VECTOR_STORE_ID = os.environ.get("OPENAI_VECTOR_STORE_ID")

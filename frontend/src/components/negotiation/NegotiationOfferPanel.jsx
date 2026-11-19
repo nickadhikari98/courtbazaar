@@ -87,6 +87,7 @@ export default function NegotiationOfferPanel({
       await onChanged?.();
     } catch (err) {
       toast.error(getErrorMessage(err, "Could not send that offer"));
+      onChanged?.();  // the server refused: show what the negotiation looks like now
     } finally {
       setBusy(false);
     }
@@ -100,6 +101,7 @@ export default function NegotiationOfferPanel({
       await onChanged?.();
     } catch (err) {
       toast.error(getErrorMessage(err, "Could not accept this offer"));
+      onChanged?.();  // e.g. the offer was replaced meanwhile: show the current one
     } finally {
       setBusy(false);
     }
@@ -236,7 +238,7 @@ export default function NegotiationOfferPanel({
           </div>
           <div>
             <Label className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Message (optional)</Label>
-            <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Travel distance is higher" data-testid="offer-note-input" />
+            <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Travel distance is higher" maxLength={1000} data-testid="offer-note-input" />
           </div>
         </div>
         <DialogFooter>
