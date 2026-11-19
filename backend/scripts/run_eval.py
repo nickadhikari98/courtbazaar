@@ -63,9 +63,12 @@ def cited_docs(citation, sources):
 
 def provision_hit(expected, citations_for_doc):
     """"Rule 8.6" / "Appendix IV, Article 7": the number is cited, as itself, a
-    sub-provision of it, or its parent (a citation of "9" for "9.8")."""
+    sub-provision of it, or its parent (a citation of "9" for "9.8").
+    "Section 11(6)" (a sub-section): exactly that sub-section must be cited."""
     m = re.match(r"(?:((?:Appendix|Schedule|Annex) \w+), )?(?:Rule|Article|Section|Paragraph) (\S+)$", expected)
     appendix, number = m.group(1), m.group(2)
+    if "(" in number:
+        return any(number in (c.get("rule_labels") or []) for c in citations_for_doc)
     for c in citations_for_doc:
         if appendix and not (c.get("label") or "").startswith(appendix + ","):
             continue
@@ -95,8 +98,11 @@ async def main():
     parser.add_argument("--limit", type=int)
     parser.add_argument("--mode", default="layman", choices=("layman", "lawyer"))
     parser.add_argument("--source", action="append", help="only questions expecting this doc_id (repeatable)")
+    parser.add_argument("--tag", action="append", help="only questions with this tag, e.g. sub_section (repeatable)")
     args = parser.parse_args()
     cases = [json.loads(line) for line in EVAL_FILE.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if args.tag:
+        cases = [c for c in cases if set(args.tag) & set(c.get("tags") or [])]
     if args.source:
         cases = [c for c in cases if set(args.source) & set(
             [c["expected_doc_id"]] if isinstance(c["expected_doc_id"], str) else c["expected_doc_id"] or [])]
@@ -139,6 +145,13 @@ async def main():
               + "; ".join(f"{d} {p}" for d, p in zip(expected, provisions)) + "\n     cited:    "
               + ("; ".join(f"{c.get('title')} | {c.get('label')} {', '.join(c.get('rule_labels') or c.get('rules') or [])}"
                            for c in citations) or "(none)"))
+        for p in provisions:
+            if "(" in p:  # other sub-sections of the expected section that the answer cited: for review
+                base = p.split()[-1].split("(")[0]
+                others = sorted({lab for c in citations for lab in c.get("rule_labels") or []
+                                 if lab.split("(")[0] == base and lab != p.split()[-1]})
+                if others:
+                    print(f"     REVIEW other sub-sections of {p.split('(')[0]} cited: {', '.join(others)}")
         codes = {kb_registry.record_code(RECORDS[d][1]) for d in expected}
         row["wrong_inst"] += sum(kb_registry.record_code(RECORDS[d][1]) not in codes for d in docs if d in RECORDS)
         if result.get("error"):

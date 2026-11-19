@@ -406,7 +406,11 @@ _ACTOR_WORDS = {
 }
 _ACTOR_ALT = "|".join(sorted(_ACTOR_WORDS, key=len, reverse=True))
 _MODAL = r"(?:may|shall|must|can|could|will|would|should|is free to|are free to|is required to|are required to|has to|have to|is entitled to|are entitled to)"
-_ACTIVE_RE = re.compile(rf"\b({_ACTOR_ALT})\s+{_MODAL}\s+(?:(?:also|either|then|not|only|still|further|now)\s+)*([a-z]+)", re.IGNORECASE)
+# "A party may, during the arbitral proceedings, apply ...": the verb can come after a comma phrase.
+_ACTIVE_RE = re.compile(rf"\b({_ACTOR_ALT})\s+{_MODAL}(?:\s*,[^,.;]{{1,200}},)?\s+(?:(?:also|either|then|not|only|still|further|now)\s+)*([a-z]+)", re.IGNORECASE)
+# "... the constitution of an arbitral tribunal may submit ...": that tribunal isn't the one acting.
+_OBJECT_OF_PREPOSITION_RE = re.compile(
+    r"\b(?:of|to|for|with|from|against|before|by|under)\s+(?:(?:the|a|an|any|each|its|their)\s+)?(?:[a-z]+\s+)?$", re.IGNORECASE)
 _PASSIVE_RE = re.compile(rf"\b(?:be|been|is|are|was|were)\s+([a-z]+(?:ed|able))\s+by\s+(?:the\s+|any\s+|each\s+|either\s+)?({_ACTOR_ALT})\b", re.IGNORECASE)
 _ADJ_BY_RE = re.compile(rf"\b([a-z]+able)\s+by\s+(?:the\s+|any\s+|each\s+|either\s+)?({_ACTOR_ALT})\b", re.IGNORECASE)
 # Further verbs an actor governs later in the same sentence: "may either
@@ -435,7 +439,7 @@ def _actor_actions(text: str, coordinated: bool = False) -> set:
     pairs = set()
     for m in _ACTIVE_RE.finditer(text):
         actor, verb = _ACTOR_WORDS[m.group(1).lower()], m.group(2).lower()
-        if verb in _NOT_VERBS:
+        if verb in _NOT_VERBS or _OBJECT_OF_PREPOSITION_RE.search(text[max(0, m.start() - 40):m.start()]):
             continue
         pairs.add((actor, _verb_key(verb)))
         if coordinated:
@@ -469,6 +473,67 @@ def _rule_refs(text: str) -> List[str]:
     return refs
 
 
+# "Section 11(6)", "Sections 11 and 12", "Section 11(4) and (5)", "Article 7(2)", "Paragraph 3": a
+# sentence citing one is checked against that provision's own text, down to its numbered sub-section.
+# Rule citations keep _rule_refs (bare numbers), as before. A clause below the sub-section
+# ("(a)", "(ii)") is checked against the sub-section it sits in.
+_SUB_REF = r"\(\d{1,2}[A-Z]{0,2}\)"
+_CLAUSE_PART = r"(?:\([a-z]{1,5}\))*"
+_LABELLED_ITEM = rf"\d{{1,3}}[A-Z]{{0,2}}(?:\.\d{{1,2}})?(?:\s?{_SUB_REF})?{_CLAUSE_PART}"
+_LABELLED_REF_RE = re.compile(
+    rf"\b(Section|Article|Paragraph)s?\s+({_LABELLED_ITEM}"
+    rf"(?:\s*(?:,|\band\b|&|\bor\b)\s*(?:{_LABELLED_ITEM}|{_SUB_REF}{_CLAUSE_PART}))*)", re.IGNORECASE)
+_LABELLED_PART_RE = re.compile(r"(\d{1,3}[A-Z]{0,2}(?:\.\d{1,2})?)?\s?(\(\d{1,2}[A-Z]{0,2}\))?")
+# "Section 9 of the Code of Civil Procedure": another instrument's provision, not checked here.
+_OTHER_INSTRUMENT_AFTER_RE = re.compile(
+    r"\s*,?\s*of\s+(?:the\s+)?(?!Arbitration\b|this\b|said\b|Act\b)(?=[A-Z])[A-Za-z ]{0,40}?\b(?:Act|Code)\b")
+
+
+def _attribution_refs(text: str, provisions: dict) -> List[str]:
+    """The provisions a sentence cites, as provision_map keys: Rule numbers as _rule_refs gives them,
+    and "section 11(6)" / "article 9.8" for the others. A Section/Article/Paragraph is only checked
+    when that kind of provision was retrieved at all; otherwise it names another instrument's."""
+    refs = list(_rule_refs(text))
+    text = text or ""
+    matches = list(_LABELLED_REF_RE.finditer(text))
+    # Only a bracketed Section/Article/Paragraph is the sentence's citation: in "... pleadings under
+    # Section 23(4) (Section 29A(1))" or "an application under Section 9 ...", the inline one is part of
+    # what it says. (Rule citations keep _rule_refs, inline or not, as before.)
+    for m in [m for m in matches if text.rfind("(", 0, m.start()) > text.rfind(")", 0, m.start())]:
+        word = m.group(1).lower()
+        if _OTHER_INSTRUMENT_AFTER_RE.match(text, m.end()) or not any(k.startswith(word + " ") for k in provisions):
+            continue
+        last = None
+        for part in re.split(r"\s*(?:,|\band\b|&|\bor\b)\s*", m.group(2), flags=re.IGNORECASE):
+            pm = _LABELLED_PART_RE.match(part.replace(" ", ""))
+            number = pm.group(1) or last
+            if not number:
+                continue
+            last = number
+            key = f"{word} {number}{pm.group(2) or ''}"
+            if key not in refs:
+                refs.append(key)
+    return refs
+
+
+def _provision_text(ref: str, provisions: dict) -> Optional[str]:
+    """A cited provision's own text. A sub-section is its own text only; a provision with no numbered
+    sub-sections at all stands for any of them. A sub-section that isn't there gives None."""
+    if ref in provisions:
+        return provisions[ref]
+    parent = ref.split("(")[0]
+    if parent == ref or parent not in provisions:
+        return None
+    found = sorted(int(m.group(1)) for k in provisions if k.startswith(parent + "(")
+                   for m in [re.match(r"\((\d+)", k[len(parent):])] if m)
+    wanted = int(re.match(r"\((\d+)", ref[len(parent):]).group(1))
+    if not found or (found[0] < wanted < found[-1] and wanted not in found):
+        # No sub-sections, or one missing between two that were found (the text's layout hid its
+        # marker): the provision's whole text stands for it rather than dropping a true sentence.
+        return provisions[parent]
+    return None
+
+
 _SPECIFIC_PARTY_RE = re.compile(r"\b(claimant|respondent)s?\b", re.IGNORECASE)
 _GENERIC_PARTY_RE = re.compile(r"\b(?:party|parties)\b", re.IGNORECASE)
 
@@ -494,7 +559,7 @@ def _restore_party_wording(sentence: str, refs: List[str], provisions: dict) -> 
     role kept in brackets ("If a party (including the Claimant) fails ...").
     Returned only if that version passes the full attribution check against
     the same rule; None otherwise. Nothing but the party wording changes."""
-    rule_text = "\n".join(provisions.get(r) or "" for r in refs)
+    rule_text = "\n".join(_provision_text(r, provisions) or "" for r in refs)
     if not _narrows_party(sentence, rule_text):
         return None
     # The original must already pass every other check: the inserted "a
@@ -514,12 +579,16 @@ def _restore_party_wording(sentence: str, refs: List[str], provisions: dict) -> 
 
 
 def _attribution_ok(sentence: str, refs: List[str], provisions: dict, check_party_wording: bool = True) -> bool:
-    texts = [provisions.get(r) for r in refs]
+    texts = [_provision_text(r, provisions) for r in refs]
     if not refs or any(t is None for t in texts):
-        return False  # cites a rule whose text wasn't retrieved
+        return False  # cites a provision (or sub-section) whose text wasn't retrieved
     rule_text = "\n".join(texts)
     rule_lower = rule_text.lower()
     body = re.sub(r"\(?\b(?:Rules?)\s+[\d.,\sand&or]+\)?|\(\d{1,3}\.\d{1,2}\)", " ", sentence, flags=re.IGNORECASE)
+    if any(" " in r for r in refs):
+        # The citation itself and the statute's name aren't claims about the sub-section's text
+        # (the grounded check holds the statute's name against everything retrieved).
+        body = _NAMED_STATUTE_RE.sub(" ", _LABELLED_REF_RE.sub(" ", body))
     if not _content_supported(body, rule_lower):
         return False
     if not _numbers(_LIST_MARKER_RE.sub("", body)) <= _numbers(rule_text):
@@ -553,7 +622,7 @@ def validate_rule_attribution(answer: str, provisions: dict) -> Tuple[Optional[s
         para_refs.append([])
         group.append(idx)
         for s in sentences:
-            current = current + [r for r in _rule_refs(s) if r not in current]
+            current = current + [r for r in _attribution_refs(s, provisions) if r not in current]
     for g in group:
         para_refs[g] = current
     out = []
@@ -561,12 +630,12 @@ def validate_rule_attribution(answer: str, provisions: dict) -> Tuple[Optional[s
     kept = dropped = 0
     for idx, (marker, sentences) in enumerate(lines):
         if _is_heading(marker):
-            section_refs = _rule_refs(" ".join(sentences))
+            section_refs = _attribution_refs(" ".join(sentences), provisions)
             out.append((marker, sentences))
             continue
         keep = []
         for s in sentences:
-            refs = _rule_refs(s) or para_refs[idx] or section_refs
+            refs = _attribution_refs(s, provisions) or para_refs[idx] or section_refs
             if refs and not _attribution_ok(s, refs, provisions):
                 restored = _restore_party_wording(s, refs, provisions)
                 if restored is None:
@@ -592,6 +661,9 @@ _DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789
 _PROVISION_REF_RE = re.compile(
     r"(?:\b(?:rules?|sections?|articles?|clauses?|paragraphs?|niyam|dhara|anuchchhed)\b\.?|नियम|धारा|अनुच्छेद|खंड)"
     r"\s*\(?(\d{1,3}[A-Z]?(?:\.\d{1,2})?)", re.IGNORECASE)
+_PROVISION_SUB_REF_RE = re.compile(
+    r"(?:\b(?:sections?|articles?|paragraphs?|dhara|anuchchhed)\b\.?|धारा|अनुच्छेद)\s*(\d{1,3}[A-Z]?)\s?(\(\d{1,2}[A-Z]{0,2}\))",
+    re.IGNORECASE)
 
 
 def _provision_grounded(text: str, evidence: str, provisions: dict) -> Optional[str]:
@@ -606,6 +678,12 @@ def _provision_grounded(text: str, evidence: str, provisions: dict) -> Optional[
             if ref not in provisions:
                 return None  # cites a provision whose text wasn't retrieved
         elif not re.search(rf"(?<![\d.]){re.escape(ref)}(?![\d.])", evidence or ""):
+            return None
+    # The wording can't be held to an English source, but a cited sub-section must exist:
+    # "धारा 11(1)" where only 11(6) was retrieved is a sub-section the answer can't stand on.
+    for number, sub in _PROVISION_SUB_REF_RE.findall(body):
+        subs = [k for k in provisions if re.fullmatch(rf"\w+ {re.escape(number)}\(.+\)", k)]
+        if subs and not any(k.endswith(f" {number}{sub}") for k in subs):
             return None
     figures = _numbers(_PROVISION_REF_RE.sub(" ", body))
     return body if figures <= _numbers(evidence or "") else None
@@ -719,14 +797,18 @@ def _specific_follow_up(question: str, points: List[dict], summary: str, evidenc
     return question if refs and refs <= set(provisions) and refs - used else None
 
 
-_CLAUSE_REF_RE = re.compile(r"\bRules?\s+(\d{1,3}(?:\.\d{1,3})?)(\([a-z]{1,4}\))", re.IGNORECASE)
+# "Rule 4(i)", and a numbered sub-section "Section 11(6)" / "Article 7(2)": shown in the source list as cited.
+_CLAUSE_REF_RE = re.compile(
+    r"\b(?:Rules?\s+(\d{1,3}(?:\.\d{1,3})?)(\([a-z]{1,4}\))"
+    r"|(?:Sections?|Articles?|Paragraphs?)\s+(\d{1,3}[A-Z]{0,2}(?:\.\d{1,3})?)\s?(\(\d{1,2}[A-Z]{0,2}\)))", re.IGNORECASE)
 
 
 def clause_labels(text: str) -> dict:
-    """Rule number -> how the text cites it where that names a clause:
-    {"4": ["4(i)"]}, so a source can read the same as the answer."""
+    """Provision number -> how the text cites it where that names a clause or sub-section:
+    {"4": ["4(i)"], "11": ["11(6)"]}, so a source can read the same as the answer."""
     labels: dict = {}
-    for number, clause in _CLAUSE_REF_RE.findall(text or ""):
+    for rule, rule_clause, number, sub in _CLAUSE_REF_RE.findall(text or ""):
+        number, clause = (rule, rule_clause) if rule else (number, sub.replace(" ", ""))
         if number + clause not in labels.setdefault(number, []):
             labels[number].append(number + clause)
     return labels

@@ -1,0 +1,159 @@
+ok   Under the Arbitration and Conciliation Act, who appoints the arbitrator if the parties cannot agree on a sole arbitrator?
+     expected: act-ac-1996-2026 Section 11
+     cited:    Arbitration and Conciliation Act, 1996 | Section 11
+ok   What is the time limit for making an arbitral award in a domestic arbitration under the Arbitration Act?
+     expected: act-ac-1996-2026 Section 29A
+     cited:    Arbitration and Conciliation Act, 1996 | Section 23, 29A
+ok   Within what time must an application to set aside an arbitral award be made under the Arbitration Act?
+     expected: act-ac-1996-2026 Section 34
+     cited:    Arbitration and Conciliation Act, 1996 | Section 33, 34
+ok   Can a party ask a court for interim measures before arbitral proceedings begin under the Arbitration Act?
+     expected: act-ac-1996-2026 Section 9
+     cited:    Arbitration and Conciliation Act, 1996 | Section 9
+ok   Can an arbitral tribunal grant interim measures under the Arbitration and Conciliation Act?
+     expected: act-ac-1996-2026 Section 17
+     cited:    Arbitration and Conciliation Act, 1996 | Section 17
+ok   Under the Arbitration Act, when must a court stay an arbitral award unconditionally while a Section 34 challenge is pending?
+     expected: act-ac-1996-2026 Section 36
+     cited:    Arbitration and Conciliation Act, 1996 | Section 34, 36
+ok   If the arbitration agreement itself was induced by fraud, does the Arbitration Act require an unconditional stay of the award?
+     expected: act-ac-1996-2026 Section 36
+     cited:    Arbitration and Conciliation Act, 1996 | Section 34, 36
+ok   Does the unconditional stay for awards induced by corruption under Section 36 apply to court cases that began before the 2021 amendment?
+     expected: act-ac-1996-2026 Section 36
+     cited:    Arbitration and Conciliation Act, 1996 | Section 34, 36
+ok   Under the DIAC Rules, who appoints the presiding arbitrator if the two party-appointed arbitrators fail to do so?
+     expected: diac-arb-proceedings-2023 Rule 8.6
+     cited:    Delhi International Arbitration Centre (Arbitration Proceedings) Rules, 2023 | Rule 8.6
+ok   Under the DIAC Rules, who fixes the deposits the parties must pay?
+     expected: diac-arb-proceedings-2023 Rule 33.1
+     cited:    Delhi International Arbitration Centre (Arbitration Proceedings) Rules, 2023 | Rule 33.1
+ok   What happens under the DIAC Rules if a party does not pay its deposit within thirty days?
+     expected: diac-arb-proceedings-2023 Rule 33.5
+     cited:    Delhi International Arbitration Centre (Arbitration Proceedings) Rules, 2023 | Rule 33.5
+ok   Who are the members of the DIAC Arbitration Committee under the DIAC Internal Management Rules?
+     expected: diac-internal-mgmt-2012 Rule 3
+     cited:    Delhi International Arbitration Centre (Internal Management) Rules, 2012 | Rule 3
+ok   How does DIAC maintain its panel of arbitrators under its Internal Management Rules?
+     expected: diac-internal-mgmt-2012 Rule 10
+     cited:    Delhi International Arbitration Centre (Internal Management) Rules, 2012 | Rule 10
+ok   Under the DIAC fee rules, is the arbitrator's fee assessed on the claim alone or on the claim and counter-claim together?
+     expected: diac-costs-fees-2018 Rule 3
+     cited:    Delhi International Arbitration Centre (Administrative Costs & Arbitrators' Fees) Rules, 2018 | Rule 3(i)
+ok   Under the DIAC fee rules, how are administrative costs and arbitrators' fees shared between the parties?
+     expected: diac-costs-fees-2018 Rule 4
+     cited:    Delhi International Arbitration Centre (Administrative Costs & Arbitrators' Fees) Rules, 2018 | Rule 4(i)
+ok   Is a separate fee payable to the tribunal for a Section 17 application under the DIAC fee rules?
+     expected: diac-costs-fees-2018 Rule 7
+     cited:    Delhi International Arbitration Centre (Administrative Costs & Arbitrators' Fees) Rules, 2018 | Rule 7(ii); Delhi International Arbitration Centre (Arbitration Proceedings) Rules, 2023 | Rule 33; Arbitration and Conciliation Act, 1996 | Section 17
+ok   Under the ICA domestic arbitration rules, when is a dispute heard by three arbitrators instead of a sole arbitrator?
+     expected: ica-domestic-rules-2024 Rule 22
+     cited:    Indian Council of Arbitration Rules of Domestic Commercial Arbitration | Rule 22(a), 22(b)
+ok   Under the ICA rules, can the Registrar ask parties to deposit money before the case goes to the arbitrators?
+     expected: ica-domestic-rules-2024 Rule 28
+     cited:    Indian Council of Arbitration Rules of Domestic Commercial Arbitration | Rule 28
+ok   Does the Indian Council of Arbitration allow fast track arbitration?
+     expected: ica-domestic-rules-2024 Rule 44
+     cited:    Indian Council of Arbitration Rules of Domestic Commercial Arbitration | Rule 44
+ok   Under the ICA rules, can the respondent file a counter-claim against the claimant?
+     expected: ica-domestic-rules-2024 Rule 19
+     cited:    Indian Council of Arbitration Rules of Domestic Commercial Arbitration | Rule 19(a)
+ok   Under the MCIA Rules, how quickly must an emergency arbitrator decide an application?
+     expected: mcia-rules-2025 Rule 19.6
+     cited:    Mumbai Centre for International Arbitration Arbitration Rules, 3rd Edition | Rule 19.6
+ok   What is the default seat of arbitration under the MCIA Rules if the parties have not agreed one?
+     expected: mcia-rules-2025 Rule 30.1
+     cited:    Mumbai Centre for International Arbitration Arbitration Rules, 3rd Edition | Rule 30.1
+ok   Under the MCIA Rules, how are arbitrators nominated when three arbitrators are to be appointed?
+     expected: mcia-rules-2025 Rule 12.1
+     cited:    Mumbai Centre for International Arbitration Arbitration Rules, 3rd Edition | Rule 12.1, 12.4
+ok   How can a party get an emergency arbitrator under the SIAC Rules?
+     expected: siac-rules-2025 Rule 12.1
+     cited:    SIAC Arbitration Rules, 7th Edition, Schedule 1 - Emergency Arbitrator Procedure | Schedule 1, Paragraph 2; Singapore International Arbitration Centre Arbitration Rules, 7th Edition | Rule 12.1
+ok   When does the SIAC Expedited Procedure apply?
+     expected: siac-rules-2025 Rule 14.1
+     cited:    Singapore International Arbitration Centre Arbitration Rules, 7th Edition | Rule 14.1
+ok   Must a party disclose third-party funding under the SIAC Rules?
+     expected: siac-rules-2025 Rule 38.1
+     cited:    Singapore International Arbitration Centre Arbitration Rules, 7th Edition | Rule 38.1
+ok   Can a party ask the tribunal for a preliminary determination of an issue under the SIAC Rules?
+     expected: siac-rules-2025 Rule 46.1
+     cited:    Singapore International Arbitration Centre Arbitration Rules, 7th Edition | Rule 46.1
+ok   What is the ICC emergency arbitrator procedure?
+     expected: icc-arbitration-rules-2026 Article 31
+     cited:    ICC Arbitration Rules 2026, Appendix IV - Emergency Arbitrator Provisions | Appendix IV, Article 1, 2, 6; ICC Arbitration Rules 2026 | Article 31
+ok   Under the ICC Rules, can a party ask the emergency arbitrator for a preliminary order without notice to the other side?
+     expected: icc-arbitration-rules-2026 Appendix IV, Article 7
+     cited:    ICC Arbitration Rules 2026, Appendix IV - Emergency Arbitrator Provisions | Appendix IV, Article 7
+ok   Under the ICC Rules, will the emergency arbitrator be appointed if the applicant has not paid the fees?
+     expected: icc-arbitration-rules-2026 Appendix IV, Article 8
+     cited:    ICC Arbitration Rules 2026, Appendix IV - Emergency Arbitrator Provisions | Appendix IV, Article 8
+ok   Under the ICC Mediation Rules, how is the mediator selected?
+     expected: icc-mediation-rules-2014 Article 5
+     cited:    ICC Mediation Rules 2014 | Article 5
+ok   When do mediation proceedings terminate under the ICC Mediation Rules?
+     expected: icc-mediation-rules-2014 Article 8
+     cited:    ICC Mediation Rules 2014 | Article 8
+ok   Under the LCIA Rules, how quickly must an emergency arbitrator decide?
+     expected: lcia-rules-2020 Article 9.8
+     cited:    London Court of International Arbitration Arbitration Rules (with Schedule of Costs effective 1 Dec 2023) | Article 9.8
+ok   What is the default seat of arbitration under the LCIA Rules?
+     expected: lcia-rules-2020 Article 16.2
+     cited:    London Court of International Arbitration Arbitration Rules (with Schedule of Costs effective 1 Dec 2023) | Article 16.2
+ok   Are LCIA awards and arbitration materials confidential?
+     expected: lcia-rules-2020 Article 30.1
+     cited:    London Court of International Arbitration Arbitration Rules (with Schedule of Costs effective 1 Dec 2023) | Article 30.1
+ok   Compare the deadline for an emergency arbitrator's decision under the MCIA Rules and the LCIA Rules.
+     expected: mcia-rules-2025 Rule 19.6; lcia-rules-2020 Article 9.8
+     cited:    Mumbai Centre for International Arbitration Arbitration Rules, 3rd Edition | Rule 19.6; London Court of International Arbitration Arbitration Rules (with Schedule of Costs effective 1 Dec 2023) | Article 9.8
+ok   What is the default seat of arbitration under the MCIA Rules compared with the LCIA Rules?
+     expected: mcia-rules-2025 Rule 30.1; lcia-rules-2020 Article 16.2
+     cited:    London Court of International Arbitration Arbitration Rules (with Schedule of Costs effective 1 Dec 2023) | Article 16.2; Mumbai Centre for International Arbitration Arbitration Rules, 3rd Edition | Rule 30.1
+MISS Under the Arbitration Act, what can a party do if the other side fails to act under the appointment procedure the parties agreed on?
+     expected: act-ac-1996-2026 Section 11(6)
+     cited:    (none)
+MISS In an arbitration with three arbitrators under the Arbitration Act, what happens if a party does not appoint its arbitrator within thirty days of being asked?
+     expected: act-ac-1996-2026 Section 11(4)
+     cited:    Arbitration and Conciliation Act, 1996 | Section 11
+MISS Under the Arbitration Act, are the parties free to agree on their own procedure for appointing arbitrators?
+     expected: act-ac-1996-2026 Section 11(2)
+     cited:    Arbitration and Conciliation Act, 1996 | Section 11
+MISS Under the Arbitration Act, within what time must an application to set aside an arbitral award be made?
+     expected: act-ac-1996-2026 Section 34(3)
+     cited:    Arbitration and Conciliation Act, 1996 | Section 33, 34
+MISS Under the Arbitration Act, can the parties extend the twelve-month time limit for making an award by consent, and for how long?
+     expected: act-ac-1996-2026 Section 29A(3)
+     cited:    Arbitration and Conciliation Act, 1996 | Section 29A
+MISS Under the Arbitration Act, what happens to the arbitrator's mandate if the award is not made within the time limit or the extended period?
+     expected: act-ac-1996-2026 Section 29A(4)
+     cited:    Arbitration and Conciliation Act, 1996 | Section 29A
+MISS Under the Arbitration Act, if a court grants an interim measure before arbitration starts, within what time must the arbitral proceedings begin?
+     expected: act-ac-1996-2026 Section 9(2)
+     cited:    Arbitration and Conciliation Act, 1996 | Section 9
+MISS Under the fast track procedure in the Arbitration Act, within what time must the award be made?
+     expected: act-ac-1996-2026 Section 29B(4)
+     cited:    Arbitration and Conciliation Act, 1996 | Section 29B
+MISS Under the Arbitration Act, does filing an application to set aside an award automatically stop the award from being enforced?
+     expected: act-ac-1996-2026 Section 36(2)
+     cited:    Arbitration and Conciliation Act, 1996 | Section 34, 36
+MISS Under the Arbitration Act, can a court still grant interim measures under Section 9 once the arbitral tribunal has been constituted?
+     expected: act-ac-1996-2026 Section 9(3)
+     cited:    Arbitration and Conciliation Act, 1996 | Section 9, 17
+
+source                            qs  right doc  right prov  wrong inst
+act-ac-1996-2026                  18        94%         44%           0
+cross-institution                  2       100%        100%           0
+diac-arb-proceedings-2023          3       100%        100%           0
+diac-costs-fees-2018               3       100%        100%           1
+diac-internal-mgmt-2012            2       100%        100%           0
+ica-domestic-rules-2024            4       100%        100%           0
+icc-arbitration-rules-2026         3       100%        100%           0
+icc-mediation-rules-2014           2       100%        100%           0
+lcia-rules-2020                    3       100%        100%           0
+mcia-rules-2025                    3       100%        100%           0
+not in KB                          3       100%        100%           0
+siac-rules-2025                    4       100%        100%           0
+TOTAL                             50        98%         80%           1
+
+Average total tokens per question: 13,707
+Superseded-document check: no superseded document cited.
